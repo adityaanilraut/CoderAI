@@ -35,6 +35,7 @@ def render_welcome_screen(
     mcp_servers_count: int = 0,
     skills_count: int = 0,
     reasoning_effort: str = "max",
+    active_agent: str = "default",
 ) -> None:
     """Render the stylish CoderAI welcome screen with connection status and focused shortcuts."""
     from coderai.cli.ascii_art import get_gradient_ascii_logo  # lazy: avoids cli/__init__ cycle
@@ -81,40 +82,55 @@ def render_welcome_screen(
         else:
             console.print(logo)
 
-        # Header Info Table inside Panel
+        # Header Info Table inside Panel — clean 3-row structured grid
         grid = Table.grid(expand=True, padding=(0, 2))
         grid.add_column(justify="left", ratio=1)
         grid.add_column(justify="right", ratio=1)
 
-        col1 = Text()
-        col1.append("  Engine: ", style="dim")
-        col1.append(f"v{__version__} ", style="bold")
-        col1.append(f"(Py {py_ver})  ", style="dim")
-        col1.append("•  Model: ", style="dim")
-        col1.append(f"{active_model}\n", style="bold cyan")
+        # Row 1: Engine & Workspace
+        r1_c1 = Text()
+        r1_c1.append("  Engine: ", style="dim")
+        r1_c1.append(f"v{__version__} ", style="bold")
+        r1_c1.append(f"(Py {py_ver})", style="dim")
 
-        col1.append("  Reasoning: ", style="dim")
-        col1.append(f"{thinking_str}  ", style="default")
-        col1.append("•  Plan Mode: ", style="dim")
-        col1.append(f"{plan_status}", style="bold yellow" if plan_mode else "dim")
-
-        col2 = Text()
-        col2.append("Workspace: ", style="dim")
-        col2.append(f"{workspace_str}", style="bold")
+        r1_c2 = Text()
+        r1_c2.append("Workspace: ", style="dim")
+        r1_c2.append(f"{workspace_str}", style="bold")
         if branch:
-            col2.append(f" ({branch}{'*' if is_dirty else ''})", style="bold magenta")
-        col2.append("\nStatus: ", style="dim")
+            r1_c2.append(f" ({branch}{'*' if is_dirty else ''})", style="bold magenta")
+        grid.add_row(r1_c1, r1_c2)
+
+        # Row 2: Model & Status
+        r2_c1 = Text()
+        r2_c1.append("  Model: ", style="dim")
+        r2_c1.append(f"{active_model}", style="bold cyan")
+
+        r2_c2 = Text()
+        r2_c2.append("Status: ", style="dim")
         if has_api_key:
-            col2.append("● Connected", style="bold green")
+            r2_c2.append("● Connected", style="bold green")
         else:
-            col2.append("○ No API Key (Run /setup)", style="bold yellow")
-
+            r2_c2.append("○ No API Key (Run /setup)", style="bold yellow")
         if mcp_servers_count > 0:
-            col2.append(f" • MCP ({mcp_servers_count})", style="bold green")
+            r2_c2.append(f" • MCP ({mcp_servers_count})", style="bold green")
         if skills_count > 0:
-            col2.append(f" • Skills ({skills_count})", style="bold yellow")
+            r2_c2.append(f" • Skills ({skills_count})", style="bold yellow")
+        grid.add_row(r2_c1, r2_c2)
 
-        grid.add_row(col1, col2)
+        # Row 3: Agent, Reasoning & Plan Mode
+        r3_c1 = Text()
+        r3_c1.append("  Agent: ", style="dim")
+        r3_c1.append(
+            f"{active_agent}  ",
+            style="bold magenta" if active_agent != "default" else "bold white",
+        )
+        r3_c1.append("•  Reasoning: ", style="dim")
+        r3_c1.append(f"{thinking_str}", style="default")
+
+        r3_c2 = Text()
+        r3_c2.append("Plan Mode: ", style="dim")
+        r3_c2.append(f"{plan_status}", style="bold yellow" if plan_mode else "dim")
+        grid.add_row(r3_c1, r3_c2)
 
         panel = Panel(
             grid,
@@ -133,13 +149,16 @@ def render_welcome_screen(
         actions.append("/help", style="bold cyan")
         actions.append(" manual  ", style="dim")
         actions.append("•  ", style="dim")
-        actions.append("/doctor", style="bold magenta")
+        actions.append("/agent", style="bold magenta")
+        actions.append(" role  ", style="dim")
+        actions.append("•  ", style="dim")
+        actions.append("/doctor", style="bold blue")
         actions.append(" diagnostics  ", style="dim")
         actions.append("•  ", style="dim")
         actions.append("/plan", style="bold yellow")
         actions.append(" safety  ", style="dim")
         actions.append("•  ", style="dim")
-        actions.append("@file", style="bold blue")
+        actions.append("@file", style="bold cyan")
         actions.append(" context  ", style="dim")
         actions.append("•  ", style="dim")
         actions.append("Ctrl-R", style="bold")

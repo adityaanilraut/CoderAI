@@ -157,8 +157,8 @@ def resolve_typed_config_overlay(project_root: str = ".") -> dict[str, Any]:
     except Exception:
         return {}
     try:
-        override_file = os.environ.get("CODERAI_CONFIG_FILE")
-        override_text = os.environ.get("CODERAI_CONFIG_STRING")
+        override_file = os.environ.get("CODERAI_CONFIG_FILE") or os.environ.get("KIMI_CONFIG_FILE")
+        override_text = os.environ.get("CODERAI_CONFIG_STRING") or os.environ.get("KIMI_CONFIG_STRING")
         if override_text:
             typed = load_typed_config_from_string(override_text)
         elif override_file:
@@ -1336,7 +1336,11 @@ def load_typed_config(config_file: Path | None = None) -> TypedConfig:
     """Load + validate config from file (creating a default when missing)."""
     default_path = get_config_file().expanduser().resolve(strict=False)
     if config_file is None:
-        config_file = default_path
+        override_file = os.environ.get("CODERAI_CONFIG_FILE") or os.environ.get("KIMI_CONFIG_FILE")
+        if override_file:
+            config_file = Path(override_file).expanduser()
+        else:
+            config_file = default_path
     config_file = config_file.expanduser().resolve(strict=False)
     is_default = config_file == default_path
     logger.debug("Loading typed config from file: {file}", file=str(config_file))

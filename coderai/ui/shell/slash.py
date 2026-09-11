@@ -141,7 +141,14 @@ _COMMANDS = (
     SlashCommand("context", "Inspect live context window utilization", "Tools & Analytics"),
     SlashCommand("theme", "Switch theme dark/light", "Utilities", subcommands=("dark", "light")),
     SlashCommand("task", "Open interactive background-task browser", "Utilities"),
-    SlashCommand("upgrade", "Install the new Kimi Code successor", "Utilities"),
+    SlashCommand(
+        "agent",
+        "View or switch active agent role",
+        "Models & Reasoning",
+        ("role",),
+        ("roles", "switch", "list"),
+    ),
+    SlashCommand("upgrade", "Check for and install CoderAI updates", "Utilities"),
     SlashCommand("hooks", "Show configured hooks", "Utilities"),
     SlashCommand("btw", "Side question (BTW modal)", "Utilities"),
     SlashCommand("help", "Show command help", "Utilities", ("?", "h")),
@@ -340,17 +347,19 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
     },
     "agents": {
         "title": "Subagents & Multi-Agent Hierarchy",
-        "syntax": "/agents or /subagents [list|tree|report <id>|send <id> <msg>]",
-        "summary": "Inspect hierarchical subagent runs and communicate with child agents.",
+        "syntax": "/agents or /subagents [list|roles|tree|report <id>|send <id> <msg>]",
+        "summary": "Inspect hierarchical subagent runs, discovered roles, and communicate with child agents.",
         "description": (
-            "Monitor and interact with delegated subagent tasks.\n"
+            "Monitor and interact with delegated subagent tasks and roles.\n"
             "• /agents                   — List running and completed subagents\n"
+            "• /agents roles             — List bundled and discovered agent roles (.coderai/agents/*.md)\n"
             "• /agents tree              — View hierarchical tree of subagent delegation\n"
             "• /agents report <id>       — Display final report or findings from subagent\n"
             "• /agents send <id> <msg>   — Send instruction message into subagent inbox"
         ),
         "examples": [
             "/agents",
+            "/agents roles",
             "/agents tree",
             "/agents report ag_1",
             "/agents send ag_1 Please check module B",
@@ -688,6 +697,18 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "summary": "Open the interactive background-task browser.",
         "description": "Three-column TUI: list | detail | output preview. Enter/O output, S stop, Tab filter, R refresh, Q exit.",
         "examples": ["/task"],
+    },
+    "agent": {
+        "title": "Agent Role & Persona",
+        "syntax": "/agent or /role [role_name]",
+        "summary": "Inspect available agent roles or switch the active agent role in current session.",
+        "description": (
+            "Switch the specialized agent persona and tool capabilities.\n"
+            "• /agent            — Open interactive agent role selector\n"
+            "• /agent <role>     — Switch session to specified role (e.g. architect, code-reviewer)\n"
+            "• /agent roles      — List all bundled and discovered markdown agent specifications"
+        ),
+        "examples": ["/agent", "/agent architect", "/role code-reviewer", "/agent default"],
     },
     "upgrade": {
         "title": "Upgrade",

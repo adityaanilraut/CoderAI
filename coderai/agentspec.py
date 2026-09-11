@@ -121,6 +121,10 @@ def load_agent_spec(agent_file: Path) -> ResolvedAgentSpec:
     if not prompt_rel:
         raise AgentSpecError("System prompt path is required")
     system_prompt_path = (agent_file.parent / str(prompt_rel)).resolve()
+    if not system_prompt_path.is_file() and DEFAULT_AGENT_FILE.is_file():
+        fallback_prompt = (DEFAULT_AGENT_FILE.parent / str(prompt_rel)).resolve()
+        if fallback_prompt.is_file():
+            system_prompt_path = fallback_prompt
     tools = agent.get("tools")
     if tools is None:
         raise AgentSpecError("Tools are required")
@@ -164,6 +168,10 @@ def render_system_prompt(spec: ResolvedAgentSpec, extra_args: dict[str, str] | N
     if not spec.system_prompt_path.is_file():
         raise AgentSpecError(f"System prompt file not found: {spec.system_prompt_path}")
     template = spec.system_prompt_path.read_text(encoding="utf-8")
+    if template.startswith("---"):
+        parts = template.split("---", 2)
+        if len(parts) >= 3:
+            template = parts[2].strip()
     args = dict(spec.system_prompt_args)
     if extra_args:
         args.update(extra_args)
@@ -177,3 +185,62 @@ def render_system_prompt(spec: ResolvedAgentSpec, extra_args: dict[str, str] | N
         return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", _replace, template)
     except Exception as exc:
         raise SystemPromptTemplateError(f"Failed to render system prompt: {exc}") from exc
+
+
+def resolve_agent_spec(
+    name_or_path: str | Path,
+    project_root: Path | None = None,
+) -> ResolvedAgentSpec:
+    """Resolve an agent spec from a bundled flavor name, a file path (.yaml or .md),
+    or a discovered role name from .coderai/agents/*.md.
+    """
+    path_obj = Path(name_or_path)
+    # Check direct file path
+    if path_obj.is_file():
+        if path_obj.suffix.lower() in (".yaml", ".yml"):
+            return load_agent_spec(path_obj)
+        if path_obj.suffix.lower() == ".md":
+            from coderai.subagents.registry import _parse_markdown_agent_file
+
+            defn = _parse_markdown_agent_file(path_obj)
+            if defn:
+                return ResolvedAgentSpec(
+                    name=defn.name,
+                    system_prompt_path=defn.source_path or path_obj,
+                    system_prompt_args={},
+                    model=None,
+                    when_to_use=defn.description,
+                    tools=list(defn.tools) if defn.tools else ["read", "bash", "edit"],
+                    allowed_tools=list(defn.tools) if defn.tools else None,
+                    exclude_tools=[],
+                    subagents={},
+                )
+
+    # Check bundled agents (e.g. "default", "okabe")
+    bundled_file = get_agents_dir() / str(name_or_path) / "agent.yaml"
+    if bundled_file.is_file():
+        return load_agent_spec(bundled_file)
+
+    # Check discovered markdown agent specs (.coderai/agents/*.md, etc.)
+    from coderai.subagents.registry import discover_markdown_agents
+
+    discovered = discover_markdown_agents(project_root or Path.cwd())
+    target_norm = str(name_or_path).strip().lower()
+    for defn in discovered:
+        if defn.name.lower() == target_norm or (
+            defn.source_path and defn.source_path.stem.lower() == target_norm
+        ):
+            return ResolvedAgentSpec(
+                name=defn.name,
+                system_prompt_path=defn.source_path or Path.cwd(),
+                system_prompt_args={},
+                model=None,
+                when_to_use=defn.description,
+                tools=list(defn.tools) if defn.tools else ["read", "bash", "edit"],
+                allowed_tools=list(defn.tools) if defn.tools else None,
+                exclude_tools=[],
+                subagents={},
+            )
+
+    raise AgentSpecError(f"Agent spec not found for name or path: {name_or_path}")
+

@@ -661,6 +661,48 @@ def select_reasoning_effort_interactive(
     return norm_cur
 
 
+def select_agent_role_interactive(
+    console: Any | None, current_role: str = "default", project_root: str = "."
+) -> str:
+    """Prompt user with an interactive agent role selection menu with arrow-key navigation."""
+    from pathlib import Path
+    from coderai.subagents.registry import discover_markdown_agents
+
+    discovered = discover_markdown_agents(Path(project_root))
+
+    # Bundled roles
+    roles: list[tuple[str, str, str]] = [
+        ("default", "default (Primary)", "Full software engineering tool suite"),
+        ("okabe", "okabe (Extended)", "Experimental mad-scientist persona with advanced toolsets"),
+    ]
+    # Discovered roles from .coderai/agents/*.md
+    for d in discovered:
+        mode_label = f"[{d.mode}]" if d.mode else ""
+        roles.append((d.name, f"{d.name} {mode_label}", d.description or f"Specialized {d.name} role"))
+
+    items: list[tuple[str, str, str]] = []
+    default_idx = 0
+    clean_curr = (current_role or "default").lower()
+    for idx, (name, label, desc) in enumerate(roles):
+        items.append((name, label, desc))
+        if name.lower() == clean_curr:
+            default_idx = idx
+
+    res = select_with_arrows(
+        console,
+        items,
+        title=f"Select Active Agent Role (Current: {clean_curr})",
+        default_idx=default_idx,
+        allow_custom=False,
+        allow_cancel=True,
+    )
+    if res is None:
+        return clean_curr
+    if isinstance(res, int) and 0 <= res < len(roles):
+        return roles[res][0]
+    return clean_curr
+
+
 def select_session_interactive(console: Any | None, sessions: list[SessionEntry]) -> str | None:
     """Display interactive sessions list and allow selecting a session to resume, delete, or fork."""
     if not sessions:

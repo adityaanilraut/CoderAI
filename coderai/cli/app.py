@@ -144,326 +144,7 @@ def _render_markdown(text: str) -> None:
     console.print(Markdown(text))
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    """Build the command-line argument parser."""
-    parser = argparse.ArgumentParser(
-        prog="coderai", description="coderai — Autonomous AI pair programming in your terminal."
-    )
-    parser.add_argument("prompt", nargs="*", help="initial prompt (non-interactive when provided)")
-    parser.add_argument(
-        "--prompt",
-        "-p",
-        "--command",
-        "-c",
-        dest="prompt_flag",
-        type=str,
-        help="Submit a prompt on launch",
-    )
-    parser.add_argument("--model", "-m", help="LLM model to use")
-    parser.add_argument(
-        "--mcp-config",
-        dest="mcp_config_jsons",
-        action="append",
-        default=None,
-        help="MCP config JSON string to load (repeatable; highest precedence).",
-    )
-    parser.add_argument(
-        "--exec",
-        "-x",
-        "-e",
-        dest="exec_prompt",
-        nargs="?",
-        const=True,
-        default=None,
-        help="Run one prompt non-interactively (requires --prompt / -p or positional prompt)",
-    )
-
-    parser.add_argument(
-        "--resume",
-        "-r",
-        "--session",
-        "-s",
-        nargs="?",
-        const=True,
-        default=None,
-        dest="resume",
-        help="Resume a specific session by its ID, prefix, or checkpoint. Use without an ID to show session picker.",
-    )
-    parser.add_argument(
-        "--fork",
-        "-f",
-        nargs="?",
-        const=True,
-        default=None,
-        dest="fork",
-        help="Fork a specific session by its ID. Use without an ID to fork the most recent session.",
-    )
-    parser.add_argument(
-        "--last",
-        "-l",
-        action="store_true",
-        default=False,
-        dest="last",
-        help="Resume the most recent session for the current project directory.",
-    )
-    parser.add_argument(
-        "--preset",
-        dest="preset",
-        choices=list(TOOL_PRESETS),
-        default=None,
-        help="Tool preset: full, core, or shell_edit",
-    )
-    parser.add_argument(
-        "--setup",
-        dest="setup",
-        action="store_true",
-        default=False,
-        help="Launch interactive setup wizard to configure API keys, endpoints, and models",
-    )
-    parser.add_argument(
-        "--provider",
-        dest="setup_provider",
-        help="Provider to configure in setup (e.g. openai, deepseek, gemini, anthropic, openrouter, ollama)",
-    )
-    parser.add_argument(
-        "--key",
-        dest="setup_key",
-        help="API key to save for the specified provider",
-    )
-    parser.add_argument(
-        "--base-url",
-        dest="setup_base_url",
-        help="Base URL endpoint to configure (for local or custom providers)",
-    )
-    parser.add_argument(
-        "--setup-model",
-        dest="setup_model",
-        help="Default model to configure in setup",
-    )
-    parser.add_argument(
-        "--test",
-        dest="setup_test",
-        action="store_true",
-        help="Test connection and authentication with active or specified provider",
-    )
-    parser.add_argument(
-        "--status",
-        dest="setup_status",
-        action="store_true",
-        help="Display provider credentials and configuration status table",
-    )
-    parser.add_argument(
-        "--project",
-        dest="setup_project",
-        action="store_true",
-        help="Save configuration to project workspace instead of user global",
-    )
-    parser.add_argument(
-        "--global",
-        dest="setup_global",
-        action="store_true",
-        help="Save configuration to user global settings (~/.coderai)",
-    )
-    parser.add_argument("--plan", action="store_true", help="start session in Plan Mode")
-    # Kimi-parity run-mode flags
-    parser.add_argument(
-        "--continue",
-        "-C",
-        dest="continue_session",
-        action="store_true",
-        default=False,
-        help="Continue the previous session for the working directory.",
-    )
-    parser.add_argument(
-        "--afk",
-        action="store_true",
-        default=False,
-        help="Run in afk mode: AskUserQuestion auto-dismissed, tool calls auto-approved.",
-    )
-    parser.add_argument(
-        "--print",
-        dest="print_mode",
-        action="store_true",
-        default=False,
-        help="Run non-interactively (implies afk for this invocation).",
-    )
-    parser.add_argument(
-        "--quiet",
-        "-q",
-        action="store_true",
-        default=False,
-        help="Alias for --print with minimal output (final message only).",
-    )
-    parser.add_argument(
-        "--final-message-only",
-        dest="final_message_only",
-        action="store_true",
-        default=False,
-        help="Only print the final assistant message (requires --print).",
-    )
-    parser.add_argument(
-        "--yolo",
-        "--yes",
-        "-y",
-        "--auto-approve",
-        dest="yes",
-        action="store_true",
-        default=False,
-        help="Automatically approve all actions (still reachable via AskUserQuestion).",
-    )
-    parser.add_argument(
-        "--thinking",
-        dest="thinking",
-        action="store_true",
-        default=None,
-        help="Enable thinking mode for this invocation.",
-    )
-    parser.add_argument(
-        "--no-thinking",
-        dest="thinking",
-        action="store_false",
-        help="Disable thinking mode for this invocation.",
-    )
-    parser.add_argument(
-        "--work-dir",
-        "-w",
-        dest="work_dir",
-        default=None,
-        help="Working directory for the agent (default: current directory).",
-    )
-    parser.add_argument(
-        "--add-dir",
-        dest="add_dirs",
-        action="append",
-        default=None,
-        help="Add an additional directory to the workspace scope (repeatable).",
-    )
-    parser.add_argument(
-        "--skills-dir",
-        dest="skills_dirs",
-        action="append",
-        default=None,
-        help="Custom skills directories (repeatable, overrides default discovery).",
-    )
-    parser.add_argument(
-        "--max-steps-per-turn",
-        type=int,
-        default=None,
-        help="Maximum number of steps in one turn.",
-    )
-    parser.add_argument(
-        "--max-retries-per-step",
-        type=int,
-        default=None,
-        help="Maximum number of retries in one step.",
-    )
-    parser.add_argument(
-        "--max-ralph-iterations",
-        type=int,
-        default=None,
-        help="Extra iterations after the first turn in Ralph mode (-1 for unlimited).",
-    )
-    parser.add_argument(
-        "--input-format",
-        choices=["text", "stream-json"],
-        default=None,
-        help="Input format (only with --print reading from stdin).",
-    )
-    parser.add_argument(
-        "--wire",
-        dest="wire",
-        action="store_true",
-        default=False,
-        help="Serve the wire protocol (JSON-RPC) on stdio for IDE/headless clients.",
-    )
-    parser.add_argument(
-        "--output-format",
-        choices=["text", "stream-json", "json"],
-        default=None,
-        help="Output format (only with --print).",
-    )
-    parser.add_argument(
-        "--agent",
-        dest="agent",
-        default=None,
-        help="Builtin agent specification to use (e.g. default).",
-    )
-    parser.add_argument(
-        "--agent-file",
-        dest="agent_file",
-        default=None,
-        help="Custom agent specification file.",
-    )
-    parser.add_argument(
-        "--mcp-config-file",
-        dest="mcp_config_files",
-        action="append",
-        default=None,
-        help="MCP config file to load (repeatable).",
-    )
-    parser.add_argument(
-        "--config",
-        dest="config_string",
-        default=None,
-        help="Config JSON string to load (overrides files).",
-    )
-    parser.add_argument(
-        "--config-file",
-        dest="config_file",
-        default=None,
-        help="Config file to load instead of ~/.coderai/settings.",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        default=False,
-        help="Log debug information.",
-    )
-    parser.add_argument(
-        "--max-subagent-depth",
-        type=int,
-        default=None,
-        help="maximum sub-agent nesting depth (default 3; env CODERAI_MAX_SUBAGENT_DEPTH)",
-    )
-    parser.add_argument(
-        "--subagent-timeout",
-        type=float,
-        default=None,
-        help="sub-agent timeout in seconds (default 90; env CODERAI_SUBAGENT_TIMEOUT_SECONDS)",
-    )
-    parser.add_argument(
-        "--workflow-max-agents",
-        type=int,
-        default=None,
-        help="workflow total agent cap per run (default 1000; env CODERAI_WORKFLOW_MAX_TOTAL_AGENTS)",
-    )
-    parser.add_argument(
-        "--workflow-max-concurrency",
-        type=int,
-        default=None,
-        help="workflow concurrent agent slots (default min(16, cores-2); env CODERAI_WORKFLOW_MAX_CONCURRENT_AGENTS)",
-    )
-    parser.add_argument(
-        "--ralph-max-rounds",
-        type=int,
-        default=None,
-        help="Ralph verification round ceiling (default 256; env CODERAI_RALPH_MAX_ROUNDS)",
-    )
-    parser.add_argument(
-        "--max-continuable-agents",
-        type=int,
-        default=None,
-        help="maximum live continuable sub-agents per session (default 50; env CODERAI_MAX_CONTINUABLE_AGENTS_PER_SESSION)",
-    )
-    parser.add_argument(
-        "--max-running-jobs",
-        type=int,
-        default=None,
-        help="maximum concurrent running background jobs per session (default 50; env CODERAI_MAX_RUNNING_JOBS_PER_SESSION)",
-    )
-    parser.add_argument("--verbose", "-v", action="store_true", help="print debug information")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    return parser
+from coderai.ui.shell.startup import _build_parser
 
 
 def _prompt_permissions(
@@ -1811,6 +1492,7 @@ async def _run_interactive(
         mcp_servers_count=mcp_count,
         skills_count=len(discovered_skills),
         reasoning_effort=mgr.get_reasoning_effort(),
+        active_agent=mgr.get_active_agent_role() if hasattr(mgr, "get_active_agent_role") else "default",
     )
 
     # Check if active model has a configured API key
@@ -1881,7 +1563,17 @@ async def _run_interactive(
             messages_list = mgr.list_session_messages(session_id) if session_id else []
             turns_count = sum(1 for m in messages_list if m.role == "user")
             active_mcp_count = len(getattr(mgr.mcp_manager, "clients", {}) or {})
-            stats = {"tokens": tokens_count, "turns": turns_count, "mcp_count": active_mcp_count}
+            active_role = (
+                mgr.get_active_agent_role()
+                if hasattr(mgr, "get_active_agent_role")
+                else "default"
+            )
+            stats = {
+                "tokens": tokens_count,
+                "turns": turns_count,
+                "mcp_count": active_mcp_count,
+                "agent_role": active_role,
+            }
 
             try:
                 from coderai.cli.input_engine import styled_prompt
@@ -1894,6 +1586,7 @@ async def _run_interactive(
                         turns=turns_count,
                         mcp_count=active_mcp_count,
                         plan_mode=active_plan_mode,
+                        agent_role=active_role,
                     )
                     from coderai.cli.prompt_session import read_user_turn_ptk
 
@@ -2183,6 +1876,82 @@ async def _run_interactive(
                         )
                     continue
 
+                if cmd in ("/agent", "/role"):
+                    arg_clean = (cmd_arg or "").strip()
+                    if not arg_clean:
+                        from coderai.ui.shell.session_picker import select_agent_role_interactive
+
+                        current_role = (
+                            mgr.get_active_agent_role()
+                            if hasattr(mgr, "get_active_agent_role")
+                            else "default"
+                        )
+                        chosen_role = select_agent_role_interactive(
+                            console, current_role, mgr.project_root
+                        )
+                        if chosen_role and chosen_role != current_role:
+                            if hasattr(mgr, "switch_agent_role") and mgr.switch_agent_role(chosen_role):
+                                if console is not None and _RICH:
+                                    console.print(
+                                        f"[bold green]✓ Switched active agent role to '[bold white]{chosen_role}[/bold white]'.[/]"
+                                    )
+                                else:
+                                    print(f"✓ Switched active agent role to '{chosen_role}'.")
+                            else:
+                                print(f"Failed to switch agent role to '{chosen_role}'.")
+                        continue
+                    elif arg_clean.lower() in ("roles", "list", "specs"):
+                        from pathlib import Path
+                        from coderai.subagents.registry import discover_markdown_agents
+
+                        project_root = Path(getattr(mgr, "project_root", "."))
+                        discovered = discover_markdown_agents(project_root)
+                        bundled = ["default", "okabe"]
+                        cur_role = (
+                            mgr.get_active_agent_role()
+                            if hasattr(mgr, "get_active_agent_role")
+                            else "default"
+                        )
+                        if console is not None and _RICH and Table is not None:
+                            rt = Table(title="Available Agent Roles & Specifications", border_style="cyan")
+                            rt.add_column("Role / Spec", style="bold cyan", width=22)
+                            rt.add_column("Type", style="magenta", width=12)
+                            rt.add_column("Mode", width=10)
+                            rt.add_column("Active", width=8)
+                            rt.add_column("Description", style="white")
+                            for b in bundled:
+                                active_mark = "[bold green]● YES[/]" if b == cur_role else "[dim]○[/]"
+                                rt.add_row(b, "bundled", "primary", active_mark, f"Bundled {b} agent specification")
+                            for d in discovered:
+                                active_mark = "[bold green]● YES[/]" if d.name == cur_role else "[dim]○[/]"
+                                rt.add_row(d.name, "discovered", d.mode, active_mark, d.description)
+                            console.print(rt)
+                        else:
+                            print(f"Active role: {cur_role}")
+                            print("Bundled agent specs:")
+                            for b in bundled:
+                                print(f"  • {b} {'(active)' if b == cur_role else ''}")
+                            print("\nDiscovered role specifications (.coderai/agents/*.md):")
+                            for d in discovered:
+                                print(
+                                    f"  • {d.name} [{d.mode}] - {d.description} {'(active)' if d.name == cur_role else ''}"
+                                )
+                        continue
+                    else:
+                        target_role = arg_clean.lower()
+                        if hasattr(mgr, "switch_agent_role") and mgr.switch_agent_role(target_role):
+                            if console is not None and _RICH:
+                                console.print(
+                                    f"[bold green]✓ Switched active agent role to '[bold white]{target_role}[/bold white]'.[/]"
+                                )
+                            else:
+                                print(f"✓ Switched active agent role to '{target_role}'.")
+                        else:
+                            print(
+                                f"Failed to switch to agent role '{target_role}'. Use '/agent roles' to see available specs."
+                            )
+                        continue
+
                 if cmd in ("/agents", "/subagents"):
                     agent_reg = getattr(mgr, "agent_registry", None)
                     if not agent_reg:
@@ -2233,9 +2002,41 @@ async def _run_interactive(
                         if not roots:
                             print("No subagent hierarchy tree in active session.")
                         else:
-                            for r in roots:
-                                tree = agent_reg.get_tree(r.id)
-                                print(json.dumps(tree, indent=2))
+                            try:
+                                from rich.tree import Tree
+
+                                def _add_subagent_branches(node_dict: dict[str, Any], parent_tree: Any) -> None:
+                                    status_col = (
+                                        "green"
+                                        if node_dict.get("status") == "completed"
+                                        else ("yellow" if node_dict.get("status") == "running" else "red")
+                                    )
+                                    branch_label = f"[bold cyan]{node_dict.get('id', '?')[:12]}[/] [{status_col}]{node_dict.get('status', '?')}[/] [magenta]{node_dict.get('mode', '')}[/] — {node_dict.get('description', '')[:50]}"
+                                    sub_branch = parent_tree.add(branch_label)
+                                    for ch in node_dict.get("children", []):
+                                        _add_subagent_branches(ch, sub_branch)
+
+                                for r in roots:
+                                    tree_data = agent_reg.get_tree(r.id)
+                                    if not tree_data:
+                                        continue
+                                    status_col = (
+                                        "green"
+                                        if tree_data.get("status") == "completed"
+                                        else ("yellow" if tree_data.get("status") == "running" else "red")
+                                    )
+                                    root_label = f"[bold cyan]{tree_data.get('id', '?')[:12]}[/] [{status_col}]{tree_data.get('status', '?')}[/] [magenta]{tree_data.get('mode', '')}[/] — {tree_data.get('description', '')[:50]}"
+                                    rtree = Tree(root_label)
+                                    for ch in tree_data.get("children", []):
+                                        _add_subagent_branches(ch, rtree)
+                                    if console is not None and _RICH:
+                                        console.print(rtree)
+                                    else:
+                                        print(json.dumps(tree_data, indent=2))
+                            except Exception:
+                                for r in roots:
+                                    tree_data = agent_reg.get_tree(r.id)
+                                    print(json.dumps(tree_data, indent=2))
                     elif agent_action == "report" and len(tokens_sub) >= 2:
                         aid = tokens_sub[1]
                         a = agent_reg.get(aid)

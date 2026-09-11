@@ -534,3 +534,65 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
 
 # Alias for handler discovery
 handle = handle_subagent_tool
+
+from pydantic import BaseModel, Field
+from kosong.tooling import CallableTool2, ToolError, ToolOk, ToolReturnValue
+
+
+class AgentParams(BaseModel):
+    description: str = Field(..., description="Short summary or label for the task")
+    prompt: str = Field(..., description="Detailed instructions for the subagent")
+    subagent_type: str | None = Field(
+        None, description="Subagent role (e.g. coder, explore, plan, architect)"
+    )
+    mode: str = Field("general", description="Isolation mode: general or read_only")
+    run_in_background: bool = Field(False, description="Run in background asynchronously")
+    timeout_seconds: float | None = Field(None, description="Execution timeout in seconds")
+    context: str | None = Field(None, description="Additional context to provide")
+
+
+class Agent(CallableTool2[AgentParams]):
+    name: str = "Agent"
+    params: type[AgentParams] = AgentParams
+
+    def __init__(
+        self,
+        runtime: Any = None,
+        manager: Any = None,
+        description: str = "Delegate tasks to specialized subagents.",
+    ) -> None:
+        super().__init__(description=description)
+        self._runtime = runtime
+        self._manager = manager
+
+    async def __call__(self, params: AgentParams) -> ToolReturnValue:
+        args = {
+            "description": params.description,
+            "prompt": params.prompt,
+            "subagent_type": params.subagent_type,
+            "mode": params.mode,
+            "run_in_background": params.run_in_background,
+            "timeout_seconds": params.timeout_seconds,
+            "context": params.context,
+        }
+        root = "."
+        session_id = None
+        if self._runtime is not None:
+            root = getattr(getattr(self._runtime, "builtin_args", None), "CODERAI_WORK_DIR", ".")
+            session_id = getattr(getattr(self._runtime, "session", None), "id", None)
+        elif self._manager is not None:
+            root = getattr(self._manager, "project_root", ".")
+            session_id = getattr(self._manager, "active_session_id", None)
+
+        ctx = ToolExecutionContext(
+            project_root=str(root),
+            session_id=session_id or "root",
+            manager=self._manager,
+        )
+        res = await handle_subagent_tool(args, ctx)
+        if res.ok:
+            return ToolOk(output=res.output, brief=params.description)
+        return ToolError(
+            output=res.error or res.output or "Subagent failed", brief=res.error or "Failed"
+        )
+

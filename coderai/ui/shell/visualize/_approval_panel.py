@@ -557,15 +557,21 @@ def prompt_plan_review(
     try:
         if console_obj is not None:
             try:
+                from rich.markdown import Markdown
+
+                plan_slice = (plan_text or "(empty plan)").strip()
+                if len(plan_slice) > 4000:
+                    plan_slice = plan_slice[:4000] + "\n\n*(Truncated in preview — see full plan file)*"
                 console_obj.print(
                     Panel(
-                        (plan_text or "(empty plan)")[:3000],
-                        title="[bold cyan]Proposed Plan[/] [dim](Ctrl-E full view)[/]",
-                        border_style="blue",
+                        Markdown(plan_slice),
+                        title="[bold cyan]📋 Proposed Plan[/] [dim](Plan Mode Review)[/]",
+                        border_style="cyan",
+                        padding=(1, 2),
                     )
                 )
             except Exception:
-                print(plan_text[:3000])
+                print((plan_text or "(empty plan)")[:3000])
         res = choose(
             console_obj, items, title="Plan Review — Approve, Revise, or Reject", default_idx=0
         )

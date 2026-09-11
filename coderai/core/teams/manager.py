@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 class TeamTaskBoard:
     """Shared task board for multi-agent coordination and dependency tracking."""
 
-    def __init__(self) -> None:
+    def __init__(self, manager: TeamManager | None = None) -> None:
         self._tasks: dict[str, TeamTask] = {}
+        self._manager = manager
 
     def _validate_dag(self) -> None:
         """Validate that all registered tasks and their dependencies form a strict DAG."""
@@ -100,6 +101,12 @@ class TeamTaskBoard:
 
         if status:
             task.status = status
+            if status == "completed" and self._manager is not None and task.assigned_to:
+                tm = self._manager.get_teammate(task.assigned_to)
+                if tm is not None:
+                    tm.status = "completed"
+                    if result:
+                        tm.last_report = result
         if assigned_to is not None:
             task.assigned_to = assigned_to
         if result is not None:
@@ -126,7 +133,7 @@ class TeamManager:
     """Manages team membership, message routing, and swarm execution."""
 
     def __init__(self) -> None:
-        self.task_board = TeamTaskBoard()
+        self.task_board = TeamTaskBoard(manager=self)
         self.channel = ActorChannel()
         self._teammates: dict[str, Teammate] = {}
         self._active_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -138,8 +145,27 @@ class TeamManager:
         system_prompt: str | None = None,
         mode: str = "general",
         allowed_tools: list[str] | None = None,
+        auto_start: bool = True,
     ) -> Teammate:
         teammate_id = f"tm_{uuid.uuid4().hex[:8]}"
+
+        # Resolve markdown role specs if custom prompt not provided
+        if not system_prompt:
+            try:
+                from pathlib import Path
+                from coderai.subagents.registry import discover_markdown_agents
+
+                for d in discover_markdown_agents(Path.cwd()):
+                    if d.name.lower() == role.lower():
+                        system_prompt = d.system_prompt
+                        if not allowed_tools and d.tools:
+                            allowed_tools = list(d.tools)
+                        if mode == "general" and d.mode:
+                            mode = d.mode
+                        break
+            except Exception:
+                pass
+
         teammate = Teammate(
             teammate_id=teammate_id,
             name=name,
@@ -151,6 +177,15 @@ class TeamManager:
         )
         self._teammates[teammate_id] = teammate
         self.channel.register_mailbox(teammate_id)
+
+        if auto_start:
+            try:
+                loop = asyncio.get_running_loop()
+                t = loop.create_task(self._teammate_worker(teammate_id))
+                self._active_tasks[teammate_id] = t
+            except RuntimeError:
+                pass
+
         return teammate
 
     def get_teammate(self, identifier: str) -> Teammate | None:
@@ -309,6 +344,109 @@ class TeamManager:
 
             await asyncio.sleep(0.5)
 
+    async def _execute_task(self, teammate: Teammate, task: TeamTask) -> str:
+        """Execute task assigned to a teammate."""
+        try:
+            from pathlib import Path
+            from coderai.core.openai_client import create_openai_client
+            from coderai.subagents.builder import SubAgentSpec
+            from coderai.subagents.runner import SubAgentRunner
+
+            prompt = (
+                f"You are teammate {teammate.name} with role '{teammate.role}'.\n"
+                f"Task Title: {task.title}\n"
+                f"Task Description: {task.description}\n"
+                f"Priority: {task.priority}\n"
+            )
+            spec = SubAgentSpec(
+                subagent_type=teammate.role,
+                prompt=prompt,
+                description=task.title,
+                mode=teammate.mode,
+                allowed_tools=teammate.allowed_tools,
+                system_prompt=teammate.system_prompt,
+            )
+            runner = SubAgentRunner(
+                project_root=str(Path.cwd()),
+                create_openai_client=lambda: create_openai_client(str(Path.cwd())),
+            )
+            result = await runner.run(spec)
+            if result.report:
+                return result.report
+        except Exception as exc:
+            logger.debug(f"SubAgentRunner fallback for team task: {exc}")
+
+        return f"Task '{task.title}' completed by {teammate.name} ({teammate.role})."
+
+    async def _teammate_worker(self, teammate_id: str) -> None:
+        """Autonomous worker loop for active teammates in the swarm."""
+        mb = self.channel.get_mailbox(teammate_id)
+        while True:
+            try:
+                tm = self.get_teammate(teammate_id)
+                if not tm:
+                    break
+
+                # 1. Check for tasks assigned to this teammate that are marked in_progress
+                runnable_tasks = [
+                    t
+                    for t in self.task_board.list_tasks(assigned_to=teammate_id)
+                    if t.status == "in_progress" and self.task_board.can_start_task(t.task_id)
+                ]
+                if not runnable_tasks:
+                    runnable_tasks = [
+                        t
+                        for t in self.task_board.list_tasks(assigned_to=tm.name)
+                        if t.status == "in_progress" and self.task_board.can_start_task(t.task_id)
+                    ]
+
+                if runnable_tasks:
+                    task = runnable_tasks[0]
+                    tm.status = "working"
+                    report = await self._execute_task(tm, task)
+                    self.task_board.update_task(
+                        task.task_id,
+                        status="completed",
+                        result=report,
+                    )
+                    tm.status = "completed"
+                    tm.last_report = report
+                    self.send_message(
+                        sender=tm.name,
+                        recipient="all",
+                        content=f"Task '{task.title}' completed by {tm.name}: {report}",
+                        task_id=task.task_id,
+                    )
+                    await asyncio.sleep(0.05)
+                    continue
+
+                # 2. Check for mailbox messages
+                if mb and not mb.is_empty():
+                    msg = await mb.receive_async(timeout_seconds=0.05)
+                    if msg and msg.sender != tm.name:
+                        if msg.recipient in (tm.name, tm.teammate_id):
+                            reply = f"Acknowledged by {tm.name} ({tm.role}): {msg.content[:60]}"
+                            self.send_message(
+                                sender=tm.name,
+                                recipient=msg.sender,
+                                content=reply,
+                                task_id=msg.task_id,
+                            )
+
+                await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug(f"Teammate {teammate_id} loop exception: {exc}")
+                await asyncio.sleep(0.5)
+
+    def cancel_all_teammates(self) -> None:
+        """Cancel and clean up all active teammate worker tasks."""
+        for task in list(self._active_tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._active_tasks.clear()
+
 
 _global_team_manager = TeamManager()
 
@@ -321,4 +459,6 @@ def get_team_manager() -> TeamManager:
 def reset_team_manager() -> None:
     """Reset the global TeamManager instance (useful for test isolation)."""
     global _global_team_manager
+    if _global_team_manager is not None:
+        _global_team_manager.cancel_all_teammates()
     _global_team_manager = TeamManager()

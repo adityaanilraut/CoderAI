@@ -11,10 +11,10 @@ def acp_main() -> None:
     import acp
 
     from coderai.acp.server import ACPServer
-    from coderai.app import enable_logging
+    from coderai.core.log import enable_logging
     from coderai.utils.logging import logger
 
-    enable_logging()
+    enable_logging(redirect_stderr=False)
     logger.info("Starting ACP server on stdio")
     asyncio.run(acp.run_agent(ACPServer(), use_unstable_protocol=True))
 

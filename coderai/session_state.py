@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from coderai.core.common.atomic import atomic_json_write
 from coderai.core.log import logger
@@ -26,6 +26,7 @@ STATE_FILE_NAME = "state.json"
 class ApprovalStateData(BaseModel):
     yolo: bool = False
     afk: bool = False
+    auto_approve: bool = False
     auto_approve_actions: set[str] = Field(default_factory=set)
 
 
@@ -52,6 +53,19 @@ class SessionState(BaseModel):
     auto_archive_exempt: bool = False
     todos: list[TodoItemState] = Field(default_factory=list)
 
+    @field_validator("todos", mode="before")
+    @classmethod
+    def _validate_todos(cls, value: Any) -> list[TodoItemState]:
+        if not isinstance(value, list):
+            return []
+        validated: list[TodoItemState] = []
+        for item in value:
+            if isinstance(item, TodoItemState):
+                validated.append(item)
+            elif isinstance(item, dict):
+                validated.append(TodoItemState.model_validate(item))
+        return validated
+
 
 def session_state_path(session_dir: Path) -> Path:
     """Absolute path of ``state.json`` for a session directory."""
@@ -74,4 +88,9 @@ def load_session_state(session_dir: Path) -> SessionState:
 
 def save_session_state(state: SessionState, session_dir: Path) -> None:
     """Persist state atomically (creating parent dirs)."""
+    if state.todos:
+        state.todos = [
+            t if isinstance(t, TodoItemState) else TodoItemState.model_validate(t)
+            for t in state.todos
+        ]
     atomic_json_write(state.model_dump(mode="json"), session_state_path(session_dir))

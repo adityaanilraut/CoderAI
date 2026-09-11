@@ -23,6 +23,12 @@ agent:
     - "WebFetch"
     - "exit_plan_mode"
     - "enter_plan_mode"
+    - "spawn_teammate"
+    - "team_task_create"
+    - "team_task_get"
+    - "team_task_list"
+    - "team_task_update"
+    - "wait_agent"
   subagents:
     coder:
       path: ./coder.yaml

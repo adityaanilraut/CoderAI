@@ -13,7 +13,7 @@ from pathlib import Path
 
 def get_share_dir() -> Path:
     """Get the share directory path."""
-    if share_dir := os.getenv("CODERAI_SHARE_DIR"):
+    if share_dir := (os.getenv("CODERAI_SHARE_DIR") or os.getenv("KIMI_SHARE_DIR")):
         path = Path(share_dir).expanduser()
     else:
         path = Path.home() / ".coderai"

@@ -23,6 +23,13 @@ from coderai.tools.display import DiffDisplayBlock
 
 logger = logging.getLogger(__name__)
 
+
+class HideOutputDisplayBlock(DisplayBlock):
+    """A special DisplayBlock indicating output should be hidden in ACP clients."""
+
+    type: str = "acp/hide_output"
+
+
 class AcpNdjsonParser:
     """Streaming line-based NDJSON parser for ACP child process output."""
 
@@ -116,8 +123,6 @@ def tool_result_to_acp_content(
     | acp.schema.FileEditToolCallContent
     | acp.schema.TerminalToolCallContent
 ]:
-    from coderai.acp.tools import HideOutputDisplayBlock
-
     def _to_acp_content(
         part: ContentPart,
     ) -> (

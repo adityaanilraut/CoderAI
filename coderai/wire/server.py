@@ -41,8 +41,8 @@ def _success(id: Any, result: Any) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": id, "result": result}
 
 
-def _error(id: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}
+def _error(id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message, "data": data}}
 
 
 def _event(msg: Any) -> dict[str, Any]:
@@ -58,10 +58,19 @@ def _request(id: Any, msg: Any) -> dict[str, Any]:
     }
 
 
+_active_wire_server: WireServer | None = None
+
+
+def get_active_wire_server() -> WireServer | None:
+    return _active_wire_server
+
+
 class WireServer:
     """Serve one session over stdio (one prompt turn at a time)."""
 
     def __init__(self, mgr: Any, session_id: str | None = None) -> None:
+        global _active_wire_server
+        _active_wire_server = self
         self._mgr = mgr
         self._session_id = session_id
         self._initialized = False
@@ -73,6 +82,7 @@ class WireServer:
         self._steers: list[str] = []
         self._cancel_event: asyncio.Event | None = None
         self._hub_queue: Any = None
+        self._dispatch_tasks: set[asyncio.Task[Any]] = set()
 
     # -- serve ------------------------------------------------------------
     async def serve(self) -> int:
@@ -89,6 +99,10 @@ class WireServer:
             pass
         finally:
             self._shutdown_requests()
+            for dt in list(self._dispatch_tasks):
+                dt.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await dt
             if self._turn_task is not None:
                 self._turn_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -103,8 +117,10 @@ class WireServer:
                 except Exception:
                     pass
             self._write_queue.shutdown()
-            with contextlib.suppress(asyncio.CancelledError):
-                await writer_task
+            await writer_task
+            global _active_wire_server
+            if _active_wire_server is self:
+                _active_wire_server = None
         return 0
 
     async def _read_loop(self) -> None:
@@ -121,12 +137,15 @@ class WireServer:
             except ValueError:
                 await self._send(_error(None, ErrorCodes.PARSE_ERROR, "Invalid JSON format"))
                 continue
-            if not isinstance(data, dict):
+            if not isinstance(data, dict) or data.get("jsonrpc") != "2.0":
+                msg_id = data.get("id") if isinstance(data, dict) else None
                 await self._send(
-                    _error(None, ErrorCodes.INVALID_REQUEST, "Invalid request")
+                    _error(msg_id, ErrorCodes.INVALID_REQUEST, "Invalid request")
                 )
                 continue
-            await self._dispatch(data)
+            task = asyncio.create_task(self._dispatch(data))
+            task.add_done_callback(self._dispatch_tasks.discard)
+            self._dispatch_tasks.add(task)
 
     async def _write_loop(self) -> None:
         while True:
@@ -175,10 +194,21 @@ class WireServer:
         if method not in IN_METHODS:
             if msg_id is not None:
                 await self._send(
-                    _error(msg_id, ErrorCodes.METHOD_NOT_FOUND, f"Unexpected method: {method}")
+                    _error(msg_id, ErrorCodes.METHOD_NOT_FOUND, f"Unexpected method received: {method}")
                 )
             return
         params = data.get("params")
+        if method == "prompt":
+            if not isinstance(params, dict) or "user_input" not in params:
+                if msg_id is not None:
+                    await self._send(
+                        _error(
+                            msg_id,
+                            ErrorCodes.INVALID_PARAMS,
+                            "Invalid parameters for method `prompt`",
+                        )
+                    )
+                return
         if not isinstance(params, dict):
             params = {}
         handler = {
@@ -206,6 +236,7 @@ class WireServer:
             return _error(msg_id, ErrorCodes.INVALID_STATE, "An agent turn is already in progress")
         from coderai._version import __version__
         from coderai.cli.commands import COMMAND_CATALOG
+        from coderai.hooks.config import HOOK_EVENT_TYPES
 
         rejected: list[dict[str, str]] = []
         for tool in params.get("external_tools") or []:
@@ -244,10 +275,20 @@ class WireServer:
                     )
         except Exception:
             pass
+
+        hook_engine = getattr(self._mgr, "hook_engine", None) or getattr(
+            self._mgr, "_hook_engine", None
+        )
+        configured_hooks = getattr(hook_engine, "summary", {}) if hook_engine else {}
+
         result: dict[str, Any] = {
             "protocol_version": WIRE_PROTOCOL_VERSION,
             "server": {"name": "coderai", "version": __version__},
             "slash_commands": slash_commands,
+            "hooks": {
+                "supported_events": HOOK_EVENT_TYPES,
+                "configured": configured_hooks,
+            },
             "capabilities": {"supports_question": True},
         }
         if rejected:
@@ -259,6 +300,59 @@ class WireServer:
         if self._streaming:
             return _error(msg_id, ErrorCodes.INVALID_STATE, "An agent turn is already in progress")
         user_input = params.get("user_input", "")
+        if isinstance(user_input, list):
+            from kosong.message import (
+                AudioURLPart,
+                ImageURLPart,
+                Message as _KMsg,
+                TextPart as _KTextPart,
+                ThinkPart,
+                VideoURLPart,
+            )
+            from coderai.soul.message import check_message
+
+            _parts = []
+            for item in user_input:
+                if isinstance(item, dict):
+                    t = item.get("type")
+                    if t == "text":
+                        _parts.append(_KTextPart(text=item.get("text", "")))
+                    elif t == "image_url":
+                        _parts.append(ImageURLPart.model_validate(item))
+                    elif t == "video_url":
+                        _parts.append(VideoURLPart.model_validate(item))
+                    elif t == "audio_url":
+                        _parts.append(AudioURLPart.model_validate(item))
+                    elif t == "think":
+                        _parts.append(
+                            ThinkPart(think=item.get("think") or item.get("text", ""))
+                        )
+            _msg = _KMsg(role="user", content=_parts)
+            active_settings = (
+                getattr(self._mgr, "get_resolved_settings", lambda: {})() or {}
+            )
+            client_info = (
+                getattr(self._mgr, "create_openai_client", lambda: {})() or {}
+            )
+            model_caps = set(
+                client_info.get("capabilities")
+                or active_settings.get("capabilities")
+                or []
+            )
+            missing = check_message(_msg, model_caps)
+            if missing:
+                model_name = (
+                    client_info.get("model")
+                    or active_settings.get("model")
+                    or "scripted_echo"
+                )
+                missing_str = ", ".join(sorted(missing))
+                cap_word = "capability" if len(missing) == 1 else "capabilities"
+                return _error(
+                    msg_id,
+                    ErrorCodes.LLM_NOT_SUPPORTED,
+                    f"LLM model '{model_name}' does not support required {cap_word}: {missing_str}.",
+                )
         text = user_input if isinstance(user_input, str) else json.dumps(user_input)
         self._cancel_event = asyncio.Event()
         try:
@@ -266,8 +360,24 @@ class WireServer:
         except asyncio.CancelledError:
             return _success(msg_id, {"status": Statuses.CANCELLED})
         except Exception as exc:
-            if "API key" in str(exc):
-                return _error(msg_id, ErrorCodes.LLM_NOT_SET, str(exc))
+            exc_name = type(exc).__name__
+            exc_str = str(exc)
+            if "LLMNotSet" in exc_name or "LLM is not set" in exc_str or "API key" in exc_str:
+                return _error(msg_id, ErrorCodes.LLM_NOT_SET, "LLM is not set")
+            if (
+                "LLMNotSupported" in exc_name
+                or "does not support required capabilit" in exc_str
+            ):
+                return _error(msg_id, ErrorCodes.LLM_NOT_SUPPORTED, exc_str)
+            if (
+                "ChatProviderError" in exc_name
+                or "APIStatusError" in exc_name
+                or "Invalid echo DSL" in exc_str
+                or "Unknown echo DSL" in exc_str
+                or "connection" in exc_str.lower()
+                or "401" in exc_str
+            ):
+                return _error(msg_id, ErrorCodes.CHAT_PROVIDER_ERROR, exc_str)
             return _error(msg_id, ErrorCodes.INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
         finally:
             self._cancel_event = None
@@ -283,7 +393,10 @@ class WireServer:
         user_input = params.get("user_input", "")
         text = user_input if isinstance(user_input, str) else json.dumps(user_input)
         if text.strip():
-            self._steers.append(text.strip())
+            if self._session_id is not None and hasattr(self._mgr, "steer_session"):
+                self._mgr.steer_session(self._session_id, text.strip())
+            else:
+                self._steers.append(text.strip())
         return _success(msg_id, {"status": Statuses.STEERED})
 
     async def _handle_replay(self, msg_id: Any, params: dict[str, Any]) -> dict[str, Any]:
@@ -380,44 +493,35 @@ class WireServer:
         mgr = self._mgr
         forward_task = self._start_event_forwarding()
         try:
-            while True:
-                if self._session_id is None:
-                    self._session_id = await mgr.create_session(text)
-                    text = ""
-                elif text:
-                    await mgr.reply_session(self._session_id, text)
-                    text = ""
-                else:
-                    await mgr.reply_session(self._session_id, None)
-                if self._cancel_event is not None and self._cancel_event.is_set():
-                    return "cancelled"
-                status = await self._settle_pauses_async()
-                if status == "continue":
-                    continue
-                if status is not None:
-                    return status
-                # Stable: entry status decides.
-                try:
-                    entry = mgr.get_session(self._session_id)
-                    entry_status = (entry.status if entry else "") or ""
-                    fail_reason = (
-                        str(getattr(entry, "fail_reason", "") or "")
-                        if entry is not None
-                        else ""
-                    ) or ((entry.get("failReason") or "") if isinstance(entry, dict) else "")
-                except Exception:
-                    entry_status, fail_reason = "", ""
-                if self._steers:
-                    text = "\n".join(self._steers)
-                    self._steers.clear()
-                    continue
-                if entry_status in ("interrupted",):
-                    return "cancelled"
-                if entry_status in ("failed",):
-                    if "API key" in fail_reason:
-                        raise RuntimeError(fail_reason or "API key not found")
-                    raise RuntimeError(fail_reason or f"turn failed ({entry_status})")
-                return "finished"
+            if self._session_id is None:
+                self._session_id = await mgr.create_session(text)
+            elif text:
+                await mgr.reply_session(self._session_id, text)
+            else:
+                await mgr.reply_session(self._session_id, None)
+            if self._cancel_event is not None and self._cancel_event.is_set():
+                return "cancelled"
+            status = await self._settle_pauses_async()
+            if status is not None:
+                return status
+            # Stable: entry status decides.
+            try:
+                entry = mgr.get_session(self._session_id)
+                entry_status = (entry.status if entry else "") or ""
+                fail_reason = (
+                    str(getattr(entry, "fail_reason", "") or "")
+                    if entry is not None
+                    else ""
+                ) or ((entry.get("failReason") or "") if isinstance(entry, dict) else "")
+            except Exception:
+                entry_status, fail_reason = "", ""
+            if entry_status in ("interrupted",):
+                return "cancelled"
+            if entry_status in ("failed",):
+                if "API key" in fail_reason:
+                    raise RuntimeError(fail_reason or "API key not found")
+                raise RuntimeError(fail_reason or f"turn failed ({entry_status})")
+            return "finished"
         finally:
             if forward_task is not None:
                 forward_task.cancel()
@@ -430,6 +534,9 @@ class WireServer:
             from coderai.core.wire.emitter import get_emitter
 
             ui_side = get_emitter().ui_side(merge=False)
+            # Subscribing replays emitter history; drop it so each turn only
+            # forwards the events it actually produces.
+            ui_side.drain_nowait()
         except Exception:
             return None
 
@@ -445,7 +552,12 @@ class WireServer:
                     if is_request(msg):
                         msg_id = getattr(msg, "id", "") or f"ext_{uuid.uuid4().hex[:8]}"
                         self._pending[msg_id] = msg
-                        await self._send(_request(msg_id, msg))
+                        if isinstance(msg, QuestionRequest) and not self._client_supports_question:
+                            from coderai.wire.types import QuestionNotSupported
+
+                            msg.set_exception(QuestionNotSupported())
+                        else:
+                            await self._send(_request(msg_id, msg))
                     elif is_event(msg):
                         await self._send(_event(msg))
                 except Exception:
@@ -456,24 +568,25 @@ class WireServer:
     async def _settle_pauses_async(self) -> str | None:
         """Bridge ask_permission / ask_user_question to wire requests.
 
-        Returns "continue" when the turn must resume, a status string when the
-        turn is over, or None when the session is stable.
+        Returns a status string when the turn is over, or None when stable.
         """
         mgr = self._mgr
         assert self._session_id is not None
-        entry = mgr.get_session(self._session_id)
-        if entry is None:
-            return "finished"
-        if entry.status == "ask_permission":
-            ok = await self._bridge_permissions(entry.ask_permissions or [])
-            if not ok:
-                return "cancelled"
-            return "continue"
-        if entry.status in ("ask_user_question", "waiting_for_user"):
-            ok = await self._bridge_question()
-            if not ok:
-                return "cancelled"
-            return "continue"
+        while True:
+            entry = mgr.get_session(self._session_id)
+            if entry is None:
+                return "finished"
+            if entry.status == "ask_permission":
+                ok = await self._bridge_permissions(entry.ask_permissions or [])
+                if not ok:
+                    return "cancelled"
+                continue
+            if entry.status in ("ask_user_question", "waiting_for_user"):
+                ok = await self._bridge_question()
+                if not ok:
+                    return "cancelled"
+                continue
+            break
         return None
 
     async def _bridge_permissions(self, items: list[dict[str, Any]]) -> bool:

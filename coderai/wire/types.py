@@ -417,30 +417,40 @@ Request = Union[ApprovalRequest, ToolCallRequest, QuestionRequest, HookRequest]
 
 WireMessage = Union[Event, Request]
 
-EVENT_TYPES: tuple[type, ...] = (
-    TurnBegin,
-    SteerInput,
-    TurnEnd,
-    StepBegin,
-    StepInterrupted,
-    StepRetry,
-    HookTriggered,
-    HookResolved,
-    CompactionBegin,
-    CompactionEnd,
-    MCPLoadingBegin,
-    MCPLoadingEnd,
-    StatusUpdate,
-    Notification,
-    TextPart,
-    ThinkPart,
-    ToolCallPart,
-    ToolResultPart,
-    ApprovalResponse,
-    SubagentEvent,
-    PlanDisplay,
-    BtwBegin,
-    BtwEnd,
+try:
+    from kosong.tooling import ToolResult as KosongToolResult
+except ImportError:
+    KosongToolResult = None  # type: ignore
+
+EVENT_TYPES: tuple[type, ...] = tuple(
+    cls
+    for cls in (
+        TurnBegin,
+        SteerInput,
+        TurnEnd,
+        StepBegin,
+        StepInterrupted,
+        StepRetry,
+        HookTriggered,
+        HookResolved,
+        CompactionBegin,
+        CompactionEnd,
+        MCPLoadingBegin,
+        MCPLoadingEnd,
+        StatusUpdate,
+        Notification,
+        TextPart,
+        ThinkPart,
+        ToolCallPart,
+        ToolResultPart,
+        ApprovalResponse,
+        SubagentEvent,
+        PlanDisplay,
+        BtwBegin,
+        BtwEnd,
+        KosongToolResult,
+    )
+    if cls is not None
 )
 
 REQUEST_TYPES: tuple[type, ...] = (
@@ -466,6 +476,8 @@ def is_wire_message(msg: Any) -> bool:
 _NAME_TO_TYPE: dict[str, type] = {cls.__name__: cls for cls in (*EVENT_TYPES, *REQUEST_TYPES)}
 # Kimi backwards-compat alias.
 _NAME_TO_TYPE["ApprovalRequestResolved"] = ApprovalResponse
+if KosongToolResult is not None:
+    _NAME_TO_TYPE["ToolResult"] = KosongToolResult
 
 
 @dataclass
@@ -492,6 +504,8 @@ class WireMessageEnvelope:
 
 
 def _to_json_dict(msg: Any) -> dict[str, Any]:
+    if hasattr(msg, "model_dump"):
+        return _jsonable(msg.model_dump())
     if dataclasses.is_dataclass(msg):
         out: dict[str, Any] = {}
         for f in dataclasses.fields(msg):
@@ -507,6 +521,8 @@ def _to_json_dict(msg: Any) -> dict[str, Any]:
 def _jsonable(v: Any) -> Any:
     if v is None or isinstance(v, (bool, int, float, str)):
         return v
+    if hasattr(v, "model_dump"):
+        return _jsonable(v.model_dump())
     if isinstance(v, (list, tuple)):
         return [_jsonable(x) for x in v]
     if isinstance(v, dict):

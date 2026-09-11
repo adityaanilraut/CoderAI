@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import json
+import uuid
 from typing import Any
 
 from coderai.core.tools.types import ToolResult
@@ -77,11 +79,11 @@ def _build_question_summary(questions: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def handle(args: dict[str, Any], context: Any) -> ToolResult:
-    return handle_ask_user_question_tool(args, context)
+async def handle(args: dict[str, Any], context: Any) -> ToolResult:
+    return await handle_ask_user_question_tool(args, context)
 
 
-def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> ToolResult:
+async def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> ToolResult:
     ok, questions, err = _parse_questions(args.get("questions"))
     if not ok:
         return ToolResult(
@@ -91,42 +93,172 @@ def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> ToolRes
         )
 
     # AFK parity: auto-dismiss AskUserQuestion when AFK/YOLO is enabled
+    is_afk = False
     try:
         from coderai.core.session import _global_afk_check  # type: ignore
 
         if _global_afk_check():
+            is_afk = True
+    except Exception:
+        pass
+    if not is_afk:
+        try:
+            sid = getattr(context, "session_id", "")
+            if sid:
+                from coderai.core.session import _check_afk_for_session
+
+                if _check_afk_for_session(sid):
+                    is_afk = True
+        except Exception:
+            pass
+
+    tc_id = ""
+    tc = getattr(context, "tool_call", None)
+    if isinstance(tc, dict):
+        tc_id = str(tc.get("id") or "")
+    elif tc is not None:
+        tc_id = str(getattr(tc, "id", "") or "")
+
+    wire_server = None
+    try:
+        from coderai.wire.server import get_active_wire_server
+
+        wire_server = get_active_wire_server()
+    except Exception:
+        pass
+
+    if is_afk:
+        if wire_server is not None:
+            from kosong.tooling import BriefDisplayBlock, ToolResult as WireToolResult, ToolReturnValue
+            from coderai.core.wire.emitter import wire_send
+
+            rv = ToolReturnValue(
+                is_error=False,
+                output=(
+                    '{"answers": {}, "note": "Running in afk mode.'
+                    ' No user is present. Make your own decision."}'
+                ),
+                message="Afk mode, auto-dismissed.",
+                display=[BriefDisplayBlock(text="Auto-dismissed (afk)")],
+            )
+            wire_send(WireToolResult(tool_call_id=tc_id, return_value=rv))
+        return ToolResult(
+            ok=True,
+            name="AskUserQuestion",
+            output="Auto-dismissed (afk mode enabled). Proceed with best assumption.",
+            metadata={
+                "kind": "ask_user_question",
+                "questions": questions,
+                "afk_dismissed": True,
+            },
+        )
+
+    if wire_server is not None:
+        from coderai.core.wire.emitter import wire_send
+        from coderai.wire.types import (
+            QuestionItem,
+            QuestionNotSupported,
+            QuestionOption,
+            QuestionRequest,
+        )
+        from kosong.tooling import BriefDisplayBlock, ToolError, ToolResult as WireToolResult, ToolReturnValue
+
+        if not getattr(wire_server, "_client_supports_question", False):
+            err = ToolError(
+                message=(
+                    "The connected client does not support interactive questions. "
+                    "Do NOT call this tool again. "
+                    "Ask the user directly in your text response instead."
+                ),
+                brief="Client unsupported",
+                display=[BriefDisplayBlock(text="Client unsupported")],
+            )
+            wire_send(WireToolResult(tool_call_id=tc_id, return_value=err))
+            return ToolResult(
+                ok=False,
+                name="AskUserQuestion",
+                error=err.message,
+            )
+
+        q_items = [
+            QuestionItem(
+                question=q["question"],
+                header=q.get("header", ""),
+                options=[
+                    QuestionOption(label=o["label"], description=o.get("description", ""))
+                    for o in (q.get("options") or [])
+                ],
+                multi_select=bool(q.get("multiSelect")),
+            )
+            for q in questions
+        ]
+        request = QuestionRequest(
+            id=str(uuid.uuid4()),
+            tool_call_id=tc_id,
+            questions=q_items,
+        )
+        wire_send(request)
+
+        try:
+            answers = await request.wait()
+        except QuestionNotSupported:
+            err = ToolError(
+                message=(
+                    "The connected client does not support interactive questions. "
+                    "Do NOT call this tool again. "
+                    "Ask the user directly in your text response instead."
+                ),
+                brief="Client unsupported",
+                display=[BriefDisplayBlock(text="Client unsupported")],
+            )
+            wire_send(WireToolResult(tool_call_id=tc_id, return_value=err))
+            return ToolResult(
+                ok=False,
+                name="AskUserQuestion",
+                error=err.message,
+            )
+        except Exception:
+            err = ToolError(
+                message="Failed to get user response.",
+                brief="Question failed",
+                display=[BriefDisplayBlock(text="Question failed")],
+            )
+            wire_send(WireToolResult(tool_call_id=tc_id, return_value=err))
+            return ToolResult(
+                ok=False,
+                name="AskUserQuestion",
+                error=err.message,
+            )
+
+        if not answers:
+            rv = ToolReturnValue(
+                is_error=False,
+                output='{"answers": {}, "note": "User dismissed the question without answering."}',
+                message="User dismissed the question without answering.",
+                display=[BriefDisplayBlock(text="User dismissed")],
+            )
+            wire_send(WireToolResult(tool_call_id=tc_id, return_value=rv))
             return ToolResult(
                 ok=True,
                 name="AskUserQuestion",
-                output="Auto-dismissed (afk mode enabled). Proceed with best assumption.",
-                metadata={
-                    "kind": "ask_user_question",
-                    "questions": questions,
-                    "afk_dismissed": True,
-                },
+                output=rv.output,
             )
-    except Exception:
-        pass
-    # Direct context check (session manager afk)
-    try:
-        sid = getattr(context, "session_id", "")
-        if sid:
-            from coderai.core.session import _check_afk_for_session
 
-            if _check_afk_for_session(sid):
-                return ToolResult(
-                    ok=True,
-                    name="AskUserQuestion",
-                    output="Auto-dismissed (afk mode enabled). Proceed with best assumption.",
-                    metadata={
-                        "kind": "ask_user_question",
-                        "questions": questions,
-                        "afk_dismissed": True,
-                    },
-                )
-    except Exception:
-        pass
+        formatted = json.dumps({"answers": answers}, ensure_ascii=False)
+        rv = ToolReturnValue(
+            is_error=False,
+            output=formatted,
+            message="User has answered.",
+            display=[BriefDisplayBlock(text="User answered")],
+        )
+        wire_send(WireToolResult(tool_call_id=tc_id, return_value=rv))
+        return ToolResult(
+            ok=True,
+            name="AskUserQuestion",
+            output=formatted,
+        )
 
+    # CLI mode fallback
     metadata: dict[str, Any] = {
         "kind": "ask_user_question",
         "questions": questions,

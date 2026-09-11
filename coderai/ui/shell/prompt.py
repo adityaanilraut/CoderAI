@@ -15,7 +15,9 @@ from dataclasses import dataclass
 from enum import Enum
 from hashlib import md5
 from pathlib import Path
-from typing import Any, Literal, Protocol, cast, override, runtime_checkable
+from typing import Any, Literal, Protocol, TypeVar, cast, override, runtime_checkable
+
+HAS_PTK = True
 
 from kaos.path import KaosPath
 from prompt_toolkit import PromptSession
@@ -86,90 +88,337 @@ class CwdLostError(OSError):
     """Raised when the working directory no longer exists (e.g. external drive unplugged)."""
 
 
+T = TypeVar("T")
+
+
+def fuzzy_score(query: str, candidate: str) -> tuple[bool, int]:
+    """Calculate whether query is a subsequence of candidate and compute a ranking score.
+
+    Returns:
+        tuple[bool, int]: (is_match, score)
+    """
+    if not query:
+        return True, 0
+
+    q_lower = query.lower()
+    c_lower = candidate.lower()
+
+    # Exact match bonus
+    if q_lower == c_lower:
+        return True, 10000
+
+    # Prefix match bonus
+    if c_lower.startswith(q_lower):
+        return True, 5000 + (len(q_lower) * 20) - len(c_lower)
+
+    # Substring match bonus
+    if q_lower in c_lower:
+        idx = c_lower.find(q_lower)
+        score = 2000 - (idx * 10) + (len(q_lower) * 20) - len(c_lower)
+        return True, score
+
+    # Subsequence matching
+    score = 0
+    q_idx = 0
+    q_len = len(q_lower)
+    c_len = len(c_lower)
+    prev_c_idx = -2
+
+    for c_idx, char in enumerate(c_lower):
+        if q_idx < q_len and char == q_lower[q_idx]:
+            # Base match points
+            score += 15
+
+            # Consecutive character match bonus
+            if c_idx == prev_c_idx + 1:
+                score += 30
+
+            # Word boundary bonus (start of word or following separator)
+            if c_idx == 0:
+                score += 50
+            elif candidate[c_idx - 1] in ("/", "\\", "_", "-", ".", " ", ":"):
+                score += 40
+            elif candidate[c_idx].isupper() and not candidate[c_idx - 1].isupper():
+                score += 35
+
+            prev_c_idx = c_idx
+            q_idx += 1
+
+    if q_idx == q_len:
+        # Full subsequence matched; apply slight penalty for length distance
+        score -= c_len
+        return True, score
+
+    return False, 0
+
+
+def fuzzy_filter(
+    query: str,
+    candidates: list[T],
+    key_func: Callable[[T], str] | None = None,
+    limit: int = 15,
+) -> list[T]:
+    """Filter and rank candidates using fuzzy matching score."""
+    if not query:
+        return candidates[:limit]
+
+    scored: list[tuple[int, T]] = []
+    for item in candidates:
+        text = key_func(item) if key_func is not None else str(item)
+        matched, score = fuzzy_score(query, text)
+        if matched:
+            scored.append((score, item))
+
+    # Sort descending by score
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored[:limit]]
+
+
 class SlashCommandCompleter(Completer):
-    """
-    A completer that:
-    - Shows canonical matches as "/name" and alias matches as "/name (alias)"
-    - Fuzzy-matches by primary name or any alias while inserting the canonical "/name"
-    - Only activates when the current token starts with '/'
-    """
+    """Fuzzy slash completer — canonical /name, alias support, and subargument completion."""
 
-    def __init__(self, available_commands: Sequence[SlashCommand[Any]]) -> None:
+    def __init__(self, available_commands: Any, project_root: str = ".") -> None:
         super().__init__()
-        self._available_commands = list(available_commands)
-        self._command_lookup: dict[str, list[SlashCommand[Any]]] = {}
+        self.project_root = project_root
+        self._available_commands: list[Any] = []
+        self._command_lookup: dict[str, list[Any]] = {}
         words: list[str] = []
+        try:
+            # Normalize to list
+            cmds = list(available_commands)
+            # Support tuple entries ("/name", desc) by wrapping into object
+            normalized: list[Any] = []
+            for c in cmds:
+                if isinstance(c, (list, tuple)) and len(c) == 2 and isinstance(c[0], str):
+                    # ("/name", desc) tuple
+                    class _Tmp:
+                        def __init__(self, n: str, d: str):
+                            self.name = n.lstrip("/")
+                            self.description = d
+                            self.summary = d
+                            self.aliases: list[str] = []
 
-        for cmd in sorted(self._available_commands, key=lambda c: c.name):
-            if cmd.name not in self._command_lookup:
-                self._command_lookup[cmd.name] = []
-                words.append(cmd.name)
-            self._command_lookup[cmd.name].append(cmd)
-            for alias in cmd.aliases:
-                if alias in self._command_lookup:
-                    self._command_lookup[alias].append(cmd)
+                        def display_name(self, trigger: str | None = None) -> str:
+                            if trigger and trigger != self.name and trigger in self.aliases:
+                                return f"/{self.name} ({trigger})"
+                            return f"/{self.name}"
+
+                    normalized.append(_Tmp(c[0], c[1]))
                 else:
-                    self._command_lookup[alias] = [cmd]
-                    words.append(alias)
-
+                    normalized.append(c)
+            self._available_commands = sorted(
+                normalized, key=lambda c: getattr(c, "name", str(c))
+            )
+            for cmd in self._available_commands:
+                name = getattr(cmd, "name", None)
+                if not name:
+                    continue
+                if name not in self._command_lookup:
+                    self._command_lookup[name] = []
+                    words.append(name)
+                self._command_lookup[name].append(cmd)
+                for alias in getattr(cmd, "aliases", []) or []:
+                    if alias in self._command_lookup:
+                        self._command_lookup[alias].append(cmd)
+                    else:
+                        self._command_lookup[alias] = [cmd]
+                        words.append(alias)
+        except Exception:
+            # fallback: plain strings
+            try:
+                for w in available_commands:  # type: ignore
+                    words.append(str(w))
+            except Exception:
+                pass
         self._word_pattern = re.compile(r"[^\s]+")
         self._fuzzy_pattern = r"^[^\s]*"
         self._word_completer = WordCompleter(words, WORD=False, pattern=self._word_pattern)
-        self._fuzzy = FuzzyCompleter(self._word_completer, WORD=False, pattern=self._fuzzy_pattern)
+        self._fuzzy = FuzzyCompleter(
+            self._word_completer, WORD=False, pattern=self._fuzzy_pattern
+        )
 
     @staticmethod
     def should_complete(document: Document) -> bool:
-        """Return whether slash command completion should be active for the current buffer."""
         text = document.text_before_cursor
-
         if document.text_after_cursor.strip():
             return False
+        stripped_start = text.lstrip()
+        return stripped_start.startswith("/")
 
-        last_space = text.rfind(" ")
-        token = text[last_space + 1 :]
-        prefix = text[: last_space + 1] if last_space != -1 else ""
+    def _display_name(self, cmd: Any, trigger: str) -> str:
+        try:
+            if hasattr(cmd, "display_name") and callable(cmd.display_name):
+                res = cmd.display_name(trigger)
+                if isinstance(res, str):
+                    return res
+        except Exception:
+            pass
+        name = getattr(cmd, "name", str(cmd))
+        if not isinstance(name, str):
+            name = str(name)
+        aliases = getattr(cmd, "aliases", []) or []
+        if trigger != name and trigger in aliases:
+            return f"/{name} ({trigger})"
+        return f"/{name}"
 
-        return not prefix.strip() and token.startswith("/")
+    def _cmd_description(self, cmd: Any) -> str:
+        desc = getattr(cmd, "description", None) or getattr(cmd, "summary", "") or ""
+        return str(desc) if not isinstance(desc, str) else desc
 
-    @override
-    def get_completions(
-        self, document: Document, complete_event: CompleteEvent
-    ) -> Iterable[Completion]:
+    def get_completions(self, document: Document, complete_event: Any):  # type: ignore[override]
         if not self.should_complete(document):
             return
         text = document.text_before_cursor
+        stripped = text.lstrip()
+        if not stripped.startswith("/"):
+            return
+
+        # Case 1: Sub-argument completion (when a space is present after command)
+        if " " in stripped:
+            parts = stripped.split(None, 1)
+            lead_cmd = parts[0].lower()
+            arg_typed = (
+                parts[1]
+                if len(parts) > 1 and not stripped.endswith(" ")
+                else (stripped.split()[-1] if not stripped.endswith(" ") else "")
+            )
+            if stripped.endswith(" "):
+                arg_typed = ""
+            else:
+                # token before cursor
+                arg_typed = text.split()[-1] if text.split() else ""
+
+            candidates: list[tuple[str, str]] = []
+
+            if lead_cmd in ("/model",):
+                from coderai.ui.shell.session_picker import CURATED_MODELS
+
+                for m_name, m_desc, _ in CURATED_MODELS:
+                    candidates.append((m_name, m_desc[:50]))
+
+            elif lead_cmd in ("/plan",):
+                for sub in ("on", "off", "view", "clear", "apply", "reset"):
+                    candidates.append((sub, f"Plan Mode {sub}"))
+
+            elif lead_cmd in ("/effort", "/reasoning"):
+                for eff in ("max", "high", "medium", "low", "off"):
+                    candidates.append((eff, f"Reasoning effort: {eff}"))
+
+            elif lead_cmd in ("/thinking", "/raw"):
+                for mode in ("full", "summary", "lite", "normal", "on", "off"):
+                    candidates.append((mode, f"Thinking trace mode: {mode}"))
+
+            elif lead_cmd in ("/setup", "/auth", "/configure"):
+                for sub in ("quick", "keys", "models", "provider", "test", "status"):
+                    candidates.append((sub, f"Setup wizard: {sub}"))
+
+            elif lead_cmd in ("/theme",):
+                for th in ("dark", "light"):
+                    candidates.append((th, f"Terminal theme: {th}"))
+
+            elif lead_cmd in ("/agent", "/role"):
+                try:
+                    from coderai.subagents.agent_spec import discover_agent_specs
+
+                    discovered = discover_agent_specs(Path(self.project_root))
+                    all_roles = ["default", "okabe"] + [s.name for s in discovered]
+                    for role_name in all_roles:
+                        candidates.append((role_name, f"Agent role: {role_name}"))
+                except Exception:
+                    for role_name in (
+                        "default",
+                        "okabe",
+                        "architect",
+                        "code-reviewer",
+                        "planner",
+                        "security-reviewer",
+                        "tdd-guide",
+                        "build-error-resolver",
+                    ):
+                        candidates.append((role_name, f"Agent role: {role_name}"))
+
+            elif lead_cmd in ("/skill",) or lead_cmd.startswith(("/skill:", "/flow:")):
+                from coderai.core.skill import list_skills
+
+                try:
+                    skills = list_skills(self.project_root)
+                    for sk in skills:
+                        if isinstance(sk, dict) and sk.get("name"):
+                            candidates.append((sk["name"], (sk.get("description") or "")[:50]))
+                except Exception:
+                    pass
+
+            elif lead_cmd in ("/help", "/?"):
+                for cmd_name in self._command_lookup:
+                    candidates.append((cmd_name, f"Help on /{cmd_name}"))
+
+            if candidates:
+                matching_names = fuzzy_filter(arg_typed, [c[0] for c in candidates], limit=20)
+                desc_map = {c[0]: c[1] for c in candidates}
+                for name in matching_names:
+                    yield Completion(
+                        text=name,
+                        start_position=-len(arg_typed),
+                        display=name,
+                        display_meta=desc_map.get(name, ""),
+                    )
+            return
+
+        # Case 2: Slash command completion
         last_space = text.rfind(" ")
         token = text[last_space + 1 :]
-
         typed = token[1:]
         mention_doc = Document(text=typed, cursor_position=len(typed))
-        candidates = list(self._fuzzy.get_completions(mention_doc, complete_event))
-
+        fuzzy_candidates = list(self._fuzzy.get_completions(mention_doc, complete_event))
         seen: set[str] = set()
         candidate_triggers: list[str] = []
         if typed and typed in self._command_lookup:
             candidate_triggers.append(typed)
-        for candidate in candidates:
-            if candidate.text not in candidate_triggers:
-                candidate_triggers.append(candidate.text)
-
+        for cand in fuzzy_candidates:
+            if cand.text not in candidate_triggers:
+                candidate_triggers.append(cand.text)
         for trigger in candidate_triggers:
-            commands = self._command_lookup.get(trigger)
-            if not commands:
+            cmds = self._command_lookup.get(trigger)
+            if not cmds:
                 continue
-            for cmd in commands:
-                if cmd.name in seen:
+            for cmd in cmds:
+                name = getattr(cmd, "name", str(cmd))
+                if name in seen:
                     continue
-                seen.add(cmd.name)
-                completion_text = f"/{cmd.name}"
-                if trigger == cmd.name and typed == cmd.name:
+                seen.add(name)
+                completion_text = f"/{name}"
+                if trigger == name and typed == name:
                     completion_text += " "
                 yield Completion(
                     text=completion_text,
                     start_position=-len(token),
-                    display=cmd.display_name(trigger),
-                    display_meta=cmd.description,
+                    display=self._display_name(cmd, trigger),
+                    display_meta=self._cmd_description(cmd),
                 )
+        # Case 3: /skill:<name> + /flow:<name> colon dispatch (Kimi parity).
+        if typed.startswith(("skill:", "flow:")):
+            prefix, _, partial = typed.partition(":")
+            try:
+                from coderai.core.skill import list_skills
+
+                skills = list_skills(self.project_root)
+                names = [
+                    str(sk.get("name"))
+                    for sk in skills
+                    if isinstance(sk, dict) and sk.get("name")
+                ]
+            except Exception:
+                names = []
+            try:
+                for name in fuzzy_filter(partial, names, limit=15):
+                    yield Completion(
+                        text=f"/{prefix}:{name}",
+                        start_position=-len(token),
+                        display=f"/{prefix}:{name}",
+                        display_meta=f"{prefix} skill: {name}",
+                    )
+            except Exception:
+                pass
 
 
 def _truncate_to_width(text: str, width: int) -> str:
@@ -2688,420 +2937,49 @@ def suggest_workspace_files(query: str, project_root: str, limit: int = 15) -> l
     return candidates[:limit]
 
 
-# --- from coderai/cli/fuzzy.py ---
-"""Fuzzy matching and ranking heuristics for CoderAI autocompleters, file mentions, and menus."""
+# ---------------------------------------------------------------------------
+# File mention completer & PTK prompt session helpers
+# ---------------------------------------------------------------------------
 
 
-from collections.abc import Callable
-from typing import TypeVar
+class FileMentionCompleter(Completer):
+    """@-file completer — thin wrapper over coderai.cli.file_mention.
 
-T = TypeVar("T")
-
-
-def fuzzy_score(query: str, candidate: str) -> tuple[bool, int]:
-    """Calculate whether query is a subsequence of candidate and compute a ranking score.
-
-    Returns:
-        tuple[bool, int]: (is_match, score)
+    Canonical file list / fuzzy logic lives in file_mention.py
+    (git ls-files 5s TTL + walk fallback 1000 cap + basename re-rank).
+    This completer only handles trigger detection (@) and PTK Completion
+    yielding.
     """
-    if not query:
-        return True, 0
 
-    q_lower = query.lower()
-    c_lower = candidate.lower()
+    def __init__(self, project_root: str) -> None:
+        super().__init__()
+        self.project_root = project_root
 
-    # Exact match bonus
-    if q_lower == c_lower:
-        return True, 10000
+    def get_completions(self, document: Document, complete_event: Any):  # type: ignore[override]
+        text_before = document.text_before_cursor
+        at_idx = text_before.rfind("@")
+        if at_idx == -1:
+            return
+        token = text_before[at_idx + 1 :]
+        if " " in token or "\n" in token:
+            return
+        if token and not re.match(r"^[\w.\-_/\\'\":@#~]*$", token):
+            return
+        query = token
+        # Delegate to canonical file_mention helper (single source)
+        try:
+            from coderai.cli.file_mention import suggest_workspace_files
 
-    # Prefix match bonus
-    if c_lower.startswith(q_lower):
-        return True, 5000 + (len(q_lower) * 20) - len(c_lower)
-
-    # Substring match bonus
-    if q_lower in c_lower:
-        idx = c_lower.find(q_lower)
-        score = 2000 - (idx * 10) + (len(q_lower) * 20) - len(c_lower)
-        return True, score
-
-    # Subsequence matching
-    score = 0
-    q_idx = 0
-    q_len = len(q_lower)
-    c_len = len(c_lower)
-    prev_c_idx = -2
-
-    for c_idx, char in enumerate(c_lower):
-        if q_idx < q_len and char == q_lower[q_idx]:
-            # Base match points
-            score += 15
-
-            # Consecutive character match bonus
-            if c_idx == prev_c_idx + 1:
-                score += 30
-
-            # Word boundary bonus (start of word or following separator)
-            if c_idx == 0:
-                score += 50
-            elif candidate[c_idx - 1] in ("/", "\\", "_", "-", ".", " ", ":"):
-                score += 40
-            elif candidate[c_idx].isupper() and not candidate[c_idx - 1].isupper():
-                score += 35
-
-            prev_c_idx = c_idx
-            q_idx += 1
-
-    if q_idx == q_len:
-        # Full subsequence matched; apply slight penalty for length distance
-        score -= c_len
-        return True, score
-
-    return False, 0
-
-
-def fuzzy_filter(
-    query: str,
-    candidates: list[T],
-    key_func: Callable[[T], str] | None = None,
-    limit: int = 15,
-) -> list[T]:
-    """Filter and rank candidates using fuzzy matching score."""
-    if not query:
-        return candidates[:limit]
-
-    scored: list[tuple[int, T]] = []
-    for item in candidates:
-        text = key_func(item) if key_func is not None else str(item)
-        matched, score = fuzzy_score(query, text)
-        if matched:
-            scored.append((score, item))
-
-    # Sort descending by score
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    return [item for _, item in scored[:limit]]
-
-
-# --- from coderai/cli/prompt_session.py ---
-"""Prompt Toolkit session — Phase2 port of Kimi ui/shell/prompt.py (lean).
-
-Provides:
-- SlashCommandCompleter (fuzzy, WordCompleter, should_complete)
-- FileMentionCompleter (git ls-files + walk fallback, basename re-rank)
-- Bottom toolbar (git branch/status cache, cwd truncate, plan/mode badges, tip rotation)
-- CoderAIPromptSession (PromptSession wrapper, history per-workspace, key bindings)
-
-Pony: ~380 LOC vs Kimi 2259 — keeps core UX, drops placeholder/media pipeline (Phase5).
-"""
-
-
-import hashlib
-import os
-import re
-import time
-from pathlib import Path
-from typing import Any
-
-# ---------------------------------------------------------------------------
-# Lazy prompt_toolkit import with fallback flag
-# ---------------------------------------------------------------------------
-try:
-    from prompt_toolkit import PromptSession
-    from prompt_toolkit.completion import (
-        Completer,
-        Completion,
-        FuzzyCompleter,
-        WordCompleter,
-        merge_completers,
-    )
-    from prompt_toolkit.document import Document
-    from prompt_toolkit.history import FileHistory
-    from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.styles import Style
-
-    HAS_PTK = True
-except ImportError:  # pragma: no cover
-    HAS_PTK = False
-    PromptSession = Any  # type: ignore
-    Completer = object  # type: ignore
-    Completion = Any  # type: ignore
-
-# ---------------------------------------------------------------------------
-# Slash completer — Kimi prompt.py:89
-# ---------------------------------------------------------------------------
-if HAS_PTK:
-
-    class SlashCommandCompleter(Completer):
-        """Fuzzy slash completer — canonical /name, alias support, and subargument completion."""
-
-        def __init__(self, available_commands: Any, project_root: str = ".") -> None:
-            super().__init__()
-            self.project_root = project_root
-            self._available_commands: list[Any] = []
-            self._command_lookup: dict[str, list[Any]] = {}
-            words: list[str] = []
-            try:
-                # Normalize to list
-                cmds = list(available_commands)
-                # Support tuple entries ("/name", desc) by wrapping into object
-                normalized: list[Any] = []
-                for c in cmds:
-                    if isinstance(c, (list, tuple)) and len(c) == 2 and isinstance(c[0], str):
-                        # ("/name", desc) tuple
-                        class _Tmp:
-                            def __init__(self, n: str, d: str):
-                                self.name = n.lstrip("/")
-                                self.description = d
-                                self.summary = d
-                                self.aliases: list[str] = []
-
-                            def display_name(self, trigger: str | None = None) -> str:
-                                if trigger and trigger != self.name and trigger in self.aliases:
-                                    return f"/{self.name} ({trigger})"
-                                return f"/{self.name}"
-
-                        normalized.append(_Tmp(c[0], c[1]))
-                    else:
-                        normalized.append(c)
-                self._available_commands = sorted(
-                    normalized, key=lambda c: getattr(c, "name", str(c))
-                )
-                for cmd in self._available_commands:
-                    name = getattr(cmd, "name", None)
-                    if not name:
-                        continue
-                    if name not in self._command_lookup:
-                        self._command_lookup[name] = []
-                        words.append(name)
-                    self._command_lookup[name].append(cmd)
-                    for alias in getattr(cmd, "aliases", []) or []:
-                        if alias in self._command_lookup:
-                            self._command_lookup[alias].append(cmd)
-                        else:
-                            self._command_lookup[alias] = [cmd]
-                            words.append(alias)
-            except Exception:
-                # fallback: plain strings
-                try:
-                    for w in available_commands:  # type: ignore
-                        words.append(str(w))
-                except Exception:
-                    pass
-            self._word_pattern = re.compile(r"[^\s]+")
-            self._fuzzy_pattern = r"^[^\s]*"
-            self._word_completer = WordCompleter(words, WORD=False, pattern=self._word_pattern)
-            self._fuzzy = FuzzyCompleter(
-                self._word_completer, WORD=False, pattern=self._fuzzy_pattern
+            candidates = suggest_workspace_files(query, self.project_root, limit=20)
+        except Exception:
+            candidates = []
+        for f in candidates:
+            yield Completion(
+                text=f,
+                start_position=-len(token),
+                display=f,
+                display_meta="file",
             )
-
-        @staticmethod
-        def should_complete(document: Document) -> bool:
-            text = document.text_before_cursor
-            if document.text_after_cursor.strip():
-                return False
-            stripped_start = text.lstrip()
-            return stripped_start.startswith("/")
-
-        def _display_name(self, cmd: Any, trigger: str) -> str:
-            try:
-                if hasattr(cmd, "display_name") and callable(cmd.display_name):
-                    res = cmd.display_name(trigger)
-                    if isinstance(res, str):
-                        return res
-            except Exception:
-                pass
-            name = getattr(cmd, "name", str(cmd))
-            if not isinstance(name, str):
-                name = str(name)
-            aliases = getattr(cmd, "aliases", []) or []
-            if trigger != name and trigger in aliases:
-                return f"/{name} ({trigger})"
-            return f"/{name}"
-
-        def _cmd_description(self, cmd: Any) -> str:
-            desc = getattr(cmd, "description", None) or getattr(cmd, "summary", "") or ""
-            return str(desc) if not isinstance(desc, str) else desc
-
-        def get_completions(self, document: Document, complete_event: Any):  # type: ignore[override]
-            if not self.should_complete(document):
-                return
-            text = document.text_before_cursor
-            stripped = text.lstrip()
-            if not stripped.startswith("/"):
-                return
-
-
-            # Case 1: Sub-argument completion (when a space is present after command)
-            if " " in stripped:
-                parts = stripped.split(None, 1)
-                lead_cmd = parts[0].lower()
-                arg_typed = (
-                    parts[1]
-                    if len(parts) > 1 and not stripped.endswith(" ")
-                    else (stripped.split()[-1] if not stripped.endswith(" ") else "")
-                )
-                if stripped.endswith(" "):
-                    arg_typed = ""
-                else:
-                    # token before cursor
-                    arg_typed = text.split()[-1] if text.split() else ""
-
-                candidates: list[tuple[str, str]] = []
-
-                if lead_cmd in ("/model",):
-                    from coderai.ui.shell.session_picker import CURATED_MODELS
-
-                    for m_name, m_desc, _ in CURATED_MODELS:
-                        candidates.append((m_name, m_desc[:50]))
-
-                elif lead_cmd in ("/plan",):
-                    for sub in ("on", "off", "view", "clear", "apply", "reset"):
-                        candidates.append((sub, f"Plan Mode {sub}"))
-
-                elif lead_cmd in ("/effort", "/reasoning"):
-                    for eff in ("max", "high", "medium", "low", "off"):
-                        candidates.append((eff, f"Reasoning effort: {eff}"))
-
-                elif lead_cmd in ("/thinking", "/raw"):
-                    for mode in ("full", "summary", "lite", "normal", "on", "off"):
-                        candidates.append((mode, f"Thinking trace mode: {mode}"))
-
-                elif lead_cmd in ("/setup", "/auth", "/configure"):
-                    for sub in ("quick", "keys", "models", "provider", "test", "status"):
-                        candidates.append((sub, f"Setup wizard: {sub}"))
-
-                elif lead_cmd in ("/theme",):
-                    for th in ("dark", "light"):
-                        candidates.append((th, f"Terminal theme: {th}"))
-
-                elif lead_cmd in ("/skill",) or lead_cmd.startswith(("/skill:", "/flow:")):
-                    from coderai.core.skill import list_skills
-
-                    try:
-                        skills = list_skills(self.project_root)
-                        for sk in skills:
-                            if isinstance(sk, dict) and sk.get("name"):
-                                candidates.append((sk["name"], (sk.get("description") or "")[:50]))
-                    except Exception:
-                        pass
-
-                elif lead_cmd in ("/help", "/?"):
-                    for cmd_name in self._command_lookup:
-                        candidates.append((cmd_name, f"Help on /{cmd_name}"))
-
-                if candidates:
-                    matching_names = fuzzy_filter(arg_typed, [c[0] for c in candidates], limit=20)
-                    desc_map = {c[0]: c[1] for c in candidates}
-                    for name in matching_names:
-                        yield Completion(
-                            text=name,
-                            start_position=-len(arg_typed),
-                            display=name,
-                            display_meta=desc_map.get(name, ""),
-                        )
-                return
-
-            # Case 2: Slash command completion
-            last_space = text.rfind(" ")
-            token = text[last_space + 1 :]
-            typed = token[1:]
-            mention_doc = Document(text=typed, cursor_position=len(typed))
-            fuzzy_candidates = list(self._fuzzy.get_completions(mention_doc, complete_event))
-            seen: set[str] = set()
-            candidate_triggers: list[str] = []
-            if typed and typed in self._command_lookup:
-                candidate_triggers.append(typed)
-            for cand in fuzzy_candidates:
-                if cand.text not in candidate_triggers:
-                    candidate_triggers.append(cand.text)
-            for trigger in candidate_triggers:
-                cmds = self._command_lookup.get(trigger)
-                if not cmds:
-                    continue
-                for cmd in cmds:
-                    name = getattr(cmd, "name", str(cmd))
-                    if name in seen:
-                        continue
-                    seen.add(name)
-                    completion_text = f"/{name}"
-                    if trigger == name and typed == name:
-                        completion_text += " "
-                    yield Completion(
-                        text=completion_text,
-                        start_position=-len(token),
-                        display=self._display_name(cmd, trigger),
-                        display_meta=self._cmd_description(cmd),
-                    )
-            # Case 3: /skill:<name> + /flow:<name> colon dispatch (Kimi parity).
-            if typed.startswith(("skill:", "flow:")):
-                prefix, _, partial = typed.partition(":")
-                try:
-                    from coderai.core.skill import list_skills
-
-                    skills = list_skills(self.project_root)
-                    names = [
-                        str(sk.get("name"))
-                        for sk in skills
-                        if isinstance(sk, dict) and sk.get("name")
-                    ]
-                except Exception:
-                    names = []
-                try:
-
-                    for name in fuzzy_filter(partial, names, limit=15):
-                        yield Completion(
-                            text=f"/{prefix}:{name}",
-                            start_position=-len(token),
-                            display=f"/{prefix}:{name}",
-                            display_meta=f"{prefix} skill: {name}",
-                        )
-                except Exception:
-                    pass
-
-    class FileMentionCompleter(Completer):
-        """@-file completer — thin wrapper over coderai.cli.file_mention.
-
-        Canonical file list / fuzzy logic lives in file_mention.py
-        (git ls-files 5s TTL + walk fallback 1000 cap + basename re-rank).
-        This completer only handles trigger detection (@) and PTK Completion
-        yielding. Ponytail: no duplicate walk/git code here.
-        """
-
-        def __init__(self, project_root: str) -> None:
-            super().__init__()
-            self.project_root = project_root
-
-        def get_completions(self, document: Document, complete_event: Any):  # type: ignore[override]
-            text_before = document.text_before_cursor
-            at_idx = text_before.rfind("@")
-            if at_idx == -1:
-                return
-            token = text_before[at_idx + 1 :]
-            if " " in token or "\n" in token:
-                return
-            if token and not re.match(r"^[\w.\-_/\\'\":@#~]*$", token):
-                return
-            query = token
-            # Delegate to canonical file_mention helper (single source)
-            try:
-
-                candidates = suggest_workspace_files(query, self.project_root, limit=20)
-            except Exception:
-                candidates = []
-            for f in candidates:
-                yield Completion(
-                    text=f,
-                    start_position=-len(token),
-                    display=f,
-                    display_meta="file",
-                )
-
-else:  # stub when no ptk
-
-    class SlashCommandCompleter:  # type: ignore
-        pass
-
-    class FileMentionCompleter:  # type: ignore
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -3117,51 +2995,6 @@ _TIPS = [
 ]
 
 
-def _format_git_badge(branch: str, dirty: bool, ahead: int, behind: int) -> str:
-    parts: list[str] = []
-    if dirty:
-        parts.append("±")
-    sync = ""
-    if ahead:
-        sync += f"↑{ahead}"
-    if behind:
-        sync += f"↓{behind}"
-    if sync:
-        parts.append(sync)
-    if not parts:
-        return branch
-    return f"{branch} [{' '.join(parts)}]"
-
-
-def _shorten_cwd(path: str) -> str:
-    home = str(Path.home())
-    if path == home:
-        return "~"
-    if path.startswith(home + os.sep):
-        return "~" + path[len(home) :]
-    return path
-
-
-def _truncate_left(text: str, max_cols: int) -> str:
-    if not HAS_PTK:
-        return text[:max_cols]
-    from prompt_toolkit.utils import get_cwidth
-
-    if sum(get_cwidth(c) for c in text) <= max_cols:
-        return text
-    ellipsis = "…"
-    budget = max_cols - get_cwidth(ellipsis)
-    chars: list[str] = []
-    width = 0
-    for ch in reversed(text):
-        w = get_cwidth(ch)
-        if width + w > budget:
-            break
-        chars.append(ch)
-        width += w
-    return ellipsis + "".join(reversed(chars))
-
-
 def get_bottom_toolbar_tokens(
     project_root: str,
     plan_mode: bool,
@@ -3170,6 +3003,7 @@ def get_bottom_toolbar_tokens(
     tokens: int = 0,
     turns: int = 0,
     mcp_count: int = 0,
+    active_agent: str | None = None,
 ) -> list[tuple[str, str]]:
     """Return prompt_toolkit FormattedText for bottom toolbar."""
     global _tip_index, _tip_last_rotate
@@ -3178,6 +3012,11 @@ def get_bottom_toolbar_tokens(
     # Active Model badge
     if active_model:
         toolbar_tokens.append(("class:toolbar.model", f" {active_model} "))
+        toolbar_tokens.append(("class:toolbar.sep", " · "))
+
+    # Active Agent Role badge
+    if active_agent and active_agent != "default":
+        toolbar_tokens.append(("class:toolbar.git", f" role: {active_agent} "))
         toolbar_tokens.append(("class:toolbar.sep", " · "))
 
     # Token Usage / Context Window %
@@ -3430,6 +3269,7 @@ if HAS_PTK:
                 toks = self._tokens
                 t_count = self._turns
                 mcp_cnt = self._mcp_count
+                role = getattr(self, "_agent_role", None)
                 if self.get_session_stats and callable(self.get_session_stats):
                     try:
                         st = self.get_session_stats()
@@ -3437,6 +3277,7 @@ if HAS_PTK:
                             toks = st.get("tokens", toks)
                             t_count = st.get("turns", t_count)
                             mcp_cnt = st.get("mcp_count", mcp_cnt)
+                            role = st.get("agent_role", role)
                     except Exception:
                         pass
                 return get_bottom_toolbar_tokens(
@@ -3446,6 +3287,7 @@ if HAS_PTK:
                     tokens=toks,
                     turns=t_count,
                     mcp_count=mcp_cnt,
+                    active_agent=role,
                 )
 
             self._session: PromptSession[Any] = PromptSession(
@@ -3467,6 +3309,7 @@ if HAS_PTK:
             turns: int | None = None,
             mcp_count: int | None = None,
             plan_mode: bool | None = None,
+            agent_role: str | None = None,
         ) -> None:
             """Update dynamic stats rendered in the persistent bottom toolbar."""
             if tokens is not None:
@@ -3477,6 +3320,8 @@ if HAS_PTK:
                 self._mcp_count = mcp_count
             if plan_mode is not None:
                 self.plan_mode = plan_mode
+            if agent_role is not None:
+                self._agent_role = agent_role
 
         def _get_prompt_message(self) -> list[tuple[str, str]]:
             """Return dynamic formatted prompt tokens (Kimi: ✨/💫 agent, 📋 plan, $ shell)."""

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from typing import Any, Generic, TypeVar
+
+T = TypeVar("T")
 
 if sys.version_info >= (3, 13):
     QueueShutDown = asyncio.QueueShutDown  # type: ignore[assignment]
 
-    class Queue[T](asyncio.Queue[T]):
+    class Queue(asyncio.Queue[T], Generic[T]):
         """Asyncio Queue with shutdown support."""
 
 else:
@@ -19,7 +22,7 @@ else:
 
     _SHUTDOWN = _Shutdown()
 
-    class Queue[T](asyncio.Queue[T | _Shutdown]):
+    class Queue(asyncio.Queue[Any], Generic[T]):
         """Asyncio Queue with shutdown support for Python < 3.13."""
 
         def __init__(self) -> None:

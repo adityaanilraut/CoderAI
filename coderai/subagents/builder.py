@@ -208,17 +208,26 @@ class SubAgentSpec:
     seed_events: list[Any] | None = None
     descriptor: SubagentDescriptor | None = None
     continuable: bool = False  # parked worker loop; survives multiple turns via its handle inbox
-    subagent_type: str | None = None  # Phase 2: builtin type (coder|explore|plan)
+    subagent_type: str | None = None  # Builtin or custom role (coder|explore|plan|architect|code-reviewer...)
+    system_prompt: str | None = None
 
     def __post_init__(self) -> None:
-        # Phase 2: resolve builtin type policy (explicit allowed_tools wins).
-        if self.subagent_type and not self.allowed_tools:
+        # Resolve type policy and role instructions from registry
+        if self.subagent_type:
             try:
-                from coderai.subagents.registry import resolve_tool_policy
+                from coderai.subagents.registry import get_subagent_definition, resolve_tool_policy
 
-                mode, tools = resolve_tool_policy(self.subagent_type)
-                if mode == "allowlist" and tools:
-                    self.allowed_tools = list(tools)
+                if not self.allowed_tools:
+                    mode, tools = resolve_tool_policy(self.subagent_type, project_root=self.isolated_cwd)
+                    if mode == "allowlist" and tools:
+                        self.allowed_tools = list(tools)
+
+                defn = get_subagent_definition(self.subagent_type, project_root=self.isolated_cwd)
+                if defn:
+                    if defn.mode and self.mode == "read_only":
+                        self.mode = defn.mode
+                    if defn.system_prompt and not self.system_prompt:
+                        self.system_prompt = defn.system_prompt
             except Exception:
                 pass
 

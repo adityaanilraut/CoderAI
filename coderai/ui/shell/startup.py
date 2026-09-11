@@ -5,6 +5,7 @@ import argparse
 
 from rich.status import Status
 
+from coderai._version import __version__
 from coderai.core.prompt_sections import TOOL_PRESETS
 from coderai.ui.shell.console import console
 
@@ -310,6 +311,83 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Log debug information.",
+    )
+    parser.add_argument(
+        "--subagent-worker",
+        action="store_true",
+        default=False,
+        dest="subagent_worker",
+        help="Run as an internal subagent worker process.",
+    )
+    parser.add_argument(
+        "--subagent-payload",
+        type=str,
+        default=None,
+        dest="subagent_payload",
+        help="Hex-encoded JSON payload for subagent worker execution.",
+    )
+    parser.add_argument(
+        "--subagent-depth",
+        type=int,
+        default=0,
+        dest="subagent_depth",
+        help="Nesting depth of this subagent invocation.",
+    )
+    parser.add_argument(
+        "--subagent-parent-id",
+        type=str,
+        default=None,
+        dest="subagent_parent_id",
+        help="Parent agent ID for this subagent execution.",
+    )
+    parser.add_argument(
+        "--subagent-runner",
+        choices=["wire", "acp"],
+        default="wire",
+        dest="subagent_runner",
+        help="Runner backend for subagents (wire or acp).",
+    )
+    parser.add_argument(
+        "--subagent-type",
+        type=str,
+        default=None,
+        dest="subagent_type",
+        help="Role name or specification for subagent (e.g. general, bash, planner).",
+    )
+    parser.add_argument(
+        "--subagent-desc",
+        type=str,
+        default="",
+        dest="subagent_desc",
+        help="Description of the delegated task for the subagent.",
+    )
+    parser.add_argument(
+        "--subagent-allowed-tools",
+        type=str,
+        default=None,
+        dest="subagent_allowed_tools",
+        help="Comma-separated list of tool names allowed for this subagent.",
+    )
+    parser.add_argument(
+        "--tools-preset",
+        dest="tools_preset",
+        choices=TOOL_PRESETS,
+        default=None,
+        help="Permission preset (read-only, workspace-write, danger-full-access, local-network-read, unrestricted-read).",
+    )
+    parser.add_argument(
+        "--permission",
+        dest="permission",
+        choices=TOOL_PRESETS,
+        default=None,
+        help="Alias for --tools-preset.",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        dest="reasoning_effort",
+        choices=["high", "medium", "low", "off", "max"],
+        default=None,
+        help="Reasoning effort level for thinking-capable models.",
     )
     parser.add_argument(
         "--max-subagent-depth",

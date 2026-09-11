@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 
+from typing import Generic, TypeVar
+
 from coderai.utils.aioqueue import Queue, QueueShutDown
 
+T = TypeVar("T")
 
-class BroadcastQueue[T]:
+
+class BroadcastQueue(Generic[T]):
     """
     A broadcast queue that allows multiple subscribers to receive published items.
     """

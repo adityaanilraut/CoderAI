@@ -139,9 +139,10 @@ def test_edit_replace_all_requires_expected_count(tmp_path):
     assert ok.ok and p.read_text() == "x = 2\nx = 2\nx = 2\n"
 
 
-def test_ask_defers_for_multi_select(tmp_path):
+@pytest.mark.asyncio
+async def test_ask_defers_for_multi_select(tmp_path):
     """AskUserQuestion renders multi-select options and awaits user input."""
-    res = ask_handle(
+    res = await ask_handle(
         {
             "questions": [
                 {

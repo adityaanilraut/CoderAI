@@ -520,3 +520,38 @@ async def test_orchestration_path_locks_isolate_writes():
     t0 = time.time()
     await asyncio.gather(_writer("/workspace/file_a.py"), _writer("/workspace/file_b.py"))
     assert time.time() - t0 < 0.12
+
+
+async def test_autonomous_teammate_execution_and_settlement():
+    """Verify autonomous teammate worker executes assigned in_progress tasks and wait_agent settles."""
+    reset_team_manager()
+    mgr = get_team_manager()
+    # Spawn teammate with discovered role
+    tm = mgr.spawn_teammate(name="Dan", role="architect")
+    assert tm.role == "architect"
+    assert tm.system_prompt is not None  # Discovered from .coderai/agents/architect.md
+
+    # Create task assigned to Dan
+    task = mgr.task_board.create_task(
+        title="Design Cache Schema",
+        description="Write high-level architecture for caching",
+        assigned_to=tm.teammate_id,
+        priority="high",
+    )
+    assert task.status == "pending"
+
+    # Kick off task execution by setting status to in_progress
+    mgr.task_board.update_task(task.task_id, status="in_progress")
+
+    # Await settlement via wait_agent
+    settle_res = await mgr.wait_agent(tm.teammate_id, timeout_seconds=5.0)
+    assert settle_res["ok"] is True
+    assert settle_res["status"] == "settled"
+
+    updated_task = mgr.task_board.get_task(task.task_id)
+    assert updated_task.status == "completed"
+    assert "Design Cache Schema" in (updated_task.result or "")
+    assert tm.status == "completed"
+    assert "Design Cache Schema" in (tm.last_report or "")
+    mgr.cancel_all_teammates()
+

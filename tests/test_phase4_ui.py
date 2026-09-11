@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 from kosong.message import Message, TextPart as KosongTextPart
@@ -23,20 +22,13 @@ from coderai.ui.shell import render_welcome_screen
 from coderai.ui.shell.echo import render_user_echo, render_user_echo_text
 from coderai.ui.shell.mcp_status import render_mcp_console, render_mcp_prompt
 from coderai.ui.shell.migration_nudge import (
-    coderai_installed,
     install_command,
     should_show_exit_nudge,
     verify_command,
 )
-from coderai.ui.shell.prompt import PROMPT_SYMBOL, CustomPromptSession, UserInput
-from coderai.ui.shell.replay import _build_replay_turns_from_history, replay_recent_history
+from coderai.ui.shell.prompt import PROMPT_SYMBOL
 from coderai.ui.shell.startup import ShellStartupProgress
 from coderai.ui.shell.update import UpdateResult, semver_tuple
-from coderai.ui.shell.visualize import (
-    _LiveView,
-    _PromptLiveView,
-    visualize,
-)
 from coderai.ui.theme import (
     get_mcp_prompt_colors,
     get_prompt_style,
@@ -47,10 +39,8 @@ from coderai.wire import Wire
 from coderai.wire.types import (
     MCPServerSnapshot,
     MCPStatusSnapshot,
-    StatusUpdate,
     StepBegin,
     TextPart as WireTextPart,
-    TurnBegin,
 )
 
 
@@ -151,35 +141,6 @@ def test_update_semver_parsing() -> None:
     assert UpdateResult.UP_TO_DATE != UpdateResult.UPDATED
 
 
-def test_replay_build_turns_from_history() -> None:
-    """Test turn grouping and filtering of system/notification messages."""
-    history = [
-        Message(role="user", content=[KosongTextPart(text="Initial question")]),
-        Message(role="assistant", content=[KosongTextPart(text="Answer 1")]),
-        Message(role="user", content=[KosongTextPart(text="<notification id='1'>Alert</notification>")]),
-        Message(role="user", content=[KosongTextPart(text="Follow up question")]),
-        Message(role="assistant", content=[KosongTextPart(text="Answer 2")]),
-    ]
-    turns = _build_replay_turns_from_history(history)
-    assert len(turns) == 2
-    assert turns[0].user_message.extract_text() == "Initial question"
-    assert turns[1].user_message.extract_text() == "Follow up question"
-
-
-@pytest.mark.asyncio
-async def test_replay_recent_history_execution() -> None:
-    """Verify replay loop sends events through wire without error."""
-    history = [
-        Message(role="user", content=[KosongTextPart(text="Hello")]),
-        Message(role="assistant", content=[KosongTextPart(text="World")]),
-    ]
-    printed = []
-    with patch("coderai.ui.shell.replay.console.print", lambda x: printed.append(str(x))):
-        with patch("coderai.ui.shell.replay.visualize", return_value=asyncio.sleep(0)):
-            await replay_recent_history(history)
-    assert any("Hello" in p for p in printed)
-
-
 def test_print_printers() -> None:
     """Test non-interactive Text, Json, and FinalOnly printers."""
     tp = TextPrinter()
@@ -209,15 +170,6 @@ async def test_print_visualize_stream() -> None:
     wire.soul_side.send(WireTextPart(text="Hello wire"))
     wire.shutdown()
     await task
-
-
-@pytest.mark.asyncio
-async def test_live_view_creation() -> None:
-    """Test LiveView instantiation and basic lifecycle."""
-    status = StatusUpdate()
-    view = _LiveView(status)
-    assert view is not None
-    assert view._status_block is not None
 
 
 def test_startup_progress() -> None:

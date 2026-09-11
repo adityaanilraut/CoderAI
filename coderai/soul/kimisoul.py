@@ -111,49 +111,48 @@ class AgentLoop:
         self._emit(make_turn_end(self._next_seq(), self._turn, reason))
         try:
             w = self._wire()
-            if w is not None:
+            if w is not None and reason not in ("permission", "question"):
                 w.flush()
                 w.turn_end()
         except Exception:
             pass
-        from coderai.hooks.runner import run_post_turn, run_stop
+        if reason not in ("permission", "question"):
+            from coderai.hooks.runner import run_post_turn, run_stop
 
-        try:
-            settings = self.manager.get_resolved_settings()
-            run_post_turn(
-                turn=self._turn,
-                session_id=self.session_id,
-                project_root=self.manager.project_root,
-                reason=reason,
-                settings=settings,
-            )
-        except Exception:
-            pass
-        # Kimi parity: Stop fires when the turn ends cleanly; hooks may set
-        # continue=false to force another activation round.
-        if reason in ("waiting", "max_steps", "refusal"):
             try:
                 settings = self.manager.get_resolved_settings()
-                outcome = run_stop(
-                    self.session_id,
-                    self.manager.project_root,
+                run_post_turn(
+                    turn=self._turn,
+                    session_id=self.session_id,
+                    project_root=self.manager.project_root,
+                    reason=reason,
                     settings=settings,
                 )
-                if outcome.stop or outcome.decision == "deny":
-                    for ctx in outcome.additional_context:
-                        try:
-                            self.manager._append_message(
-                                self.manager._build_message(
-                                    self.session_id,
-                                    "user",
-                                    str(ctx),
-                                    meta={"isHookContext": True},
-                                )
-                            )
-                        except Exception:
-                            pass
             except Exception:
                 pass
+            if reason in ("waiting", "max_steps", "refusal", "natural"):
+                try:
+                    settings = self.manager.get_resolved_settings()
+                    outcome = run_stop(
+                        self.session_id,
+                        self.manager.project_root,
+                        settings=settings,
+                    )
+                    if outcome and (outcome.stop or outcome.decision == "deny"):
+                        for ctx in outcome.additional_context:
+                            try:
+                                self.manager._append_message(
+                                    self.manager._build_message(
+                                        self.session_id,
+                                        "user",
+                                        str(ctx),
+                                        meta={"isHookContext": True},
+                                    )
+                                )
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
 
     def emit_step_start(self) -> None:
         self._step += 1
@@ -199,7 +198,8 @@ class AgentLoop:
         settings = manager.get_resolved_settings()
 
         manager.session_controllers[session_id] = asyncio.Event()
-        self.emit_turn_start()
+        if permission_replies is None:
+            self.emit_turn_start()
 
         messages = manager.list_session_messages(session_id)
         rebuild_session_state_from_history(
@@ -336,6 +336,18 @@ class AgentLoop:
                     compact_notice.meta = {"asThinking": True}
                     manager.on_assistant_message(compact_notice, False)
                     await manager._compact_session(session_id, trigger=effective_trigger)
+                    messages = manager.list_session_messages(session_id)
+
+                steers = manager.pop_steers(session_id)
+                if steers:
+                    for st in steers:
+                        manager._append_message(
+                            manager._build_message(
+                                session_id,
+                                "user",
+                                st,
+                            )
+                        )
                     messages = manager.list_session_messages(session_id)
 
                 self.emit_step_start()
@@ -626,38 +638,4 @@ class AgentLoop:
     @property
     def step(self) -> int:
         return self._step
-
-
-class KimiSoul:
-    """Soul controller coordinating the agent, context, and runtime."""
-
-    def __init__(self, agent: Any, context: Any = None) -> None:
-        self.agent = agent
-        self.context = context
-        self.plan_mode = False
-        self._hook_engine: Any = None
-
-    @property
-    def runtime(self) -> Any:
-        return getattr(self.agent, "runtime", None)
-
-    def set_hook_engine(self, hook_engine: Any) -> None:
-        self._hook_engine = hook_engine
-
-    def schedule_plan_activation_reminder(self) -> None:
-        pass
-
-    async def set_plan_mode_from_manual(self, enabled: bool) -> None:
-        self.plan_mode = enabled
-
-    async def run(
-        self,
-        user_input: Any,
-        *,
-        skip_user_prompt_hook: bool = False,
-    ) -> None:
-        pass
-
-
-SessionSoul = KimiSoul
 

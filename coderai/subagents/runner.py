@@ -598,8 +598,9 @@ class SubAgentManager:
         available_tools = self._get_sandboxed_tools(spec, model)
 
         if messages is None:
-            # Build isolated initial message history with static system prompt
             system_prompt = get_subagent_system_prompt(spec.mode)
+            if getattr(spec, "system_prompt", None):
+                system_prompt = f"{system_prompt}\n\n## Role Instructions\n{spec.system_prompt}"
             runtime_context = get_runtime_context(effective_root, model)
 
             initial_user_prompt = spec.prompt

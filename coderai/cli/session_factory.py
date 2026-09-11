@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -20,6 +21,7 @@ def build_session_manager(
     *,
     model: str | None = None,
     preset: str | None = None,
+    agent: str | None = None,
     on_assistant_message: AssistantCallback | None = None,
     on_stream_chunk: ChunkCallback | None = None,
     on_thinking_chunk: ChunkCallback | None = None,
@@ -33,6 +35,30 @@ def build_session_manager(
     if preset:
         resolved["preset"] = preset
         resolved["toolsPreset"] = preset
+
+    agent_target = (
+        agent
+        or os.environ.get("CODERAI_AGENT_FILE")
+        or os.environ.get("CODERAI_AGENT")
+    )
+    if agent_target:
+        try:
+            from pathlib import Path
+            from coderai.agentspec import render_system_prompt, resolve_agent_spec
+
+            spec = resolve_agent_spec(agent_target, project_root=Path(project_root))
+            rendered = render_system_prompt(spec)
+            if rendered:
+                resolved["persona"] = rendered
+            if spec.model and not model:
+                resolved["model"] = spec.model
+                model = spec.model
+            if spec.allowed_tools:
+                resolved["allowedTools"] = list(spec.allowed_tools)
+        except Exception as exc:
+            import sys
+
+            print(f"Warning: Failed to load agent '{agent_target}': {exc}", file=sys.stderr)
 
     manager: SessionManager | None = None
 
@@ -52,6 +78,8 @@ def build_session_manager(
     )
     if model:
         manager.set_model(model)
+    if agent_target:
+        manager.active_agent_role = getattr(spec, "name", str(agent_target)) if "spec" in locals() and spec else str(agent_target)
     return manager
 
 

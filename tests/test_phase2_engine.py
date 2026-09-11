@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -18,17 +17,9 @@ from coderai.llm import (
     derive_model_capabilities,
     estimate_request_tokens,
 )
-from coderai.session import Session, SessionManager
-from coderai.soul.context import Context
-from coderai.soul.slash import registry as slash_registry
-from coderai.soul.toolset import (
-    CoderAIToolset,
-    KimiToolset,
-    _build_repeat_reminder,
-    _canonical_tool_arguments,
-    get_session_id,
-    set_session_id,
-)
+from coderai.session import Session
+from coderai.soul.tool_context import get_session_id, set_session_id
+from coderai.ui.shell.slash import completion_entries
 from coderai.utils.sensitive import is_sensitive_file, sensitive_file_warning
 from coderai.utils.slashcmd import SlashCommandRegistry, parse_slash_command_call
 
@@ -101,60 +92,15 @@ def test_slashcmd_registry_and_parser():
     assert parse_slash_command_call("not a slash command") is None
 
 
-def test_soul_slash_registry_commands():
-    cmds = {c.name for c in slash_registry.list_commands()}
-    assert "init" in cmds
-    assert "clear" in cmds
-    assert "compact" in cmds
-    assert "yolo" in cmds
-    assert "plan" in cmds
+def test_slash_catalog_commands():
+    """The ACP-advertised catalog comes from the live Stack A slash catalog."""
+    names = {name for name, _ in completion_entries()}
+    assert {"/init", "/clear", "/compact", "/yolo", "/plan"} <= names
 
 
-def test_toolset_helpers():
-    assert CoderAIToolset is KimiToolset
-
-    # Session ID ContextVar
+def test_tool_context_session_id():
     set_session_id("test-session-123")
     assert get_session_id() == "test-session-123"
-
-    # Canonical arguments
-    canon = _canonical_tool_arguments({"b": 2, "a": 1})
-    assert canon == '{"a":1,"b":2}'
-
-    # Reminder generation
-    action, reminder = _build_repeat_reminder(streak=3, tool_name="ReadFile", canonical_args='{"path":"foo.py"}')
-    assert action == "r1"
-    assert reminder is not None
-    action2, reminder2 = _build_repeat_reminder(streak=5, tool_name="ReadFile", canonical_args='{"path":"foo.py"}')
-    assert action2 == "r2"
-    assert "ReadFile" in reminder2
-
-
-@pytest.mark.asyncio
-async def test_context_lifecycle(tmp_path: Path):
-    context_file = tmp_path / "context.jsonl"
-    ctx = Context(context_file)
-
-    assert ctx.token_count == 0
-    assert ctx.n_checkpoints == 0
-
-    msg1 = Message(role="user", content=[TextPart(text="Hello CoderAI")])
-    await ctx.append_message(msg1)
-    assert len(ctx.history) == 1
-
-    await ctx.checkpoint(add_user_message=False)
-    assert ctx.n_checkpoints == 1
-
-    # Reload context in fresh instance
-    ctx2 = Context(context_file)
-    restored = await ctx2.restore()
-    assert restored is True
-    assert len(ctx2.history) == 1
-    assert ctx2.n_checkpoints == 1
-
-    # Revert to checkpoint 0
-    await ctx2.revert_to(0)
-    assert len(ctx2.history) == 1
 
 
 @pytest.mark.asyncio

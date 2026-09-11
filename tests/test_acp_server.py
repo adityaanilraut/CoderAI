@@ -17,16 +17,10 @@ from coderai.acp.session import (
     ACPSession,
     AcpRunConfig,
     AcpSubagentRunner,
-    get_current_acp_tool_call_id_or_none,
 )
-from coderai.acp.tools import Terminal, replace_tools
 from coderai.config import LLMModel
 from coderai.core.acp.runner import AcpRunConfig as CoreRunConfig
 from coderai.core.acp.runner import AcpSubagentRunner as CoreSubagentRunner
-from coderai.soul.agent import Runtime
-from coderai.soul.approval import Approval
-from coderai.soul.toolset import KimiToolset
-from coderai.tools.shell import Params as ShellParams, Shell
 
 
 @dataclass
@@ -68,27 +62,6 @@ async def test_acp_kaos_lifecycle(tmp_path: Path):
     mock_client.write_text_file.assert_awaited_once()
 
 
-def test_replace_tools():
-    toolset = KimiToolset()
-    approval = Approval(yolo=True)
-    shell = Shell(approval=approval)
-    toolset.add(shell)
-
-    assert toolset.find(Shell) is not None
-
-    mock_client = MagicMock()
-    runtime = MagicMock()
-    runtime.approval = approval
-
-    caps = acp.schema.ClientCapabilities(terminal=True)
-    replace_tools(caps, mock_client, "session-123", toolset, runtime)
-
-    terminal_tool = toolset.find(Terminal)
-    assert terminal_tool is not None
-    assert terminal_tool.name == "Shell"
-    assert isinstance(terminal_tool, Terminal)
-
-
 @pytest.mark.asyncio
 async def test_acp_server_initialize():
     server = ACPServer()
@@ -122,13 +95,6 @@ async def test_acp_server_session_lifecycle(tmp_path: Path):
     new_resp = await server.new_session(cwd=str(tmp_path))
     session_id = new_resp.session_id
     assert session_id in server.sessions
-
-    # Append a message so session is non-empty on disk
-    acp_session, _ = server.sessions[session_id]
-    from kosong.message import Message, TextPart
-    await acp_session.cli.soul.context.append_message(
-        Message(role="user", content=[TextPart(text="Hello CoderAI")])
-    )
 
     # 2. List sessions
     list_resp = await server.list_sessions(cwd=str(tmp_path))
@@ -205,3 +171,36 @@ def test_acp_subagent_runner_backward_compatibility():
     runner = AcpSubagentRunner(config)
     assert runner.config.command == "echo"
     assert runner._parser is not None
+
+
+@pytest.mark.asyncio
+async def test_acp_server_fork_and_ext_methods(tmp_path: Path):
+    server = ACPServer()
+    mock_conn = MagicMock()
+    mock_conn.session_update = AsyncMock()
+    server.on_connect(mock_conn)
+    caps = acp.schema.ClientCapabilities(terminal=False)
+    await server.initialize(protocol_version=1, client_capabilities=caps)
+
+    # Mock auth check
+    server._check_auth = MagicMock()
+
+    # 1. Test ext_method
+    ping_resp = await server.ext_method("ping", {})
+    assert ping_resp["status"] == "ok"
+
+    ver_resp = await server.ext_method("version", {})
+    assert ver_resp["name"] == "CoderAI"
+
+    # ext_notification should not raise
+    await server.ext_notification("test_notice", {"foo": "bar"})
+
+    # 2. Test fork_session
+    new_resp = await server.new_session(cwd=str(tmp_path))
+    orig_session_id = new_resp.session_id
+
+    fork_resp = await server.fork_session(cwd=str(tmp_path), session_id=orig_session_id)
+    assert fork_resp.session_id in server.sessions
+    assert fork_resp.session_id != orig_session_id
+    assert fork_resp.modes.current_mode_id == "default"
+

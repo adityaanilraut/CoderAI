@@ -506,12 +506,12 @@ def describe_tool_permission_request(
             res["diff_preview"] = diff_prev
         return res
 
-    if name == "bash":
-        command = args.get("command") if isinstance(args.get("command"), str) else "bash"
+    if name in ("bash", "Shell", "shell"):
+        command = args.get("command") if isinstance(args.get("command"), str) else name
         description = args.get("description") if isinstance(args.get("description"), str) else ""
         return {
             "toolCallId": tool_call["id"],
-            "name": "bash",
+            "name": name,
             "command": command,
             "description": description,
             "scopes": parse_bash_side_effects(args.get("sideEffects")),
@@ -1135,7 +1135,7 @@ class Approval:
             return ApprovalResult(True)
 
         from coderai.soul import get_wire_or_none
-        from coderai.soul.toolset import get_current_tool_call_or_none
+        from coderai.soul.tool_context import get_current_tool_call_or_none
         from coderai.wire.types import ApprovalRequest
 
         wire = get_wire_or_none()

@@ -13,21 +13,46 @@ from typing import Any, NamedTuple
 import acp
 from kaos.path import KaosPath
 
+from coderai.acp.engine import SessionManagerEngine
 from coderai.acp.kaos import ACPKaos
 from coderai.acp.mcp import acp_mcp_servers_to_mcp_config
 from coderai.acp.session import ACPSession
-from coderai.acp.tools import replace_tools
 from coderai.acp.types import ACPContentBlock, MCPServer
 from coderai.acp.version import ACPVersionSpec, negotiate_version
-from coderai.app import KimiCLI
 from coderai.auth.oauth import KIMI_CODE_OAUTH_KEY, load_tokens
 from coderai.config import LLMModel, OAuthRef, load_config, save_config
 from coderai.constant import NAME, VERSION
-from coderai.llm import create_llm, derive_model_capabilities
+from coderai.llm import derive_model_capabilities
 from coderai.session import Session
-from coderai.soul.slash import registry as soul_slash_registry
-from coderai.soul.toolset import KimiToolset
 from coderai.utils.logging import logger
+
+
+def _build_engine(
+    session: Session,
+    mcp_configs: list[Any] | None = None,
+) -> SessionManagerEngine:
+    """Build a Stack A (``SessionManager``) engine for one ACP session.
+
+    ACP-supplied MCP servers are injected through the documented
+    ``CODERAI_MCP_CONFIG_JSON`` overlay, which settings resolution merges over
+    user/project config. Note this overlay is process-global, so concurrent ACP
+    sessions with different server sets share the last-written set.
+    """
+    import json as _json
+    import os
+
+    from coderai.cli.session_factory import build_session_manager
+    from coderai.config import load_config
+
+    servers: dict[str, Any] = {}
+    for config in mcp_configs or []:
+        if isinstance(config, dict):
+            servers.update(config.get("mcpServers") or {})
+    if servers:
+        os.environ["CODERAI_MCP_CONFIG_JSON"] = _json.dumps({"mcpServers": servers})
+
+    manager = build_session_manager(str(session.work_dir), non_interactive=True)
+    return SessionManagerEngine(manager, config=load_config(), session=session)
 
 
 class ACPServer:
@@ -97,6 +122,7 @@ class ACPServer:
                 session_capabilities=acp.schema.SessionCapabilities(
                     list=acp.schema.SessionListCapabilities(),
                     resume=acp.schema.SessionResumeCapabilities(),
+                    fork=acp.schema.SessionForkCapabilities(),
                 ),
             ),
             auth_methods=self._auth_methods,
@@ -160,31 +186,32 @@ class ACPServer:
         self._check_auth()
 
         session = await Session.create(KaosPath.unsafe_from_local_path(Path(cwd)))
+        # ACP session identity lives in the Kimi session store, which hides
+        # sessions with no history. Title it so it is listable/resumable from
+        # the moment it is created, before the first prompt lands.
+        try:
+            from coderai.session_state import save_session_state
+
+            session.state.custom_title = f"ACP {session.id[:8]}"
+            save_session_state(session.state, session.dir)
+        except Exception:
+            logger.warning("Failed to title ACP session: %s", session.id)
 
         mcp_config = acp_mcp_servers_to_mcp_config(mcp_servers or [])
-        cli_instance = await KimiCLI.create(
-            session,
-            mcp_configs=[mcp_config],
-            ui_mode="acp",
-        )
-        config = cli_instance.soul.runtime.config
+        engine = _build_engine(session, mcp_configs=[mcp_config])
+        config = engine.config
         acp_kaos = ACPKaos(self.conn, session.id, self.client_capabilities)
-        acp_session = ACPSession(session.id, cli_instance, self.conn, kaos=acp_kaos)
+        acp_session = ACPSession(session.id, engine, self.conn, kaos=acp_kaos)
         model_id_conv = _ModelIDConv(config.default_model or "", bool(config.default_thinking))
         self.sessions[session.id] = (acp_session, model_id_conv)
 
-        if isinstance(cli_instance.soul.agent.toolset, KimiToolset):
-            replace_tools(
-                self.client_capabilities,
-                self.conn,
-                session.id,
-                cli_instance.soul.agent.toolset,
-                cli_instance.soul.runtime,
-            )
+        # Advertise the live CoderAI slash catalog (Stack A), not the retired
+        # Kimi soul-slash registry.
+        from coderai.ui.shell.slash import completion_entries
 
         available_commands = [
-            acp.schema.AvailableCommand(name=cmd.name, description=cmd.description)
-            for cmd in soul_slash_registry.list_commands()
+            acp.schema.AvailableCommand(name=name, description=description)
+            for name, description in completion_entries()
         ]
         asyncio.create_task(
             self.conn.session_update(
@@ -229,26 +256,16 @@ class ACPServer:
             raise acp.RequestError.invalid_params({"session_id": "Session not found"})
 
         mcp_config = acp_mcp_servers_to_mcp_config(mcp_servers or [])
-        cli_instance = await KimiCLI.create(
-            session,
-            mcp_configs=[mcp_config],
-            resumed=True,
-            ui_mode="acp",
-        )
-        config = cli_instance.soul.runtime.config
+        engine = _build_engine(session, mcp_configs=[mcp_config])
+        # Re-attach to an existing SessionManager session so resumed/forked ACP
+        # sessions keep their conversation history instead of starting blank.
+        if engine.manager.get_session(session.id) is not None:
+            engine.bind_session(session.id)
+        config = engine.config
         acp_kaos = ACPKaos(self.conn, session.id, self.client_capabilities)
-        acp_session = ACPSession(session.id, cli_instance, self.conn, kaos=acp_kaos)
+        acp_session = ACPSession(session.id, engine, self.conn, kaos=acp_kaos)
         model_id_conv = _ModelIDConv(config.default_model or "", bool(config.default_thinking))
         self.sessions[session.id] = (acp_session, model_id_conv)
-
-        if isinstance(cli_instance.soul.agent.toolset, KimiToolset):
-            replace_tools(
-                self.client_capabilities,
-                self.conn,
-                session.id,
-                cli_instance.soul.agent.toolset,
-                cli_instance.soul.runtime,
-            )
 
         return acp_session, model_id_conv
 
@@ -263,7 +280,9 @@ class ACPServer:
         self._check_auth()
 
         acp_session, _ = await self._setup_session(cwd, session_id, mcp_servers)
-        await acp_session.replay_history(acp_session.cli.soul.runtime.session.wire_file)
+        wire_file = getattr(getattr(acp_session.cli, "session", None), "wire_file", None)
+        if wire_file is not None:
+            await acp_session.replay_history(wire_file)
 
     async def resume_session(
         self, cwd: str, session_id: str, mcp_servers: list[MCPServer] | None = None, **kwargs: Any
@@ -274,7 +293,7 @@ class ACPServer:
             await self._setup_session(cwd, session_id, mcp_servers)
 
         acp_session, model_id_conv = self.sessions[session_id]
-        config = acp_session.cli.soul.runtime.config
+        config = acp_session.cli.config
         return acp.schema.ResumeSessionResponse(
             modes=acp.schema.SessionModeState(
                 available_modes=[
@@ -295,7 +314,58 @@ class ACPServer:
     async def fork_session(
         self, cwd: str, session_id: str, mcp_servers: list[MCPServer] | None = None, **kwargs: Any
     ) -> acp.schema.ForkSessionResponse:
-        raise NotImplementedError
+        logger.info("Forking session: %s for working directory: %s", session_id, cwd)
+        self._check_auth()
+        assert self.conn is not None, "ACP client not connected"
+        assert self.client_capabilities is not None, "ACP connection not initialized"
+
+        work_dir = KaosPath.unsafe_from_local_path(Path(cwd))
+        forked_session = await Session.create(work_dir)
+
+        mcp_config = acp_mcp_servers_to_mcp_config(mcp_servers or [])
+        engine = _build_engine(forked_session, mcp_configs=[mcp_config])
+        config = engine.config
+        acp_kaos = ACPKaos(self.conn, forked_session.id, self.client_capabilities)
+        acp_session = ACPSession(forked_session.id, engine, self.conn, kaos=acp_kaos)
+        model_id_conv = _ModelIDConv(config.default_model or "", bool(config.default_thinking))
+        self.sessions[forked_session.id] = (acp_session, model_id_conv)
+
+        # Carry the parent conversation across with a real SessionManager fork
+        # (clones message history, event log, and file checkpoint).
+        parent_session = self.sessions.get(session_id)
+        if parent_session is not None:
+            source_id = getattr(parent_session[0].cli, "session_id", None)
+            forked_id = None
+            if source_id:
+                try:
+                    forked_id = engine.manager.fork_session(source_id)
+                except Exception as exc:
+                    logger.warning("SessionManager fork failed: %s", exc)
+            if forked_id:
+                engine.bind_session(forked_id)
+            else:
+                logger.warning(
+                    "Forked ACP session %s started without conversation history",
+                    forked_session.id,
+                )
+
+        return acp.schema.ForkSessionResponse(
+            session_id=forked_session.id,
+            modes=acp.schema.SessionModeState(
+                available_modes=[
+                    acp.schema.SessionMode(
+                        id="default",
+                        name="Default",
+                        description="The default mode.",
+                    ),
+                ],
+                current_mode_id="default",
+            ),
+            models=acp.schema.SessionModelState(
+                available_models=_expand_llm_models(config.models),
+                current_model_id=model_id_conv.to_acp_model_id(),
+            ),
+        )
 
     async def list_sessions(
         self, cursor: str | None = None, cwd: str | None = None, **kwargs: Any
@@ -328,12 +398,12 @@ class ACPServer:
             raise acp.RequestError.invalid_params({"session_id": "Session not found"})
 
         acp_session, current_model_id = self.sessions[session_id]
-        cli_instance = acp_session.cli
+        engine = acp_session.cli
         model_id_conv = _ModelIDConv.from_acp_model_id(model_id)
         if model_id_conv == current_model_id:
             return
 
-        config = cli_instance.soul.runtime.config
+        config = engine.config
         new_model = config.models.get(model_id_conv.model_key)
         if new_model is None:
             logger.error("Model not found: %s", model_id_conv.model_key)
@@ -343,14 +413,8 @@ class ACPServer:
             logger.error("Provider not found: %s for model: %s", new_model.provider, model_id_conv.model_key)
             raise acp.RequestError.invalid_params({"model_id": "Model's provider not found"})
 
-        new_llm = create_llm(
-            new_provider,
-            new_model,
-            session_id=acp_session.id,
-            thinking=model_id_conv.thinking,
-            oauth=getattr(cli_instance.soul.runtime, "oauth", None),
-        )
-        cli_instance.soul.runtime.llm = new_llm
+        # Stack A resolves the provider per turn; SessionManager applies the override.
+        engine.set_model(model_id_conv.model_key)
 
         target_model = model_id_conv.model_key
         config.default_model = target_model
@@ -405,10 +469,21 @@ class ACPServer:
         await acp_session.cancel()
 
     async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError
+        logger.info("Handling ext_method: %s", method)
+        if method == "ping":
+            return {"status": "ok", "timestamp": time.time()}
+        if method == "version":
+            return {"version": VERSION, "name": NAME}
+        if method == "list_roles":
+            from coderai.subagents.registry import discover_markdown_agents
+
+            roles = [d.name for d in discover_markdown_agents(Path.cwd())]
+            return {"roles": roles}
+        logger.warning("Unsupported ext_method: %s", method)
+        return {"error": f"Method {method} not supported"}
 
     async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
-        raise NotImplementedError
+        logger.info("Received ext_notification: %s", method)
 
 
 class _ModelIDConv(NamedTuple):

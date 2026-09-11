@@ -763,6 +763,189 @@ def resolve_model_provider_routing(
     return base_url, api_key
 
 
+class _EchoToolCallFunction:
+    def __init__(self, name: str | None = None, arguments: str | None = None) -> None:
+        self.name = name
+        self.arguments = arguments
+
+
+class _EchoToolCallDelta:
+    def __init__(
+        self,
+        index: int = 0,
+        id: str | None = None,
+        function: _EchoToolCallFunction | None = None,
+        type: str = "function",
+    ) -> None:
+        self.index = index
+        self.id = id
+        self.function = function
+        self.type = type
+
+
+class _EchoDelta:
+    def __init__(
+        self,
+        content: str | None = None,
+        tool_calls: list[Any] | None = None,
+        reasoning_content: str | None = None,
+    ) -> None:
+        self.content = content
+        self.tool_calls = tool_calls
+        self.reasoning_content = reasoning_content
+
+
+class _EchoChunkChoice:
+    def __init__(
+        self,
+        delta: _EchoDelta,
+        finish_reason: str | None = None,
+        index: int = 0,
+    ) -> None:
+        self.delta = delta
+        self.finish_reason = finish_reason
+        self.index = index
+
+
+class _EchoChunkUsage:
+    def __init__(
+        self,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+    ) -> None:
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
+
+
+class _EchoChunk:
+    def __init__(
+        self,
+        choices: list[_EchoChunkChoice],
+        usage: Any = None,
+    ) -> None:
+        self.choices = choices
+        self.usage = usage
+
+
+class _EchoCompletions:
+    def __init__(self, chat_provider: Any) -> None:
+        self.chat_provider = chat_provider
+
+    def create(self, **kwargs: Any) -> Any:
+        if self.chat_provider is None:
+            return [
+                _EchoChunk([_EchoChunkChoice(_EchoDelta(content="ok"))]),
+                _EchoChunk([_EchoChunkChoice(_EchoDelta(), finish_reason="stop")]),
+            ]
+
+        if not hasattr(self.chat_provider, "_scripts"):
+            messages = kwargs.get("messages") or []
+            last_text = ""
+            if messages:
+                last = messages[-1]
+                last_text = (
+                    last.get("content", "")
+                    if isinstance(last, dict)
+                    else str(getattr(last, "content", ""))
+                )
+            return [
+                _EchoChunk([_EchoChunkChoice(_EchoDelta(content=f"echo: {last_text}"))]),
+                _EchoChunk([_EchoChunkChoice(_EchoDelta(), finish_reason="stop")]),
+            ]
+
+        if not self.chat_provider._scripts:
+            from kosong.chat_provider import ChatProviderError
+
+            turn = getattr(self.chat_provider, "_turn", 0) + 1
+            raise ChatProviderError(
+                f"ScriptedEchoChatProvider exhausted at turn {turn}."
+            )
+
+        script_text = self.chat_provider._scripts.popleft()
+        if getattr(self.chat_provider, "_trace", False):
+            import json
+
+            turn = getattr(self.chat_provider, "_turn", 0) + 1
+            print(f"SCRIPTED_ECHO TURN {turn}: {json.dumps(script_text)}")
+        self.chat_provider._turn = getattr(self.chat_provider, "_turn", 0) + 1
+
+        from kosong.chat_provider.echo.dsl import parse_echo_script
+
+        parts, message_id, usage = parse_echo_script(script_text)
+
+        chunks: list[_EchoChunk] = []
+        for p in parts:
+            p_type = getattr(p, "type", "")
+            if p_type == "text":
+                chunks.append(
+                    _EchoChunk([_EchoChunkChoice(_EchoDelta(content=getattr(p, "text", "")))])
+                )
+            elif p_type == "think":
+                chunks.append(
+                    _EchoChunk(
+                        [_EchoChunkChoice(_EchoDelta(reasoning_content=getattr(p, "think", "")))]
+                    )
+                )
+            elif hasattr(p, "function") or p_type in ("tool_call", "function"):
+                fn_name = (
+                    getattr(p.function, "name", "")
+                    if hasattr(p, "function")
+                    else ""
+                )
+                fn_args = (
+                    getattr(p.function, "arguments", "")
+                    if hasattr(p, "function")
+                    else ""
+                )
+                tc_delta = _EchoToolCallDelta(
+                    index=getattr(p, "index", 0),
+                    id=getattr(p, "id", None) or f"call_{len(chunks)}",
+                    function=_EchoToolCallFunction(name=fn_name, arguments=fn_args),
+                )
+                chunks.append(_EchoChunk([_EchoChunkChoice(_EchoDelta(tool_calls=[tc_delta]))]))
+            elif p_type == "tool_call_part":
+                tc_delta = _EchoToolCallDelta(
+                    index=getattr(p, "index", 0),
+                    id=getattr(p, "id", None),
+                    function=_EchoToolCallFunction(
+                        name=getattr(p, "function_name", None),
+                        arguments=getattr(p, "arguments_part", ""),
+                    ),
+                )
+                chunks.append(_EchoChunk([_EchoChunkChoice(_EchoDelta(tool_calls=[tc_delta]))]))
+
+        has_tool_call = any(
+            hasattr(p, "function")
+            or getattr(p, "type", "") in ("tool_call", "tool_call_part", "function")
+            for p in parts
+        )
+        finish = "tool_calls" if has_tool_call else "stop"
+        u_obj = None
+        if usage:
+            u_obj = _EchoChunkUsage(
+                prompt_tokens=getattr(usage, "input_tokens", 0) or 0,
+                completion_tokens=getattr(usage, "output_tokens", 0) or 0,
+                total_tokens=(getattr(usage, "input_tokens", 0) or 0)
+                + (getattr(usage, "output_tokens", 0) or 0),
+            )
+        chunks.append(
+            _EchoChunk([_EchoChunkChoice(_EchoDelta(), finish_reason=finish)], usage=u_obj)
+        )
+        return chunks
+
+
+class _EchoChat:
+    def __init__(self, chat_provider: Any) -> None:
+        self.completions = _EchoCompletions(chat_provider)
+
+
+class _EchoClientAdapter:
+    def __init__(self, chat_provider: Any) -> None:
+        self.chat = _EchoChat(chat_provider)
+
+
 _client_pool: dict[str, Any] = {}
 
 
@@ -888,6 +1071,27 @@ def create_openai_client(
             "webSearchTool": settings.get("webSearchTool"),
             "env": env,
         }
+
+    if provider_type in {"_scripted_echo", "_echo"}:
+        cache_key = f"_echo::{provider_type}::{active_model}"
+        if cache_key in _client_pool:
+            result = base()
+            result["client"] = _client_pool[cache_key]
+            return result
+        try:
+            from coderai.config import LLMProvider as _LLMP, LLMModel as _LLMM
+            from pydantic import SecretStr as _Sec
+            _sec_key = _Sec(api_key or "none")
+            _prov = tprovider or _LLMP(type=provider_type, base_url=base_url or "", api_key=_sec_key)
+            _mod = tmodel or _LLMM(provider=_prov.type if hasattr(_prov, "type") else "scripted_provider", model=active_model, max_context_size=context_window)
+            _llm_inst = create_llm(_prov, _mod)
+            client_adapter = _EchoClientAdapter(_llm_inst.chat_provider)
+            _client_pool[cache_key] = client_adapter
+            result = base()
+            result["client"] = client_adapter
+            return result
+        except Exception:
+            raise
 
     if not api_key:
         return base()

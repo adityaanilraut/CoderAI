@@ -198,6 +198,7 @@ class SessionManager:
         # YOLO/AFK approval mode (Kimi parity: yolo auto-approves all, afk auto-dismisses questions)
         self._yolo_mode: bool = False
         self._afk_mode: bool = False
+        self.active_agent_role: str = "default"
         self.additional_dirs: list[str] = []
         # Phase 2: per-session persisted state + soul views + approval runtime.
         from coderai.core.approval import ApprovalRuntime
@@ -256,6 +257,35 @@ class SessionManager:
         if self._override_reasoning_effort:
             return self._override_reasoning_effort
         return str(self.get_resolved_settings().get("reasoningEffort") or "max")
+
+    def get_active_agent_role(self) -> str:
+        return getattr(self, "active_agent_role", "default")
+
+    def switch_agent_role(self, role_name: str) -> bool:
+        """Switch the active agent role specification (e.g. architect, code-reviewer, default)."""
+        clean_role = (role_name or "").strip().lower()
+        if not clean_role:
+            return False
+        try:
+            from pathlib import Path
+            from coderai.agentspec import render_system_prompt, resolve_agent_spec
+
+            spec = resolve_agent_spec(clean_role, project_root=Path(self.project_root))
+            rendered = render_system_prompt(spec)
+            settings = self.get_resolved_settings()
+            if rendered:
+                settings["persona"] = rendered
+            if spec.allowed_tools is not None:
+                settings["allowedTools"] = list(spec.allowed_tools)
+            if spec.model:
+                self.set_model(spec.model)
+            self.active_agent_role = spec.name or clean_role
+            return True
+        except Exception as exc:
+            import sys
+
+            print(f"Warning: Failed to switch agent role to '{clean_role}': {exc}", file=sys.stderr)
+            return False
 
     # ---- YOLO / AFK (Kimi parity) ----
     def is_yolo(self) -> bool:
@@ -727,11 +757,30 @@ class SessionManager:
             pass
         return session_id
 
+    def steer_session(self, session_id: str, text: str) -> None:
+        if not hasattr(self, "_steer_queues"):
+            self._steer_queues = {}
+        self._steer_queues.setdefault(session_id, []).append(text)
+
+    def pop_steers(self, session_id: str) -> list[str]:
+        if not hasattr(self, "_steer_queues"):
+            return []
+        return self._steer_queues.pop(session_id, [])
+
     async def respond_permissions(
-        self, session_id: str, replies: list[dict[str, Any]], plan_mode: bool | None = None
+        self,
+        session_id: str,
+        replies: list[dict[str, Any]],
+        plan_mode: bool | None = None,
+        user_prompt: str | None = None,
     ) -> None:
         """Respond to pending permission requests in a session."""
-        await self.reply_session(session_id, permission_replies=replies, plan_mode=plan_mode)
+        await self.reply_session(
+            session_id,
+            user_prompt=user_prompt,
+            permission_replies=replies,
+            plan_mode=plan_mode,
+        )
 
     async def create_session(
         self,
@@ -793,6 +842,7 @@ class SessionManager:
             "nonInteractive": self.non_interactive,
             "sandboxMode": sandbox_mode,
             "workspaceRoot": self.project_root,
+            "persona": settings.get("persona"),
             "preset": settings.get("preset") or settings.get("toolsPreset"),
             "enabledSkills": settings.get("enabledSkills"),
             "skillScanPaths": settings.get("skillScanPaths"),
@@ -904,6 +954,7 @@ class SessionManager:
             "nonInteractive": self.non_interactive,
             "sandboxMode": sandbox_mode,
             "workspaceRoot": self.project_root,
+            "persona": settings.get("persona"),
             "preset": settings.get("preset") or settings.get("toolsPreset"),
             "enabledSkills": settings.get("enabledSkills"),
             "skillScanPaths": settings.get("skillScanPaths"),
