@@ -9,7 +9,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from coderai.core.session import SessionEntry, SessionManager
+from coderai.soul.session.manager import SessionManager
+from coderai.soul.session.models import SessionEntry
 
 
 def compute_session_stats(mgr: SessionManager, session_id: str | None) -> dict[str, Any]:
@@ -70,7 +71,7 @@ def compute_session_stats(mgr: SessionManager, session_id: str | None) -> dict[s
     stats["turns"] = turns
     stats["files_modified"] = sorted(modified_files)
 
-    from coderai.cli.interactive_menu import estimate_model_cost
+    from coderai.ui.shell.session_picker import estimate_model_cost
 
     stats["estimated_cost"] = estimate_model_cost(
         stats["model"],

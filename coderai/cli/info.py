@@ -18,13 +18,13 @@ def collect_info() -> dict[str, object]:
     except Exception:
         version = "0.0.0"
     try:
-        from coderai.core.agentspec import SUPPORTED_AGENT_SPEC_VERSIONS
+        from coderai.agentspec import SUPPORTED_AGENT_SPEC_VERSIONS
 
         agent_specs = [str(v) for v in SUPPORTED_AGENT_SPEC_VERSIONS]
     except Exception:
         agent_specs = []
     try:
-        from coderai.core.wire.protocol import WIRE_PROTOCOL_VERSION
+        from coderai.wire.protocol import WIRE_PROTOCOL_VERSION
 
         wire = str(WIRE_PROTOCOL_VERSION)
     except Exception:

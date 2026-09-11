@@ -12,9 +12,9 @@ from typing import Any
 from rich.panel import Panel
 from rich.table import Table
 
-from coderai.cli.statusline import get_git_status
-from coderai.core.openai_client import resolve_model_provider_routing
-from coderai.core.skill import list_skills
+from coderai.ui.shell.prompt import get_git_status
+from coderai.llm import resolve_model_provider_routing
+from coderai.skill import list_skills
 
 _RICH = True
 

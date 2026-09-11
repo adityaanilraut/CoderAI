@@ -16,8 +16,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from coderai.core.plugin import PLUGIN_JSON, PluginError, parse_plugin_json
-from coderai.core.plugin.manager import (
+from coderai.plugin import PLUGIN_JSON, PluginError, parse_plugin_json
+from coderai.plugin.manager import (
     collect_host_values,
     get_plugins_dir,
     install_plugin,
@@ -154,8 +154,8 @@ def cmd_plugin_install(argv: list[str]) -> int:
         print(f"Error: {exc}")
         return 1
     try:
-        from coderai.core.openai_client import create_openai_client
-        from coderai.core.settings import resolve_current_settings
+        from coderai.llm import create_openai_client
+        from coderai.config import resolve_current_settings
 
         merged = dict(resolve_current_settings("."))
         try:
