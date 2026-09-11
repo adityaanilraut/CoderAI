@@ -1,17 +1,6 @@
-"""Code Mode package for CoderAI."""
+"""Moved to coderai.code_mode.__init__ - shim (kimi structure). Reads and writes
+(mock.patch / monkeypatch) forward to the implementation module.
+Do not add code here."""
+from coderai._moved import forward as _forward
 
-from coderai.core.code_mode.engine import (
-    CodeModeResult,
-    CodeModeSandbox,
-    clear_code_mode_sandbox,
-    get_code_mode_sandbox,
-)
-from coderai.core.code_mode.tool import handle_code_mode_tool
-
-__all__ = [
-    "CodeModeResult",
-    "CodeModeSandbox",
-    "clear_code_mode_sandbox",
-    "get_code_mode_sandbox",
-    "handle_code_mode_tool",
-]
+_forward(__name__, "coderai.code_mode.__init__")
