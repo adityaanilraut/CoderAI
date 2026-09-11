@@ -7,9 +7,10 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-from coderai.core.openai_client import create_openai_client
-from coderai.core.session import SessionManager, SessionMessage
-from coderai.core.settings import resolve_current_settings
+from coderai.llm import create_openai_client
+from coderai.soul.session.manager import SessionManager
+from coderai.soul.session.models import SessionMessage
+from coderai.config import resolve_current_settings
 
 AssistantCallback = Callable[[SessionMessage, bool], None]
 ChunkCallback = Callable[[str], None]
@@ -106,10 +107,10 @@ async def close_session_manager(manager: SessionManager) -> None:
         except Exception:
             pass
 
-    from coderai.core.lsp import client as lsp_module
-    from coderai.core.terminal import manager as terminal_module
-    from coderai.core.sandbox import cleanup_seatbelt_profiles
-    from coderai.core.spill import cleanup_all_spills
+    from coderai.lsp import client as lsp_module
+    from coderai.terminal import manager as terminal_module
+    from coderai.sandbox import cleanup_seatbelt_profiles
+    from coderai.spill import cleanup_all_spills
 
     terminal_manager = terminal_module._default_terminal_manager
     if terminal_manager is not None:

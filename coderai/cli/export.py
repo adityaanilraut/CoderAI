@@ -37,14 +37,14 @@ def _version() -> str:
 
 
 def _project_dir(project_root: str) -> Path:
-    from coderai.core.session_store import JsonlSessionStore
+    from coderai.soul.session.store import JsonlSessionStore
 
     return JsonlSessionStore(project_root).project_dir
 
 
 def _find_session_files(project_root: str, session_id: str) -> list[Path]:
     """Collect on-disk files belonging to ``session_id`` (index prefix ok)."""
-    from coderai.core.session_store import JsonlSessionStore
+    from coderai.soul.session.store import JsonlSessionStore
 
     store = JsonlSessionStore(project_root)
     resolved = session_id
@@ -65,7 +65,7 @@ def _find_session_files(project_root: str, session_id: str) -> list[Path]:
 
 
 def _previous_session_id(project_root: str) -> str | None:
-    from coderai.core.session_store import JsonlSessionStore
+    from coderai.soul.session.store import JsonlSessionStore
 
     entries = JsonlSessionStore(project_root).load_index().get("entries") or []
     for entry in entries:
@@ -119,7 +119,7 @@ def _collect_recent_log_files(
     first_ts: float | None, last_ts: float | None
 ) -> list[Path]:
     """Recent ``coderai.log*`` files near session activity or export time."""
-    from coderai.core.share import get_share_dir
+    from coderai.share import get_share_dir
 
     log_dir = get_share_dir() / "logs"
     if not log_dir.is_dir():

@@ -22,7 +22,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from coderai.core.mcp_files import (
+from coderai.mcp.files import (
     get_global_mcp_config_file,
     merge_server_cfg,
     try_load_mcp_servers_file,
@@ -43,7 +43,7 @@ def _read_global() -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
 
 def _write_global(servers: dict[str, dict[str, Any]]) -> Path:
     """Persist ``servers`` to the global file (atomic tmp → replace)."""
-    from coderai.core.common.atomic import atomic_json_write
+    from coderai.utils.io import atomic_json_write
 
     path = get_global_mcp_config_file()
     atomic_json_write({"mcpServers": servers}, path)
@@ -182,7 +182,7 @@ def cmd_mcp_list(argv: list[str]) -> int:
         elif "url" in server:
             line = f"{name} ({server.get('transport') or 'http'}): {server['url']}"
             if server.get("auth") == "oauth":
-                from coderai.core.mcp.oauth import has_server_token
+                from coderai.mcp_oauth import has_server_token
 
                 line += (
                     " [oauth token stored]"
@@ -212,7 +212,7 @@ def cmd_mcp_test(argv: list[str]) -> int:
     if "url" in server:
         print(f"✓ '{name}' http entry looks valid: {server['url']}")
         if server.get("auth") == "oauth":
-            from coderai.core.mcp.oauth import has_server_token
+            from coderai.mcp_oauth import has_server_token
 
             if has_server_token(name, server):
                 print("  ✓ bearer token configured for OAuth.")
@@ -276,7 +276,7 @@ def _login_usage() -> int:
 
 def cmd_mcp_login(argv: list[str]) -> int:
     """Store a bearer token for an ``auth: oauth`` server."""
-    from coderai.core.mcp.oauth import has_server_token, store_server_token
+    from coderai.mcp_oauth import has_server_token, store_server_token
 
     token: str | None = None
     token_env: str | None = None
@@ -369,7 +369,7 @@ def cmd_mcp_login(argv: list[str]) -> int:
 
 def cmd_mcp_logout(argv: list[str]) -> int:
     """Drop the stored bearer token for a server (config keys preserved)."""
-    from coderai.core.mcp.oauth import clear_server_token, oauth_token_dir
+    from coderai.mcp_oauth import clear_server_token, oauth_token_dir
 
     if len(argv) != 1 or argv[0].startswith("-"):
         print("Usage: coderai mcp logout <name>")
