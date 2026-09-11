@@ -17,6 +17,8 @@ from coderai.acp.session import (
     ACPSession,
     AcpRunConfig,
     AcpSubagentRunner,
+    load_engine_session_id,
+    save_engine_session_id,
 )
 from coderai.config import LLMModel
 from coderai.core.acp.runner import AcpRunConfig as CoreRunConfig
@@ -203,4 +205,112 @@ async def test_acp_server_fork_and_ext_methods(tmp_path: Path):
     assert fork_resp.session_id in server.sessions
     assert fork_resp.session_id != orig_session_id
     assert fork_resp.modes.current_mode_id == "default"
+
+
+def test_engine_session_binding_roundtrip(tmp_path: Path):
+    # Missing file -> None (backward compatible with pre-binding sessions).
+    assert load_engine_session_id(tmp_path) is None
+    assert load_engine_session_id(None) is None
+
+    save_engine_session_id(tmp_path, "engine-abc123")
+    assert load_engine_session_id(tmp_path) == "engine-abc123"
+
+    # Corrupt file -> None, never raises.
+    (tmp_path / "engine-session-id.json").write_text("{not json", encoding="utf-8")
+    assert load_engine_session_id(tmp_path) is None
+
+    # Empty/invalid ids are not persisted.
+    save_engine_session_id(tmp_path, "")
+    assert load_engine_session_id(tmp_path) is None
+
+
+@pytest.mark.asyncio
+async def test_acp_session_prompt_persists_engine_binding(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from coderai.wire.types import TextPart, TurnBegin, TurnEnd
+
+    async def mock_run(user_input, cancel_event):
+        yield TurnBegin(user_input=user_input)
+        yield TextPart(text="hi")
+        yield TurnEnd()
+
+    mock_cli = SimpleNamespace(run=mock_run, session_id="engine-abc123", session=SimpleNamespace(dir=tmp_path))
+    mock_conn = MagicMock()
+    mock_conn.session_update = AsyncMock()
+
+    session = ACPSession(id="acp-1", cli=mock_cli, acp_conn=mock_conn, kaos=None)
+    prompt_blocks = [acp.schema.TextContentBlock(type="text", text="Say hi")]
+    prompt_resp = await session.prompt(prompt_blocks)
+    assert prompt_resp.stop_reason == "end_turn"
+    assert load_engine_session_id(tmp_path) == "engine-abc123"
+
+
+@pytest.mark.asyncio
+async def test_setup_session_rehydrates_persisted_binding(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    import coderai.acp.server as server_module
+
+    bound: list[str] = []
+
+    async def fake_find(work_dir, session_id):
+        return SimpleNamespace(id="acp-1", dir=tmp_path)
+
+    def fake_build_engine(session, mcp_configs=None):
+        manager = SimpleNamespace(get_session=lambda sid: object() if sid == "engine-abc123" else None)
+        return SimpleNamespace(
+            manager=manager,
+            config=SimpleNamespace(default_model="", default_thinking=False),
+            session_id=None,
+            bind_session=lambda sid: bound.append(sid),
+        )
+
+    monkeypatch.setattr(server_module.Session, "find", staticmethod(fake_find))
+    monkeypatch.setattr(server_module, "_build_engine", fake_build_engine)
+
+    save_engine_session_id(tmp_path, "engine-abc123")
+
+    server = ACPServer()
+    mock_conn = MagicMock()
+    server.on_connect(mock_conn)
+    server.client_capabilities = acp.schema.ClientCapabilities(terminal=False)
+
+    acp_session, _ = await server._setup_session(str(tmp_path), "acp-1")
+    assert bound == ["engine-abc123"]
+    assert "acp-1" in server.sessions
+    assert acp_session.id == "acp-1"
+
+
+@pytest.mark.asyncio
+async def test_setup_session_legacy_same_id_fallback(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    import coderai.acp.server as server_module
+
+    bound: list[str] = []
+
+    async def fake_find(work_dir, session_id):
+        return SimpleNamespace(id="acp-1", dir=tmp_path)
+
+    def fake_build_engine(session, mcp_configs=None):
+        # No persisted binding file; only the legacy same-id entry exists.
+        manager = SimpleNamespace(get_session=lambda sid: object() if sid == "acp-1" else None)
+        return SimpleNamespace(
+            manager=manager,
+            config=SimpleNamespace(default_model="", default_thinking=False),
+            session_id=None,
+            bind_session=lambda sid: bound.append(sid),
+        )
+
+    monkeypatch.setattr(server_module.Session, "find", staticmethod(fake_find))
+    monkeypatch.setattr(server_module, "_build_engine", fake_build_engine)
+
+    server = ACPServer()
+    mock_conn = MagicMock()
+    server.on_connect(mock_conn)
+    server.client_capabilities = acp.schema.ClientCapabilities(terminal=False)
+
+    await server._setup_session(str(tmp_path), "acp-1")
+    assert bound == ["acp-1"]
 

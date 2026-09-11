@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any
 
 import acp
@@ -22,6 +24,7 @@ from coderai.acp.types import ACPContentBlock
 from coderai.soul import LLMNotSet, LLMNotSupported, MaxStepsReached, RunCancelled
 from coderai.tools import extract_key_argument
 from coderai.tools.display import TodoDisplayBlock
+from coderai.utils.io import atomic_json_write
 from coderai.utils.logging import logger
 from coderai.wire.file import WireFile
 from coderai.wire.types import (
@@ -81,6 +84,50 @@ def register_terminal_tool_call_id(tool_call_id: str) -> None:
 def should_hide_terminal_output(tool_call_id: str) -> bool:
     calls = _terminal_tool_call_ids.get()
     return calls is not None and tool_call_id in calls
+
+
+#: Sidecar file (next to ``context.jsonl``/``wire.jsonl``/``state.json``) holding
+#: the ACP session id <-> ``SessionManager`` session id binding. The engine id is
+#: created lazily on the first prompt and otherwise lives only in memory, so
+#: without this file ``session/resume`` after a process restart cannot find the
+#: persisted conversation and starts blank.
+ENGINE_SESSION_ID_FILENAME = "engine-session-id.json"
+_ENGINE_SESSION_ID_KEY = "engine_session_id"
+
+
+def engine_session_id_path(session_dir: Path | str) -> Path:
+    """Absolute path of the engine-id sidecar file for a session directory."""
+    return Path(session_dir) / ENGINE_SESSION_ID_FILENAME
+
+
+def load_engine_session_id(session_dir: Path | str | None) -> str | None:
+    """Return the persisted engine session id, or None (missing/corrupt; never raises)."""
+    if session_dir is None:
+        return None
+    try:
+        with open(engine_session_id_path(session_dir), encoding="utf-8") as handle:
+            data = json.load(handle)
+        engine_session_id = data.get(_ENGINE_SESSION_ID_KEY) if isinstance(data, dict) else None
+        return engine_session_id if isinstance(engine_session_id, str) and engine_session_id else None
+    except (OSError, ValueError):
+        return None
+
+
+def save_engine_session_id(session_dir: Path | str | None, engine_session_id: str) -> None:
+    """Persist the engine session id atomically (never raises)."""
+    if session_dir is None:
+        return
+    if not isinstance(engine_session_id, str) or not engine_session_id:
+        return
+    try:
+        atomic_json_write(
+            {_ENGINE_SESSION_ID_KEY: engine_session_id},
+            engine_session_id_path(session_dir),
+        )
+    except OSError:
+        logger.warning(
+            "Failed to persist engine session binding in %s", str(session_dir)
+        )
 
 
 class _ToolCallState:
@@ -252,6 +299,7 @@ class ACPSession:
                 reset_current_kaos(kaos_token)
             _terminal_tool_call_ids.reset(terminal_tool_calls_token)
             _current_turn_id.reset(token)
+            self._persist_engine_binding()
         return acp.PromptResponse(stop_reason="end_turn")
 
     async def replay_history(self, wire_file: WireFile) -> None:
@@ -320,6 +368,25 @@ class ACPSession:
         if self._turn_state is None:
             self._turn_state = _TurnState()
             _current_turn_id.set(self._turn_state.id)
+
+    def _persist_engine_binding(self) -> None:
+        """Persist the ACP<->engine id binding so resume survives process restarts.
+
+        The engine creates its ``SessionManager`` session lazily on the first
+        prompt; recording its id in the session directory lets a later process
+        re-attach to the persisted conversation instead of starting blank.
+        Never raises.
+        """
+        try:
+            engine_session_id = getattr(self._cli, "session_id", None)
+            if not isinstance(engine_session_id, str) or not engine_session_id:
+                return
+            session_dir = getattr(getattr(self._cli, "session", None), "dir", None)
+            if not isinstance(session_dir, Path):
+                return
+            save_engine_session_id(session_dir, engine_session_id)
+        except Exception:
+            logger.warning("Failed to persist engine session binding")
 
     async def _send_user_input(self, user_input: str | list[ContentPart]) -> None:
         if not self._id or not self._conn:
@@ -565,7 +632,11 @@ __all__ = [
     "ACPSession",
     "AcpRunConfig",
     "AcpSubagentRunner",
+    "ENGINE_SESSION_ID_FILENAME",
+    "engine_session_id_path",
     "get_current_acp_tool_call_id_or_none",
+    "load_engine_session_id",
     "register_terminal_tool_call_id",
+    "save_engine_session_id",
     "should_hide_terminal_output",
 ]
