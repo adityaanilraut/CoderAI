@@ -16,7 +16,11 @@ from kaos.path import KaosPath
 from coderai.acp.engine import SessionManagerEngine
 from coderai.acp.kaos import ACPKaos
 from coderai.acp.mcp import acp_mcp_servers_to_mcp_config
-from coderai.acp.session import ACPSession
+from coderai.acp.session import (
+    ACPSession,
+    load_engine_session_id,
+    save_engine_session_id,
+)
 from coderai.acp.types import ACPContentBlock, MCPServer
 from coderai.acp.version import ACPVersionSpec, negotiate_version
 from coderai.auth.oauth import KIMI_CODE_OAUTH_KEY, load_tokens
@@ -259,7 +263,16 @@ class ACPServer:
         engine = _build_engine(session, mcp_configs=[mcp_config])
         # Re-attach to an existing SessionManager session so resumed/forked ACP
         # sessions keep their conversation history instead of starting blank.
-        if engine.manager.get_session(session.id) is not None:
+        # The ACP<->engine id binding is persisted in the session directory
+        # (see coderai.acp.session.save_engine_session_id), which is what makes
+        # resume work across process restarts. The same-id check is kept as a
+        # fallback for sessions created before the binding was persisted.
+        bound = False
+        stored_id = load_engine_session_id(session.dir)
+        if stored_id is not None and engine.manager.get_session(stored_id) is not None:
+            engine.bind_session(stored_id)
+            bound = True
+        if not bound and engine.manager.get_session(session.id) is not None:
             engine.bind_session(session.id)
         config = engine.config
         acp_kaos = ACPKaos(self.conn, session.id, self.client_capabilities)
@@ -343,6 +356,7 @@ class ACPServer:
                     logger.warning("SessionManager fork failed: %s", exc)
             if forked_id:
                 engine.bind_session(forked_id)
+                save_engine_session_id(forked_session.dir, forked_id)
             else:
                 logger.warning(
                     "Forked ACP session %s started without conversation history",
