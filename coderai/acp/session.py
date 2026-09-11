@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import acp
 import streamingjson
@@ -53,9 +53,6 @@ from coderai.wire.types import (
 
 # Backward-compatible re-exports from core runner
 from coderai.core.acp.runner import AcpRunConfig, AcpSubagentRunner
-
-if TYPE_CHECKING:
-    from coderai.app import KimiCLI
 
 
 _current_turn_id = ContextVar[str | None]("current_turn_id", default=None)
@@ -150,6 +147,12 @@ class ACPSession:
 
     def _is_oauth_session(self) -> bool:
         """Return True if the current session uses OAuth-based authentication."""
+        probe = getattr(self._cli, "is_oauth_session", None)
+        if callable(probe):
+            try:
+                return bool(probe())
+            except Exception:
+                return False
         try:
             llm = self._cli.soul.runtime.llm
             return llm is not None and getattr(llm.provider_config, "oauth", None) is not None

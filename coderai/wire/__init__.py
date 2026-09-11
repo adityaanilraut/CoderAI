@@ -125,6 +125,24 @@ class WireUISide:
             logger.debug("Receiving wire message: {msg}", msg=msg)
         return msg
 
+    def try_receive_nowait(self) -> WireMessage | None:
+        """Return the next queued message without blocking, or ``None`` if empty."""
+        try:
+            return self._queue.get_nowait()
+        except Exception:
+            return None
+
+    def drain_nowait(self) -> int:
+        """Discard already-queued messages and return how many were dropped.
+
+        `BroadcastQueue.subscribe` replays its history, so a per-turn subscriber
+        would otherwise re-emit everything published by earlier turns.
+        """
+        dropped = 0
+        while self.try_receive_nowait() is not None:
+            dropped += 1
+        return dropped
+
 
 class _WireRecorder:
     def __init__(self, wire_file: WireFile, queue: Queue[WireMessage]) -> None:
