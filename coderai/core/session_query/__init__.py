@@ -1,7 +1,6 @@
-"""Session query package backed by canonical session JSONL."""
+"""Moved to coderai.session_query - shim (kimi structure). Reads and writes
+(mock.patch / monkeypatch) forward to the implementation module.
+Do not add code here."""
+from coderai._moved import forward as _forward
 
-from coderai.core.session_query.engine import SessionQueryEngine
-
-__all__ = [
-    "SessionQueryEngine",
-]
+_forward(__name__, "coderai.session_query")
