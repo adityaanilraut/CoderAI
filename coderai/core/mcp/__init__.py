@@ -1,19 +1,6 @@
-"""MCP support — dynamic tool registry over stdio and SSE servers."""
+"""Moved to coderai.mcp - shim (kimi structure). Reads and writes
+(mock.patch / monkeypatch) forward to the implementation module.
+Do not add code here."""
+from coderai._moved import forward as _forward
 
-from coderai.core.mcp.client import McpClient
-from coderai.core.mcp.manager import McpManager
-from coderai.core.mcp.transport import (
-    McpTransport,
-    SseMcpTransport,
-    StdioMcpTransport,
-    StreamableHttpMcpTransport,
-)
-
-__all__ = [
-    "McpClient",
-    "McpManager",
-    "McpTransport",
-    "SseMcpTransport",
-    "StdioMcpTransport",
-    "StreamableHttpMcpTransport",
-]
+_forward(__name__, "coderai.mcp")
