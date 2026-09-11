@@ -1,21 +1,6 @@
-"""Workflow Scripting Engine package for CoderAI."""
+"""Moved to coderai.workflow.__init__ - shim (kimi structure). Reads and writes
+(mock.patch / monkeypatch) forward to the implementation module.
+Do not add code here."""
+from coderai._moved import forward as _forward
 
-from coderai.core.workflow.engine import (
-    WorkflowContext,
-    WorkflowEngine,
-    WorkflowLog,
-    WorkflowPhase,
-    WorkflowResult,
-    execute_workflow_script,
-)
-from coderai.core.workflow.tool import handle_workflow_tool
-
-__all__ = [
-    "WorkflowContext",
-    "WorkflowEngine",
-    "WorkflowLog",
-    "WorkflowPhase",
-    "WorkflowResult",
-    "execute_workflow_script",
-    "handle_workflow_tool",
-]
+_forward(__name__, "coderai.workflow.__init__")
