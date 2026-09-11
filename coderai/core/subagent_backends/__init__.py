@@ -1,26 +1,6 @@
-"""External Subagent Drivers & Backends."""
+"""Moved to coderai.subagents.backends.__init__ - shim (kimi structure). Reads and writes
+(mock.patch / monkeypatch) forward to the implementation module.
+Do not add code here."""
+from coderai._moved import forward as _forward
 
-from coderai.core.subagent_backends.base import CliSubagentDriver
-from coderai.core.subagent_backends.claude_code import (
-    ClaudeCodeConfig,
-    ClaudeCodeDriver,
-)
-from coderai.core.subagent_backends.codex import (
-    CodexConfig,
-    CodexDriver,
-)
-from coderai.core.subagent_backends.acp import AcpSubagentDriver
-
-ClaudeCodeSubagentDriver = ClaudeCodeDriver
-CodexSubagentDriver = CodexDriver
-
-__all__ = [
-    "CliSubagentDriver",
-    "ClaudeCodeConfig",
-    "ClaudeCodeDriver",
-    "ClaudeCodeSubagentDriver",
-    "CodexConfig",
-    "CodexDriver",
-    "CodexSubagentDriver",
-    "AcpSubagentDriver",
-]
+_forward(__name__, "coderai.subagents.backends.__init__")
