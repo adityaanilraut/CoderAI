@@ -3690,7 +3690,7 @@ async def _run_once(
 
 def main(argv: list[str] | None = None) -> int:
     """Console entry point for CoderAI CLI."""
-    from coderai.core.common.env import normalize_proxy_env
+    from coderai.utils.proxy import normalize_proxy_env
     from coderai.core.log import enable_logging
 
     from coderai.cli.proctitle import init_process_name
