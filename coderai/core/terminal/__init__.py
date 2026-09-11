@@ -1,15 +1,6 @@
-"""Terminal subsystem package."""
+"""Moved to coderai.terminal - shim (kimi structure). Reads and writes
+(mock.patch / monkeypatch) forward to the implementation module.
+Do not add code here."""
+from coderai._moved import forward as _forward
 
-from coderai.core.terminal.manager import (
-    TerminalManager,
-    TerminalSession,
-    TerminalSessionStatus,
-    get_terminal_manager,
-)
-
-__all__ = [
-    "TerminalManager",
-    "TerminalSession",
-    "TerminalSessionStatus",
-    "get_terminal_manager",
-]
+_forward(__name__, "coderai.terminal")
