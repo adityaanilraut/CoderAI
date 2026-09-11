@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from collections.abc import Callable
 
+from coderai.approval_runtime import ApprovalRuntime  # Kimi parity: single registry
 from coderai.core.common.validate import clean_json_string
 from coderai.core.state import get_snippet, is_absolute_file_path, normalize_file_path
 from coderai.core.tools.types import normalize_tool_call
@@ -1031,7 +1032,9 @@ def resolve_snippet_file_path(session_id: str, snippet_id: str) -> str | None:
     return snippet.file_path if snippet else None
 
 
-# --- Kimi parity: Approval, ApprovalResult, ApprovalState, ApprovalRuntime ---
+# --- Kimi parity: Approval, ApprovalResult, ApprovalState ---
+# `ApprovalRuntime` comes from `coderai.approval_runtime` (imported above) —
+# this module must not define a second registry.
 class ApprovalResult:
     """Result of an approval request. Behaves as bool for backward compatibility."""
 
@@ -1074,25 +1077,6 @@ class ApprovalState:
     def notify_change(self) -> None:
         if self._on_change is not None:
             self._on_change()
-
-
-class ApprovalRuntime:
-    """In-memory coordinator bridging pending approval requests."""
-
-    def __init__(self) -> None:
-        self._waiters: dict[str, asyncio.Future[ApprovalResult]] = {}
-
-    def resolve(self, request_id: str, outcome: Any, feedback: str = "") -> None:
-        fut = self._waiters.pop(request_id, None)
-        if fut and not fut.done():
-            approved = outcome in (True, "approve", "approve_for_session", "allow")
-            fut.set_result(ApprovalResult(approved, feedback=feedback))
-
-    async def wait_for(self, request_id: str) -> ApprovalResult:
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future[ApprovalResult] = loop.create_future()
-        self._waiters[request_id] = fut
-        return await fut
 
 
 class Approval:

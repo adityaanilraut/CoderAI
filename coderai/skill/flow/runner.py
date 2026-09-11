@@ -1,6 +1,6 @@
 """Flow execution (Kimi ``soul/kimisoul.py:FlowRunner`` parity).
 
-``FlowRunner`` walks a :class:`~coderai.core.flow.Flow` turn-by-turn in the
+``FlowRunner`` walks a :class:`~coderai.skill.flow.Flow` turn-by-turn in the
 current session: task nodes run one agent turn each, decision nodes branch on
 the model's ``<choice>`` reply. :meth:`FlowRunner.ralph_loop` builds the
 automated repeat-prompt loop (``CONTINUE``/``STOP``) used when
@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from coderai.core.flow import (
+from coderai.skill.flow import (
     FLOW_COMMAND_PREFIX,
     Flow,
     FlowEdge,
@@ -362,7 +362,7 @@ def ralph_iterations_for_prompt(settings: dict[str, Any] | None, prompt_text: An
 
 async def run_flow_skill(mgr: Any, session_id: str, name: str) -> FlowOutcome:
     """Run a ``type: flow`` skill by name in the current session."""
-    from coderai.core.flow import parse_flow_from_skill_content
+    from coderai.skill.flow import parse_flow_from_skill_content
     from coderai.core.skill import load_skill
 
     skill = load_skill(name, getattr(mgr, "project_root", None))

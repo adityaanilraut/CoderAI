@@ -17,7 +17,7 @@ import coderai.core.session  # noqa: F401  (engine first: background.* before co
 from coderai.background.manager import get_job_store, reset_job_store
 from coderai.background.worker import run_background_task_worker
 from coderai.core.common.file_utils import with_file_lock, write_file_atomic
-from coderai.core.flow import (
+from coderai.skill.flow import (
     Flow,
     FlowEdge,
     FlowNode,
@@ -25,8 +25,8 @@ from coderai.core.flow import (
     parse_choice,
     validate_flow,
 )
-from coderai.core.flow.mermaid import parse_mermaid_flowchart
-from coderai.core.flow.runner import FlowRunner, maybe_run_ralph, resolve_max_ralph_iterations
+from coderai.skill.flow.mermaid import parse_mermaid_flowchart
+from coderai.skill.flow.runner import FlowRunner, maybe_run_ralph, resolve_max_ralph_iterations
 from coderai.core.hooks import (
     HookOutput,
     HookPoint,

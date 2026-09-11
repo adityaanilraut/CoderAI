@@ -720,7 +720,7 @@ class SessionManager:
         except Exception:
             pass
         try:  # Kimi metadata.py parity: remember latest session per workdir.
-            from coderai.cli.metadata import record_last_session
+            from coderai.metadata import record_last_session
 
             record_last_session(self.project_root, session_id)
         except Exception:
@@ -744,7 +744,7 @@ class SessionManager:
         # automated repeat loop instead of a single turn (checked up front so
         # the prompt is not appended twice).
         try:
-            from coderai.core.flow.runner import ralph_iterations_for_prompt
+            from coderai.skill.flow.runner import ralph_iterations_for_prompt
 
             ralph_iterations = ralph_iterations_for_prompt(
                 self.get_resolved_settings(), user_prompt
@@ -846,13 +846,13 @@ class SessionManager:
         except Exception:
             pass
         try:  # Kimi metadata.py parity: remember latest session per workdir.
-            from coderai.cli.metadata import record_last_session
+            from coderai.metadata import record_last_session
 
             record_last_session(self.project_root, session_id)
         except Exception:
             pass
         if ralph_iterations != 0:
-            from coderai.core.flow.runner import FlowRunner
+            from coderai.skill.flow.runner import FlowRunner
 
             text = user_prompt if isinstance(user_prompt, str) else str(user_prompt or "")
             await FlowRunner.ralph_loop(text.strip(), ralph_iterations).run(self, session_id)
@@ -926,7 +926,7 @@ class SessionManager:
         except Exception:
             pass
         try:
-            from coderai.cli.metadata import record_last_session
+            from coderai.metadata import record_last_session
 
             record_last_session(self.project_root, session_id)
         except Exception:
@@ -1051,7 +1051,7 @@ class SessionManager:
             # loop instead of a single turn (after UserPromptSubmit so hooks
             # still see the prompt, before anything is appended).
             try:
-                from coderai.core.flow.runner import maybe_run_ralph
+                from coderai.skill.flow.runner import maybe_run_ralph
 
                 if await maybe_run_ralph(self, session_id, str(user_prompt)):
                     self._active_session_id = session_id

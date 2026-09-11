@@ -72,7 +72,7 @@ def _previous_session_id(project_root: str) -> str | None:
         if isinstance(entry, dict) and entry.get("id"):
             return str(entry["id"])
     try:
-        from coderai.cli.metadata import get_last_session_id
+        from coderai.metadata import get_last_session_id
 
         return get_last_session_id(project_root)
     except Exception:

@@ -131,7 +131,7 @@ def fork_session(
     index["entries"] = index["entries"][:MAX_SESSION_ENTRIES]
     manager._save_index(index)
     try:  # Kimi metadata.py parity: forked session becomes the latest.
-        from coderai.cli.metadata import record_last_session
+        from coderai.metadata import record_last_session
 
         record_last_session(manager.project_root, forked_id)
     except Exception:

@@ -3503,7 +3503,7 @@ async def _run_interactive(
 
                         async def _run_flow() -> str | None:
                             nonlocal session_id
-                            from coderai.core.flow.runner import run_flow_skill
+                            from coderai.skill.flow.runner import run_flow_skill
 
                             if session_id is None:
                                 s_id = await mgr.create_empty_session(
@@ -4096,7 +4096,7 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "thinking", None) is not None:
             os.environ["CODERAI_THINKING"] = "1" if args.thinking else "0"
         if has_exec and prompt_value:
-            from coderai.cli.exec_runner import run_exec_session
+            from coderai.ui.print import run_exec_session
 
             resume_id = args.resume if isinstance(args.resume, str) else None
             return await run_exec_session(
@@ -4198,7 +4198,7 @@ def main(argv: list[str] | None = None) -> int:
                 # session instead of forking a fresh one.
                 _resume_target: str | None = None
                 if last_arg and not (resume_arg or args.fork):
-                    from coderai.cli.metadata import get_last_session_id
+                    from coderai.metadata import get_last_session_id
 
                     _sessions = mgr.list_sessions()
                     _resume_target = _sessions[0].id if _sessions else None
