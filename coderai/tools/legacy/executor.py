@@ -1,0 +1,825 @@
+"""ToolExecutor — dispatches built-in tools with schema validation, lifecycle stages, and MCP fallback."""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import json
+import time
+from typing import Any
+from collections.abc import Callable
+
+from coderai.utils.common.validate import clean_json_string, repair_json_string
+from coderai.tools.legacy.registry import ToolRegistry, get_tool_registry
+from coderai.tools.legacy.sanitizer import sanitize_tool_output
+from coderai.tools.legacy.types import (
+    BackgroundProcessCompletion,
+    ProcessTimeoutControl,
+    ProcessTimeoutInfo,
+    ToolCall,
+    ToolDefinition,
+    ToolError,
+    ToolExecutionContext,
+    ToolExecutionFollowUpMessage,
+    ToolExecutionHooks,
+    ToolResult,
+    ValidationError,
+    normalize_tool_call,
+)
+
+__all__ = [
+    "BackgroundProcessCompletion",
+    "ProcessTimeoutControl",
+    "ProcessTimeoutInfo",
+    "ToolCall",
+    "ToolDefinition",
+    "ToolError",
+    "ToolExecutionContext",
+    "ToolExecutionFollowUpMessage",
+    "SlidingWindowRateLimiter",
+    "ToolExecutor",
+    "ToolResult",
+    "ValidationError",
+]
+
+
+DEFAULT_TOOL_CONCURRENCY = 8
+
+
+class SlidingWindowRateLimiter:
+    """Thread-safe and async-safe in-memory sliding-window rate limiter per tool key."""
+
+    def __init__(self) -> None:
+        self._history: dict[str, list[float]] = {}
+
+    def acquire(self, key: str, max_requests: int, window_seconds: float) -> tuple[bool, float]:
+        """Attempt to acquire a call permit.
+
+        Returns:
+            tuple of (allowed: bool, retry_after_seconds: float)
+        """
+        if max_requests <= 0 or window_seconds <= 0:
+            return True, 0.0
+
+        now = time.time()
+        window_start = now - window_seconds
+
+        calls = self._history.setdefault(key, [])
+        # Prune calls older than window_start
+        self._history[key] = [t for t in calls if t > window_start]
+        calls = self._history[key]
+
+        if len(calls) < max_requests:
+            calls.append(now)
+            return True, 0.0
+
+        oldest_in_window = calls[0]
+        retry_after = max(0.1, (oldest_in_window + window_seconds) - now)
+        return False, retry_after
+
+    def reset(self, key: str | None = None) -> None:
+        if key:
+            self._history.pop(key, None)
+        else:
+            self._history.clear()
+
+
+class ToolExecutor:
+    """Standardized Tool Execution Engine: Validation -> Permission -> Guard -> Execution -> Post-Execute -> Finalize -> Spill -> Context."""
+
+    def __init__(
+        self,
+        project_root: str,
+        create_openai_client: Callable[[], dict[str, Any]] | None = None,
+        mcp_manager: Any = None,
+        registry: ToolRegistry | None = None,
+        concurrency_limit: int = DEFAULT_TOOL_CONCURRENCY,
+    ) -> None:
+        self.project_root = project_root
+        self.create_openai_client = create_openai_client
+        self.mcp_manager = mcp_manager
+        self.registry = registry or get_tool_registry()
+        self.rate_limiter = SlidingWindowRateLimiter()
+        self.concurrency_limit = concurrency_limit
+        self._concurrency_semaphore = asyncio.Semaphore(max(1, concurrency_limit))
+        self._plugin_defs: list[dict[str, Any]] | None = None
+
+    def refresh_plugin_tools(self) -> list[dict[str, Any]]:
+        """Reload plugin tool definitions (conflict-skip vs registry+MCP names)."""
+        from coderai.plugin.tool import plugin_tool_definitions
+
+        reserved = {t.name for t in self.registry.list_tools()}
+        if self.mcp_manager is not None:
+            try:
+                reserved.update(t.namespaced_name for t in self.mcp_manager.tools)
+            except Exception:
+                pass
+        self._plugin_defs = plugin_tool_definitions(reserved=reserved)
+        return list(self._plugin_defs)
+
+    def plugin_tool_definitions(self) -> list[dict[str, Any]]:
+        if self._plugin_defs is None:
+            return self.refresh_plugin_tools()
+        return list(self._plugin_defs)
+
+    def is_plugin_tool(self, name: str) -> bool:
+        return any(
+            d.get("function", {}).get("name") == name for d in self.plugin_tool_definitions()
+        )
+
+    def _plugin_host_values(self) -> dict[str, str]:
+        try:
+            from coderai.plugin.manager import collect_host_values
+            from coderai.core.settings import resolve_current_settings
+
+            merged = dict(resolve_current_settings(self.project_root))
+            if self.create_openai_client is not None:
+                try:
+                    info = self.create_openai_client() or {}
+                    if isinstance(info, dict):
+                        merged.update(info)
+                except Exception:
+                    pass
+            return collect_host_values(merged)
+        except Exception:
+            return {}
+
+    async def execute_tool_calls(
+        self,
+        session_id: str,
+        tool_calls: list[Any],
+        hooks: ToolExecutionHooks | dict[str, Any] | None = None,
+        parallel: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Execute a list of tool calls sequentially or in parallel, returning formatted execution payloads."""
+        parsed_calls: list[dict[str, Any]] = []
+        for tc in tool_calls:
+            parsed = self._parse_tool_call(tc)
+            if parsed:
+                parsed_calls.append(parsed)
+
+        should_stop = None
+        if hooks:
+            should_stop = getattr(hooks, "should_stop", None) or (
+                hooks.get("should_stop") if isinstance(hooks, dict) else None
+            )
+
+        if parallel and len(parsed_calls) > 1:
+            # Parallel execution path throttled by semaphore to prevent EMFILE
+            async def _run_single(tc: dict[str, Any]) -> dict[str, Any]:
+                if should_stop and should_stop():
+                    return {
+                        "toolCallId": tc["id"],
+                        "content": json.dumps(
+                            {
+                                "ok": False,
+                                "name": tc["function"]["name"],
+                                "error": "Execution interrupted",
+                            }
+                        ),
+                        "result": {
+                            "ok": False,
+                            "name": tc["function"]["name"],
+                            "error": "Execution interrupted",
+                        },
+                    }
+                async with self._concurrency_semaphore:
+                    res = await self.execute_tool_call(session_id, tc, hooks)
+                return {
+                    "toolCallId": tc["id"],
+                    "content": self.format_tool_result(res),
+                    "result": _result_as_dict(res),
+                }
+
+            tasks = [_run_single(tc) for tc in parsed_calls]
+            executions = await asyncio.gather(*tasks, return_exceptions=False)
+            return list(executions)
+
+        # Sequential execution path
+        executions_list: list[dict[str, Any]] = []
+        for tool_call in parsed_calls:
+            if should_stop and should_stop():
+                break
+
+            result = await self.execute_tool_call(session_id, tool_call, hooks)
+            executions_list.append(
+                {
+                    "toolCallId": tool_call["id"],
+                    "content": self.format_tool_result(result),
+                    "result": _result_as_dict(result),
+                }
+            )
+
+            if should_stop and should_stop():
+                break
+
+        return executions_list
+
+    def _parse_tool_call(self, raw: Any) -> dict[str, Any] | None:
+        """Parse raw tool call structure from LLM output into normalized dict."""
+        return normalize_tool_call(raw)
+
+    async def execute_tool_call(
+        self,
+        session_id: str,
+        tool_call: dict[str, Any],
+        hooks: ToolExecutionHooks | dict[str, Any] | None = None,
+    ) -> ToolResult:
+        """Execute a single tool call through the complete staged pipeline."""
+        start_time_ms = int(time.time() * 1000)
+        tool_name = tool_call["function"]["name"]
+        raw_args_str = tool_call["function"].get("arguments", "")
+
+        # 1. Parse Arguments
+        parsed = self._parse_tool_arguments(raw_args_str)
+        if not parsed["ok"]:
+            end_time_ms = int(time.time() * 1000)
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=parsed["error"],
+                metadata={
+                    "startTime": start_time_ms,
+                    "endTime": end_time_ms,
+                    "durationMs": end_time_ms - start_time_ms,
+                    "timestamp": start_time_ms,
+                },
+            )
+        raw_args = parsed["args"]
+        context = self._build_execution_context(session_id, tool_call, hooks)
+
+        # 2. Pre-Execute & Permission & Monotonic Guard Gate
+        denied = self._pre_execute_deny(tool_name, raw_args, context, hooks)
+        if denied is not None:
+            end_time_ms = int(time.time() * 1000)
+            meta = dict(denied.metadata or {})
+            meta.setdefault("startTime", start_time_ms)
+            meta.setdefault("endTime", end_time_ms)
+            meta.setdefault("durationMs", end_time_ms - start_time_ms)
+            meta.setdefault("timestamp", start_time_ms)
+            denied.metadata = meta
+            return denied
+
+        # 3. Resolve Definition & Validate Schema
+        tool_def = self.registry.get(tool_name, scope=session_id)
+        result: ToolResult
+        if tool_def is not None:
+            try:
+                validated_args = self.registry.validate_arguments(
+                    tool_def.name, raw_args, scope=session_id
+                )
+            except ValidationError as val_err:
+                end_time_ms = int(time.time() * 1000)
+                return ToolResult(
+                    ok=False,
+                    name=tool_name,
+                    error=f"ValidationError: {val_err}",
+                    metadata={
+                        "startTime": start_time_ms,
+                        "endTime": end_time_ms,
+                        "durationMs": end_time_ms - start_time_ms,
+                        "timestamp": start_time_ms,
+                    },
+                )
+            # 4. Dispatch Body
+            result = await self._run_handler(tool_def, validated_args, context, hooks)
+        elif self.registry.has_tool(tool_name):
+            # Tool exists globally but was restricted or suppressed in this session scope
+            result = ToolResult(
+                ok=False,
+                name=tool_name,
+                error=f"Tool '{tool_name}' is disabled or masked for session '{session_id}'.",
+            )
+        elif self.mcp_manager is not None and self.mcp_manager.is_mcp_tool(tool_name):
+            if hasattr(
+                self.mcp_manager, "is_tool_enabled_for_session"
+            ) and not self.mcp_manager.is_tool_enabled_for_session(session_id, tool_name):
+                result = ToolResult(
+                    ok=False,
+                    name=tool_name,
+                    error=f"MCP tool '{tool_name}' is disabled or masked for session '{session_id}'.",
+                )
+            else:
+                result = await self._run_mcp(tool_name, raw_args, hooks, session_id=session_id)
+        elif self.is_plugin_tool(tool_name):
+            result = await self._run_plugin(tool_name, raw_args, hooks)
+        else:
+            result = ToolResult(ok=False, name=tool_name, error=f"Unknown tool: {tool_name}")
+
+        # 5. Content Finalization
+        if tool_def and tool_def.finalize_content:
+            try:
+                transformed = tool_def.finalize_content(context, result)
+                if transformed is not None:
+                    result.output = transformed
+            except Exception:
+                pass
+
+        # 6. Apply Result Spill
+        end_time_ms = int(time.time() * 1000)
+        result = self._apply_result_spill(tool_name, result, context)
+
+        # 7. Presentation Meta & Timings
+        meta = dict(result.metadata or {})
+        meta.setdefault("startTime", start_time_ms)
+        meta.setdefault("endTime", end_time_ms)
+        meta.setdefault("durationMs", max(0, end_time_ms - start_time_ms))
+        meta.setdefault("timestamp", start_time_ms)
+
+        if tool_def and tool_def.present_result:
+            try:
+                pres_meta = tool_def.present_result(raw_args, result)
+                if pres_meta and isinstance(pres_meta, dict):
+                    meta["presentation"] = pres_meta
+            except Exception:
+                pass
+
+        result.metadata = meta
+
+        # 8. Attach deferred contexts and conclusion
+        if context.deferred_contexts:
+            result.follow_up_messages = list(result.follow_up_messages or []) + list(
+                context.deferred_contexts
+            )
+        if context.is_turn_concluded:
+            result.concludes_turn = True
+
+        # 9. Post-Execute Waterfall Hooks
+        result = self._post_execute(tool_name, raw_args, result, context, hooks)
+
+        # 10. Credential & Secret Sanitization
+        return sanitize_tool_output(result)
+
+    def _build_execution_context(
+        self,
+        session_id: str,
+        tool_call: dict[str, Any],
+        hooks: ToolExecutionHooks | dict[str, Any] | None = None,
+    ) -> ToolExecutionContext:
+        def get_hook(name: str) -> Any:
+            if not hooks:
+                return None
+            return getattr(hooks, name, None) or (
+                hooks.get(name) if isinstance(hooks, dict) else None
+            )
+
+        return ToolExecutionContext(
+            session_id=session_id,
+            project_root=self.project_root,
+            tool_call=tool_call,
+            create_openai_client=self.create_openai_client,
+            on_process_start=get_hook("on_process_start"),
+            on_process_exit=get_hook("on_process_exit"),
+            on_process_stdout=get_hook("on_process_stdout"),
+            on_process_timeout_control=get_hook("on_process_timeout_control"),
+            on_background_process_complete=get_hook("on_background_process_complete"),
+            on_before_file_mutation=get_hook("on_before_file_mutation"),
+            on_after_file_mutation=get_hook("on_after_file_mutation"),
+            on_plugin_rate_limit_exceeded=get_hook("on_plugin_rate_limit_exceeded"),
+            on_load_skill=get_hook("on_load_skill"),
+            bash_timeout_ms=get_hook("bash_timeout_ms"),
+            bash_min_timeout_ms=get_hook("bash_min_timeout_ms"),
+            permission_decision=get_hook("permission_decision"),
+            sandbox_mode=get_hook("sandbox_mode"),
+            isolated_cwd=get_hook("isolated_cwd"),
+            dry_run=bool(get_hook("dry_run")),
+            list_session_messages=get_hook("list_session_messages"),
+            list_session_events=get_hook("list_session_events"),
+        )
+
+    def _pre_execute_deny(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        context: ToolExecutionContext,
+        hooks: ToolExecutionHooks | dict[str, Any] | None,
+    ) -> ToolResult | None:
+        """Fail-closed ask/deny, then monotonic pre-execute + guards. Never rewrites args."""
+        decision = context.permission_decision
+        if decision == "deny":
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=(
+                    "PermissionDenied: User denied the required permission for this "
+                    "tool call. Do not try to bypass this decision."
+                ),
+            )
+        if decision == "ask":
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=(
+                    "PermissionDenied: Approval is required but was not granted "
+                    "(fail-closed). Retry only if the permission is still necessary."
+                ),
+            )
+
+        def get_hook(name: str) -> Any:
+            if not hooks:
+                return None
+            return getattr(hooks, name, None) or (
+                hooks.get(name) if isinstance(hooks, dict) else None
+            )
+
+        pre_execute = get_hook("pre_execute")
+        if callable(pre_execute):
+            verdict = pre_execute(tool_name, args, context)
+            if verdict == "deny":
+                return ToolResult(
+                    ok=False,
+                    name=tool_name,
+                    error="PreExecuteDenied: tool call blocked by pre-execute hook.",
+                )
+
+        guards = get_hook("guards") or []
+        for guard in guards:
+            if not callable(guard):
+                continue
+            if guard(tool_name, args, context) == "deny":
+                return ToolResult(
+                    ok=False,
+                    name=tool_name,
+                    error="GuardDenied: tool call blocked by a monotonic guard.",
+                )
+
+        # Check sliding-window rate limiting on tool definition
+        tool_def = self.registry.get(tool_name, scope=getattr(context, "session_id", None))
+        if tool_def and tool_def.rate_limit is not None:
+            max_reqs, window_s = tool_def.rate_limit
+            sid = getattr(context, "session_id", "global")
+            limiter_key = f"{sid}:{tool_name}"
+            allowed, retry_after = self.rate_limiter.acquire(limiter_key, max_reqs, window_s)
+            if not allowed:
+                return ToolResult(
+                    ok=False,
+                    name=tool_name,
+                    error=f"ToolRateLimitExceeded: Tool '{tool_name}' exceeded rate limit ({max_reqs} calls per {window_s:.1f}s). Retry in {retry_after:.1f}s.",
+                    metadata={"rateLimited": True, "retryAfterSeconds": retry_after},
+                )
+
+        from coderai.core.hooks import HookPoint, run_hook_point
+
+        pre_outcome = run_hook_point(
+            HookPoint.PRE_TOOL_USE,
+            payload={
+                "tool_name": tool_name,
+                "tool_input": args,
+                "session_id": getattr(context, "session_id", "default"),
+            },
+            project_root=getattr(context, "project_root", self.project_root),
+        )
+        if pre_outcome.decision == "deny":
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=f"PreToolUseDenied: {pre_outcome.reason or 'blocked by a PreToolUse hook.'}",
+            )
+        return None
+
+    async def _run_handler(
+        self,
+        tool_def: Any,
+        validated_args: dict[str, Any],
+        context: ToolExecutionContext,
+        hooks: ToolExecutionHooks | dict[str, Any] | None,
+    ) -> ToolResult:
+        handler = tool_def.handler
+        if handler is None:
+            return ToolResult(
+                ok=False,
+                name=tool_def.name,
+                error=f"Tool '{tool_def.name}' has no registered handler.",
+            )
+        timeout_ms = getattr(tool_def, "timeout_ms", None)
+        if hooks:
+            hook_timeout = getattr(hooks, "timeout_ms", None) or (
+                hooks.get("timeout_ms") if isinstance(hooks, dict) else None
+            )
+            if hook_timeout is not None:
+                timeout_ms = hook_timeout
+
+        target_path = None
+        if tool_def.name.lower() in ("write", "edit", "str_replace_editor", "patch", "apply_patch"):
+            target_path = (
+                validated_args.get("file_path")
+                or validated_args.get("path")
+                or validated_args.get("target_file")
+            )
+
+        try:
+
+            async def _invoke() -> Any:
+                if inspect.iscoroutinefunction(handler):
+                    return await handler(validated_args, context)
+                try:
+                    res = await asyncio.to_thread(handler, validated_args, context)
+                except TypeError:
+                    res = handler(validated_args, context)
+                if inspect.iscoroutine(res):
+                    return await res
+                return res
+
+            if target_path and isinstance(target_path, str) and target_path.strip():
+                from coderai.tools.legacy.path_lock import get_path_lock_manager
+
+                path_lock_mgr = get_path_lock_manager()
+                async with path_lock_mgr.acquire_write_lock(target_path, self.project_root):
+                    if timeout_ms and int(timeout_ms) > 0:
+                        res = await asyncio.wait_for(_invoke(), timeout=int(timeout_ms) / 1000.0)
+                    else:
+                        res = await _invoke()
+            else:
+                if timeout_ms and int(timeout_ms) > 0:
+                    res = await asyncio.wait_for(_invoke(), timeout=int(timeout_ms) / 1000.0)
+                else:
+                    res = await _invoke()
+        except (TimeoutError, asyncio.TimeoutError):
+            return ToolResult(
+                ok=False,
+                name=tool_def.name,
+                error=f"TOOL_TIMEOUT: tool exceeded {timeout_ms}ms.",
+            )
+        except Exception as e:
+            return ToolResult(ok=False, name=tool_def.name, error=f"ToolExecutionError: {e}")
+
+        if isinstance(res, ToolResult):
+            return res
+        if isinstance(res, dict):
+            return ToolResult(
+                ok=res.get("ok", True),
+                name=tool_def.name,
+                output=res.get("output"),
+                error=res.get("error"),
+                metadata=res.get("metadata"),
+                await_user_response=bool(res.get("awaitUserResponse", False)),
+            )
+        return ToolResult(ok=True, name=tool_def.name, output=str(res))
+
+    async def _run_mcp(
+        self,
+        tool_name: str,
+        raw_args: dict[str, Any],
+        hooks: Any,
+        session_id: str | None = None,
+    ) -> ToolResult:
+        timeout_ms = None
+        if hooks:
+            timeout_ms = getattr(hooks, "timeout_ms", None) or (
+                hooks.get("timeout_ms") if isinstance(hooks, dict) else None
+            )
+        try:
+            fn = self.mcp_manager.execute_mcp_tool
+            sig = inspect.signature(fn)
+
+            async def _invoke_mcp() -> Any:
+                if "session_id" in sig.parameters:
+                    return await fn(tool_name, raw_args, session_id=session_id)
+                return await fn(tool_name, raw_args)
+
+            if timeout_ms and int(timeout_ms) > 0:
+                res = await asyncio.wait_for(_invoke_mcp(), timeout=int(timeout_ms) / 1000.0)
+            else:
+                res = await _invoke_mcp()
+
+            if isinstance(res, ToolResult):
+                # ponytail: Kimi MCP_MAX_OUTPUT_CHARS=100k budget
+                if res.output and len(res.output) > 100_000:
+                    res.output = res.output[:100_000] + "\n...[truncated MCP output >100k]..."
+                return res
+            if isinstance(res, dict):
+                out = res.get("output")
+                if isinstance(out, str) and len(out) > 100_000:
+                    out = out[:100_000] + "\n...[truncated MCP output >100k]..."
+                return ToolResult(
+                    ok=res.get("ok", True),
+                    name=tool_name,
+                    output=out,
+                    error=res.get("error"),
+                    metadata=res.get("metadata"),
+                )
+            text = str(res)
+            if len(text) > 100_000:
+                text = text[:100_000] + "\n...[truncated MCP output >100k]..."
+            return ToolResult(ok=True, name=tool_name, output=text)
+        except (TimeoutError, asyncio.TimeoutError):
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=f"TOOL_TIMEOUT: MCP tool exceeded {timeout_ms}ms.",
+                metadata={"code": "TOOL_TIMEOUT"},
+            )
+        except Exception as e:
+            return ToolResult(ok=False, name=tool_name, error=f"McpToolExecutionError: {e}")
+
+    async def _run_plugin(
+        self,
+        tool_name: str,
+        raw_args: dict[str, Any],
+        hooks: Any,
+    ) -> ToolResult:
+        from coderai.plugin.tool import run_plugin_tool
+
+        timeout_ms = None
+        if hooks:
+            timeout_ms = getattr(hooks, "timeout_ms", None) or (
+                hooks.get("timeout_ms") if isinstance(hooks, dict) else None
+            )
+        try:
+
+            async def _invoke_plugin() -> Any:
+                return await run_plugin_tool(
+                    tool_name, raw_args, host_values=self._plugin_host_values()
+                )
+
+            if timeout_ms and int(timeout_ms) > 0:
+                res = await asyncio.wait_for(_invoke_plugin(), timeout=int(timeout_ms) / 1000.0)
+            else:
+                res = await _invoke_plugin()
+            return res if isinstance(res, ToolResult) else ToolResult(ok=True, name=tool_name, output=str(res))
+        except (TimeoutError, asyncio.TimeoutError):
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=f"TOOL_TIMEOUT: plugin tool exceeded {timeout_ms}ms.",
+                metadata={"code": "TOOL_TIMEOUT"},
+            )
+        except Exception as e:
+            return ToolResult(ok=False, name=tool_name, error=f"PluginToolExecutionError: {e}")
+
+    def _apply_result_spill(
+        self, tool_name: str, result: ToolResult, context: ToolExecutionContext
+    ) -> ToolResult:
+        """Spill oversized plain-text results except `read` (avoids read → spill → read)."""
+        from coderai.spill import SPILL_SKIP_TOOLS, apply_spill_policy
+
+        if tool_name in SPILL_SKIP_TOOLS or not result.ok or not result.output:
+            return result
+        replaced, ref = apply_spill_policy(
+            result.output,
+            session_id=context.session_id,
+            tool_name=tool_name,
+        )
+        if ref is None:
+            return result
+        meta = dict(result.metadata or {})
+        meta["spill"] = ref.to_dict()
+        result.output = replaced
+        result.metadata = meta
+        return result
+
+    def _post_execute(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        result: ToolResult,
+        context: ToolExecutionContext,
+        hooks: ToolExecutionHooks | dict[str, Any] | None,
+    ) -> ToolResult:
+        from coderai.core.hooks import (
+            run_post_tool_use,
+            run_post_tool_use_failure,
+            run_on_tool_error,
+        )
+
+        try:
+            if not result.ok or result.error:
+                error_outcome = run_on_tool_error(
+                    tool_name=tool_name,
+                    args=args,
+                    error=result.error or "tool_failed",
+                    context=context,
+                )
+                if error_outcome.additional_context:
+                    err_follow_ups: list[ToolExecutionFollowUpMessage | dict[str, Any]] = [
+                        {"role": "user", "content": ctx} for ctx in error_outcome.additional_context
+                    ]
+                    result.follow_up_messages = (
+                        list(result.follow_up_messages or []) + err_follow_ups
+                    )
+                # Kimi parity: PostToolUseFailure fires alongside legacy ToolError.
+                try:
+                    fail_outcome = run_post_tool_use_failure(
+                        tool_name=tool_name,
+                        args=args,
+                        error=result.error or "tool_failed",
+                        context=context,
+                    )
+                    if fail_outcome.additional_context:
+                        fail_follow_ups: list[ToolExecutionFollowUpMessage | dict[str, Any]] = [
+                            {"role": "user", "content": ctx}
+                            for ctx in fail_outcome.additional_context
+                        ]
+                        result.follow_up_messages = (
+                            list(result.follow_up_messages or []) + fail_follow_ups
+                        )
+                except Exception:
+                    pass
+            else:
+                post_outcome = run_post_tool_use(
+                    tool_name=tool_name,
+                    args=args,
+                    result=result,
+                    context=context,
+                )
+                if post_outcome.additional_context:
+                    post_follow_ups: list[ToolExecutionFollowUpMessage | dict[str, Any]] = [
+                        {"role": "user", "content": ctx} for ctx in post_outcome.additional_context
+                    ]
+                    result.follow_up_messages = (
+                        list(result.follow_up_messages or []) + post_follow_ups
+                    )
+                if post_outcome.stop:
+                    result.concludes_turn = True
+        except Exception:
+            pass
+
+        if not hooks:
+            return result
+        post_execute = getattr(hooks, "post_execute", None) or (
+            hooks.get("post_execute") if isinstance(hooks, dict) else None
+        )
+        if not callable(post_execute):
+            return result
+        updated = post_execute(tool_name, args, result, context)
+        return updated if isinstance(updated, ToolResult) else result
+
+    def _parse_tool_arguments(self, raw_arguments: Any) -> dict[str, Any]:
+        """Parse raw arguments string into JSON object with clean error messaging and auto-repair."""
+        if not raw_arguments:
+            return {"ok": True, "args": {}}
+        if isinstance(raw_arguments, dict):
+            return {"ok": True, "args": raw_arguments}
+
+        cleaned = (
+            clean_json_string(raw_arguments)
+            if isinstance(raw_arguments, str)
+            else str(raw_arguments)
+        )
+        try:
+            parsed = json.loads(cleaned)
+        except Exception:
+            try:
+                repaired = repair_json_string(cleaned)
+                parsed = json.loads(repaired)
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"InputParseError: Failed to parse tool arguments: {e}. "
+                        "Ensure the tool call arguments are valid JSON. Prefer Edit over Write for large existing-file changes."
+                    ),
+                }
+
+        if not isinstance(parsed, dict):
+            return {"ok": False, "error": "InputParseError: Tool arguments must be a JSON object."}
+
+        return {"ok": True, "args": parsed}
+
+    def format_tool_result(self, result: ToolResult) -> str:
+        """Format ToolResult into structured JSON string payload for model context injection."""
+        sanitized_res = sanitize_tool_output(result)
+        payload: dict[str, Any] = {
+            "ok": sanitized_res.ok,
+            "name": sanitized_res.name,
+        }
+
+        if sanitized_res.output is not None:
+            payload["output"] = sanitized_res.output
+
+        if sanitized_res.error:
+            payload["error"] = sanitized_res.error
+
+        if (
+            sanitized_res.metadata
+            and isinstance(sanitized_res.metadata, dict)
+            and len(sanitized_res.metadata) > 0
+        ):
+            payload["metadata"] = sanitized_res.metadata
+
+        if sanitized_res.await_user_response:
+            payload["awaitUserResponse"] = True
+
+        return json.dumps(payload, indent=2)
+
+
+def _result_as_dict(result: ToolResult) -> dict[str, Any]:
+    d: dict[str, Any] = {
+        "ok": result.ok,
+        "name": result.name,
+    }
+    if result.output is not None:
+        d["output"] = result.output
+    if result.error:
+        d["error"] = result.error
+    if result.metadata:
+        d["metadata"] = result.metadata
+    if result.await_user_response:
+        d["awaitUserResponse"] = True
+    if result.follow_up_messages:
+        d["followUpMessages"] = [
+            m.to_dict() if hasattr(m, "to_dict") else m for m in result.follow_up_messages
+        ]
+    if getattr(result, "concludes_turn", False):
+        d["concludesTurn"] = True
+    return d
