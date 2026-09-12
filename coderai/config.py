@@ -276,7 +276,7 @@ def _normalize_permission_list(value: Any) -> list[str]:
 
 
 def _normalize_default_mode(value: Any) -> PermissionDefaultMode:
-    return value if value in ("allowAll", "askAll") else "allowAll"
+    return value if value in ("allowAll", "askAll") else "askAll"
 
 
 def _normalize_permissions(settings: dict | None) -> dict[str, Any]:

@@ -30,14 +30,32 @@ dev:
 	$(PYTHON) -m pip install -e ".[dev]"
 
 test:
-	$(PYTHON) -m pytest
+	@fail=0; \
+	for t in tests/test_*.py; do \
+		printf "%-45s " "$$t"; \
+		if $(PYTHON) -m pytest "$$t" -p no:cacheprovider --benchmark-disable -q > /tmp/coderai_pytest_one.log 2>&1; then \
+			tail -1 /tmp/coderai_pytest_one.log; \
+		else \
+			fail=1; tail -5 /tmp/coderai_pytest_one.log; \
+		fi; \
+	done; \
+	test "$$fail" = 0
 	@echo ""
 	@echo "Running basic CLI smoke test..."
 	$(PYTHON) -m coderai --version
 
 # Async wire protocol E2E suite (Phase 5 harness). No live LLM calls required.
 test-e2e:
-	$(PYTHON) -m pytest tests_e2e -p no:cacheprovider -q
+	@fail=0; \
+	for t in tests_e2e/test_*.py; do \
+		printf "%-45s " "$$t"; \
+		if $(PYTHON) -m pytest "$$t" -p no:cacheprovider --benchmark-disable -q > /tmp/coderai_pytest_one.log 2>&1; then \
+			tail -1 /tmp/coderai_pytest_one.log; \
+		else \
+			fail=1; tail -5 /tmp/coderai_pytest_one.log; \
+		fi; \
+	done; \
+	test "$$fail" = 0
 
 e2e: test-e2e
 

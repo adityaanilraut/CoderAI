@@ -17,6 +17,20 @@ from pathlib import Path
 DIST_NAME = "coderai"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+#: Data files the PyInstaller bundle must ship (mirrors
+#: ``coderai/utils/pyinstaller.py`` datas + binaries). Each entry is a glob
+#: relative to the onedir distribution root (next to the executable, or its
+#: ``_internal`` dir). Single-file builds embed these in the archive, so the
+#: data check is skipped there with a note.
+EXPECTED_DATA_GLOBS = (
+    "agents/default/agent.yaml",
+    "prompts/compact.md",
+    "skills/*/SKILL.md",
+    "tools/*/*.md",
+)
+
+EXPECTED_BINARIES = ("rg", "rg.exe")
+
 
 def _expected_version() -> str:
     """Read the expected version from coderai/_version.py."""
@@ -101,12 +115,93 @@ def verify(path: str) -> int:
             print(f"        got: {result.stdout.strip()!r}")
             all_ok = False
 
+    all_ok &= check_bundled_data(binary)
+
     print()
     if all_ok:
         print("All checks passed.")
         return 0
     print("Some checks failed.")
     return 1
+
+
+def _dist_search_roots(binary: Path) -> list[Path]:
+    """Candidate roots holding extracted bundle data (onedir layouts)."""
+    roots = [binary.parent]
+    internal = binary.parent / "_internal"
+    if internal.is_dir():
+        roots.append(internal)
+    # ``dist/coderai/coderai`` COLLECT layout: data sits beside the dir.
+    if binary.parent.name == DIST_NAME and binary.parent.is_dir():
+        roots.append(binary.parent)
+    seen: list[Path] = []
+    for root in roots:
+        if root not in seen:
+            seen.append(root)
+    return seen
+
+
+def check_bundled_data(binary: Path) -> bool:
+    """Verify expected data files + vendored binaries ship with the bundle."""
+    roots = [r for r in _dist_search_roots(binary) if r.is_dir()]
+    # Single-file build: data lives inside the archive; probe via strings.
+    layout_has_data = any(
+        next((r / "agents").glob("*"), None) is not None or (r / "prompts").is_dir() for r in roots
+    )
+    # Single-file build: data lives inside the archive; validate the build
+    # manifest (build/<app>/PKG-00.toc) when this checkout still has it.
+    toc_ok = check_archive_manifest()
+    if not layout_has_data:
+        if toc_ok is None:
+            print("  SKIP  bundled data check (single-file build; data is in-archive)")
+            return True
+        return toc_ok
+
+    ok = True
+    for pattern in EXPECTED_DATA_GLOBS:
+        found = any(list(r.glob(pattern)) for r in roots)
+        if found:
+            print(f"  OK  bundle ships {pattern}")
+        else:
+            print(f"  FAIL  bundle missing {pattern}")
+            ok = False
+    for name in EXPECTED_BINARIES:
+        candidates = [r / name for r in roots] + [binary.parent / name]
+        if any(c.is_file() for c in candidates):
+            print(f"  OK  bundle ships vendored {name}")
+            break
+    else:
+        # Vendored rg is optional on PATH-equipped hosts; warn only.
+        print("  SKIP  vendored rg not found beside bundle (falls back to PATH)")
+    return ok
+
+
+#: Markers that must appear in the single-file PKG archive manifest.
+ARCHIVE_MARKERS = (
+    "agents/default/agent.yaml",
+    "prompts/compact.md",
+    "SKILL.md",
+    "vendor/rg",
+)
+
+
+def check_archive_manifest() -> bool | None:
+    """Grep the PyInstaller PKG manifest for bundled data markers.
+
+    Returns None when no manifest is available (nothing to check).
+    """
+    manifests = sorted((REPO_ROOT / "build").glob("*/PKG-*.toc"))
+    if not manifests:
+        return None
+    text = manifests[0].read_text(encoding="utf-8", errors="replace")
+    ok = True
+    for marker in ARCHIVE_MARKERS:
+        if marker in text:
+            print(f"  OK  archive bundles {marker}")
+        else:
+            print(f"  FAIL  archive missing {marker}")
+            ok = False
+    return ok
 
 
 def main() -> int:

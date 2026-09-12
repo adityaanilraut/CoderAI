@@ -1230,7 +1230,7 @@ def render_config_interactive(console: Any | None, project_root: str) -> None:
             "API Key:", f"[bold green]{mask_api_key(api_k)}[/]" if api_k else "[dim red]Not set[/]"
         )
         perms = settings.get("permissions") or {}
-        table.add_row("Permission Mode:", str(perms.get("defaultMode", "allowAll")))
+        table.add_row("Permission Mode:", str(perms.get("defaultMode", "askAll")))
         table.add_row("Reasoning Effort:", str(settings.get("reasoningEffort", "max")))
         table.add_row("Context Window:", f"{settings.get('contextWindow', 262144):,} tokens")
         table.add_row(

@@ -28,14 +28,28 @@ def build_session_manager(
     on_thinking_chunk: ChunkCallback | None = None,
     non_interactive: bool = False,
     client_factory: ClientFactory = create_openai_client,
+    mcp_servers: dict[str, dict[str, Any]] | None = None,
 ) -> SessionManager:
-    """Build a manager with consistently resolved settings and model overrides."""
+    """Build a manager with consistently resolved settings and model overrides.
+
+    ``mcp_servers`` is a session-scoped overlay merged over the resolved
+    ``mcpServers`` (global file → user → project → CLI/env). Prefer it over
+    the process-global ``CODERAI_MCP_CONFIG_JSON`` escape hatch whenever the
+    caller serves concurrent sessions (e.g. the ACP server).
+    """
     resolved = resolve_current_settings(project_root)
     if model:
         resolved["model"] = model
     if preset:
         resolved["preset"] = preset
         resolved["toolsPreset"] = preset
+    if mcp_servers:
+        from coderai.mcp.files import merge_mcp_servers_dicts
+
+        overlay = {k: dict(v) for k, v in mcp_servers.items() if isinstance(v, dict)}
+        merged = merge_mcp_servers_dicts(resolved.get("mcpServers"), overlay or None)
+        if merged:
+            resolved["mcpServers"] = merged
 
     agent_target = (
         agent

@@ -313,3 +313,157 @@ async def test_setup_session_legacy_same_id_fallback(tmp_path: Path, monkeypatch
     await server._setup_session(str(tmp_path), "acp-1")
     assert bound == ["acp-1"]
 
+
+# -- P4: per-session MCP injection -------------------------------------------
+
+
+def _stdio_server(name: str, command: str = "npx") -> acp.schema.McpServerStdio:
+    return acp.schema.McpServerStdio(name=name, command=command, args=["-y", "x"], env=[])
+
+
+def test_mcp_configs_to_servers_accepts_config_and_dict():
+    from coderai.acp.mcp import acp_mcp_servers_to_mcp_config
+    from coderai.acp.server import _mcp_configs_to_servers
+
+    assert _mcp_configs_to_servers(None) == {}
+    assert _mcp_configs_to_servers([]) == {}
+
+    cfg = acp_mcp_servers_to_mcp_config([_stdio_server("s1")])
+    assert _mcp_configs_to_servers([cfg]) == {
+        "s1": {"command": "npx", "args": ["-y", "x"], "env": {}, "transport": "stdio"}
+    }
+    assert _mcp_configs_to_servers([{"mcpServers": {"s2": {"command": "uvx"}}}]) == {
+        "s2": {"command": "uvx"}
+    }
+    # Malformed entries are skipped, never raised.
+    assert _mcp_configs_to_servers([cfg, None, {"mcpServers": None}, 42]) == {
+        "s1": {"command": "npx", "args": ["-y", "x"], "env": {}, "transport": "stdio"}
+    }
+
+
+def test_build_engine_is_session_scoped_and_leaves_env_alone(tmp_path: Path, monkeypatch):
+    """Concurrent ACP sessions must not collide via process-global env."""
+    from types import SimpleNamespace
+
+    import coderai.acp.server as server_module
+    from coderai.acp.mcp import acp_mcp_servers_to_mcp_config
+
+    monkeypatch.delenv("CODERAI_MCP_CONFIG_JSON", raising=False)
+
+    first = SimpleNamespace(work_dir=str(tmp_path / "one"))
+    second = SimpleNamespace(work_dir=str(tmp_path / "two"))
+    engine_one = server_module._build_engine(
+        first, mcp_configs=[acp_mcp_servers_to_mcp_config([_stdio_server("only-one")])]
+    )
+    engine_two = server_module._build_engine(
+        second, mcp_configs=[acp_mcp_servers_to_mcp_config([_stdio_server("only-two")])]
+    )
+
+    one_servers = engine_one.manager.get_resolved_settings().get("mcpServers") or {}
+    two_servers = engine_two.manager.get_resolved_settings().get("mcpServers") or {}
+    assert "only-one" in one_servers and "only-two" not in one_servers
+    assert "only-two" in two_servers and "only-one" not in two_servers
+    assert "CODERAI_MCP_CONFIG_JSON" not in __import__("os").environ
+
+
+def test_build_session_manager_mcp_overlay_merges_without_env(tmp_path: Path, monkeypatch):
+    """The factory overlay must merge over base settings (no env consulted)."""
+    import os
+
+    from coderai.cli.session_factory import build_session_manager
+
+    monkeypatch.delenv("CODERAI_MCP_CONFIG_JSON", raising=False)
+    manager = build_session_manager(
+        str(tmp_path),
+        non_interactive=True,
+        mcp_servers={"overlay-srv": {"command": "npx", "args": ["-y", "overlay"]}},
+    )
+    servers = manager.get_resolved_settings().get("mcpServers") or {}
+    assert servers.get("overlay-srv") == {"command": "npx", "args": ["-y", "overlay"]}
+    assert "CODERAI_MCP_CONFIG_JSON" not in os.environ
+
+
+# -- P4: session-scoped model switching ---------------------------------------
+
+
+def _model_server(model_key="m1", thinking=False):
+    from types import SimpleNamespace
+
+    from coderai.acp.server import _ModelIDConv
+
+    engine = SimpleNamespace(
+        config=SimpleNamespace(
+            models={model_key: SimpleNamespace(provider="p1")},
+            providers={"p1": SimpleNamespace()},
+            default_model=model_key,
+            default_thinking=False,
+        ),
+        applied=[],
+        thinking=[],
+        set_model=lambda key: engine.applied.append(key),
+        set_thinking=lambda flag: engine.thinking.append(flag),
+    )
+    session = SimpleNamespace(cli=engine)
+    server = ACPServer()
+    server.sessions["sid-1"] = (session, _ModelIDConv(model_key, thinking))
+    return server, engine
+
+
+@pytest.mark.asyncio
+async def test_set_session_model_is_session_scoped():
+    """Model switches must override the session only: no global config write."""
+    server, engine = _model_server()
+    before = (engine.config.default_model, engine.config.default_thinking)
+
+    await server.set_session_model("m1,thinking", "sid-1")
+
+    assert engine.applied == ["m1"]
+    assert engine.thinking == [True]
+    # In-memory config object untouched (previously rewritten + saved to disk).
+    assert (engine.config.default_model, engine.config.default_thinking) == before
+    # Advertised session model tracks the switch (previously left stale).
+    assert server.sessions["sid-1"][1].thinking is True
+
+
+@pytest.mark.asyncio
+async def test_set_session_model_noop_when_unchanged():
+    server, engine = _model_server()
+    await server.set_session_model("m1", "sid-1")
+    assert engine.applied == []
+    assert engine.thinking == []
+
+
+@pytest.mark.asyncio
+async def test_set_session_model_rejects_unknown_model():
+    server, engine = _model_server()
+    with pytest.raises(acp.RequestError):
+        await server.set_session_model("nope", "sid-1")
+    assert engine.applied == []
+
+
+@pytest.mark.asyncio
+async def test_set_session_model_rejects_unknown_session():
+    server, _ = _model_server()
+    with pytest.raises(acp.RequestError):
+        await server.set_session_model("m1", "missing")
+
+
+def test_thinking_override_is_session_scoped(tmp_path: Path):
+    """Manager thinking override must shadow resolved settings per session."""
+    from coderai.cli.session_factory import build_session_manager
+
+    manager = build_session_manager(str(tmp_path), non_interactive=True)
+    baseline = manager.get_thinking_enabled()
+    assert isinstance(baseline, bool)
+    manager.set_thinking_enabled(not baseline)
+    assert manager.get_thinking_enabled() is (not baseline)
+
+
+def test_engine_set_thinking_tolerates_minimal_managers():
+    """Engines bound to fakes without the setter must not crash on switch."""
+    from types import SimpleNamespace
+
+    from coderai.acp.engine import SessionManagerEngine
+
+    engine = SessionManagerEngine(SimpleNamespace())
+    engine.set_thinking(True)  # must not raise

@@ -25,8 +25,9 @@ the `_moved.forward()` shim layer have been removed.
   the `coderai/core/**` tree, all `_moved.forward()` shims, and `coderai/_moved.py`
   were deleted.
 - **Phases 0–7** of `PORT_PLAN.md`: engine leaves, `soul/`, `tools/`, `ui/`, `wire/`,
-  `acp/`, `subagents/`, `hooks/`, `config.py`, `llm.py`; `tests_e2e/` (13 files);
-  `scripts/`, `docs/`, `clips/`.
+  `acp/`, `subagents/`, `hooks/`, `config.py`, `llm.py`; `tests_e2e/` (15 files:
+  12 `test_wire_*`/`test_mcp_cli` suites + `__init__`/`conftest`/`wire_helpers`
+  harness); `scripts/`, `docs/`, `clips/`.
 - **Dead code and duplicates removed** (commits `6bb7fae`, `e4c9d50`, `33ee4f3`, `5e06ff6`):
   - `utils/diff.py` (byte-identical to `utils/path.py`), `tools/file/grep_local.py`
     (byte-identical to `glob.py`), `core/lifecycle/*`, `core/common/output_retention.py`,
@@ -69,7 +70,8 @@ dead code      reachability sweep from product entrypoints: 0 unreferenced modul
 
 **Interpreter.** Use `/usr/local/bin/python3` — it has `kosong`, `kaos`, `acp`,
 `fastmcp`. The default `python3` on PATH (Homebrew) does **not** and will fail on
-`import kosong`.
+`import kosong`. (CI is the exception: workflows use the setup-python matrix
+`python`, which installs deps from `pyproject.toml` on the runner.)
 
 **Tests.** Never run the whole suite in one process (RAM rule from `AGENTS.md`).
 Per file:
@@ -131,53 +133,124 @@ all forwarding shims have been deleted. The live implementation is the modular t
 - `python -m coderai --help` and `python -m coderai.cli --help` work.
 - Full `ruff check coderai` still reports ~409 pre-existing errors (mostly E402/F401/F811/F821) outside the P1 migration scope.
 
-### P2 — Finish packaging and SDK integration (partial)
+### Verified state post-P2/P4/P5 (working tree, uncommitted)
 
-**Status:** PyInstaller artifacts and the headless SDK skeleton exist; real build and
-integration validation remain.
+```
+unit suite     20/20 files, all pass, 0 failures (new: tests/test_acp_terminal.py)
+e2e suite      49 passed, 4 skipped (real-LLM gated) — matches baseline
+sdk suite      12 passed offline + 4 integration (CODERAI_SDK_INTEGRATION=1)
+compileall     clean across coderai, tests, tests_e2e, scripts, examples, sdks
+ruff check     clean on every file touched by P2/P4/P5 work
+ruff format    clean on every touched hunk (remaining diffs are pre-existing)
+mypy           0 new errors (98 baseline → 98 on touched-file closure; new
+               acp/terminal.py is clean). Default-config run stays blocked by
+               the pre-existing upstream kosong PEP-695 syntax error.
+self_check     scripts/self_check.py passes ("All self-checks passed.")
+binary         61MB single-file build; --help/--version + archive markers OK
+cli smoke      python -m coderai --help / python -m coderai.cli --help work
+```
+
+### P2 — Finish packaging and SDK integration (complete)
+
+**Status:** done. Real build + integration validation performed.
 
 - **PyInstaller**
-  - Verify `coderai.spec`, `coderai/utils/pyinstaller.py`, and `scripts/verify_binary.py`
-    against a real PyInstaller build.
-  - Install/add `pyinstaller` where appropriate.
-  - Build the binary and run `scripts/verify_binary.py` against it.
-  - Fix missing datas/hidden imports, especially skills, agents, prompts, vendor `rg`,
-    and dynamic MCP/tool imports.
-  - If needed, update `pyproject.toml`, `requirements-dev.txt`, and CI workflow.
+  - `coderai/utils/pyinstaller.py`: hidden imports now cover every first-party
+    subpackage (`teams`, `workflow`, `mcp`, `network`, `prompt`,
+    `session_query`, `code_mode`, `goals`, `lsp`, `terminal`, `skills`, …);
+    `datas` fixed (dropped the stale in-package `CHANGELOG.md` entry — ours
+    lives at the repo root — and the meaningless `tools/*.py` exclude);
+    new `binaries` slot ships vendored `rg` with its exec bit intact.
+  - New `excludes` list drops the ML/notebook/dev stack that static analysis
+    reaches through guarded optional imports (`torch`, `transformers`,
+    `datasets`, `IPython`, `pandas`, `pygame`, `pytest`, …): the runtime
+    never imports them (zero references in `coderai/`, verified by import
+    test). Binary went from **438MB / >30s startup to 61MB / ~17s**.
+  - `coderai.spec` consumes `binaries` + `excludes`.
+  - `scripts/verify_binary.py` now also checks bundled data: onedir layouts
+    by glob (`agents/default/agent.yaml`, `prompts/compact.md`,
+    `skills/*/SKILL.md`, `tools/*/*.md`), single-file builds via the
+    `build/*/PKG-*.toc` archive manifest.
+  - Real build run: `dist/coderai` reports the expected version;
+    `verify_binary.py dist` passes all checks.
+  - `pyinstaller>=6.0` added to `[project.optional-dependencies] dev`.
+  - `dist/` + `build/` stay gitignored; no CI workflow change (release.yml
+    ships wheel/sdist, not the PyInstaller binary).
 - **Headless SDK**
-  - Validate `sdks/coderai-sdk/src/coderai_sdk/client.py` against the real
-    `coderai.acp.engine.SessionManagerEngine` + `coderai.cli.session_factory.build_session_manager`.
-  - Add an optional integration test, gated behind an environment variable so the
-    default SDK test remains offline.
-  - Confirm the SDK can import without the main repo on `sys.path` after packaging.
+  - `CoderAIClient.create()` validated against the real
+    `SessionManagerEngine` + `build_session_manager` (model/plan/skills
+    reach the live manager; bind/set_model/interrupt delegate).
+  - New `sdks/coderai-sdk/tests/test_sdk_integration.py`, gated behind
+    `CODERAI_SDK_INTEGRATION=1` (4 tests; skipped by default so the SDK
+    suite stays offline).
+  - Standalone packaging confirmed: `pip install ./sdks/coderai-sdk
+    --target <dir>` then `import coderai_sdk` with only that dir on
+    `sys.path` works (client/engine imports stay lazy).
 
 ### P3 — Skills gap (complete)
 
 **Status:** complete. The five missing skills were added under `.coderai/skills/`:
 `skill-creator`, `feature-smoke-test`, `pull-request`, `release`, `worktree-status`.
 
-### P4 — Remaining ACP capability gaps (partial)
+### P4 — Remaining ACP capability gaps (complete)
 
-**Status:** cross-process resume persistence is done.
+**Status:** cross-process resume persistence was done; the four open items are done.
 
-1. **ACP-client terminal bridge** — add a `Terminal` bridge over
-   `coderai/terminal/manager.py` so ACP clients can drive terminals remotely.
-2. **Per-session MCP injection** — stop relying on process-global
-   `CODERAI_MCP_CONFIG_JSON` in `coderai/acp/server.py::_build_engine`; make MCP
-   config session-scoped so concurrent sessions cannot collide.
-3. **Image handling** — avoid persisting images to temp files and referencing them
-   indirectly in prompts; wire image blocks through `coderai/acp/engine.py::build_prompt`.
-4. **Model switching consistency** — align ACP model keys with Stack A model
-   overrides in `coderai/acp/server.py::set_session_model`.
+1. **ACP-client terminal bridge** — new `coderai/acp/terminal.py`
+    (`TerminalBridge` over `coderai/terminal/manager.py`, per-ACP-session
+    namespaced ownership) exposed via `ext_method` as
+    `terminal/bridge` (capability catalogue) and
+    `terminal/list|open|send|read|signal|close`. Timeouts clamped
+    (defaults 2s read / 10s send, 30s cap). Covered by
+    `tests/test_acp_terminal.py` (9 tests, fake manager — no PTY flakiness).
+2. **Per-session MCP injection** — `_build_engine` no longer writes the
+    process-global `CODERAI_MCP_CONFIG_JSON`. New
+    `_mcp_configs_to_servers()` flattens `MCPConfig`/dict configs to plain
+    server dicts and `build_session_manager(..., mcp_servers=...)` merges
+    them session-scoped into resolved `mcpServers`. This also fixed a live
+    bug: callers pass `MCPConfig` objects, which the old `isinstance(dict)`
+    filter silently dropped — ACP-supplied servers never reached the
+    engine at all. Covered by 3 tests incl. a two-session no-collision test.
+3. **Image handling** — `build_prompt` no longer persists images to temp
+    files. New `build_acp_prompt()` splits text + `image_url` content
+    params; `SessionManager.create_session`/`reply_session` accept
+    `content_params` and store them in the user message
+    `meta["contentParams"]`, which `OpenAIMessageConverter` already sends
+    as multimodal input when the model supports it (same path as CLI
+    `/image`). Oversized images (>20MB, mirroring the CLI limit) are
+    dropped with a warning; image-only turns still append on the reply
+    path. Covered by 4 engine tests + 2 manager message-meta tests.
+4. **Model switching consistency** — `set_session_model` is now fully
+    session-scoped: `engine.set_model()` + new `engine.set_thinking()`
+    (`,thinking` suffix ↔ `SessionManager` thinking override via new
+    `set_thinking_enabled`/`get_thinking_enabled`, wired into turn
+    execution). Removed the global `config.toml` rewrite (one session's
+    choice leaked to all future sessions) and fixed the stale advertised
+    model (`self.sessions` conv is now updated). Covered by 6 tests.
 
-### P5 — Residual cleanup
+### P5 — Residual cleanup (complete)
 
-- Full-repo `ruff check coderai` still reports pre-existing lint debt; decide
-  whether to clean by directory or rule category.
-- Run `mypy` and fix regressions introduced by the modular import rewrites.
-- Optional: rename `scripts/self_check_core.py` to a non-core name and update references.
-- Consider updating `README.md`, `PORT_PLAN.md`, and CI references that still describe
-  the old `coderai/core/**` tree.
+- **Ruff debt strategy: clean touched hunks, not the repo.** Full-repo
+  `ruff check coderai` debt (~409 pre-existing E402/F401/F811/F821) is left
+  for a dedicated lint pass — reformatting whole files under a newer ruff
+  (0.15.x vs whatever formatted the tree) would bury functional diffs.
+  Every file touched by P2/P4/P5 passes `ruff check`, and every touched
+  hunk passes `ruff format --diff` (remaining diffs in those files are
+  pre-existing).
+- **mypy:** 0 regressions from this work (touched-file closure 98 → 98;
+  new `acp/terminal.py` clean). Note the default-config run
+  (`python_version = "3.10"`) is wholly blocked by a pre-existing upstream
+  `kosong/message.py` PEP-695 `type` statement; advisory runs used
+  `--python-version 3.14`. No PEP 695 syntax added to `coderai/`.
+- **Rename done:** `scripts/self_check_core.py` → `scripts/self_check.py`
+  (README reference updated). Also fixed a latent async drift the rename
+  surfaced (`ask_user.handle` is now a coroutine; the script awaited
+  nothing and failed at HEAD too) — the self-check passes again.
+- **Docs:** `README.md` example now references the live modular paths
+  (`soul/session/manager.py`, `soul/approval.py`). `PORT_PLAN.md` keeps its
+  single historical `core/` mention (Phase 2b completion record — history,
+  not a live reference). No CI references to the old tree remain
+  (workflows only touch `coderai/`, `tests/`, `tests_e2e/`, `scripts/`).
 
 ## 4. Definition of done (per phase, from `PORT_PLAN.md`)
 

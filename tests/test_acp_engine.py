@@ -45,8 +45,9 @@ class _FakeManager:
                 return SimpleNamespace(status="ask_user_question", ask_permissions=[])
         return SimpleNamespace(status="completed", ask_permissions=[])
 
-    async def create_session(self, user_prompt, plan_mode=False, skills=None):
+    async def create_session(self, user_prompt, plan_mode=False, skills=None, content_params=None):
         self.prompts.append(("create", user_prompt))
+        self.content_params = content_params
         get_emitter().turn_begin(user_prompt)
         get_emitter().text(f"echo: {user_prompt}")
         self.sessions["s1"] = self._entry()
@@ -54,6 +55,7 @@ class _FakeManager:
 
     async def reply_session(self, session_id, user_prompt=None, **kwargs):
         self.prompts.append(("reply", user_prompt))
+        self.content_params = kwargs.get("content_params")
         if user_prompt:
             get_emitter().text(f"reply: {user_prompt}")
         self.sessions[session_id] = self._entry()
@@ -88,12 +90,78 @@ async def _collect(engine: SessionManagerEngine, text: str = "hi", cancel: async
     return await asyncio.wait_for(_drain(), timeout=TIMEOUT)
 
 
+async def _drain_parts(engine: SessionManagerEngine, parts: list):
+    return [msg async for msg in engine.run(parts, asyncio.Event())]
+
+
 def test_build_prompt_flattens_text_parts():
     assert build_prompt([KTextPart(text="first"), KTextPart(text="second")]) == "first\nsecond"
 
 
 def test_build_prompt_ignores_empty_text():
     assert build_prompt([KTextPart(text="")]) == ""
+
+
+def test_build_acp_prompt_routes_images_via_content_params_not_temp_files():
+    from kosong.message import ImageURLPart
+
+    from coderai.acp.engine import build_acp_prompt
+
+    url = "data:image/png;base64,iVBORw0KGgo="
+    text, images = build_acp_prompt(
+        [KTextPart(text="look"), ImageURLPart(image_url=ImageURLPart.ImageURL(url=url))]
+    )
+    assert text == "look"
+    assert images == [{"type": "image_url", "image_url": {"url": url}}]
+
+
+def test_build_acp_prompt_drops_oversized_images():
+    from kosong.message import ImageURLPart
+
+    from coderai.acp.engine import MAX_ACP_IMAGE_BYTES, build_acp_prompt
+
+    # Payload sized just over the limit (base64 inflates raw bytes by 4/3).
+    raw_len = (MAX_ACP_IMAGE_BYTES * 4) // 3 + 16
+    url = "data:image/png;base64," + "A" * raw_len
+    text, images = build_acp_prompt([ImageURLPart(image_url=ImageURLPart.ImageURL(url=url))])
+    assert text == ""
+    assert images == []
+
+
+@pytest.mark.asyncio
+async def test_engine_forwards_image_content_params_to_manager():
+    from kosong.message import ImageURLPart
+
+    manager = _FakeManager()
+    engine = SessionManagerEngine(manager)
+    url = "data:image/png;base64,iVBORw0KGgo="
+    parts = [
+        KTextPart(text="describe"),
+        ImageURLPart(image_url=ImageURLPart.ImageURL(url=url)),
+    ]
+    await asyncio.wait_for(
+        _drain_parts(engine, parts),
+        timeout=TIMEOUT,
+    )
+    assert manager.prompts == [("create", "describe")]
+    assert manager.content_params == [{"type": "image_url", "image_url": {"url": url}}]
+
+
+@pytest.mark.asyncio
+async def test_engine_forwards_images_on_reply_turns():
+    from kosong.message import ImageURLPart
+
+    manager = _FakeManager()
+    engine = SessionManagerEngine(manager)
+    await _collect(engine, "first")
+
+    url = "data:image/png;base64,iVBORw0KGgo="
+    parts = [ImageURLPart(image_url=ImageURLPart.ImageURL(url=url))]
+    await asyncio.wait_for(_drain_parts(engine, parts), timeout=TIMEOUT)
+
+    # Image-only reply still appends (empty text + content params).
+    assert manager.prompts[-1] == ("reply", "")
+    assert manager.content_params == [{"type": "image_url", "image_url": {"url": url}}]
 
 
 @pytest.mark.asyncio

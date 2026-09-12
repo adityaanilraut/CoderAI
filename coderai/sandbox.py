@@ -15,8 +15,13 @@ import tempfile
 import time
 from typing import Any
 
+from coderai.utils.logging import logger
+
 SANDBOX_MODES = ("read-only", "workspace-write", "danger-full-access")
-DEFAULT_SANDBOX_MODE = "danger-full-access"  # preserve CoderAI allowAll unless a preset is set
+# Closed by default: fresh installs constrain file writes to the workspace and
+# prompt for anything else. `danger-full-access` remains available as an
+# explicit opt-in (preset / --yolo) for trusted workspaces.
+DEFAULT_SANDBOX_MODE = "workspace-write"
 
 READ_SCOPES = ("read-in-cwd", "read-out-cwd", "query-git-log")
 WRITE_SCOPES = (
@@ -110,7 +115,7 @@ def apply_preset(permissions: dict[str, Any] | None, preset: str | None) -> dict
             "allow": list(base.get("allow") or []),
             "deny": list(base.get("deny") or []),
             "ask": list(base.get("ask") or []),
-            "defaultMode": base.get("defaultMode") or "allowAll",
+            "defaultMode": base.get("defaultMode") or "askAll",
             "preset": None,
             "sandbox": DEFAULT_SANDBOX_MODE,
         }
@@ -198,10 +203,20 @@ def build_seatbelt_profile(mode: str, workspace_root: str) -> str:
         '(allow file-write-data (literal "/dev/stderr"))',
         '(allow file-write-data (literal "/dev/dtracehelper"))',
         "(allow ipc-posix-shm)",
-        "(allow network-outbound)",
-        "(allow network-inbound)",
-        "(allow network-bind)",
     ]
+    if parsed in ("workspace-write", "danger-full-access"):
+        # Network access at the OS layer is granted for modes that allow work
+        # beyond pure reads. The permission layer still gates network scopes
+        # via `ask` (see PRESET_SCOPE_MAP), so user approval is required first.
+        # `read-only` gets no network rules: the `(deny default)` head denies
+        # outbound/inbound/bind, constraining exfiltration — not just files.
+        lines.extend(
+            [
+                "(allow network-outbound)",
+                "(allow network-inbound)",
+                "(allow network-bind)",
+            ]
+        )
     if parsed == "read-only":
         # ponytail: read-only must not grant /tmp writes; keep only device/null parity with source writableRoots=[]
         return "\n".join(lines) + "\n"
@@ -324,6 +339,11 @@ def wrap_sandbox_command(
         meta["sandboxBackend"] = "bwrap"
         return bwrap, meta
     meta["sandboxSkipped"] = "no sandbox backend on this platform"
+    logger.warning(
+        f"OS sandbox requested ({parsed}) but no backend is available "
+        "(sandbox-exec on macOS / bwrap on Linux); running without OS-level "
+        "isolation. Permission prompts still apply."
+    )
     return argv, meta
 
 

@@ -736,24 +736,11 @@ def render_thinking_block(
                 f"    [dim]... ({len(thinking_text.strip().splitlines()) - 25} more lines truncated)[/]"
             )
     else:
-        term_width = 80
-        if (
-            active_console is not None
-            and isinstance(getattr(active_console, "width", None), int)
-            and active_console.width > 0
-        ):
-            term_width = active_console.width
-        else:
-            term_width = shutil.get_terminal_size(fallback=(80, 24)).columns
-
-        elapsed_len = len(f"({elapsed_str})") if elapsed_str else 0
-        prefix_len = 16 + (elapsed_len + 1 if elapsed_len else 0)
-        max_summary_chars = min(140, max(20, term_width - prefix_len - 2))
-
-        summary = summarize_thinking(thinking_text, max_chars=max_summary_chars)
-        active_console.print(
-            f"  [bold magenta]● Reasoning[/]{duration_str}{tok_str} [dim]•[/] [dim italic]{escape(summary)}[/]"
-        )
+        # Collapsed: stats only, no thought-content summary. Dumping the raw
+        # reasoning text here leaked internal chain-of-thought into the chat
+        # (e.g. "The user just said hi...") on every turn. Full traces remain
+        # available via expanded mode (/thinking full).
+        active_console.print(f"  [dim]● Reasoning[/]{duration_str}{tok_str}")
 
 
 class LiveThinkingStreamer:
@@ -821,26 +808,45 @@ class LiveThinkingStreamer:
             return
         if not self._is_tty():
             return
+        # Never raw-write while a prompt_toolkit app owns the screen:
+        # patch_stdout converts \r rewrites into stacked lines (one spinner
+        # frame per line) instead of a single updating line.
+        try:
+            from prompt_toolkit.application.current import get_app_or_none
+
+            _app = get_app_or_none()
+            if _app is not None and bool(getattr(_app, "is_running", False)):
+                return
+        except Exception:
+            pass
         elapsed = time.time() - self.start_time
-        full_text = "".join(self.thinking_chunks)
         frame = self.SPINNER_FRAMES[self.frame_idx % len(self.SPINNER_FRAMES)]
         self.frame_idx += 1
         bullet = bullet_frame_for(elapsed)
         elapsed_fmt = format_elapsed(elapsed)
-        from coderai.cli.elapsed import estimate_tokens
-
-        tok_count = estimate_tokens(full_text)
-        rate = f" · {int(tok_count / elapsed)} tok/s" if elapsed > 0.5 and tok_count else ""
-        tok_info = f" · {tok_count} tokens{rate}" if tok_count else ""
         term_width = max(30, self._get_term_width())
         elapsed_str = f"({elapsed_fmt})"
-        prefix_len = 17 + len(elapsed_str)
-        max_summary_len = max(10, term_width - prefix_len - 2)
-        summary = summarize_thinking(full_text, max_chars=max_summary_len)
-        line = f"\r\x1b[2K  \x1b[35m\x1b[1m{frame}\x1b[0m \x1b[1;35mReasoning{bullet}\x1b[0m \x1b[36m{elapsed_str}\x1b[0m\x1b[2m{tok_info} • {summary}\x1b[0m"
+        # Clean single-line status: spinner + elapsed only. Thought content,
+        # token counts and tok/s are deliberately withheld here — they leaked
+        # internal reasoning into the live view and pushed the line past the
+        # terminal width, which wrapped and left stacked spinner lines behind.
+        visible = f"  {frame} Reasoning{bullet} {elapsed_str}"
+        if len(visible) > term_width:
+            visible = visible[: max(0, term_width - 3)] + "..."
+            line = f"\r\x1b[2K{visible}"
+        else:
+            line = (
+                f"\r\x1b[2K  \x1b[35m\x1b[1m{frame}\x1b[0m"
+                f" \x1b[1;35mReasoning{bullet}\x1b[0m"
+                f" \x1b[36m{elapsed_str}\x1b[0m"
+            )
+        # Pad to overwrite any previously rendered longer line.
+        pad = max(0, self._last_line_len - len(visible))
+        if pad:
+            line += " " * pad + f"\x1b[{pad}D"
         sys.stdout.write(line)
         sys.stdout.flush()
-        self._last_line_len = prefix_len + len(summary)
+        self._last_line_len = len(visible)
 
     def finalize(self, console: Any | None = None, expanded: bool = False) -> str:
         if not self.is_active or not self.thinking_chunks:

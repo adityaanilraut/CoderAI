@@ -522,14 +522,24 @@ async def test_orchestration_path_locks_isolate_writes():
     assert time.time() - t0 < 0.12
 
 
-async def test_autonomous_teammate_execution_and_settlement():
-    """Verify autonomous teammate worker executes assigned in_progress tasks and wait_agent settles."""
+async def test_autonomous_teammate_execution_and_settlement(monkeypatch):
+    """Verify autonomous teammate worker executes assigned in_progress tasks and wait_agent settles.
+
+    The sub-agent run itself is stubbed: this test covers worker mechanics
+    (pickup → completed → settlement), not LLM execution.
+    """
     reset_team_manager()
     mgr = get_team_manager()
     # Spawn teammate with discovered role
     tm = mgr.spawn_teammate(name="Dan", role="architect")
     assert tm.role == "architect"
     assert tm.system_prompt is not None  # Discovered from .coderai/agents/architect.md
+
+    async def _fake_execute(teammate, task):
+        assert task.title == "Design Cache Schema"
+        return f"Report for '{task.title}' by {teammate.name}"
+
+    monkeypatch.setattr(mgr, "_execute_task", _fake_execute)
 
     # Create task assigned to Dan
     task = mgr.task_board.create_task(
@@ -555,3 +565,80 @@ async def test_autonomous_teammate_execution_and_settlement():
     assert "Design Cache Schema" in (tm.last_report or "")
     mgr.cancel_all_teammates()
 
+
+async def test_autonomous_teammate_failure_marks_failed(monkeypatch):
+    """A sub-agent error must mark the task `failed` — never `completed`."""
+    reset_team_manager()
+    mgr = get_team_manager()
+    tm = mgr.spawn_teammate(name="Erin", role="coder")
+
+    async def _boom(teammate, task):
+        raise RuntimeError("AuthenticationError: Missing API client.")
+
+    monkeypatch.setattr(mgr, "_execute_task", _boom)
+
+    task = mgr.task_board.create_task(
+        title="Broken Task",
+        description="This execution always fails",
+        assigned_to=tm.teammate_id,
+    )
+    mgr.task_board.update_task(task.task_id, status="in_progress")
+
+    settle_res = await mgr.wait_agent(tm.teammate_id, timeout_seconds=5.0)
+    assert settle_res["ok"] is True
+    assert settle_res["status"] == "settled"
+
+    updated_task = mgr.task_board.get_task(task.task_id)
+    assert updated_task.status == "failed"
+    assert "Missing API client" in (updated_task.result or "")
+    assert tm.status == "failed"
+    mgr.cancel_all_teammates()
+
+
+async def test_execute_task_uses_subagent_manager(monkeypatch):
+    """_execute_task drives SubAgentManager.spawn_subagent and surfaces failures."""
+    from coderai.subagents.output import SubAgentResult
+
+    reset_team_manager()
+    mgr = get_team_manager()
+    tm = mgr.spawn_teammate(name="Farah", role="coder")
+    task = mgr.task_board.create_task(
+        title="Real Path",
+        description="exercises the SubAgentManager call path",
+        assigned_to=tm.teammate_id,
+    )
+
+    seen: dict[str, object] = {}
+
+    class _FakeRunner:
+        def __init__(self, project_root, create_openai_client):
+            seen["project_root"] = project_root
+
+        async def spawn_subagent(self, spec):
+            seen["spec"] = spec
+            return SubAgentResult(
+                task_id=spec.task_id,
+                session_id="s1",
+                status="completed",
+                summary="Cache schema: LRU over Redis.",
+            )
+
+    monkeypatch.setattr("coderai.subagents.runner.SubAgentManager", _FakeRunner)
+    report = await mgr._execute_task(tm, task)
+    assert report == "Cache schema: LRU over Redis."
+    assert seen["spec"].subagent_type == "coder"
+
+    class _FailingRunner(_FakeRunner):
+        async def spawn_subagent(self, spec):
+            return SubAgentResult(
+                task_id=spec.task_id,
+                session_id="s1",
+                status="failed",
+                summary="",
+                error="AuthenticationError: Missing API client.",
+            )
+
+    monkeypatch.setattr("coderai.subagents.runner.SubAgentManager", _FailingRunner)
+    with pytest.raises(RuntimeError, match="Missing API client"):
+        await mgr._execute_task(tm, task)
+    mgr.cancel_all_teammates()

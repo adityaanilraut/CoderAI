@@ -208,7 +208,7 @@ CoderAI includes full `readline` and fuzzy autocompletion:
 Mention workspace files directly anywhere in your prompts:
 
 ```text
-coderai> Explain the architecture in @coderai/core/session.py and how it connects to @coderai/core/permissions.py
+coderai> Explain the architecture in @coderai/soul/session/manager.py and how it connects to @coderai/soul/approval.py
 ```
 
 CoderAI automatically detects referenced files and attaches their contents to the prompt context. Specific line ranges can also be targeted with `@file.py:10-30` or `@file.py:L25`.
@@ -359,7 +359,7 @@ make typecheck
 make test
 
 # Run offline engine self-check
-python scripts/self_check_core.py
+python scripts/self_check.py
 
 # Clean build artifacts
 make clean

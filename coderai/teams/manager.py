@@ -345,38 +345,43 @@ class TeamManager:
             await asyncio.sleep(0.5)
 
     async def _execute_task(self, teammate: Teammate, task: TeamTask) -> str:
-        """Execute task assigned to a teammate."""
-        try:
-            from pathlib import Path
-            from coderai.llm import create_openai_client
-            from coderai.subagents.builder import SubAgentSpec
-            from coderai.subagents.runner import SubAgentRunner
+        """Execute task assigned to a teammate.
 
-            prompt = (
-                f"You are teammate {teammate.name} with role '{teammate.role}'.\n"
-                f"Task Title: {task.title}\n"
-                f"Task Description: {task.description}\n"
-                f"Priority: {task.priority}\n"
-            )
-            spec = SubAgentSpec(
-                subagent_type=teammate.role,
-                prompt=prompt,
-                description=task.title,
-                mode=teammate.mode,
-                allowed_tools=teammate.allowed_tools,
-                system_prompt=teammate.system_prompt,
-            )
-            runner = SubAgentRunner(
-                project_root=str(Path.cwd()),
-                create_openai_client=lambda: create_openai_client(str(Path.cwd())),
-            )
-            result = await runner.run(spec)
-            if result.report:
-                return result.report
-        except Exception as exc:
-            logger.debug(f"SubAgentRunner fallback for team task: {exc}")
+        Returns the sub-agent's summary report on success. Raises
+        RuntimeError when the sub-agent fails, is misconfigured, or produces
+        no report — callers must mark the task ``failed``, never ``completed``.
+        """
+        from pathlib import Path
 
-        return f"Task '{task.title}' completed by {teammate.name} ({teammate.role})."
+        from coderai.llm import create_openai_client
+        from coderai.subagents.builder import SubAgentSpec
+        from coderai.subagents.runner import SubAgentManager
+
+        prompt = (
+            f"You are teammate {teammate.name} with role '{teammate.role}'.\n"
+            f"Task Title: {task.title}\n"
+            f"Task Description: {task.description}\n"
+            f"Priority: {task.priority}\n"
+        )
+        spec = SubAgentSpec(
+            subagent_type=teammate.role,
+            prompt=prompt,
+            description=task.title,
+            mode=teammate.mode,
+            allowed_tools=teammate.allowed_tools,
+            system_prompt=teammate.system_prompt,
+        )
+        runner = SubAgentManager(
+            project_root=str(Path.cwd()),
+            create_openai_client=lambda: create_openai_client(str(Path.cwd())),
+        )
+        result = await runner.spawn_subagent(spec)
+        if result.status == "completed" and result.summary:
+            return result.summary
+        raise RuntimeError(
+            f"Sub-agent for team task '{task.title}' ended with status "
+            f"'{result.status}': {result.error or result.summary or 'no details'}"
+        )
 
     async def _teammate_worker(self, teammate_id: str) -> None:
         """Autonomous worker loop for active teammates in the swarm."""
@@ -403,7 +408,31 @@ class TeamManager:
                 if runnable_tasks:
                     task = runnable_tasks[0]
                     tm.status = "working"
-                    report = await self._execute_task(tm, task)
+                    try:
+                        report = await self._execute_task(tm, task)
+                    except Exception as exc:
+                        # Fail honestly: a task whose sub-agent errored is
+                        # `failed`, never `completed` with a synthetic report.
+                        # Dependents stay blocked via can_start_task(), and
+                        # wait_agent() treats `failed` as settled.
+                        err = str(exc) or "unknown error"
+                        logger.warning("Team task '%s' failed for %s: %s", task.title, tm.name, err)
+                        self.task_board.update_task(
+                            task.task_id,
+                            status="failed",
+                            result=err,
+                            notes=f"teammate={tm.name}",
+                        )
+                        tm.status = "failed"
+                        tm.last_report = err
+                        self.send_message(
+                            sender=tm.name,
+                            recipient="all",
+                            content=f"Task '{task.title}' failed for {tm.name}: {err}",
+                            task_id=task.task_id,
+                        )
+                        await asyncio.sleep(0.05)
+                        continue
                     self.task_board.update_task(
                         task.task_id,
                         status="completed",

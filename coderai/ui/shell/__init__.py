@@ -140,36 +140,27 @@ def render_welcome_screen(
         )
         console.print(panel)
 
-        # Streamlined Quick Actions Bar
-        actions = Text()
-        actions.append("  Shortcuts:  ", style="bold")
-        actions.append("/setup", style="bold green")
-        actions.append(" configure  ", style="dim")
-        actions.append("•  ", style="dim")
-        actions.append("/help", style="bold cyan")
-        actions.append(" manual  ", style="dim")
-        actions.append("•  ", style="dim")
-        actions.append("/agent", style="bold magenta")
-        actions.append(" role  ", style="dim")
-        actions.append("•  ", style="dim")
-        actions.append("/doctor", style="bold blue")
-        actions.append(" diagnostics  ", style="dim")
-        actions.append("•  ", style="dim")
-        actions.append("/plan", style="bold yellow")
-        actions.append(" safety  ", style="dim")
-        actions.append("•  ", style="dim")
-        actions.append("@file", style="bold cyan")
-        actions.append(" context  ", style="dim")
-        actions.append("•  ", style="dim")
-        actions.append("Ctrl-R", style="bold")
-        actions.append(" search  ", style="dim")
-        actions.append("•  ", style="dim")
-        actions.append("Ctrl-C", style="bold red")
-        actions.append(" interrupt  ", style="dim")
-        actions.append("•  ", style="dim")
-        actions.append("Tab", style="bold")
-        actions.append(" complete", style="dim")
-        console.print(actions)
+        # Compact shortcuts — two short dim lines that fit 80-col terminals
+        # without wrapping (one long rainbow line wrapped and looked broken).
+        for row in (
+            (
+                ("/setup", "config"),
+                ("/help", None),
+                ("/agent", "role"),
+                ("/doctor", "check"),
+                ("/plan", "mode"),
+            ),
+            (("@file", "attach"), ("Tab", "complete"), ("Ctrl-C", "stop")),
+        ):
+            line = Text()
+            line.append("  ", style="dim")
+            for idx, (cmd, desc) in enumerate(row):
+                if idx:
+                    line.append(" · ", style="dim")
+                line.append(cmd, style="bold")
+                if desc:
+                    line.append(f" {desc}", style="dim")
+            console.print(line)
         console.print()
     else:
         print("\n" + str(get_gradient_ascii_logo()))
@@ -180,5 +171,6 @@ def render_welcome_screen(
             f"Workspace: {workspace_str}{branch_str} | Model: {active_model} | Status: {conn_str} | Plan: {plan_status}"
         )
         print(
-            "Shortcuts: /setup configure • /help manual • /doctor diagnostics • /plan safety • @file context • Ctrl-R search • Ctrl-C interrupt • Tab complete\n"
+            "  /setup config · /help · /agent role · /doctor check · /plan mode\n"
+            "  @file attach · Tab complete · Ctrl-C stop\n"
         )

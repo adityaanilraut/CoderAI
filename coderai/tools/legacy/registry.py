@@ -17,7 +17,8 @@ from coderai.tools import plan as _plan_mode
 from coderai.tools.legacy import ralph as _ralph
 from coderai.tools.file import read as _read
 from coderai.tools.legacy import schedule as _schedule
-from coderai.tools.file import glob as _search_fs
+from coderai.tools.file.glob import glob_tool_definition as _glob_tool_definition
+from coderai.tools.file.grep import grep_tool_definition as _grep_tool_definition
 from coderai.tools.legacy import skill as _skill
 from coderai.tools.file import replace as _str_replace
 from coderai.tools import agent as _subagent
@@ -603,56 +604,9 @@ class ToolRegistry:
             )
         )
 
-        # 3. Filesystem Discovery (glob / grep)
-        self.register(
-            define_tool(
-                name="glob",
-                description=_search_fs.GLOB_DESCRIPTION,
-                parameters={
-                    "pattern": {
-                        "type": "string",
-                        "description": (
-                            'Glob pattern to match file paths against (e.g. "**/*.ts", "src/**/*.test.js"). '
-                            'A pattern with no "/" matches the basename at any depth, so "*" and "*.ts" both search the whole tree; include a separator to anchor the depth.'
-                        ),
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Directory to search in. Defaults to the session workspace; a relative path resolves against it.",
-                    },
-                },
-                required=["pattern"],
-                handler=_search_fs.handle_glob_tool,
-                category="filesystem",
-                is_mutating=False,
-                is_concurrency_safe=True,
-            )
-        )
-        self.register(
-            define_tool(
-                name="grep",
-                description=_search_fs.GREP_DESCRIPTION,
-                parameters={
-                    "pattern": {
-                        "type": "string",
-                        "description": "Regular expression to search for (ripgrep syntax).",
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "File or directory to search. Defaults to the session workspace; a relative path resolves against it.",
-                    },
-                    "include": {
-                        "type": "string",
-                        "description": 'One glob filter for which files to search (e.g. "*.ts", "*.{js,jsx}"). Not a list; negation is not supported.',
-                    },
-                },
-                required=["pattern"],
-                handler=_search_fs.handle_grep_tool,
-                category="filesystem",
-                is_mutating=False,
-                is_concurrency_safe=True,
-            )
-        )
+        # 3. Filesystem Discovery (glob / grep; definitions live per-tool).
+        self.register(_glob_tool_definition())
+        self.register(_grep_tool_definition())
 
         # 4. Filesystem Core (read, write, edit, str_replace_editor)
         self.register(

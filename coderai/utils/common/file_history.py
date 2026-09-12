@@ -14,6 +14,9 @@ from typing import Any
 MANIFEST_PATH = "manifest.json"
 FILE_HISTORY_AUTHOR_NAME = "CoderAI"
 FILE_HISTORY_AUTHOR_EMAIL = "coderai@local"
+# Bound every git subprocess so a hung git binary cannot hang the agent turn.
+# These are local plumbing commands on a scratch bare repo; 30s is generous.
+GIT_TIMEOUT_SECONDS = 30
 
 COMMIT_HASH_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 STORED_PATH_PATTERN = re.compile(r"^files-[0-9a-f]{64}$")
@@ -71,12 +74,18 @@ class GitFileHistory:
             *args,
         ]
         input_bytes = input_data.encode("utf-8") if isinstance(input_data, str) else input_data
-        res = subprocess.run(
-            git_args,
-            input=input_bytes,
-            capture_output=True,
-            env=env or self._get_git_env(),
-        )
+        try:
+            res = subprocess.run(
+                git_args,
+                input=input_bytes,
+                capture_output=True,
+                env=env or self._get_git_env(),
+                timeout=GIT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"git {' '.join(args)} timed out after {GIT_TIMEOUT_SECONDS}s"
+            ) from exc
         if res.returncode != 0:
             err = (res.stderr or res.stdout or b"").decode("utf-8", errors="replace").strip()
             raise RuntimeError(err or f"git {' '.join(args)} failed with code {res.returncode}")
@@ -90,11 +99,15 @@ class GitFileHistory:
         if os.path.exists(self.git_dir):
             return
         os.makedirs(self.git_dir, exist_ok=True)
-        res = subprocess.run(
-            ["git", "init", "--bare", self.git_dir],
-            capture_output=True,
-            env=self._get_git_env(),
-        )
+        try:
+            res = subprocess.run(
+                ["git", "init", "--bare", self.git_dir],
+                capture_output=True,
+                env=self._get_git_env(),
+                timeout=GIT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"git init --bare timed out after {GIT_TIMEOUT_SECONDS}s") from exc
         if res.returncode != 0:
             err = (res.stderr or b"").decode("utf-8", errors="replace").strip()
             raise RuntimeError(err or "git init --bare failed")

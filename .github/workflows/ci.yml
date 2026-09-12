@@ -52,11 +52,38 @@ jobs:
       - name: Dependency drift check
         run: python scripts/check_dependency_versions.py
 
+      # RAM rule (AGENTS.md): one pytest process per file, never the whole
+      # suite in a single process. Coverage accumulates via --cov-append and
+      # the 63% gate is enforced once at the end with `coverage report`.
       - name: Pytest
-        run: pytest -q --cov=coderai --cov-fail-under=63
+        run: |
+          rm -f .coverage .coverage.*
+          fail=0
+          for t in tests/test_*.py; do
+            printf "%-45s " "$t"
+            if python -m pytest "$t" -p no:cacheprovider --benchmark-disable -q --cov=coderai --cov-append > /tmp/pytest_one.log 2>&1; then
+              tail -1 /tmp/pytest_one.log
+            else
+              fail=1
+              tail -5 /tmp/pytest_one.log
+            fi
+          done
+          python -m coverage report --fail-under=63
+          test "$fail" = 0
 
       - name: Wire E2E suite
-        run: pytest tests_e2e -q -p no:cacheprovider
+        run: |
+          fail=0
+          for t in tests_e2e/test_*.py; do
+            printf "%-45s " "$t"
+            if python -m pytest "$t" -q -p no:cacheprovider --benchmark-disable > /tmp/pytest_one.log 2>&1; then
+              tail -1 /tmp/pytest_one.log
+            else
+              fail=1
+              tail -5 /tmp/pytest_one.log
+            fi
+          done
+          test "$fail" = 0
 
       - name: CLI smoke test
         run: coderai --version
@@ -82,9 +109,11 @@ jobs:
           pip install -e ".[dev]"
 
       # Keep a separate status for the security corpus even though the coverage
-      # job also exercises it.
+      # job also exercises it. Scoped to the single marked file (RAM rule:
+      # no full-collection runs); test_security.py is the only file carrying
+      # the `security` marker.
       - name: Security tests
-        run: pytest -m security -q
+        run: pytest tests/test_security.py -m security -q -p no:cacheprovider --benchmark-disable
 
       - name: Dependency audit (pip-audit)
         run: |

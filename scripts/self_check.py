@@ -350,7 +350,7 @@ async def main() -> None:
             "project_root": tmp,
             "create_openai_client": lambda: {"client": img_client, "model": "gpt-4o"},
         }
-        ask_res = ask_handle(
+        ask_res = await ask_handle(
             {
                 "questions": [
                     {

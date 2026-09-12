@@ -164,6 +164,7 @@ class SessionManager:
         )
         self._active_session_id: str | None = None
         self._override_model: str | None = None
+        self._override_thinking_enabled: bool | None = None
         self._override_reasoning_effort: str | None = None
         self.session_controllers: dict[str, asyncio.Event] = {}
         self.compaction_engine = BasicCompaction(self)
@@ -233,6 +234,16 @@ class SessionManager:
         if self._override_model:
             return self._override_model
         return str(self.get_resolved_settings().get("model") or "gpt-5.6-luna")
+
+    def set_thinking_enabled(self, enabled: bool) -> None:
+        """Session-scoped thinking-mode override (mirrors :meth:`set_model`)."""
+        self._override_thinking_enabled = bool(enabled)
+
+    def get_thinking_enabled(self) -> bool:
+        """Effective thinking mode: session override, else resolved settings."""
+        if self._override_thinking_enabled is not None:
+            return self._override_thinking_enabled
+        return bool(self.get_resolved_settings().get("thinkingEnabled"))
 
     def set_reasoning_effort(self, effort: str) -> None:
         from coderai.utils.common.openai_thinking import normalize_reasoning_effort
@@ -774,6 +785,7 @@ class SessionManager:
         user_prompt: str,
         plan_mode: bool = False,
         skills: list[str] | None = None,
+        content_params: list[dict[str, Any]] | None = None,
     ) -> str:
         session_id = uuid.uuid4().hex
         # Kimi parity: max_ralph_iterations != 0 turns the prompt into an
@@ -870,6 +882,7 @@ class SessionManager:
                         "checkpointHash": ckpt_res.checkpoint_hash,
                         "userPrompt": {"planMode": plan_mode},
                         "rawPrompt": user_prompt,
+                        **({"contentParams": list(content_params)} if content_params else {}),
                     },
                 )
             )
@@ -996,10 +1009,16 @@ class SessionManager:
         permission_replies: list[dict[str, Any]] | None = None,
         plan_mode: bool | None = None,
         skills: list[str] | None = None,
+        content_params: list[dict[str, Any]] | None = None,
     ) -> None:
         entry = self._get_entry(session_id)
         if not entry:
-            await self.create_session(user_prompt or "", plan_mode=bool(plan_mode), skills=skills)
+            await self.create_session(
+                user_prompt or "",
+                plan_mode=bool(plan_mode),
+                skills=skills,
+                content_params=content_params,
+            )
             return
 
         if plan_mode is not None:
@@ -1049,7 +1068,10 @@ class SessionManager:
             )
             return
 
-        if user_prompt and not is_continue:
+        if (user_prompt or content_params) and not is_continue:
+            # Image-only turns carry no text; the images ride in contentParams
+            # (same path as the CLI /image command) so they still append.
+            user_text = user_prompt or ""
             # Kimi parity: UserPromptSubmit fires before the turn starts; hooks
             # may inject additionalContext (appended) or deny (abort turn).
             try:
@@ -1108,14 +1130,15 @@ class SessionManager:
                 self._build_message(
                     session_id,
                     "user",
-                    user_prompt,
+                    user_text,
                     meta={
                         "checkpointHash": ckpt_res.checkpoint_hash,
                         "userPrompt": {"planMode": curr_mode},
+                        **({"contentParams": list(content_params)} if content_params else {}),
                     },
                 )
             )
-            await self._inject_matched_skills(session_id, user_prompt, skills)
+            await self._inject_matched_skills(session_id, user_text, skills)
         elif skills:
             self._append_skill_messages(session_id, skills)
 
@@ -1742,7 +1765,7 @@ class SessionManager:
         fallback_reasons: list[str] = []
         last_error: Exception | None = None
 
-        thinking_enabled = bool(settings.get("thinkingEnabled"))
+        thinking_enabled = self.get_thinking_enabled()
         base_url = settings.get("baseURL")
         reasoning_effort = settings.get("reasoningEffort") or "max"
 

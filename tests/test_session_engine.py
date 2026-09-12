@@ -45,6 +45,39 @@ def _manager(tmp_path: pathlib.Path, **kwargs) -> SessionManager:
 
 
 @pytest.mark.asyncio
+async def test_create_session_attaches_image_content_params(tmp_path):
+    """ACP/CLI image params must land in the user message meta (multimodal path)."""
+    mgr = _manager(tmp_path)
+
+    async def _no_activate(session_id, **kwargs):
+        return None
+
+    mgr._activate = _no_activate  # type: ignore[method-assign]
+    params = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}]
+    sid = await mgr.create_session("describe", content_params=params)
+    user_msgs = [m for m in mgr.list_session_messages(sid) if m.role == "user"]
+    assert user_msgs
+    assert (user_msgs[-1].meta or {}).get("contentParams") == params
+
+
+@pytest.mark.asyncio
+async def test_reply_session_appends_image_only_turn(tmp_path):
+    """Image-only replies (empty text + params) must still append a message."""
+    mgr = _manager(tmp_path)
+
+    async def _no_activate(session_id, **kwargs):
+        return None
+
+    mgr._activate = _no_activate  # type: ignore[method-assign]
+    sid = await mgr.create_session("first")
+    params = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}]
+    await mgr.reply_session(sid, "", content_params=params)
+    user_msgs = [m for m in mgr.list_session_messages(sid) if m.role == "user"]
+    assert len(user_msgs) == 2
+    assert (user_msgs[-1].meta or {}).get("contentParams") == params
+
+
+@pytest.mark.asyncio
 async def test_session_lifecycle_create_fork_delete_roundtrip(tmp_path):
     """Create, fork, and delete sessions while preserving forked copies."""
     mgr = _manager(tmp_path)

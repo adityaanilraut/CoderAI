@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import time
 from datetime import datetime
@@ -24,11 +25,50 @@ from coderai.acp.session import (
 from coderai.acp.types import ACPContentBlock, MCPServer
 from coderai.acp.version import ACPVersionSpec, negotiate_version
 from coderai.auth.oauth import KIMI_CODE_OAUTH_KEY, load_tokens
-from coderai.config import LLMModel, OAuthRef, load_config, save_config
+from coderai.config import LLMModel, OAuthRef, load_config
 from coderai.constant import NAME, VERSION
 from coderai.llm import derive_model_capabilities
 from coderai.session import Session
 from coderai.utils.logging import logger
+
+
+def _mcp_configs_to_servers(mcp_configs: list[Any] | None) -> dict[str, dict[str, Any]]:
+    """Flatten ACP MCP configs to plain ``{name: cfg}`` server dicts.
+
+    Accepts :class:`~fastmcp.mcp_config.MCPConfig` objects (what
+    :func:`coderai.acp.mcp.acp_mcp_servers_to_mcp_config` returns) as well as
+    plain dicts, so ACP-supplied servers actually reach the engine. Returns
+    an empty dict when the client supplied no servers.
+    """
+    servers: dict[str, dict[str, Any]] = {}
+    for config in mcp_configs or []:
+        if config is None:
+            continue
+        payload: Any = None
+        if isinstance(config, dict):
+            payload = config.get("mcpServers", config)
+        else:
+            to_dict = getattr(config, "to_dict", None)
+            if callable(to_dict):
+                try:
+                    payload = (to_dict() or {}).get("mcpServers", {})
+                except Exception:
+                    payload = None
+            if payload is None:
+                model_dump = getattr(config, "model_dump", None)
+                if callable(model_dump):
+                    try:
+                        payload = (model_dump(exclude_none=True) or {}).get("mcpServers", {})
+                    except Exception:
+                        payload = None
+            if payload is None:
+                raw = getattr(config, "mcpServers", None)
+                payload = raw if isinstance(raw, dict) else None
+        if isinstance(payload, dict):
+            for name, cfg in payload.items():
+                if isinstance(name, str) and name and isinstance(cfg, dict):
+                    servers[name] = cfg
+    return servers
 
 
 def _build_engine(
@@ -37,25 +77,20 @@ def _build_engine(
 ) -> SessionManagerEngine:
     """Build a Stack A (``SessionManager``) engine for one ACP session.
 
-    ACP-supplied MCP servers are injected through the documented
-    ``CODERAI_MCP_CONFIG_JSON`` overlay, which settings resolution merges over
-    user/project config. Note this overlay is process-global, so concurrent ACP
-    sessions with different server sets share the last-written set.
+    ACP-supplied MCP servers are injected session-scoped through
+    :func:`coderai.cli.session_factory.build_session_manager`'s
+    ``mcp_servers`` overlay. The previous process-global
+    ``CODERAI_MCP_CONFIG_JSON`` overlay is deliberately not used here so
+    concurrent ACP sessions with different server sets cannot collide.
     """
-    import json as _json
-    import os
-
     from coderai.cli.session_factory import build_session_manager
     from coderai.config import load_config
 
-    servers: dict[str, Any] = {}
-    for config in mcp_configs or []:
-        if isinstance(config, dict):
-            servers.update(config.get("mcpServers") or {})
-    if servers:
-        os.environ["CODERAI_MCP_CONFIG_JSON"] = _json.dumps({"mcpServers": servers})
-
-    manager = build_session_manager(str(session.work_dir), non_interactive=True)
+    manager = build_session_manager(
+        str(session.work_dir),
+        non_interactive=True,
+        mcp_servers=_mcp_configs_to_servers(mcp_configs) or None,
+    )
     return SessionManagerEngine(manager, config=load_config(), session=session)
 
 
@@ -68,6 +103,7 @@ class ACPServer:
         self.sessions: dict[str, tuple[ACPSession, _ModelIDConv]] = {}
         self.negotiated_version: ACPVersionSpec | None = None
         self._auth_methods: list[acp.schema.AuthMethod] = []
+        self._terminal_bridges: dict[str, Any] = {}
 
     def on_connect(self, conn: acp.Client) -> None:
         logger.info("ACP client connected")
@@ -418,33 +454,28 @@ class ACPServer:
             return
 
         config = engine.config
-        new_model = config.models.get(model_id_conv.model_key)
+        models = getattr(config, "models", None) or {}
+        new_model = models.get(model_id_conv.model_key)
         if new_model is None:
             logger.error("Model not found: %s", model_id_conv.model_key)
             raise acp.RequestError.invalid_params({"model_id": "Model not found"})
-        new_provider = config.providers.get(new_model.provider)
+        providers = getattr(config, "providers", None) or {}
+        new_provider = providers.get(new_model.provider)
         if new_provider is None:
-            logger.error("Provider not found: %s for model: %s", new_model.provider, model_id_conv.model_key)
+            logger.error(
+                "Provider not found: %s for model: %s", new_model.provider, model_id_conv.model_key
+            )
             raise acp.RequestError.invalid_params({"model_id": "Model's provider not found"})
 
-        # Stack A resolves the provider per turn; SessionManager applies the override.
+        # Session-scoped Stack A overrides: the manager resolves the provider
+        # per turn from these, so one session's choice never leaks into the
+        # global config file or sibling sessions. The ",thinking" suffix maps
+        # onto the same ``thinkingEnabled`` knob ``SessionManager`` turns use.
         engine.set_model(model_id_conv.model_key)
-
-        target_model = model_id_conv.model_key
-        config.default_model = target_model
-        config.default_thinking = model_id_conv.thinking
-        try:
-            config_for_save = load_config()
-            if target_model not in config_for_save.models:
-                for key, m in config_for_save.models.items():
-                    if m.model == target_model:
-                        target_model = key
-                        break
-            config_for_save.default_model = target_model
-            config_for_save.default_thinking = model_id_conv.thinking
-            save_config(config_for_save)
-        except Exception:
-            pass
+        set_thinking = getattr(engine, "set_thinking", None)
+        if callable(set_thinking):
+            set_thinking(model_id_conv.thinking)
+        self.sessions[session_id] = (acp_session, model_id_conv)
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> acp.AuthenticateResponse | None:
         if method_id == "login":
@@ -493,8 +524,72 @@ class ACPServer:
 
             roles = [d.name for d in discover_markdown_agents(Path.cwd())]
             return {"roles": roles}
+        if method == "terminal/bridge":
+            from coderai.acp.terminal import TERMINAL_METHODS
+
+            return {"operations": [f"terminal/{op}" for op in TERMINAL_METHODS]}
+        if method.startswith("terminal/"):
+            return await self._terminal_ext_method(method[len("terminal/") :], params)
         logger.warning("Unsupported ext_method: %s", method)
         return {"error": f"Method {method} not supported"}
+
+    def _terminal_bridge(self, session_id: str) -> Any:
+        """Per-ACP-session terminal bridge (lazily created, session-scoped)."""
+        from coderai.acp.terminal import TerminalBridge
+
+        bridge = self._terminal_bridges.get(session_id)
+        if bridge is None:
+            work_dir = "."
+            entry = self.sessions.get(session_id)
+            if entry is not None:
+                with contextlib.suppress(Exception):
+                    work_dir = str(entry[0].cli.session.work_dir)
+            bridge = TerminalBridge(session_id, work_dir=work_dir)
+            self._terminal_bridges[session_id] = bridge
+        return bridge
+
+    async def _terminal_ext_method(self, operation: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Drive server-side PTY terminals for an ACP client (see acp/terminal.py)."""
+        from coderai.acp.terminal import TERMINAL_METHODS
+
+        if operation not in TERMINAL_METHODS:
+            return {"error": f"Method terminal/{operation} not supported"}
+        session_id = str((params or {}).get("session_id") or (params or {}).get("sessionId") or "")
+        if not session_id:
+            return {"error": "terminal/* methods require a session_id param"}
+        bridge = self._terminal_bridge(session_id)
+        try:
+            if operation == "list":
+                return bridge.list_terminals()
+            if operation == "open":
+                return bridge.open_terminal(
+                    command=(params or {}).get("command"),
+                    name=(params or {}).get("name"),
+                    cwd=(params or {}).get("cwd"),
+                    env=(params or {}).get("env"),
+                )
+            terminal_id = str(
+                (params or {}).get("terminal_id") or (params or {}).get("terminalId") or ""
+            )
+            if not terminal_id:
+                return {"error": "terminal/* methods require a terminal_id param"}
+            if operation == "send":
+                return bridge.send_terminal(
+                    terminal_id,
+                    str((params or {}).get("text") or ""),
+                    submit=bool((params or {}).get("submit", True)),
+                    timeout_ms=(params or {}).get("timeout_ms"),
+                )
+            if operation == "read":
+                return bridge.read_terminal(terminal_id, (params or {}).get("timeout_ms"))
+            if operation == "signal":
+                return bridge.signal_terminal(
+                    terminal_id, str((params or {}).get("signal") or "SIGINT")
+                )
+            return bridge.close_terminal(terminal_id)
+        except Exception as exc:
+            logger.warning("terminal/%s failed: %s", operation, exc)
+            return {"error": f"terminal/{operation} failed: {exc}"}
 
     async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
         logger.info("Received ext_notification: %s", method)

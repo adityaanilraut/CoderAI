@@ -781,7 +781,10 @@ def _path_cmd(tool: str, file_path: str | None) -> str:
     return f"{tool} {file_path}" if file_path else tool
 
 
-DEFAULT_PERMISSION_SETTINGS = {"allow": [], "deny": [], "ask": [], "defaultMode": "allowAll"}
+# Closed by default: unknown scopes prompt instead of auto-allowing. Explicit
+# `{"defaultMode": "allowAll"}` (preset danger-full-access / --yolo) remains
+# available as an opt-in for trusted workspaces.
+DEFAULT_PERMISSION_SETTINGS = {"allow": [], "deny": [], "ask": [], "defaultMode": "askAll"}
 
 
 def evaluate_permission_scopes(
@@ -793,7 +796,7 @@ def evaluate_permission_scopes(
     deny = set(settings.get("deny") or [])
     ask = set(settings.get("ask") or [])
     allow = set(settings.get("allow") or [])
-    default_mode = settings.get("defaultMode", "allowAll")
+    default_mode = settings.get("defaultMode", "askAll")
     forced = set(force_ask_scopes or [])
 
     if "unknown" in scopes:
@@ -821,7 +824,7 @@ def get_scopes_requiring_ask(
     deny = set(settings.get("deny") or [])
     ask = set(settings.get("ask") or [])
     allow = set(settings.get("allow") or [])
-    default_mode = settings.get("defaultMode", "allowAll")
+    default_mode = settings.get("defaultMode", "askAll")
     forced = set(force_ask_scopes or [])
     result: list[str] = []
     for scope in scopes:
@@ -1158,5 +1161,11 @@ class Approval:
             approved = outcome in (True, "approve", "approve_for_session", "allow")
             return ApprovalResult(approved, feedback=getattr(req, "feedback", ""))
 
-        return ApprovalResult(True)
-
+        # Fail closed: with no UI channel there is nobody to approve, so deny.
+        # Non-interactive runs that need auto-approval must opt in explicitly
+        # via --yolo/--afk (which short-circuit in is_auto_approve() above).
+        return ApprovalResult(
+            False,
+            feedback="Denied by default: no approval channel is attached. "
+            "Re-run with --yolo in a trusted workspace to auto-approve.",
+        )

@@ -3,6 +3,11 @@
 **Gold Standard Reference**: `/Users/adityaraut/Downloads/kimi-cli-main`  
 **Target Package**: `coderai/` (CLI terminal platform, async wire runtime, autonomous agent swarms)
 
+> **Status note (2026-09-12):** this plan is the historical record of the port.
+> Phases 0–7 were completed here; **Phases 8 (skills), 9 (binary), and 10 (SDK)
+> are also complete** — see `REMAINING_PLAN.md` §§1–3 (P2/P3/P4) for the
+> completion evidence. `REMAINING_PLAN.md` is the current handoff document.
+
 ---
 
 ## 1. Completed Foundation Summary
@@ -21,6 +26,9 @@ All core engine components, tool sandboxes, ACP server protocols, and interactiv
 | **Phase 5** | Web UI & FastAPI Servers (`vis/`, `web/`) | Removed browser UI and web backends in adherence to the Pure Terminal CLI constraint | **DROPPED** | Pure CLI verified |
 | **Phase 6** | Developer Tooling, CI Scripts & Release Automation | `scripts/inject_build_sha.py`, `scripts/check_dependency_versions.py`, `scripts/telemetry_debug_server.py`, `scripts/install.ps1`, `Makefile` (`build-sha`, `check-deps`, `telemetry-debug`, `test-e2e`), `.github/workflows/ci.yml`, `tests/test_phase6_tooling.py` | **COMPLETED** | 9/9 tooling tests passed; `make check-deps` + `make build-sha` verified |
 | **Phase 7** | Production Documentation & Architectural Proposals (CLIPs) | `docs/configuration.md`, `docs/agent-roles.md`, `docs/mcp.md`, `docs/skills.md`, `docs/troubleshooting.md`, `clips/clip-001` … `clip-005` | **COMPLETED** | Guides + RFCs grounded in `coderai/` source |
+| **Phase 8** | Bundled Skills Library & Examples | `.coderai/skills/` (skill-creator, feature-smoke-test, pull-request, release, worktree-status), `examples/` | **COMPLETED** | See `REMAINING_PLAN.md` P3 |
+| **Phase 9** | Standalone Binary Packaging | `coderai.spec`, `coderai/utils/pyinstaller.py`, `scripts/verify_binary.py` | **COMPLETED** | 61MB single-file build verified; see `REMAINING_PLAN.md` P2 |
+| **Phase 10** | Headless SDK | `sdks/coderai-sdk/` (`client.py`, `models.py`), integration tests | **COMPLETED** | Offline + integration suites green; see `REMAINING_PLAN.md` P2 |
 
 ---
 
@@ -31,8 +39,11 @@ All core engine components, tool sandboxes, ACP server protocols, and interactiv
 3. **Zero Placeholder Files**: Every created file must be fully functional, imported, and exercised by automated tests or integration scripts.
 4. **Memory Isolation (RAM Rule)**: Never run the entire test suite in a single process. Run test suites per-file:
    ```bash
-   /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m pytest tests/<test_file>.py -p no:cacheprovider --benchmark-disable -q
+   /usr/local/bin/python3 -m pytest tests/<test_file>.py -p no:cacheprovider --benchmark-disable -q
    ```
+   (`Makefile test` / `test-e2e` and CI implement this as a per-file loop. CI
+   runners use the matrix `python`; local dev uses `/usr/local/bin/python3`,
+   which is the interpreter carrying `kosong`/`kaos`.)
 5. **Compilation Cleanliness**: After each phase, `python3 -m compileall -q coderai tests scripts` must produce zero errors or warnings.
 6. **Backward Compatibility**: Existing CLI invocation syntax (`coderai`, `cai`), configuration paths (`~/.coderai/`), and legacy tool bindings must remain operational through forwarding shims where needed.
 
@@ -143,6 +154,11 @@ Deliver comprehensive documentation for users and contributors, and formalize ar
 
 ### Phase 8 — Bundled Skills Library & Developer Showcase (`examples/`)
 
+> **Status: COMPLETED** — the five skills ship under `.coderai/skills/`
+> (`skill-creator`, `feature-smoke-test`, `pull-request`, `release`,
+> `worktree-status`); evidence in `REMAINING_PLAN.md` P3. The section below is
+> the original proposal, kept for history.
+
 Equip CoderAI with high-leverage bundled skills and concrete programmatic examples demonstrating CoderAI's capabilities.
 
 | Target Component | Source Reference | Scope & Technical Strategy |
@@ -164,6 +180,10 @@ Equip CoderAI with high-leverage bundled skills and concrete programmatic exampl
 
 ### Phase 9 — Standalone Binary Packaging (`coderai.spec`) & PyInstaller Pipeline
 
+> **Status: COMPLETED** — `pyinstaller coderai.spec` produces a verified 61MB
+> single-file `dist/coderai`; evidence in `REMAINING_PLAN.md` P2. The section
+> below is the original proposal, kept for history.
+
 Enable zero-dependency single-binary distribution of CoderAI across macOS, Linux, and Windows using PyInstaller.
 
 | Target File | Source Reference | Lines | Scope & Technical Strategy |
@@ -179,6 +199,11 @@ Enable zero-dependency single-binary distribution of CoderAI across macOS, Linux
 ---
 
 ### Phase 10 — Headless CoderAI SDK (`sdks/coderai-sdk/`)
+
+> **Status: COMPLETED** — `sdks/coderai-sdk` ships `client.py`/`models.py` with
+> offline + `CODERAI_SDK_INTEGRATION=1` integration suites; evidence in
+> `REMAINING_PLAN.md` P2. The section below is the original proposal, kept for
+> history.
 
 Provide an ergonomic Python SDK allowing third-party applications to embed CoderAI's agentic execution engine programmatically.
 
@@ -231,7 +256,7 @@ graph TD
 
 Each phase is considered complete only when:
 1. **Automated Tests Pass**: All targeted unit and integration tests execute and pass without error.
-2. **Zero Regressions**: Existing test suites (299 tests across 16 files) remain 100% green.
+2. **Zero Regressions**: Existing per-file test suites remain 100% green (current verified counts live in `REMAINING_PLAN.md`, not here — this plan's historical counts below are point-in-time records).
 3. **Bytecode Compilation**: `python3 -m compileall -q coderai tests scripts` compiles cleanly.
 4. **Typing & Linting**: `ruff check` and `mypy` pass with no PEP 695 typing violations.
 5. **Interactive Verification**: Manual verification via CLI (`coderai`) confirms smooth interactive performance and clean terminal output.

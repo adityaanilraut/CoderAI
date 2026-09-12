@@ -202,7 +202,8 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="yes",
         action="store_true",
         default=False,
-        help="Automatically approve all actions (still reachable via AskUserQuestion).",
+        help="Automatically approve all actions, including file writes and "
+        "network access. Only use in a trusted workspace.",
     )
     parser.add_argument(
         "--thinking",

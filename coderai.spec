@@ -2,7 +2,7 @@
 
 import os
 
-from coderai.utils.pyinstaller import datas, hiddenimports
+from coderai.utils.pyinstaller import binaries, datas, excludes, hiddenimports
 
 codesign_identity = os.environ.get("APPLE_SIGNING_IDENTITY", None)
 
@@ -11,13 +11,13 @@ onedir_mode = os.environ.get("PYINSTALLER_ONEDIR", "0") == "1"
 a = Analysis(
     ["coderai/cli/__main__.py"],
     pathex=[],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excludes,
     noarchive=False,
     optimize=0,
 )

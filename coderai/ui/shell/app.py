@@ -2962,7 +2962,9 @@ async def _run_interactive(
                         mgr.set_yolo(not mgr.is_yolo())
                         state = "ON" if mgr.is_yolo() else "OFF"
                         msg = (
-                            "You only live once! All actions will be auto-approved."
+                            "You only live once! All actions — including file writes "
+                            "and network access — will be auto-approved. "
+                            "Use only in a trusted workspace."
                             if mgr.is_yolo()
                             else "You only die once! Actions will require approval."
                         )

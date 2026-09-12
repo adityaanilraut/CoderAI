@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeAlias
 
 from PIL import Image
 
@@ -88,7 +88,7 @@ def _build_image_part(image_bytes: bytes, mime_type: str) -> ImageURLPart:
     )
 
 
-type CachedAttachmentKind = Literal["image"]
+CachedAttachmentKind: TypeAlias = Literal["image"]
 
 
 @dataclass(slots=True)
