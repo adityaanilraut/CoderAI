@@ -1415,16 +1415,16 @@ class SessionManager:
         read_only_tool_names = {
             "read",
             "Read",
+            "read_file",
             "grep",
             "Grep",
             "glob",
             "Glob",
+            "read_media_file",
             "WebSearch",
             "web_search",
             "WebFetch",
             "web_fetch",
-            "lsp",
-            "session_query",
             "UnderstandImage",
             "understand_image",
         }

@@ -8,6 +8,7 @@ __pycache__/
 dist/
 build/
 .eggs/
+coderai/_build_info.py
 
 # Virtual environments
 .venv/

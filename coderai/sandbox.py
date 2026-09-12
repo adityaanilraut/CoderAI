@@ -1,4 +1,4 @@
-"""OS sandbox + permission-preset mapping (dsh sandbox-policy / sandbox-local).
+"""OS sandbox + permission-preset mapping (sandbox-policy / sandbox-local).
 
 Presets: read-only, workspace-write, danger-full-access. The first two wrap bash
 spawns (Seatbelt on macOS, bwrap on Linux). Plan-mode force-ask is unchanged.

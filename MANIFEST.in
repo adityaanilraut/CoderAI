@@ -1,4 +1,3 @@
-include CHANGELOG.md
 include SECURITY.md
 include scripts/verify_wheel.py
 include coderai/vendor/rg

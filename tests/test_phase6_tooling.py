@@ -1,4 +1,4 @@
-"""Tests for Phase 6 developer tooling scripts (PORT_PLAN.md).
+"""Tests for developer tooling scripts.
 
 Exercises scripts/inject_build_sha.py, scripts/check_dependency_versions.py,
 and scripts/telemetry_debug_server.py without network access or git side

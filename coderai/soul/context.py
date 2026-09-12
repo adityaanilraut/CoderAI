@@ -42,26 +42,34 @@ class Context:
             return False
 
         messages_after_last_usage: list[Message] = []
-        async with aiofiles.open(self._file_backend, encoding="utf-8", errors="replace") as f:
-            line_no = 0
-            async for line in f:
-                line_no += 1
-                if not line.strip():
-                    continue
-                line_json = self._parse_context_line(
-                    line,
-                    file_backend=self._file_backend,
-                    line_no=line_no,
-                )
-                if line_json is None:
-                    continue
-                self._apply_context_record(
-                    line_json,
-                    history=self._history,
-                    messages_after_last_usage=messages_after_last_usage,
-                    file_backend=self._file_backend,
-                    line_no=line_no,
-                )
+        try:
+            async with aiofiles.open(self._file_backend, encoding="utf-8", errors="replace") as f:
+                line_no = 0
+                async for line in f:
+                    line_no += 1
+                    if not line.strip():
+                        continue
+                    line_json = self._parse_context_line(
+                        line,
+                        file_backend=self._file_backend,
+                        line_no=line_no,
+                    )
+                    if line_json is None:
+                        continue
+                    self._apply_context_record(
+                        line_json,
+                        history=self._history,
+                        messages_after_last_usage=messages_after_last_usage,
+                        file_backend=self._file_backend,
+                        line_no=line_no,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "Error reading context file {file}: {error}",
+                file=self._file_backend,
+                error=exc,
+            )
+            return False
 
         self._pending_token_estimate = estimate_text_tokens(messages_after_last_usage)
         return True

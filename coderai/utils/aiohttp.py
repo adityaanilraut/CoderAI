@@ -7,7 +7,11 @@ import asyncio
 import time
 import urllib.parse
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from coderai.network.cache import ResponseCache
+    from coderai.network.security import NetworkPolicy
 
 import requests
 from requests.adapters import HTTPAdapter

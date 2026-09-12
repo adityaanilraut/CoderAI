@@ -730,6 +730,8 @@ def apply_login_config(models: list[RemoteModelInfo]) -> str:
 
 def clear_login_config() -> bool:
     """Remove the managed provider + models from the typed config."""
+    from coderai.config import load_typed_config, save_typed_config
+
     try:
         config = load_typed_config()
     except Exception:

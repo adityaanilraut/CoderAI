@@ -118,7 +118,6 @@ def _verify_sdist(sdist: Path, *, wheel_version: str) -> None:
             "LICENSE",
             "README.md",
             "SECURITY.md",
-            "CHANGELOG.md",
             "MANIFEST.in",
             "pyproject.toml",
             *RUNTIME_MEMBERS,

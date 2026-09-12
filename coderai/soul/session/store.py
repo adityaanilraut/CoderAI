@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
 import shutil
+import uuid
 from typing import Any
 
 from coderai.events import SessionEvent, legacy_message_to_event
@@ -79,7 +81,7 @@ class JsonlSessionStore:
         if not self.index_path.exists():
             return empty
         try:
-            data = json.loads(self.index_path.read_text(encoding="utf-8"))
+            data = json.loads(self.index_path.read_text(encoding="utf-8", errors="replace"))
         except (OSError, ValueError, TypeError):
             return empty
         if not isinstance(data, dict):
@@ -107,8 +109,7 @@ class JsonlSessionStore:
                 reverse=True,
             )[: self.max_entries]
         index["entries"] = entries
-        # ponytail: atomic tmp→replace prevents corruption on SIGINT mid-write
-        tmp_path = self.index_path.with_suffix(".tmp")
+        tmp_path = self.index_path.with_suffix(f".tmp-{uuid.uuid4().hex[:8]}")
         tmp_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
         tmp_path.replace(self.index_path)
 
@@ -119,9 +120,12 @@ class JsonlSessionStore:
 
     def replace_rows(self, session_id: str, rows: list[dict[str, Any]]) -> None:
         self.project_dir.mkdir(parents=True, exist_ok=True)
-        with self.messages_path(session_id).open("w", encoding="utf-8") as stream:
+        target = self.messages_path(session_id)
+        tmp = target.with_suffix(f".tmp-{uuid.uuid4().hex[:8]}")
+        with tmp.open("w", encoding="utf-8") as stream:
             for row in rows:
                 stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+        tmp.replace(target)
 
     def read_rows(self, session_id: str) -> list[dict[str, Any]]:
         path = self.messages_path(session_id)
@@ -129,7 +133,7 @@ class JsonlSessionStore:
             return []
         rows: list[dict[str, Any]] = []
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             return []
         for line in lines:
@@ -150,7 +154,7 @@ class JsonlSessionStore:
         try:
             return [
                 line.strip()
-                for line in path.read_text(encoding="utf-8").splitlines()
+                for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
                 if line.strip()
             ]
         except OSError:
@@ -158,9 +162,12 @@ class JsonlSessionStore:
 
     def write_raw_lines(self, session_id: str, lines: list[str]) -> None:
         self.project_dir.mkdir(parents=True, exist_ok=True)
-        with self.messages_path(session_id).open("w", encoding="utf-8") as stream:
+        target = self.messages_path(session_id)
+        tmp = target.with_suffix(f".tmp-{uuid.uuid4().hex[:8]}")
+        with tmp.open("w", encoding="utf-8") as stream:
             for line in lines:
                 stream.write(line + "\n")
+        tmp.replace(target)
 
     def list_events(self, session_id: str) -> list[SessionEvent]:
         """Read event rows and adapt legacy message rows without rewriting the log."""

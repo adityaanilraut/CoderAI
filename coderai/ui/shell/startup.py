@@ -403,24 +403,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="sub-agent timeout in seconds (default 90; env CODERAI_SUBAGENT_TIMEOUT_SECONDS)",
     )
     parser.add_argument(
-        "--workflow-max-agents",
-        type=int,
-        default=None,
-        help="workflow total agent cap per run (default 1000; env CODERAI_WORKFLOW_MAX_TOTAL_AGENTS)",
-    )
-    parser.add_argument(
-        "--workflow-max-concurrency",
-        type=int,
-        default=None,
-        help="workflow concurrent agent slots (default min(16, cores-2); env CODERAI_WORKFLOW_MAX_CONCURRENT_AGENTS)",
-    )
-    parser.add_argument(
-        "--ralph-max-rounds",
-        type=int,
-        default=None,
-        help="Ralph verification round ceiling (default 256; env CODERAI_RALPH_MAX_ROUNDS)",
-    )
-    parser.add_argument(
         "--max-continuable-agents",
         type=int,
         default=None,

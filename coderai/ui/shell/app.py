@@ -23,18 +23,15 @@ from coderai.ui.shell.slash import (
     parse_slash_command,
     render_help,
 )
-from coderai.ui.shell.prompt import read_user_turn
+from coderai.ui.shell.prompt import (
+    expand_file_mentions,
+    read_user_turn,
+    setup_readline,
+)
+from coderai.utils.rich.diff_render import render_diff_preview
+from coderai.cli.exit_summary import render_exit_summary
 from coderai.ui.shell.session_picker import (
-    render_config_interactive,
-    render_mcp_interactive,
-    render_mcp_prompts,
-    render_mcp_resources_async,
-    render_session_history,
-    render_skills_interactive,
-    render_token_breakdown,
-    select_model_interactive,
     select_session_interactive,
-    select_undo_interactive,
     select_with_arrows,
 )
 from coderai.cli.session_factory import build_session_manager, close_session_manager
@@ -51,7 +48,6 @@ from coderai.skill import list_skills, load_skill
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.table import Table
 
 from coderai.utils.term import ensure_new_line, ensure_tty_sane
 
@@ -2137,9 +2133,6 @@ def main(argv: list[str] | None = None) -> int:
     for flag, env_name in (
         ("max_subagent_depth", "CODERAI_MAX_SUBAGENT_DEPTH"),
         ("subagent_timeout", "CODERAI_SUBAGENT_TIMEOUT_SECONDS"),
-        ("workflow_max_agents", "CODERAI_WORKFLOW_MAX_TOTAL_AGENTS"),
-        ("workflow_max_concurrency", "CODERAI_WORKFLOW_MAX_CONCURRENT_AGENTS"),
-        ("ralph_max_rounds", "CODERAI_RALPH_MAX_ROUNDS"),
         ("max_continuable_agents", "CODERAI_MAX_CONTINUABLE_AGENTS_PER_SESSION"),
         ("max_running_jobs", "CODERAI_MAX_RUNNING_JOBS_PER_SESSION"),
         ("max_steps_per_turn", "CODERAI_MAX_STEPS_PER_TURN"),
@@ -2377,7 +2370,10 @@ def main(argv: list[str] | None = None) -> int:
             if getattr(args, "print_mode", False) and prompt_value:
                 # Read stdin when --input-format stream-json / piped input.
                 stdin_prompt = ""
-                if not sys.stdin.isatty():
+                if not sys.stdin.isatty() and (
+                    getattr(args, "input_format", None) == "stream-json"
+                    or (not has_prompt_flag and not has_positional)
+                ):
                     try:
                         stdin_prompt = sys.stdin.read().strip()
                     except Exception:

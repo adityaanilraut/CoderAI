@@ -13,8 +13,8 @@ from coderai.soul.session.store import JsonlSessionStore
 logger = logging.getLogger(__name__)
 
 SESSION_MENTION_PATTERN = re.compile(
-    r"@\[(?P<md_label>[^\]]+)\]\((?P<md_uri>dsh-session:[^\s)]+)\)"
-    r"|(?P<dsh_uri>dsh-session:[a-zA-Z0-9_\-]+)"
+    r"@\[(?P<md_label>[^\]]+)\]\((?P<md_uri>coderai-session:[^\s)]+)\)"
+    r"|(?P<session_uri>coderai-session:[a-zA-Z0-9_\-]+)"
     r"|@session[:/](?P<id>[a-zA-Z0-9_\-]+)"
     r"|session[:/](?P<raw_id>[a-zA-Z0-9_\-]{8,})"
 )
@@ -23,10 +23,13 @@ DEFAULT_MAX_BYTES_PER_REFERENCE = 4096
 
 
 def decode_session_uri(uri: str) -> str | None:
-    """Decode a canonical dsh-session: URI or return the raw payload if alphanumeric."""
-    if not uri or not uri.startswith("dsh-session:"):
+    """Decode a canonical coderai-session: URI or return the raw payload if alphanumeric."""
+    if not uri:
         return None
-    payload = uri[len("dsh-session:") :]
+    prefix = "coderai-session:"
+    if not uri.startswith(prefix):
+        return None
+    payload = uri[len(prefix) :]
     try:
         padded = payload + "=" * ((4 - len(payload) % 4) % 4)
         raw = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
@@ -44,7 +47,7 @@ def decode_session_uri(uri: str) -> str | None:
 
 
 def extract_session_reference_ids(text: str) -> list[str]:
-    """Extract unique session reference IDs mentioned in text (supports @session:<id>, @session/<id>, dsh-session: URIs)."""
+    """Extract unique session reference IDs mentioned in text (supports @session:<id>, @session/<id>, coderai-session: URIs)."""
     if not text:
         return []
     ids: list[str] = []
@@ -53,8 +56,8 @@ def extract_session_reference_ids(text: str) -> list[str]:
         sid: str | None = None
         if match.group("md_uri"):
             sid = decode_session_uri(match.group("md_uri"))
-        elif match.group("dsh_uri"):
-            sid = decode_session_uri(match.group("dsh_uri"))
+        elif match.group("session_uri"):
+            sid = decode_session_uri(match.group("session_uri"))
         else:
             sid = match.group("id") or match.group("raw_id")
         if sid and sid not in seen:

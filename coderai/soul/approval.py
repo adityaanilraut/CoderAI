@@ -71,32 +71,22 @@ PERMISSION_DESCRIBED_TOOLS = {
     "terminal_signal",
     "terminal_close",
     "terminal_list",
-    "lsp",
     "schedule_create",
     "schedule_list",
     "schedule_delete",
     "Task",
     "subagent",
     "subagent_fork",
-    "workflow",
-    "ralph",
     "spawn_teammate",
     "team_task_create",
     "team_task_get",
     "team_task_list",
     "team_task_update",
     "wait_agent",
-    "code_mode",
-    "session_query",
     "session_search",
     "session_trace",
     "session_event_search",
     "session_event_read",
-    "browser_navigate",
-    "browser_click",
-    "browser_type",
-    "browser_snapshot",
-    "browser_close",
 }
 
 
@@ -535,23 +525,6 @@ def describe_tool_permission_request(
             "scopes": ["network"],
         }
 
-    if name == "browser_navigate":
-        url = args.get("url") if isinstance(args.get("url"), str) else "browser_navigate"
-        return {
-            "toolCallId": tool_call["id"],
-            "name": "browser_navigate",
-            "command": url,
-            "scopes": ["network"],
-        }
-
-    if name in ("browser_click", "browser_type", "browser_snapshot", "browser_close"):
-        return {
-            "toolCallId": tool_call["id"],
-            "name": name,
-            "command": f"{name} {args.get('element_ref', '')}".strip(),
-            "scopes": ["network"] if name in ("browser_click", "browser_type") else [],
-        }
-
     if name == "UnderstandImage":
         image_path = args.get("image_path") if isinstance(args.get("image_path"), str) else ""
         img_scopes: list[str] = ["network"]
@@ -624,17 +597,6 @@ def describe_tool_permission_request(
             "scopes": [],
         }
 
-    if name == "lsp":
-        fp = args.get("file_path") if isinstance(args.get("file_path"), str) else ""
-        op = args.get("operation") if isinstance(args.get("operation"), str) else "lsp"
-        scopes = [_read_scope(project_root, fp)] if fp else ["read-in-cwd"]
-        return {
-            "toolCallId": tool_call["id"],
-            "name": "lsp",
-            "command": f"lsp {op} {fp}".strip(),
-            "scopes": scopes,
-        }
-
     if name in ("schedule_create", "schedule_delete"):
         return {
             "toolCallId": tool_call["id"],
@@ -662,30 +624,6 @@ def describe_tool_permission_request(
             "toolCallId": tool_call["id"],
             "name": name,
             "command": description or name,
-            "scopes": scopes,
-        }
-
-    if name == "workflow":
-        meta_obj = args.get("meta")
-        meta = meta_obj if isinstance(meta_obj, dict) else {}
-        wf_name_val = meta.get("name")
-        wf_name = wf_name_val if isinstance(wf_name_val, str) else "workflow"
-        return {
-            "toolCallId": tool_call["id"],
-            "name": "workflow",
-            "command": f"workflow {wf_name}",
-            "scopes": ["write-in-cwd"],
-        }
-
-    if name == "ralph":
-        mode = args.get("mode") if isinstance(args.get("mode"), str) else "general"
-        obj_val = args.get("objective")
-        obj = obj_val if isinstance(obj_val, str) else "verify"
-        scopes = [] if mode == "read_only" else ["write-in-cwd"]
-        return {
-            "toolCallId": tool_call["id"],
-            "name": "ralph",
-            "command": f"ralph {obj[:30]}",
             "scopes": scopes,
         }
 
@@ -721,16 +659,7 @@ def describe_tool_permission_request(
             "scopes": [],
         }
 
-    if name == "code_mode":
-        return {
-            "toolCallId": tool_call["id"],
-            "name": "code_mode",
-            "command": "code_mode",
-            "scopes": ["write-in-cwd"],
-        }
-
     if name in (
-        "session_query",
         "session_search",
         "session_trace",
         "session_event_search",

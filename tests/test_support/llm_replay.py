@@ -1,6 +1,6 @@
 """Deterministic LLM replay engine for zero-cost, keyless automated testing.
 
-Port of dsh test-support/llm-replay. Enables recording and replaying LLM responses
+Enables recording and replaying LLM responses
 (text streams, reasoning/thinking, tool calls, token usage) in unit and integration tests.
 """
 

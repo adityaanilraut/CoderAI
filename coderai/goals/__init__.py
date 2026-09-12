@@ -1,1 +1,1 @@
-"""Goal tracking and DSH orchestration."""
+"""Goal tracking and execution orchestration."""

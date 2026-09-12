@@ -382,22 +382,39 @@ class ACPServer:
         # Carry the parent conversation across with a real SessionManager fork
         # (clones message history, event log, and file checkpoint).
         parent_session = self.sessions.get(session_id)
+        source_id = None
         if parent_session is not None:
             source_id = getattr(parent_session[0].cli, "session_id", None)
-            forked_id = None
-            if source_id:
+        else:
+            # Fallback 1: Resolve from on-disk ACP session directory
+            try:
+                candidate_dir = Path(cwd) / ".coderai" / "acp_sessions" / session_id
+                if candidate_dir.exists():
+                    source_id = load_engine_session_id(candidate_dir)
+            except Exception:
+                pass
+            # Fallback 2: Check if session_id is directly a SessionManager session ID
+            if not source_id:
                 try:
-                    forked_id = engine.manager.fork_session(source_id)
-                except Exception as exc:
-                    logger.warning("SessionManager fork failed: %s", exc)
-            if forked_id:
-                engine.bind_session(forked_id)
-                save_engine_session_id(forked_session.dir, forked_id)
-            else:
-                logger.warning(
-                    "Forked ACP session %s started without conversation history",
-                    forked_session.id,
-                )
+                    if engine.manager.get_session(session_id):
+                        source_id = session_id
+                except Exception:
+                    pass
+
+        forked_id = None
+        if source_id:
+            try:
+                forked_id = engine.manager.fork_session(source_id)
+            except Exception as exc:
+                logger.warning("SessionManager fork failed: %s", exc)
+        if forked_id:
+            engine.bind_session(forked_id)
+            save_engine_session_id(forked_session.dir, forked_id)
+        else:
+            logger.warning(
+                "Forked ACP session %s started without conversation history",
+                forked_session.id,
+            )
 
         return acp.schema.ForkSessionResponse(
             session_id=forked_session.id,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextlib
+import hashlib
 import json
 import os
 import random
@@ -36,9 +38,10 @@ from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions, has_focus, is_done
 from prompt_toolkit.formatted_text import AnyFormattedText, FormattedText, to_formatted_text
-from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.history import FileHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.styles import Style
 from prompt_toolkit.layout.containers import (
     ConditionalContainer,
     DynamicContainer,
@@ -3218,6 +3221,7 @@ if HAS_PTK:
                 """Kimi Ctrl-O parity: open $VISUAL/$EDITOR for the current buffer."""
                 buf = event.current_buffer
                 try:
+                    from coderai.utils.editor import open_external_editor
 
                     composed = open_external_editor(buf.text)
                     if composed:

@@ -1,18 +1,15 @@
 """Shared orchestration parity layer for CoderAI.
 
-Mirrors the DeepSeek Harness subagent/workflow/goal seam vocabulary onto
-CoderAI's asyncio primitives:
+Asyncio primitives and lifecycle control:
 
-- ``SubagentStopReason`` — the harness stop-reason union and the mapping from
+- ``SubagentStopReason`` — stop-reason union and the mapping from
   CoderAI's internal result statuses (``completed``/``failed``/``interrupted``/
   ``timeout``/``max_iterations``/``budget_exceeded``/``refusal``).
 - ``OrchestrationEventBus`` — contained process-local publication of the
-  ``subagent/start`` + ``subagent/end`` and ``workflow/*`` lifecycle pairs.
+  ``subagent/start`` + ``subagent/end`` lifecycle pairs.
   Listener failures are logged and contained; they never change the run.
 - ``resolve_child_depth`` — lineage-derived delegation depth (parent + 1),
   monotone via the registry handle when available.
-- ``resolve_workflow_limits`` / env knobs — deployment ceilings with DeepSeek
-  Harness defaults, overridable via ``CODERAI_*`` environment variables.
 """
 
 from __future__ import annotations
@@ -218,29 +215,6 @@ def resolve_child_depth(parent_depth: int | None, max_depth: int | None = None) 
     return child
 
 
-# ---------------------------------------------------------------------------
-# Deployment limits (mirrors workflow-worker-thread Config defaults)
-# ---------------------------------------------------------------------------
-
-
-class WorkflowLimits:
-    """Resolved per-run workflow ceilings."""
-
-    def __init__(
-        self,
-        max_concurrent_agents: int,
-        max_total_agents: int,
-        max_items_per_call: int,
-        sync_timeout_ms: int = 5000,
-        dispose_grace_ms: int = 5000,
-    ) -> None:
-        self.max_concurrent_agents = max_concurrent_agents
-        self.max_total_agents = max_total_agents
-        self.max_items_per_call = max_items_per_call
-        self.sync_timeout_ms = sync_timeout_ms
-        self.dispose_grace_ms = dispose_grace_ms
-
-
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
     raw = os.environ.get(name)
     if raw is None:
@@ -253,28 +227,9 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 
 
 def auto_max_concurrent_agents() -> int:
-    """DSH default: min(16, max(1, cores - 2))."""
+    """Default concurrent subagent slots: min(16, max(1, cores - 2))."""
     cores = os.cpu_count() or 1
     return min(16, max(1, cores - 2))
-
-
-def resolve_workflow_limits(settings: dict[str, Any] | None = None) -> WorkflowLimits:
-    """Resolve workflow ceilings from settings/env with harness defaults."""
-    settings = settings or {}
-    orch = settings.get("orchestration") or {}
-
-    def _pick(settings_key: str, env_name: str, default: int) -> int:
-        from_settings = orch.get(settings_key)
-        if isinstance(from_settings, int) and from_settings >= 1:
-            return from_settings
-        return _env_int(env_name, default)
-
-    concurrent = _pick("maxConcurrentAgents", "CODERAI_WORKFLOW_MAX_CONCURRENT_AGENTS", 0)
-    return WorkflowLimits(
-        max_concurrent_agents=(auto_max_concurrent_agents() if concurrent <= 0 else concurrent),
-        max_total_agents=_pick("maxTotalAgents", "CODERAI_WORKFLOW_MAX_TOTAL_AGENTS", 1000),
-        max_items_per_call=_pick("maxItemsPerCall", "CODERAI_WORKFLOW_MAX_ITEMS_PER_CALL", 4096),
-    )
 
 
 def resolve_subagent_defaults(settings: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -308,15 +263,6 @@ def resolve_subagent_defaults(settings: dict[str, Any] | None = None) -> dict[st
     }
 
 
-def resolve_ralph_max_rounds(settings: dict[str, Any] | None = None) -> int:
-    settings = settings or {}
-    orch = settings.get("orchestration") or {}
-    from_settings = orch.get("ralphMaxRounds")
-    if isinstance(from_settings, int) and from_settings >= 1:
-        return from_settings
-    return _env_int("CODERAI_RALPH_MAX_ROUNDS", 256)
-
-
 def resolve_goal_defaults(settings: dict[str, Any] | None = None) -> dict[str, int]:
     settings = settings or {}
     orch = settings.get("orchestration") or {}
@@ -330,7 +276,7 @@ def resolve_goal_defaults(settings: dict[str, Any] | None = None) -> dict[str, i
 
 
 def resolve_max_parallel_tool_calls(settings: dict[str, Any] | None = None) -> int:
-    """DSH agent-loop default: 10 parallel tool calls in one rolling pool."""
+    """Agent loop default: 10 parallel tool calls in one rolling pool."""
     settings = settings or {}
     orch = settings.get("orchestration") or {}
     from_settings = orch.get("maxParallelToolCalls")

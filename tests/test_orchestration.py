@@ -1,6 +1,6 @@
-"""Consolidated orchestration tests: workflows, Ralph, goals, teams, jobs, guards.
+"""Consolidated orchestration tests: subagents, goals, teams, jobs, guards.
 
-Covers workflow caps/cancel, Ralph rounds/budget, goal/DSH lifecycle, team
+Covers subagent depth/scratchpad, goal lifecycle, team
 board/messaging, jobs, git-history hermetic env, and concurrency guards. All
 LLM/network access is mocked.
 """

@@ -1173,34 +1173,6 @@ def _render_search_grep_card(
         print(f"    ↳ Search '{query}': {matches_count} matches")
 
 
-def _render_lsp_card(
-    console: Any, output_text: str | None, metadata: dict[str, Any], ok: bool
-) -> None:
-    """Render language server diagnostics cleanly."""
-    diagnostics = metadata.get("diagnostics") or []
-    file_path = metadata.get("file_path") or ""
-
-    if console is not None and _RICH:
-        diag_count = len(diagnostics) if diagnostics else (1 if output_text else 0)
-        console.print(
-            f"    ↳ [bold yellow]LSP Diagnostics:[/] [bold cyan]{escape(file_path)}[/] [dim]({diag_count} issues)[/]"
-        )
-        if diagnostics:
-            for diag in diagnostics[:10]:
-                sev = str(diag.get("severity", "error")).lower()
-                sev_badge = (
-                    "[bold red]ERROR[/]"
-                    if "err" in sev
-                    else ("[bold yellow]WARN[/]" if "warn" in sev else "[dim cyan]INFO[/]")
-                )
-                line_col = f"L{diag.get('line', 1)}:C{diag.get('col', 1)}"
-                msg = escape(str(diag.get("message", "")))
-                code = f" [dim]({escape(str(diag.get('code')))})[/]" if diag.get("code") else ""
-                console.print(f"      {sev_badge} [dim cyan]{line_col}[/] {msg}{code}")
-        elif output_text and output_text.strip():
-            console.print(f"      {escape(output_text.strip())}")
-    elif output_text:
-        print(f"    ↳ LSP: {file_path}\n      {output_text.strip()}")
 
 
 def _render_subagent_card(
@@ -1249,24 +1221,6 @@ def _render_session_card(
         print(f"    ↳ Session Query: {results_count} events")
 
 
-def _render_code_mode_card(
-    console: Any, output_text: str | None, metadata: dict[str, Any], ok: bool
-) -> None:
-    """Render sandboxed python code mode execution cleanly."""
-    status = "success" if ok else "error"
-    status_style = "bold green" if ok else "bold red"
-    duration = metadata.get("durationMs")
-    dur_str = f" [dim]({duration:.1f}ms)[/]" if duration else ""
-
-    title = f"    ↳ [bold magenta]Python Code Mode[/] [{status_style}]({status})[/]{dur_str}"
-
-    if console is not None and _RICH:
-        console.print(title)
-        if output_text and output_text.strip():
-            for line in output_text.strip().splitlines()[:15]:
-                console.print(f"      [dim]│[/] {escape(line)}")
-    elif output_text:
-        print(f"    ↳ Python Code Mode: {status}")
 
 
 def render_tool_card(console: Any | None, message: SessionMessage) -> None:
@@ -1330,9 +1284,6 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
             elif name in ("grep", "glob", "file_search", "find_files"):
                 _render_search_grep_card(console, raw_output, metadata, ok)
 
-            # LSP diagnostics card
-            elif name in ("lsp", "diagnostics", "typecheck"):
-                _render_lsp_card(console, raw_output, metadata, ok)
 
             # Subagent task card
             elif name in ("subagent", "delegate", "agent_task", "invoke_agent"):
@@ -1348,9 +1299,6 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
             ):
                 _render_session_card(console, raw_output, metadata, ok)
 
-            # Code mode card
-            elif name in ("code_mode", "python_eval", "eval"):
-                _render_code_mode_card(console, raw_output, metadata, ok)
 
             # Read tool snippet info
             elif name in ("read", "Read", "view_file"):

@@ -1,4 +1,4 @@
-"""Consolidated MCP transports, OAuth, plugins, skills, LSP, and plan review."""
+"""Consolidated MCP transports, OAuth, plugins, skills, and plan review."""
 
 from __future__ import annotations
 

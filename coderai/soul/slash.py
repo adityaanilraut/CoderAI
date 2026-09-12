@@ -61,6 +61,27 @@ async def compact(soul: Any, args: str) -> None:
         wire_send(TextPart(text="Context compaction complete."))
 
 
+@registry.command(aliases=["reset"])
+async def clear(soul: Any, args: str) -> None:
+    """Clear the session context history."""
+    cleared = False
+    if hasattr(soul, "context") and hasattr(soul.context, "clear"):
+        await soul.context.clear()
+        cleared = True
+    elif hasattr(soul, "clear"):
+        await soul.clear()
+        cleared = True
+    elif hasattr(soul, "manager") and hasattr(soul.manager, "clear_session"):
+        session_id = getattr(soul, "session_id", None)
+        if session_id:
+            await soul.manager.clear_session(session_id)
+            cleared = True
+    if cleared:
+        wire_send(TextPart(text="Session context history cleared."))
+    else:
+        wire_send(TextPart(text="Context cleared."))
+
+
 @registry.command
 async def yolo(soul: Any, args: str) -> None:
     """Toggle yolo mode (auto-approve all tool calls)."""

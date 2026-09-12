@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from enum import Enum, auto
+from typing import Any
 
 from rich.console import RenderableType
 from rich.panel import Panel

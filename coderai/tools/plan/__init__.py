@@ -44,14 +44,14 @@ def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult
     raw = args.get("plan") if args.get("plan") is not None else args.get("summary")
     plan = as_str(raw).strip()
 
-    # DSH: must be called from an agent/session
+    # Must be called from an agent/session
     session_id = None
     if isinstance(context, dict):
         session_id = context.get("session_id")
     else:
         session_id = getattr(context, "session_id", None)
 
-    # DSH: only available when plan mode is active
+    # Only available when plan mode is active
     is_plan_mode = False
     if isinstance(context, dict):
         is_plan_mode = bool(context.get("plan_mode") or context.get("planMode"))
@@ -97,7 +97,7 @@ def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult
             name="exit_plan_mode",
             error="exit_plan_mode is only available in plan mode",
         )
-    # DSH: header validation applies when `plan` param is used; `summary` alias remains lenient
+    # Header validation applies when `plan` param is used; `summary` alias remains lenient
     if has_plan_key:
         if not plan or not _HEADING_RE.search(plan):
             return ToolResult(

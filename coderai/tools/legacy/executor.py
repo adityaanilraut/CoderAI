@@ -183,8 +183,15 @@ class ToolExecutor:
                             "error": "Execution interrupted",
                         },
                     }
-                async with self._concurrency_semaphore:
-                    res = await self.execute_tool_call(session_id, tc, hooks)
+                try:
+                    async with self._concurrency_semaphore:
+                        res = await self.execute_tool_call(session_id, tc, hooks)
+                except Exception as exc:
+                    res = ToolResult(
+                        ok=False,
+                        name=tc["function"].get("name", "tool"),
+                        error=f"Unhandled tool execution error: {exc}",
+                    )
                 return {
                     "toolCallId": tc["id"],
                     "content": self.format_tool_result(res),
@@ -192,8 +199,24 @@ class ToolExecutor:
                 }
 
             tasks = [_run_single(tc) for tc in parsed_calls]
-            executions = await asyncio.gather(*tasks, return_exceptions=False)
-            return list(executions)
+            executions = await asyncio.gather(*tasks, return_exceptions=True)
+            res_list: list[dict[str, Any]] = []
+            for i, ex in enumerate(executions):
+                if isinstance(ex, Exception):
+                    tc = parsed_calls[i]
+                    fn_name = tc.get("function", {}).get("name", "tool")
+                    res_list.append(
+                        {
+                            "toolCallId": tc.get("id", ""),
+                            "content": json.dumps(
+                                {"ok": False, "name": fn_name, "error": str(ex)}
+                            ),
+                            "result": {"ok": False, "name": fn_name, "error": str(ex)},
+                        }
+                    )
+                else:
+                    res_list.append(ex)
+            return res_list
 
         # Sequential execution path
         executions_list: list[dict[str, Any]] = []
@@ -201,7 +224,14 @@ class ToolExecutor:
             if should_stop and should_stop():
                 break
 
-            result = await self.execute_tool_call(session_id, tool_call, hooks)
+            try:
+                result = await self.execute_tool_call(session_id, tool_call, hooks)
+            except Exception as exc:
+                result = ToolResult(
+                    ok=False,
+                    name=tool_call.get("function", {}).get("name", "tool"),
+                    error=f"Unhandled tool execution error: {exc}",
+                )
             executions_list.append(
                 {
                     "toolCallId": tool_call["id"],

@@ -1,4 +1,4 @@
-"""Consolidated background/wire: jobs, flows, notifications, wire server, browser, telemetry, hooks, atomic IO."""
+"""Consolidated background/wire: jobs, flows, notifications, wire server, telemetry, hooks, atomic IO."""
 
 from __future__ import annotations
 

@@ -27,10 +27,10 @@ from coderai.tools.legacy.types import (
 DEFAULT_LINE_LIMIT = 2000
 MAX_LINE_LENGTH = 2000
 LINE_NUMBER_WIDTH = 6
-READ_MAX_BYTES = 50 * 1024  # DSH READ_MAX_BYTES cap
+READ_MAX_BYTES = 50 * 1024  # READ_MAX_BYTES cap
 STREAM_MIN_SIZE = (
     10 * 1024 * 1024
-)  # DSH streaming threshold; Python reads whole but documents ceiling
+)  # Streaming threshold; Python reads whole but documents ceiling
 # ponytail: whole-file read; streaming via chunked scan if large files cause OOM
 
 DEFAULT_GITIGNORE = [
@@ -379,7 +379,7 @@ def _find_suffix_matches(project_root: str, suffix: str) -> list[str]:
 def _parse_line_number(value: Any, label: str) -> tuple[bool, int | None, str | None]:
     if value is None or value == "":
         return True, None, None
-    # DSH: must be integer, not float string. Reject "2.0", "1.5" like Number.isInteger.
+    # Must be integer, not float string. Reject "2.0", "1.5" like Number.isInteger.
     if isinstance(value, float):
         return False, None, f"{label} must be a positive integer"
     if isinstance(value, str):
@@ -646,7 +646,7 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
         )
 
     total_lines = len(lines)
-    # DSH: offset out of range (except empty+offset1 which already returned)
+    # Offset out of range (except empty+offset1 which already returned)
     if offset is not None and offset > total_lines:
         return ToolResult(
             ok=False,
@@ -655,14 +655,14 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
             metadata={"code": "FS_NOT_FOUND"},
         )
     start_index = (offset - 1) if offset else 0
-    # DSH READ_MAX_BYTES: byte cap like buildWindow — stop adding lines when cap hit
+    # READ_MAX_BYTES: byte cap like buildWindow — stop adding lines when cap hit
     # ponytail: linear scan, no streaming; upgrade to chunked scan if large files regress
     truncated_by_bytes = False
     selected: list[str] = []
     output_bytes = 0
     for idx in range(start_index, min(start_index + limit, total_lines)):
         raw_line = lines[idx]
-        # apply line truncation first for byte counting (matches DSH truncateLine)
+        # apply line truncation first for byte counting (matches truncateLine)
         display_line = (
             raw_line[:MAX_LINE_LENGTH] + f"... (line truncated to {MAX_LINE_LENGTH} chars)"
             if len(raw_line) > MAX_LINE_LENGTH
@@ -698,7 +698,7 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
 
     formatted_output = _format_with_line_numbers(selected, start_line)
 
-    # DSH formatReadOutput footers: capped > paged > eof
+    # Output footers: capped > paged > eof
     if truncated_by_bytes:
         formatted_output = f"{formatted_output}\n\n(Output capped. Showing lines {start_line}-{end_line}. Use offset={end_line + 1} to continue.)"
     elif end_line < total_lines:

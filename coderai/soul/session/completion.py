@@ -166,11 +166,17 @@ def call_stream_or_sync(
                                 content_parts.append(delta_content)
                                 estimated_tokens += max(1, len(delta_content) // 4)
                                 if on_chunk:
-                                    on_chunk(delta_content)
+                                    try:
+                                        on_chunk(delta_content)
+                                    except Exception:
+                                        pass
                                 if on_progress:
-                                    on_progress(
-                                        {"estimatedTokens": estimated_tokens, "type": "update"}
-                                    )
+                                    try:
+                                        on_progress(
+                                            {"estimatedTokens": estimated_tokens, "type": "update"}
+                                        )
+                                    except Exception:
+                                        pass
 
                             delta_thinking = extract_reasoning_content(
                                 delta, reasoning_key
@@ -179,15 +185,21 @@ def call_stream_or_sync(
                                 thinking_parts.append(delta_thinking)
                                 estimated_tokens += max(1, len(delta_thinking) // 4)
                                 if on_thinking_chunk:
-                                    on_thinking_chunk(delta_thinking)
+                                    try:
+                                        on_thinking_chunk(delta_thinking)
+                                    except Exception:
+                                        pass
                                 if on_progress:
-                                    on_progress(
-                                        {
-                                            "estimatedTokens": estimated_tokens,
-                                            "type": "update",
-                                            "isThinking": True,
-                                        }
-                                    )
+                                    try:
+                                        on_progress(
+                                            {
+                                                "estimatedTokens": estimated_tokens,
+                                                "type": "update",
+                                                "isThinking": True,
+                                            }
+                                        )
+                                    except Exception:
+                                        pass
 
                             delta_refusal = getattr(delta, "refusal", None)
                             if delta_refusal:
@@ -224,7 +236,10 @@ def call_stream_or_sync(
                 raise stream_err
 
             if on_progress:
-                on_progress({"estimatedTokens": estimated_tokens, "type": "end"})
+                try:
+                    on_progress({"estimatedTokens": estimated_tokens, "type": "end"})
+                except Exception:
+                    pass
 
             if not usage_dict and estimated_tokens > 0:
                 usage_dict = {

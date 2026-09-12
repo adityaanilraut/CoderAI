@@ -109,7 +109,6 @@ _COMMANDS = (
         ("list", "tree", "report", "send"),
     ),
     SlashCommand("teams", "Inspect active agent teams", "Diagnostics"),
-    SlashCommand("lsp", "Inspect language-server status", "Diagnostics"),
     SlashCommand(
         "mcp",
         "Inspect MCP servers, tools, prompts, and resources",
@@ -380,13 +379,6 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "summary": "Inspect active agent team members, task allocation, and coordination boards.",
         "description": "View team configuration, assigned tasks, and message routing among specialized agents.",
         "examples": ["/teams"],
-    },
-    "lsp": {
-        "title": "Language Server Protocol (LSP)",
-        "syntax": "/lsp",
-        "summary": "Inspect active LSP connections, language servers, and diagnostics.",
-        "description": "View language server instances, connection health, and code diagnostics.",
-        "examples": ["/lsp"],
     },
     "image": {
         "title": "Image Vision Attachment",
@@ -798,7 +790,6 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("/compact", "", "Compress history to free up active context tokens"),
             ("/history", "", "View turn-by-turn conversation timeline"),
             ("/config, /settings", "", "Inspect resolved workspace & user settings"),
-            ("/lsp", "", "Inspect LSP language servers and code diagnostics"),
             ("/teams", "", "Inspect active agent team members and status"),
         ],
     ),

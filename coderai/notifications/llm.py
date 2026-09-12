@@ -1,6 +1,9 @@
 # Ported from coderai/core/notifications.py - kimi structure (notifications/llm.py).
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any
+
 from coderai.notifications.models import NotificationView, _NOTIFICATION_ID_RE
 def build_notification_message(view: NotificationView) -> str:
     """Render the advisory user-message text for the ``llm`` sink (Kimi parity)."""

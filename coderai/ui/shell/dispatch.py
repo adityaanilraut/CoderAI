@@ -6,21 +6,18 @@ structured registration via SlashCommandRegistry, and typed ShellContext.
 
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Coroutine
 from enum import Enum, auto
 import os
 import pathlib
-import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine
+from typing import Any
 
-from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from coderai.log import logger
-from coderai.utils.slashcmd import SlashCommand, SlashCommandRegistry
+from coderai.utils.slashcmd import SlashCommandRegistry
 
 
 class SlashAction(Enum):
@@ -233,7 +230,7 @@ def cmd_schedule(ctx: ShellContext, args: str) -> SlashAction:
     return SlashAction.HANDLED
 
 
-@registry.command(aliases=["role"])
+@registry.command(name="agent", aliases=["role", "agents", "roles", "subagents", "subagent"])
 def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
     """View or switch active agent role."""
     arg_clean = args.strip()
@@ -831,7 +828,7 @@ def cmd_undo(ctx: ShellContext, args: str) -> SlashAction:
     return SlashAction.HANDLED
 
 
-@registry.command
+@registry.command(name="new", aliases=["reset"])
 def cmd_new(ctx: ShellContext, args: str) -> SlashAction:
     """Start a fresh session."""
     ctx.session_id = None
@@ -897,8 +894,6 @@ def cmd_afk(ctx: ShellContext, args: str) -> SlashAction:
 @registry.command(name="add-dir", aliases=["add_dir"])
 def cmd_add_dir(ctx: ShellContext, args: str) -> SlashAction:
     """Add directory to workspace."""
-    from coderai.utils.path import list_directory
-
     arg = args.strip().strip("'\"")
     if not arg:
         dirs = getattr(ctx.mgr, "additional_dirs", [])
@@ -1062,7 +1057,7 @@ def cmd_task(ctx: ShellContext, args: str) -> SlashAction:
     return SlashAction.HANDLED
 
 
-@registry.command
+@registry.command(name="web-vis", aliases=["web", "vis", "browser", "web_vis"])
 def cmd_web_vis(ctx: ShellContext, args: str) -> SlashAction:
     """Pure CLI notice for web/vis commands."""
     msg = "CoderAI is a pure CLI application. Web UI and browser visualizers have been removed."
@@ -1070,6 +1065,75 @@ def cmd_web_vis(ctx: ShellContext, args: str) -> SlashAction:
         ctx.console.print(f"[yellow]{msg}[/]")
     else:
         print(msg)
+    return SlashAction.HANDLED
+
+
+@registry.command(name="teams", aliases=["team", "swarm"])
+def cmd_teams(ctx: ShellContext, args: str) -> SlashAction:
+    """Inspect autonomous multi-agent swarm team and task board."""
+    from coderai.teams import get_team_manager
+
+    team_mgr = get_team_manager()
+    teammates = team_mgr.list_teammates()
+    tasks = team_mgr.board.list_tasks()
+
+    if ctx.console is not None:
+        tt = Table(title="Autonomous Swarm — Teammates", border_style="cyan")
+        tt.add_column("Agent ID", style="bold cyan")
+        tt.add_column("Role / Spec", style="magenta")
+        tt.add_column("Status", style="green")
+        tt.add_column("Turn / Iter", justify="right")
+        tt.add_column("Description")
+        if not teammates:
+            tt.add_row("(none active)", "-", "-", "-", "No autonomous teammates currently spawned.")
+        else:
+            for tm in teammates:
+                tt.add_row(tm.agent_id, tm.role, tm.status, str(tm.turn_count), tm.description or "-")
+        ctx.console.print(tt)
+
+        tb = Table(title="Autonomous Swarm — Task Board", border_style="blue")
+        tb.add_column("Task ID", style="bold blue")
+        tb.add_column("Title", style="white")
+        tb.add_column("Assigned", style="cyan")
+        tb.add_column("Priority", style="yellow")
+        tb.add_column("Status", style="green")
+        if not tasks:
+            tb.add_row("(no tasks)", "No swarm tasks on board.", "-", "-", "-")
+        else:
+            for t in tasks:
+                tb.add_row(t.task_id, t.title, t.assigned_to or "(unassigned)", t.priority, t.status)
+        ctx.console.print(tb)
+    else:
+        print(f"Autonomous Swarm: {len(teammates)} teammates, {len(tasks)} tasks.")
+        for tm in teammates:
+            print(f"  • {tm.agent_id} [{tm.role}]: {tm.status}")
+        for t in tasks:
+            print(f"  [{t.task_id}] {t.title} ({t.status}) -> {t.assigned_to or 'unassigned'}")
+    return SlashAction.HANDLED
+
+
+@registry.command(name="btw", aliases=["side"])
+async def cmd_btw(ctx: ShellContext, args: str) -> SlashAction:
+    """Ask a lightweight side question without mutating the main conversation history."""
+    q = args.strip()
+    if not q:
+        print("Usage: /btw <question>")
+        return SlashAction.HANDLED
+    from coderai.soul.btw import run_side_question
+
+    if ctx.console is not None:
+        ctx.console.print(f"[dim]Thinking... (side question: {q[:60]}...)[/]")
+    try:
+        answer = await run_side_question(ctx.mgr, ctx.session_id, q)
+        if ctx.console is not None:
+            ctx.console.print(Panel(answer, title="[bold cyan]BTW / Side Note[/]", border_style="cyan"))
+        else:
+            print(f"\n--- BTW ---\n{answer}\n-----------")
+    except Exception as err:
+        if ctx.console is not None:
+            ctx.console.print(f"[red]Side question failed: {err}[/]")
+        else:
+            print(f"Side question failed: {err}")
     return SlashAction.HANDLED
 
 

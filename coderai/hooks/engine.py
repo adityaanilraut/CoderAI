@@ -21,6 +21,7 @@ import pathlib
 import re
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -44,7 +45,7 @@ def _scrubbed_env(base: dict[str, str] | None = None) -> dict[str, str]:
     src = base if base is not None else os.environ
     out: dict[str, str] = {}
     for k, v in src.items():
-        if pat.search(k) or k.upper().startswith("DSH_"):
+        if pat.search(k) or k.upper().startswith("CODERAI_"):
             continue
         out[k] = v
     return out

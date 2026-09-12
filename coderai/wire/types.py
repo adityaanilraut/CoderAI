@@ -11,6 +11,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 from dataclasses import dataclass, field
+import datetime
+from enum import Enum
+import pathlib
 from typing import Any, Literal, Union
 
 from kosong.message import (
@@ -521,9 +524,19 @@ def _to_json_dict(msg: Any) -> dict[str, Any]:
 def _jsonable(v: Any) -> Any:
     if v is None or isinstance(v, (bool, int, float, str)):
         return v
+    if isinstance(v, Enum):
+        return v.value
+    if isinstance(v, (pathlib.Path, pathlib.PurePath)):
+        return str(v)
+    if isinstance(v, (datetime.datetime, datetime.date)):
+        return v.isoformat()
+    if isinstance(v, (bytes, bytearray)):
+        return v.decode("utf-8", errors="replace")
     if hasattr(v, "model_dump"):
         return _jsonable(v.model_dump())
-    if isinstance(v, (list, tuple)):
+    if hasattr(v, "dict") and callable(getattr(v, "dict", None)):
+        return _jsonable(v.dict())
+    if isinstance(v, (list, tuple, set, frozenset)):
         return [_jsonable(x) for x in v]
     if isinstance(v, dict):
         return {str(k): _jsonable(x) for k, x in v.items()}

@@ -1,8 +1,7 @@
 """Tests for the ACP terminal bridge (``coderai/acp/terminal.py`` + ext_method).
 
-All tests use a fake terminal manager: real PTYs are environment-sensitive
-(``out of pty devices`` failures are documented in REMAINING_PLAN.md), so
-PTY behavior stays covered by the existing terminal tool tests instead.
+All tests use a fake terminal manager: real PTYs are environment-sensitive,
+so PTY behavior stays covered by the existing terminal tool tests instead.
 """
 
 from __future__ import annotations

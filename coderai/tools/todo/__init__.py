@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from coderai.tools.legacy.types import ToolResult
 
 # ponytail: coderai imports are function-level so `import coderai.tools.todo`
 # first never suspends this module partial while the tool registry instantiates.

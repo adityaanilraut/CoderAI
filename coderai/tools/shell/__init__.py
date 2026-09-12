@@ -349,7 +349,7 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
             name="bash",
             error="invalid description: expected a non-empty string for background execution",
         )
-    # DSH: timeoutMs must be positive number when provided
+    # timeoutMs must be positive number when provided
     if args.get("timeout_ms") is not None:
         try:
             tm = float(args["timeout_ms"])
@@ -384,7 +384,7 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
     execution = _execute_shell_command(shell_path, shell_args, start_cwd, command, context)
     cleaned_stdout, cwd = _strip_marker(execution["stdout"], marker)
     combined = _join_output(cleaned_stdout, execution["stderr"])
-    # DSH-style exit/signal/timeout markers appended to body
+    # Exit/signal/timeout markers appended to body
     body_with_marker = combined if combined.strip() else "(no output)"
     if execution["timed_out"]:
         body_with_marker = f"{body_with_marker}\n[timed out after {execution['timeout_ms']}ms]"
