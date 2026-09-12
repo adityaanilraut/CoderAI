@@ -22,17 +22,14 @@ _FIRST_PARTY_PACKAGES = (
     "coderai.auth",
     "coderai.background",
     "coderai.cli",
-    "coderai.code_mode",
     "coderai.goals",
     "coderai.hooks",
-    "coderai.lsp",
     "coderai.mcp",
     "coderai.network",
     "coderai.notifications",
     "coderai.plugin",
     "coderai.prompt",
     "coderai.prompts",
-    "coderai.session_query",
     "coderai.skill",
     "coderai.skills",
     "coderai.soul",
@@ -44,7 +41,6 @@ _FIRST_PARTY_PACKAGES = (
     "coderai.ui",
     "coderai.utils",
     "coderai.wire",
-    "coderai.workflow",
 )
 
 #: Third-party packages are intentionally NOT collected wholesale:

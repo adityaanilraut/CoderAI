@@ -12,9 +12,7 @@ from coderai.tools import dmail as _dmail
 from coderai.tools.file import replace as _edit
 from coderai.tools import think as _think
 from coderai.tools import background as _jobs
-from coderai.tools.legacy import lsp as _lsp
 from coderai.tools import plan as _plan_mode
-from coderai.tools.legacy import ralph as _ralph
 from coderai.tools.file import read as _read
 from coderai.tools.legacy import schedule as _schedule
 from coderai.tools.file.glob import glob_tool_definition as _glob_tool_definition
@@ -28,24 +26,9 @@ from coderai.tools.file import read_media as _image
 from coderai.tools import todo as _plan
 from coderai.tools.web import fetch as _fetch
 from coderai.tools.web import search as _search
-from coderai.tools.legacy import browser as _browser
 from coderai.tools.file import write as _write
 
 from coderai.goals.core import handle_goal_tool as _goal_handle
-from coderai.tools.legacy.goal_dsh import (
-    handle_create_goal_tool as _create_goal_handle,
-    handle_get_goal_tool as _get_goal_handle,
-    handle_update_goal_tool as _update_goal_handle,
-)
-from coderai.workflow import handle_workflow_tool as _workflow_handle
-from coderai.code_mode import handle_code_mode_tool as _code_mode_handle
-from coderai.tools.legacy.session_query import (
-    handle_session_query_tool as _session_query_handle,
-    handle_session_search_tool as _session_search_handle,
-    handle_session_trace_tool as _session_trace_handle,
-    handle_session_event_search_tool as _session_event_search_handle,
-    handle_session_event_read_tool as _session_event_read_handle,
-)
 from coderai.tools import shell as _pwsh
 from coderai.teams import (
     handle_spawn_teammate_tool as _spawn_teammate_handle,
@@ -819,93 +802,6 @@ class ToolRegistry:
             )
         )
 
-        self.register(
-            define_tool(
-                name="browser_navigate",
-                description="Navigate headless browser to a URL and extract indexed interactive elements and page content.",
-                parameters={
-                    "url": {"type": "string", "description": "The URL to navigate to."},
-                    "html_override": {
-                        "type": "string",
-                        "description": "Optional direct HTML content to render and inspect.",
-                    },
-                },
-                required=["url"],
-                handler=_browser.handle_browser_navigate_tool,
-                category="web",
-                is_mutating=False,
-                is_concurrency_safe=False,
-            )
-        )
-        self.register(
-            define_tool(
-                name="browser_click",
-                description="Click an indexed element [#N] or selector in the active browser page.",
-                parameters={
-                    "element_ref": {
-                        "type": ["integer", "string"],
-                        "description": "Element reference ID [#N] (e.g. 1 or '#1') or CSS selector to click.",
-                    }
-                },
-                required=["element_ref"],
-                handler=_browser.handle_browser_click_tool,
-                category="web",
-                is_mutating=True,
-                is_concurrency_safe=False,
-            )
-        )
-        self.register(
-            define_tool(
-                name="browser_type",
-                description="Type text into an input or textarea element on the active browser page.",
-                parameters={
-                    "element_ref": {
-                        "type": ["integer", "string"],
-                        "description": "Element reference ID [#N] or CSS selector.",
-                    },
-                    "text": {"type": "string", "description": "Text to type into element."},
-                    "clear_first": {
-                        "type": "boolean",
-                        "description": "Clear existing value before typing (default: true).",
-                    },
-                },
-                required=["element_ref", "text"],
-                handler=_browser.handle_browser_type_tool,
-                category="web",
-                is_mutating=True,
-                is_concurrency_safe=False,
-            )
-        )
-        self.register(
-            define_tool(
-                name="browser_snapshot",
-                description="Capture current DOM tree snapshot, scroll position, and text/element catalog.",
-                parameters={
-                    "extract_dom": {
-                        "type": "boolean",
-                        "description": "Extract structured element hierarchy.",
-                    },
-                    "full_page": {"type": "boolean"},
-                },
-                required=[],
-                handler=_browser.handle_browser_snapshot_tool,
-                category="web",
-                is_mutating=False,
-                is_concurrency_safe=True,
-            )
-        )
-        self.register(
-            define_tool(
-                name="browser_close",
-                description="Close active browser session and reset state.",
-                parameters={},
-                required=[],
-                handler=_browser.handle_browser_close_tool,
-                category="web",
-                is_mutating=False,
-                is_concurrency_safe=False,
-            )
-        )
 
         # 7. Subagents & Delegation
 
@@ -1166,37 +1062,7 @@ class ToolRegistry:
             )
         )
 
-        # 9. Language Server Protocol (LSP)
-        self.register(
-            define_tool(
-                name="lsp",
-                description="Query Language Server Protocol features: definitions, references, hover docs, document symbols.",
-                parameters={
-                    "operation": {
-                        "type": "string",
-                        "enum": ["goToDefinition", "findReferences", "hover", "documentSymbol"],
-                        "description": "The LSP query operation to perform.",
-                    },
-                    "file_path": {
-                        "type": "string",
-                        "description": "Path to the target source file.",
-                    },
-                    "line": {
-                        "type": "integer",
-                        "description": "1-based line number for position queries.",
-                    },
-                    "character": {
-                        "type": "integer",
-                        "description": "1-based character column number for position queries.",
-                    },
-                },
-                required=["operation", "file_path"],
-                handler=_lsp.handle_lsp_tool,
-                category="meta",
-                is_mutating=False,
-                is_concurrency_safe=True,
-            )
-        )
+
 
         # 10. Skills
         self.register(
@@ -1411,96 +1277,6 @@ class ToolRegistry:
             )
         )
 
-        # 14. Ralph / Workflow / Goal
-        self.register(
-            define_tool(
-                name="ralph",
-                description="Run an automated task loop with verification until completion criteria are met.",
-                parameters={
-                    "objective": {
-                        "type": "string",
-                        "description": "Immutable verification objective instructions.",
-                    },
-                    "prompt": {"type": "string", "description": "Alias for objective."},
-                    "max_rounds": {
-                        "type": "integer",
-                        "description": "Maximum verification rounds (default: 5).",
-                    },
-                    "max_iterations": {
-                        "type": "integer",
-                        "description": "Alias for max_rounds.",
-                    },
-                    "timeout_per_round": {
-                        "type": "number",
-                        "description": "Timeout in seconds per round (default: 90s).",
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "Optional initial context or requirements for round 1.",
-                    },
-                },
-                required=[],
-                handler=_ralph.handle_ralph_tool,
-                category="meta",
-                is_mutating=True,
-                is_concurrency_safe=False,
-            )
-        )
-        self.register(
-            define_tool(
-                name="workflow",
-                description=(
-                    "Run a workflow script that orchestrates subagents at scale. Use for work that "
-                    "fans out across many independent pieces — an audit over many files, a migration, "
-                    "multi-angle research — where you write the orchestration as a script instead of "
-                    "delegating turn by turn. Script hooks: agent(prompt, opts?), "
-                    "pipeline(items, ...stages) (no barrier between stages; stage throw drops the item "
-                    "to null), parallel(thunks) (barrier; thunk throw resolves null), phase(title), "
-                    "log(message), args. The run executes in the foreground."
-                ),
-                parameters={
-                    "script": {
-                        "type": "string",
-                        "description": "The workflow script body (top-level await and `return <value>` allowed).",
-                    },
-                    "meta": {
-                        "type": "object",
-                        "additionalProperties": True,
-                        "description": "Workflow identity block: required name (short kebab-case) and description strings, optional whenToUse string and phases array.",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "description": {"type": "string"},
-                            "whenToUse": {"type": "string"},
-                            "phases": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "additionalProperties": True,
-                                    "properties": {"title": {"type": "string"}},
-                                },
-                            },
-                        },
-                    },
-                    "args": {
-                        "type": "object",
-                        "additionalProperties": True,
-                        "description": "Optional JSON input exposed to the script as the `args` global.",
-                    },
-                    # Legacy declarative-workflow parameters (backward compatible)
-                    "workflow": {
-                        "type": "object",
-                        "description": "Legacy workflow definition schema.",
-                    },
-                    "action": {"type": "string", "enum": ["run", "status", "cancel", "list"]},
-                    "workflow_id": {"type": "string"},
-                },
-                required=[],
-                handler=_workflow_handle,
-                category="meta",
-                is_mutating=True,
-                is_concurrency_safe=False,
-            )
-        )
         self.register(
             define_tool(
                 name="goal",
@@ -1519,86 +1295,6 @@ class ToolRegistry:
                 },
                 required=["title", "description"],
                 handler=_goal_handle,
-                category="meta",
-                is_mutating=True,
-                is_concurrency_safe=False,
-            )
-        )
-        # 15a. Harness goal controls (get_goal / create_goal / update_goal)
-        self.register(
-            define_tool(
-                name="get_goal",
-                description=(
-                    "Read the current same-session goal, including its exact id/revision, objective, "
-                    "phase, completed continuation rounds, round limit, blocker reason when present, "
-                    "and whether another continuation is armed. Call this before updating a goal."
-                ),
-                parameters={},
-                required=[],
-                handler=_get_goal_handle,
-                category="meta",
-                is_mutating=False,
-                is_concurrency_safe=True,
-            )
-        )
-        self.register(
-            define_tool(
-                name="create_goal",
-                description=(
-                    "Create one persisted same-session completion goal when the current direct human "
-                    "request is a long-running objective that should continue across autonomous goal "
-                    "rounds. Do not use this for trivial single-turn work."
-                ),
-                parameters={
-                    "objective": {
-                        "type": "string",
-                        "description": "The concrete completion objective.",
-                    },
-                    "max_goal_rounds": {
-                        "type": "integer",
-                        "description": "Optional positive safe-integer limit on automatic continuation rounds.",
-                    },
-                },
-                required=["objective"],
-                handler=_create_goal_handle,
-                category="meta",
-                is_mutating=True,
-                is_concurrency_safe=False,
-            )
-        )
-        self.register(
-            define_tool(
-                name="update_goal",
-                description=(
-                    "Update the exact current goal revision. edit, pause, and resume require a direct "
-                    "top-level human request. blocked requires a concrete blocked_reason and at least "
-                    "the configured minimum number of consecutive goal rounds."
-                ),
-                parameters={
-                    "goal_id": {"type": "string", "description": "Exact id returned by get_goal."},
-                    "revision": {
-                        "type": "integer",
-                        "description": "Exact positive revision returned by get_goal.",
-                    },
-                    "action": {
-                        "type": "string",
-                        "enum": ["edit", "pause", "resume", "complete", "blocked"],
-                    },
-                    "objective": {
-                        "type": "string",
-                        "description": "Replacement objective; valid only with action edit.",
-                    },
-                    "max_goal_rounds": {
-                        "type": "integer",
-                        "description": "Replacement cap; valid only with action edit.",
-                    },
-                    "blocked_reason": {
-                        "type": "string",
-                        "description": "Concrete blocking condition; required only with action blocked.",
-                    },
-                },
-                required=["goal_id", "revision", "action"],
-                handler=_update_goal_handle,
                 category="meta",
                 is_mutating=True,
                 is_concurrency_safe=False,
@@ -1711,121 +1407,6 @@ class ToolRegistry:
         )
 
         # 16. Code Mode & Session Query
-        self.register(
-            define_tool(
-                name="code_mode",
-                description="Execute Python code in a stateful sandbox with workspace tool helpers.",
-                parameters={
-                    "code": {
-                        "type": "string",
-                        "description": "The Python code snippet to execute.",
-                    },
-                    "reset_state": {"type": "boolean"},
-                    "timeout_seconds": {"type": "number"},
-                },
-                required=["code"],
-                handler=_code_mode_handle,
-                category="meta",
-                is_mutating=True,
-                is_concurrency_safe=False,
-            )
-        )
-        self.register(
-            define_tool(
-                name="session_query",
-                description="Search historical conversation turns and tool outputs using full-text search.",
-                parameters={
-                    "query": {
-                        "type": "string",
-                        "description": "Natural language or keyword query.",
-                    },
-                    "session_id": {"type": "string"},
-                    "role": {"type": "string", "enum": ["user", "assistant", "tool", "system"]},
-                    "limit": {"type": "integer"},
-                },
-                required=["query"],
-                handler=_session_query_handle,
-                category="meta",
-                is_mutating=False,
-                is_concurrency_safe=True,
-            )
-        )
-        self.register(
-            define_tool(
-                name="session_search",
-                description="Search prior sessions in the workspace by query keywords and topics.",
-                parameters={
-                    "query": {
-                        "type": "string",
-                        "description": "Natural language or keyword search query.",
-                    },
-                    "limit": {"type": "integer"},
-                },
-                required=["query"],
-                handler=_session_search_handle,
-                category="meta",
-                is_mutating=False,
-                is_concurrency_safe=True,
-            )
-        )
-        self.register(
-            define_tool(
-                name="session_trace",
-                description="Read the authorized session lineage, event count, and recent event summaries around one session.",
-                parameters={
-                    "session_id": {
-                        "type": "string",
-                        "description": "Target session ID to trace.",
-                    },
-                },
-                required=["session_id"],
-                handler=_session_trace_handle,
-                category="meta",
-                is_mutating=False,
-                is_concurrency_safe=True,
-            )
-        )
-        self.register(
-            define_tool(
-                name="session_event_search",
-                description="Search historical events and messages within a specific session or across workspace sessions.",
-                parameters={
-                    "query": {
-                        "type": "string",
-                        "description": "Keyword search query.",
-                    },
-                    "session_id": {"type": "string"},
-                    "role": {"type": "string", "enum": ["user", "assistant", "tool", "system"]},
-                    "limit": {"type": "integer"},
-                },
-                required=["query"],
-                handler=_session_event_search_handle,
-                category="meta",
-                is_mutating=False,
-                is_concurrency_safe=True,
-            )
-        )
-        self.register(
-            define_tool(
-                name="session_event_read",
-                description="Read one full unabridged event and neighboring event summaries from a session log.",
-                parameters={
-                    "session_id": {
-                        "type": "string",
-                        "description": "The session ID containing the target event.",
-                    },
-                    "seq": {
-                        "type": "integer",
-                        "description": "The event sequence number to retrieve.",
-                    },
-                },
-                required=["session_id", "seq"],
-                handler=_session_event_read_handle,
-                category="meta",
-                is_mutating=False,
-                is_concurrency_safe=True,
-            )
-        )
 
 
 # Global default tool registry

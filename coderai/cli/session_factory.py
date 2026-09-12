@@ -120,8 +120,6 @@ async def close_session_manager(manager: SessionManager) -> None:
             manager.kill_live_processes()
         except Exception:
             pass
-
-    from coderai.lsp import client as lsp_module
     from coderai.terminal import manager as terminal_module
     from coderai.sandbox import cleanup_seatbelt_profiles
     from coderai.spill import cleanup_all_spills

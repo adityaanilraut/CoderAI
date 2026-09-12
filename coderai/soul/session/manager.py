@@ -1147,31 +1147,8 @@ class SessionManager:
         await self._maybe_drive_goal_rounds(session_id)
 
     async def _maybe_drive_goal_rounds(self, session_id: str, _depth: int = 0) -> None:
-        """Automatic same-session goal continuation (harness goal-round driver).
-
-        After a clean turn end, queue the next goal round and re-activate;
-        permission waits, interruptions, and exhausted caps stop the loop.
-        """
-        from coderai.goals.round_driver import (
-            finish_goal_round,
-            maybe_queue_goal_round,
-        )
-
-        guard = 0
-        while guard < 64:
-            guard += 1
-            if self.is_interrupted(session_id):
-                finish_goal_round(session_id, self.project_root)
-                return
-            entry = self._get_entry(session_id) or {}
-            entry_status = entry.get("status")
-            if entry_status not in ("completed",):
-                finish_goal_round(session_id, self.project_root, entry_status=entry_status)
-                return
-            if not maybe_queue_goal_round(self, session_id):
-                return
-            await self._activate(session_id)
-        finish_goal_round(session_id, self.project_root)
+        """Automatic goal rounds (no-op; harness driver removed)."""
+        return
 
     def list_available_skills(self, session_id: str | None = None) -> list[dict[str, Any]]:
         """Discover skills with enabledSkills filtering, custom scan paths, and loaded flags."""

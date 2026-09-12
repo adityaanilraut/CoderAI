@@ -341,13 +341,13 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
             name="bash",
             error="invalid command: expected a non-empty string",
         )
-    # DSH: description must be non-empty string when provided
+    # Description check: only required when run_in_background is True
     desc_val = args.get("description")
-    if desc_val is not None and not str(desc_val).strip():
+    if run_in_background and (desc_val is None or not str(desc_val).strip()):
         return ToolResult(
             ok=False,
             name="bash",
-            error="invalid description: expected a non-empty string",
+            error="invalid description: expected a non-empty string for background execution",
         )
     # DSH: timeoutMs must be positive number when provided
     if args.get("timeout_ms") is not None:
@@ -1098,8 +1098,19 @@ class Shell(CallableTool2[Params]):
             if not approval_result:
                 return approval_result.rejection_error()
 
+        def _exec_bash(cmd: str, timeout_ms: int, run_in_background: bool, description: str) -> Any:
+            return handle_bash_tool(
+                {
+                    "command": cmd,
+                    "timeout_ms": timeout_ms,
+                    "run_in_background": run_in_background,
+                    "description": description,
+                },
+                self._runtime,
+            )
+
         res = await asyncio.to_thread(
-            execute_bash,
+            _exec_bash,
             params.command,
             timeout_ms=params.timeout * 1000,
             run_in_background=params.run_in_background,

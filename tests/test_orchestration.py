@@ -15,19 +15,6 @@ from types import SimpleNamespace as NS
 import pytest
 
 from coderai.utils.common.file_history import GitFileHistory
-from coderai.goals.dsh import (
-    BLOCK_CODE_ROUND_LIMIT,
-    DSHGoalStore,
-    GoalBlockReason,
-    GoalError,
-    get_dsh_goal_store,
-    reset_dsh_goal_store,
-)
-from coderai.goals.round_driver import (
-    finish_goal_round,
-    maybe_queue_goal_round,
-)
-from coderai.orchestration import WorkflowLimits
 from coderai.subagents.builder import (
     check_subagent_depth_quota,
     cleanup_subagent_scratchpad,
@@ -52,17 +39,10 @@ from coderai.teams.deadlock import (
     assert_acyclic_dependencies,
     detect_task_cycles,
 )
-from coderai.tools.legacy.goal_dsh import (
-    handle_create_goal_tool,
-    handle_get_goal_tool,
-    handle_update_goal_tool,
-)
 from coderai.tools.background import handle_job_kill_tool, handle_job_output_tool
 from coderai.tools.legacy.path_lock import PathLockManager
-from coderai.tools.legacy.ralph import RalphHandoff, _validate_report, handle_ralph_tool
 from coderai.tools.agent import handle_subagent_tool
 from coderai.tools.legacy.types import ToolExecutionContext
-from coderai.workflow.engine import WorkflowContext, execute_workflow_script
 
 
 def _client_factory(content: str = "All done.", delay: float = 0.0):
@@ -104,14 +84,6 @@ def _tool_context(tmp_path, content: str = "All done."):
     )
 
 
-@pytest.fixture
-def goal_store(tmp_path: pathlib.Path):
-    """Provide an isolated DSH goal store, reset before and after."""
-    reset_dsh_goal_store()
-    yield get_dsh_goal_store(str(tmp_path))
-    reset_dsh_goal_store()
-
-
 async def test_orchestration_background_job_completes(tmp_path: pathlib.Path):
     """Background Task tool creates a job that completes and kills as finished."""
     ctx = _tool_context(tmp_path)
@@ -125,240 +97,6 @@ async def test_orchestration_background_job_completes(tmp_path: pathlib.Path):
     assert out.ok is True and out.metadata["job"]["status"] == "completed"
     kill = await handle_job_kill_tool({"job_id": res.metadata["jobId"]}, ctx)
     assert kill.ok is True and kill.metadata["outcome"] == "already-finished"
-
-
-async def test_orchestration_workflow_runs_pipeline_parallel(tmp_path: pathlib.Path):
-    """Workflow harness supports pipeline, parallel, phase, log, and args."""
-    ctx = WorkflowContext(
-        workflow_id="wf_contract",
-        name="contract",
-        project_root=str(tmp_path),
-        create_openai_client=None,
-    )
-    result = await execute_workflow_script(
-        """
-pipeline_out = await pipeline([1, 2, 3], lambda prev, item, index: prev + index,
-                              lambda prev, item, index: f"v_{prev}")
-parallel_out = await parallel([lambda: "ok", lambda: 1 / 0])
-phase("agg")
-log("aggregating")
-return {"pipeline": pipeline_out, "parallel": parallel_out, "n": len(args.get("files", []))}
-""",
-        {"files": [1, 2]},
-        ctx,
-    )
-    assert result.status == "completed" and result.stop_reason == "completed"
-    assert result.output == {"pipeline": ["v_1", "v_3", "v_5"], "parallel": ["ok", None], "n": 2}
-
-
-async def test_orchestration_workflow_enforces_agent_cap(tmp_path: pathlib.Path):
-    """Workflow fails once total spawned agents exceed the configured cap."""
-    ctx = WorkflowContext(
-        workflow_id="wf_cap",
-        name="cap",
-        project_root=str(tmp_path),
-        create_openai_client=_client_factory(),
-        limits=WorkflowLimits(max_concurrent_agents=2, max_total_agents=2, max_items_per_call=4096),
-    )
-    result = await execute_workflow_script(
-        'a = await agent("one")\nb = await agent("two")\n'
-        'c = await agent("three")\nreturn [a, b, c]',
-        None,
-        ctx,
-    )
-    assert result.status == "failed" and "total agent cap (2)" in str(result.error)
-
-
-async def test_orchestration_workflow_enforces_item_cap(tmp_path: pathlib.Path):
-    """Workflow fails when a single parallel call exceeds the item cap."""
-    ctx = WorkflowContext(workflow_id="wf_items", name="items", project_root=str(tmp_path))
-    result = await execute_workflow_script("await parallel([lambda: 1] * 5000)", None, ctx)
-    assert result.status == "failed" and "per-call cap" in str(result.error)
-
-
-async def test_orchestration_workflow_cancel_stops_children(tmp_path: pathlib.Path):
-    """Pre-cancelled workflow settles cancelled and wins over settled returns."""
-    ctx = WorkflowContext(workflow_id="wf_cancel", name="cancel", project_root=str(tmp_path))
-    ctx.cancel("parent step aborted")
-    result = await execute_workflow_script("return 1", None, ctx)
-    assert result.status == "cancelled" and result.stop_reason == "cancelled"
-    ctx2 = WorkflowContext(workflow_id="wf_cancel2", name="cancel2", project_root=str(tmp_path))
-    ctx2.cancel("late")
-    assert (await execute_workflow_script("log('x')\nreturn 2", None, ctx2)).status == "cancelled"
-
-
-async def test_orchestration_workflow_slot_waiter_rejects_on_cancel(tmp_path: pathlib.Path):
-    """Cancelling a slot-contended run settles the workflow without hanging."""
-    ctx = WorkflowContext(
-        workflow_id="wf_slots",
-        name="slots",
-        project_root=str(tmp_path),
-        create_openai_client=_client_factory("done", delay=0.2),
-        limits=WorkflowLimits(
-            max_concurrent_agents=1, max_total_agents=10, max_items_per_call=4096
-        ),
-    )
-    task = asyncio.create_task(
-        execute_workflow_script(
-            'a = await parallel([lambda: agent("first"), lambda: agent("second")])\nreturn a',
-            None,
-            ctx,
-        )
-    )
-    await asyncio.sleep(0.05)
-    ctx.cancel("parent step aborted")
-    await asyncio.wait_for(task, timeout=10)
-
-
-def test_orchestration_ralph_validates_reports():
-    """Ralph handoff validation enforces per-status required fields."""
-    assert (
-        _validate_report(RalphHandoff(status="continue", summary="w", next_steps="run tests"))
-        is None
-    )
-    assert _validate_report(RalphHandoff(status="continue", summary="w", next_steps="")) is not None
-    assert (
-        _validate_report(RalphHandoff(status="complete", summary="d", evidence="tests pass"))
-        is None
-    )
-    assert (
-        _validate_report(RalphHandoff(status="complete", summary="d", next_steps="more"))
-        is not None
-    )
-    assert (
-        _validate_report(RalphHandoff(status="blocked", summary="s", blocker="no docker")) is None
-    )
-    assert _validate_report(RalphHandoff(status="blocked", summary="s")) is not None
-
-
-async def test_orchestration_ralph_budget_marks_round_failed(tmp_path: pathlib.Path):
-    """Non-JSON model output fails the round instead of looping forever."""
-    res = await handle_ralph_tool(
-        {"objective": "Verify budget behavior", "max_rounds": 1}, _tool_context(tmp_path)
-    )
-    assert res.ok is False and res.metadata["status"] == "round-failed"
-
-
-async def test_orchestration_ralph_rejects_excess_rounds(tmp_path: pathlib.Path):
-    """Ralph rejects max_rounds above the ceiling."""
-    res = await handle_ralph_tool(
-        {"objective": "Verify ceiling", "max_rounds": 999_999}, _tool_context(tmp_path)
-    )
-    assert res.ok is False and "ceiling" in (res.error or "")
-
-
-def test_orchestration_goal_lifecycle_enforces_cas(goal_store: DSHGoalStore):
-    """Goal pause/resume/complete enforce CAS revisions; block carries a reason code."""
-    goal = goal_store.create("sess", "Ship the feature", max_goal_rounds=5)
-    assert (goal.phase, goal.activation, goal.max_goal_rounds) == ("active", "armed", 5)
-    with pytest.raises(GoalError):
-        goal_store.complete("sess", goal.ref().__class__(id=goal.id, revision=999))
-    assert goal_store.pause("sess", goal.ref()).phase == "paused"
-    resumed = goal_store.resume("sess", goal_store.get("sess").ref())
-    assert resumed.phase == "active"
-    assert goal_store.complete("sess", resumed.ref()).phase == "complete"
-    goal2 = goal_store.create("sess2", "Other goal")
-    blocked = goal_store.block(
-        "sess2", goal2.ref(), GoalBlockReason(code="model-reported", message="needs human")
-    )
-    assert blocked.phase == "blocked" and blocked.blocked_reason.code == "model-reported"
-
-
-def test_orchestration_goal_reload_disarms_activation(
-    goal_store: DSHGoalStore, tmp_path: pathlib.Path
-):
-    """Reloaded goals start disarmed so they never auto-run after restart."""
-    goal_store.create("sess3", "Persisted goal")
-    reset_dsh_goal_store()
-    reloaded = get_dsh_goal_store(str(tmp_path)).get("sess3")
-    assert reloaded is not None and reloaded.activation == "disarmed"
-
-
-async def test_orchestration_goal_tools_reject_stale_and_subagent(
-    tmp_path: pathlib.Path, goal_store: DSHGoalStore
-):
-    """Goal tools reject stale revisions and subagent callers lacking authority."""
-    ctx = ToolExecutionContext(session_id="sess4", project_root=str(tmp_path))
-    created = await handle_create_goal_tool({"objective": "Ship it", "max_goal_rounds": 4}, ctx)
-    assert created.ok is True
-    goal_id, revision = created.metadata["goal"]["id"], created.metadata["goal"]["revision"]
-    assert (await handle_get_goal_tool({}, ctx)).metadata["goal"]["id"] == goal_id
-    stale = await handle_update_goal_tool(
-        {"goal_id": goal_id, "revision": revision + 1, "action": "complete"}, ctx
-    )
-    assert stale.ok is False and "STALE" in stale.error
-    done = await handle_update_goal_tool(
-        {"goal_id": goal_id, "revision": revision, "action": "complete"}, ctx
-    )
-    assert done.ok is True and done.metadata["goal"]["phase"] == "complete"
-    sub_ctx = ToolExecutionContext(session_id="sub_parent_ab_task1", project_root=str(tmp_path))
-    rejected = await handle_create_goal_tool({"objective": "Nested"}, sub_ctx)
-    assert rejected.ok is False and "authority" in (rejected.error or "").lower()
-
-
-async def test_orchestration_goal_block_threshold_applies_in_round(
-    tmp_path: pathlib.Path, goal_store: DSHGoalStore
-):
-    """Model-reported blocked is deferred while an automatic round is under threshold."""
-    ctx = ToolExecutionContext(session_id="sess5", project_root=str(tmp_path))
-    first = await handle_create_goal_tool({"objective": "Long goal"}, ctx)
-    blocked_now = await handle_update_goal_tool(
-        {
-            "goal_id": first.metadata["goal"]["id"],
-            "revision": first.metadata["goal"]["revision"],
-            "action": "blocked",
-            "blocked_reason": "stuck",
-        },
-        ctx,
-    )
-    assert blocked_now.ok is True
-    second = await handle_create_goal_tool({"objective": "Long goal 2"}, ctx)
-    goal_store.set_in_goal_round("sess5", True)
-    try:
-        early = await handle_update_goal_tool(
-            {
-                "goal_id": second.metadata["goal"]["id"],
-                "revision": second.metadata["goal"]["revision"],
-                "action": "blocked",
-                "blocked_reason": "stuck",
-            },
-            ctx,
-        )
-        assert early.ok is False and "BLOCK_THRESHOLD" in early.error
-    finally:
-        goal_store.set_in_goal_round("sess5", False)
-
-
-def test_orchestration_goal_round_queues_until_limit(
-    tmp_path: pathlib.Path, goal_store: DSHGoalStore
-):
-    """Goal rounds queue until the round cap blocks the goal with a limit code."""
-    appended: list = []
-
-    class StubManager:
-        project_root = str(tmp_path)
-
-        def get_resolved_settings(self):
-            return {}
-
-        def _append_message(self, message):
-            appended.append((message.session_id, message.content, message.meta or {}))
-
-        def _build_message(self, session_id, role, content, **kwargs):
-            return NS(session_id=session_id, role=role, content=content, meta=kwargs.get("meta"))
-
-    goal_store.create("sess6", "Drive to completion", max_goal_rounds=2)
-    assert maybe_queue_goal_round(StubManager(), "sess6") is True
-    assert "<goal_round>" in appended[0][1] and goal_store.in_goal_round("sess6") is True
-    finish_goal_round("sess6", str(tmp_path), entry_status="completed")
-    assert maybe_queue_goal_round(StubManager(), "sess6") is True
-    finish_goal_round("sess6", str(tmp_path), entry_status="completed")
-    assert maybe_queue_goal_round(StubManager(), "sess6") is False
-    blocked = goal_store.get("sess6")
-    assert blocked.phase == "blocked" and blocked.blocked_reason.code == BLOCK_CODE_ROUND_LIMIT
-    goal_store.create("sess7", "Another")
-    goal_store.disarm("sess7")
-    assert maybe_queue_goal_round(StubManager(), "sess7") is False
 
 
 def test_orchestration_team_board_gates_dependencies():

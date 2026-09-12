@@ -25,7 +25,6 @@ from coderai.events import (
 )
 from coderai.background import get_job_store, reset_job_store
 from coderai.soul.session.manager import SessionManager, SessionMessage, get_project_code
-from coderai.session_query.engine import SessionQueryEngine
 from coderai.session_state import load_session_state, save_session_state
 from coderai.soul.session.store import JsonlSessionStore
 from coderai.tools.background import (
@@ -33,7 +32,6 @@ from coderai.tools.background import (
     handle_job_list_tool,
     handle_job_output_tool,
 )
-from coderai.tools.legacy.session_query import handle_session_query_tool
 from coderai.tools.legacy.types import TOOL_ABORTED_BEFORE_DISPATCH
 
 
@@ -357,49 +355,6 @@ def test_session_jobs_kill_all_terminates_running():
     reset_job_store()
 
 
-def test_session_query_search_finds_relevant_snippet(tmp_path):
-    """Keyword search returns the owning session with a matching snippet."""
-    engine = SessionQueryEngine(str(tmp_path))
-    engine.store.replace_rows(
-        "sess_abc",
-        [
-            {"seq": 1, "role": "user", "content": "Please refactor the JWT authentication flow."},
-            {
-                "seq": 2,
-                "role": "assistant",
-                "content": "Updated auth/jwt.py with RSA verification.",
-            },
-        ],
-    )
-    engine.store.save_index({"entries": [{"id": "sess_abc", "summary": "Refactor Auth"}]})
-    hits = engine.search_events("JWT authentication")
-    assert hits and hits[0]["sessionId"] == "sess_abc"
-    assert "JWT" in hits[0]["snippet"] or "authentication" in hits[0]["snippet"]
-    assert engine.list_sessions()[0]["title"] == "Refactor Auth"
-    trace = engine.get_session_trace("sess_abc")
-    assert trace["totalEvents"] == 2
-    assert "JWT" in engine.get_event("sess_abc", seq=1)["content"]
-
-
-@pytest.mark.asyncio
-async def test_session_query_tool_handles_search_and_list(tmp_path, monkeypatch):
-    """The session-query tool searches by keyword and lists known sessions."""
-    engine = SessionQueryEngine(str(tmp_path))
-    engine.store.replace_rows(
-        "sess_100",
-        [{"seq": 1, "role": "tool", "name": "bash", "content": "psql connection refused"}],
-    )
-    engine.store.save_index({"entries": [{"id": "sess_100", "summary": "Fix Database Pool"}]})
-    monkeypatch.setattr(
-        "coderai.tools.legacy.session_query.SessionQueryEngine", lambda project_root: engine
-    )
-    ctx = type("Ctx", (), {"project_root": str(tmp_path), "session_id": "cur"})()
-    found = await handle_session_query_tool(
-        {"action": "search", "query": "connection refused"}, ctx
-    )
-    assert found.ok and "sess_100" in found.output
-    listed = await handle_session_query_tool({"action": "list"}, ctx)
-    assert listed.ok and "Fix Database Pool" in listed.output
 
 
 @pytest.mark.asyncio

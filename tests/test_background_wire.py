@@ -38,15 +38,6 @@ from coderai.hooks import (
 )
 from coderai.notifications import NotificationEvent, NotificationManager
 from coderai.telemetry.sink import ExecutionSpan, TelemetryCollector
-from coderai.tools.legacy.browser import (
-    DOMExtractor,
-    HeadlessBrowserDriver,
-    handle_browser_click_tool,
-    handle_browser_close_tool,
-    handle_browser_navigate_tool,
-    handle_browser_snapshot_tool,
-    handle_browser_type_tool,
-)
 from coderai.wire.serde import deserialize_wire_message, serialize_wire_message
 from coderai.wire.server import WireServer
 from coderai.wire.types import TurnBegin
@@ -441,38 +432,6 @@ SAMPLE_HTML = """<!DOCTYPE html><html><head><title>CoderAI Test Dashboard</title
 </body></html>"""
 
 
-def test_browser_dom_extracts_interactive_elements():
-    """DOM extraction indexes links, inputs, and buttons with sequential refs."""
-    extractor = DOMExtractor()
-    extractor.feed(SAMPLE_HTML)
-    assert extractor.title == "CoderAI Test Dashboard" and len(extractor.elements) >= 4
-    assert {"a", "input", "button"} <= {e.tag for e in extractor.elements}
-    assert [e.ref_id for e in extractor.elements] == list(range(1, len(extractor.elements) + 1))
-    state = HeadlessBrowserDriver().navigate("http://localhost:3000/app", html_override=SAMPLE_HTML)
-    assert (
-        state.title == "CoderAI Test Dashboard"
-        and "Interactive Elements:" in state.format_summary()
-    )
-
-
-def test_browser_tools_drive_navigate_type_click_close():
-    """Browser tool handlers navigate, snapshot, type, click, and close cleanly."""
-    ctx = {"session_id": "test_browser_sess"}
-    res_nav = handle_browser_navigate_tool(
-        {"url": "https://dashboard.local", "html_override": SAMPLE_HTML}, ctx
-    )
-    assert res_nav.ok is True and "CoderAI Test Dashboard" in (res_nav.output or "")
-    assert res_nav.metadata.get("element_count", 0) >= 4
-    assert "Interactive Elements:" in (
-        handle_browser_snapshot_tool({"extract_dom": True}, ctx).output or ""
-    )
-    assert (
-        handle_browser_type_tool({"element_ref": 3, "text": "query", "clear_first": True}, ctx).ok
-        is True
-    )
-    assert handle_browser_click_tool({"element_ref": 1}, ctx).ok is True
-    res_close = handle_browser_close_tool({}, ctx)
-    assert res_close.ok is True and "Browser session closed" in (res_close.output or "")
 
 
 def test_telemetry_span_tracks_duration_and_exports_otel():

@@ -16,8 +16,6 @@ from typing import Any
 import pytest
 
 from coderai.ui.shell.visualize._approval_panel import extract_plan_options, prompt_plan_review
-from coderai.lsp.client import LspClient
-from coderai.lsp.protocol import LspFrameParser, encode_lsp_message
 from coderai.mcp.client import McpClient
 from coderai.mcp.manager import McpManager
 from coderai.mcp_oauth import (
@@ -47,7 +45,6 @@ from coderai.plugin.manager import (
 )
 from coderai.plugin.tool import find_plugin_tool, run_plugin_tool
 from coderai.skill import list_skills
-from coderai.tools.legacy.lsp import handle_lsp_tool
 
 
 @pytest.fixture
@@ -486,52 +483,6 @@ def test_skill_scan_discovers_skill_manifests(tmp_path: Path):
     assert {s["name"] for s in filtered} == {"alpha-skill"}
 
 
-def test_lsp_framing_parses_concatenated_messages():
-    """Concatenated Content-Length frames decode into distinct messages."""
-    parser = LspFrameParser()
-    m1 = {"jsonrpc": "2.0", "id": 1, "result": {"foo": "bar"}}
-    m2 = {"jsonrpc": "2.0", "method": "window/logMessage", "params": {"message": "hi"}}
-    parsed = parser.feed(encode_lsp_message(m1) + encode_lsp_message(m2))
-    assert len(parsed) == 2 and parsed[0]["id"] == 1
-    assert parsed[1]["method"] == "window/logMessage"
-
-
-def test_lsp_framing_buffers_partial_chunks():
-    """Split frames emit nothing until the final chunk completes the message."""
-    parser, raw = (
-        LspFrameParser(),
-        encode_lsp_message({"jsonrpc": "2.0", "id": 42, "result": {"data": [1, 2, 3]}}),
-    )
-    assert parser.feed(raw[: len(raw) // 2]) == []
-    assert parser.feed(raw[len(raw) // 2 :])[0]["result"]["data"] == [1, 2, 3]
-
-
-def test_lsp_fallback_resolves_python_symbols(tmp_path: Path):
-    """The AST fallback answers definition, hover, and symbol queries offline."""
-    (tmp_path / "greeter.py").write_text(
-        "class Greeter:\n    def greet(self, name: str) -> str:\n"
-        '        """Greet a user by name."""\n        return f"Hello {name}"\n'
-    )
-    client = LspClient(workspace_root=str(tmp_path))
-    res_def = client.query("goToDefinition", "greeter.py", 2, 9, project_root=str(tmp_path))
-    assert res_def["ok"] is True and res_def["locations"][0]["line"] == 2
-    res_hover = client.query("hover", "greeter.py", 2, 9, project_root=str(tmp_path))
-    assert res_hover["ok"] is True and "Greet a user by name" in res_hover["hover"]["contents"]
-    res_sym = client.query("documentSymbol", "greeter.py", 1, 1, project_root=str(tmp_path))
-    assert res_sym["ok"] is True and {"Greeter", "greet"} <= {s["name"] for s in res_sym["symbols"]}
-
-
-def test_lsp_tool_rejects_invalid_operation(tmp_path: Path):
-    """The LSP tool validates the operation name and required file path."""
-    context = type("Ctx", (), {"project_root": str(tmp_path)})()
-    cases = [
-        ({}, "Missing required parameter"),
-        ({"operation": "nonExistent", "file_path": "a.py"}, "Invalid operation"),
-        ({"operation": "goToDefinition"}, "Missing required parameter `file_path`"),
-    ]
-    for args, msg in cases:
-        res = handle_lsp_tool(args, context)
-        assert res.ok is False and msg in res.error
 
 
 def test_plan_review_extracts_option_list():

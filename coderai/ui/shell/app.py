@@ -2095,49 +2095,7 @@ async def _run_interactive(
                     continue
 
                 if cmd == "/lsp":
-                    import shutil
-                    from coderai.lsp.client import LSP_SERVER_COMMANDS, get_lsp_client
-
-                    lsp_client = get_lsp_client(mgr.project_root)
-                    detected_servers = []
-                    for ext, cmd_args in LSP_SERVER_COMMANDS.items():
-                        bin_name = cmd_args[0]
-                        found_path = shutil.which(bin_name)
-                        if not found_path and ext == ".py":
-                            found_path = shutil.which("pylsp")
-                            if found_path:
-                                bin_name = "pylsp"
-                        detected_servers.append(
-                            (
-                                ext,
-                                bin_name,
-                                bool(found_path),
-                                found_path or "Not installed (AST static fallback active)",
-                            )
-                        )
-
-                    active_inst_count = len(lsp_client._instances)
-                    if console is not None and _RICH and Table is not None:
-                        lt = Table(
-                            title=f"LSP Status & Language Servers ({active_inst_count} active instance{'s' if active_inst_count != 1 else ''})",
-                            border_style="cyan",
-                        )
-                        lt.add_column("Extension", style="bold cyan", width=12)
-                        lt.add_column("Server Binary", style="magenta", width=26)
-                        lt.add_column("Status", width=14)
-                        lt.add_column("Binary Path / Fallback", style="dim")
-                        for ext, bin_name, available, path_info in detected_servers:
-                            status_badge = (
-                                "[green]AVAILABLE[/]" if available else "[yellow]STATIC AST[/]"
-                            )
-                            lt.add_row(ext, bin_name, status_badge, path_info)
-                        console.print(lt)
-                    else:
-                        print(f"\n--- LSP Language Servers ({active_inst_count} active) ---")
-                        for ext, bin_name, available, path_info in detected_servers:
-                            status_text = "AVAILABLE" if available else "STATIC AST"
-                            print(f"  {ext:10} {bin_name:26} [{status_text:10}] {path_info}")
-                        print()
+                    print("LSP language servers are disabled in pure-CLI mode. Using ripgrep and AST static analysis.")
                     continue
 
                 if cmd == "/rename":
