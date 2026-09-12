@@ -1,5 +1,4 @@
-# Ported from coderai/cli/task_browser.py - kimi structure (ui/shell/task_browser.py).
-"""Interactive background-task browser (Kimi ``/task`` parity).
+"""Interactive background-task browser.
 
 Three-column TUI: task list | detail | output preview.
 Keys: Enter/O full output in pager, S stop (confirm), Tab filter,

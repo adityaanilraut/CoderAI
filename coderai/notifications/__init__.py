@@ -1,4 +1,3 @@
-# Ported from coderai/core/* - kimi structure (notifications/__init__.py).
 
 from coderai.notifications.models import (
     NotificationCategory,

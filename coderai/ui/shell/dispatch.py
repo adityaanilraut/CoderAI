@@ -1,6 +1,6 @@
 """Slash command dispatcher and registry for CoderAI Shell.
 
-Models Kimi CLI's shell-level slash commands with pure-terminal execution,
+Models CoderAI CLI's shell-level slash commands with pure-terminal execution,
 structured registration via SlashCommandRegistry, and typed ShellContext.
 """
 
@@ -539,7 +539,7 @@ def cmd_thinking(ctx: ShellContext, args: str) -> SlashAction:
     return SlashAction.HANDLED
 
 
-@registry.command
+@registry.command(name="export")
 def cmd_export_action(ctx: ShellContext, args: str) -> SlashAction:
     """Export session history to Markdown or JSON."""
     from coderai.utils.export import export_session_to_json, export_session_to_markdown
@@ -711,7 +711,7 @@ def cmd_model(ctx: ShellContext, args: str) -> SlashAction:
     if not arg_clean:
         from coderai.ui.shell.session_picker import select_model_interactive
 
-        chosen = select_model_interactive(ctx.console, ctx.mgr.get_active_model(), ctx.mgr.project_root)
+        chosen = select_model_interactive(ctx.console, ctx.mgr.get_active_model())
         if chosen and chosen != ctx.mgr.get_active_model():
             ctx.mgr.set_model(chosen)
             if ctx.console is not None:
@@ -733,12 +733,14 @@ def cmd_effort(ctx: ShellContext, args: str) -> SlashAction:
     valid_efforts = ("max", "high", "medium", "low", "off")
     chosen = args.strip().lower()
     if not chosen:
-        from coderai.ui.shell.session_picker import select_with_arrows
+        from coderai.ui.shell.session_picker import select_reasoning_effort_interactive
 
         cur = ctx.mgr.get_reasoning_effort() or "max"
-        idx = select_with_arrows(ctx.console, "Select reasoning effort:", list(valid_efforts), default_idx=valid_efforts.index(cur) if cur in valid_efforts else 0)
-        if idx is not None:
-            chosen = valid_efforts[idx]
+        try:
+            model = ctx.mgr.get_active_model() if hasattr(ctx.mgr, "get_active_model") else ""
+        except Exception:
+            model = ""
+        chosen = select_reasoning_effort_interactive(ctx.console, cur, model or "")
     if chosen:
         if chosen in valid_efforts:
             ctx.mgr.set_reasoning_effort(chosen)
@@ -828,7 +830,7 @@ def cmd_undo(ctx: ShellContext, args: str) -> SlashAction:
     return SlashAction.HANDLED
 
 
-@registry.command(name="new", aliases=["reset"])
+@registry.command(name="new")
 def cmd_new(ctx: ShellContext, args: str) -> SlashAction:
     """Start a fresh session."""
     ctx.session_id = None

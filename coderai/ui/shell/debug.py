@@ -1,10 +1,9 @@
-# Ported from coderai/cli/info_cmds.py - kimi structure (ui/shell/debug.py).
 from __future__ import annotations
 
 from typing import Any
 
 def cmd_debug(mgr: Any, session_id: str | None, console: Any = None) -> dict[str, Any]:
-    """Show context debug info: message/token counts, checkpoints, history (Kimi ``/debug``)."""
+    """Show context debug info: message/token counts, checkpoints, history (``/debug``)."""
     info: dict[str, Any] = {
         "session_id": session_id,
         "messages": 0,

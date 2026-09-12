@@ -613,7 +613,7 @@ class ToolExecutor:
                 res = await _invoke_mcp()
 
             if isinstance(res, ToolResult):
-                # ponytail: Kimi MCP_MAX_OUTPUT_CHARS=100k budget
+                # ponytail: MCP_MAX_OUTPUT_CHARS=100k budget
                 if res.output and len(res.output) > 100_000:
                     res.output = res.output[:100_000] + "\n...[truncated MCP output >100k]..."
                 return res
@@ -727,7 +727,7 @@ class ToolExecutor:
                     result.follow_up_messages = (
                         list(result.follow_up_messages or []) + err_follow_ups
                     )
-                # Kimi parity: PostToolUseFailure fires alongside legacy ToolError.
+                # PostToolUseFailure fires alongside legacy ToolError.
                 try:
                     fail_outcome = run_post_tool_use_failure(
                         tool_name=tool_name,

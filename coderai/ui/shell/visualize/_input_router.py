@@ -1,5 +1,4 @@
-# Ported from coderai/cli/input_router.py - kimi structure (ui/shell/visualize/_input_router.py).
-"""Input router — Phase4 port of Kimi ui/shell/visualize/_input_router.py:31.
+"""Input router — Phase4 port of upstream ui/shell/visualize/_input_router.py:31.
 
 Single routing decision point for all user input (btw/queue/send).
 ponytail: lean — no slashcmd registry needed, plain string parse.

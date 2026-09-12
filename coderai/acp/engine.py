@@ -2,9 +2,7 @@
 
 :class:`coderai.acp.session.ACPSession` is engine-agnostic: it consumes an async
 iterator of wire messages plus a couple of accessors. This module supplies that
-contract on top of the live ``SessionManager`` (the 62-tool platform) instead of
-``KimiCLI``/``KimiSoul`` — which never had a toolset wired up, so ACP turns ran
-with zero tools.
+contract on top of the live ``SessionManager`` (the full tool platform).
 
 Turn driving mirrors :class:`coderai.wire.server.WireServer`: create/reply the
 session, forward process-emitter events, and bridge permission/question pauses
@@ -191,8 +189,7 @@ class SessionManagerEngine:
     ) -> AsyncIterator[WireMessage]:
         """Run one prompt, yielding wire messages until the turn settles.
 
-        Mirrors ``KimiCLI.run``'s contract so ``ACPSession.prompt`` can consume
-        either engine unchanged.
+        Runs the prompt and yields wire messages until the turn settles.
         """
         from coderai.wire.emitter import get_emitter
 
@@ -309,7 +306,7 @@ class SessionManagerEngine:
     def _record_turn(self, text: str) -> None:
         """Append the user turn to the ACP session's context file.
 
-        The ACP session identity lives in the Kimi ``Session`` store while the
+        The ACP session identity lives in the ``Session`` store while the
         conversation is owned by ``SessionManager``. Recording each turn keeps
         ``session/list`` and history inspection meaningful for ACP sessions.
         """

@@ -1,5 +1,4 @@
-# Ported from coderai/core/wire/jsonrpc.py - kimi structure (kimi_cli/wire/jsonrpc.py).
-"""JSON-RPC 2.0 framing for the wire server (Kimi ``wire/jsonrpc.py`` parity).
+"""JSON-RPC 2.0 framing for the wire server.
 
 Inbound (client → server): initialize / prompt / steer / replay /
 set_plan_mode / cancel (+ success/error responses to our requests).

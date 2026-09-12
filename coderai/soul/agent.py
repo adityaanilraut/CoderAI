@@ -1,5 +1,4 @@
-# Ported from coderai/core/soul.py - kimi structure (soul/agent.py).
-"""Per-turn soul view over ``SessionManager`` (Kimi ``KimiSoul`` surface parity).
+"""Per-turn soul view over ``SessionManager``.
 
 ``SessionSoul`` is a thin adapter, not a second loop: it exposes the small
 surface injection providers and subagent builders need (afk/yolo,
@@ -29,15 +28,6 @@ class BuiltinSystemPromptArgs:
     CODERAI_ADDITIONAL_DIRS_INFO: str = ""
     CODERAI_OS: str = ""
     CODERAI_SHELL: str = ""
-    # Kimi parity aliases
-    KIMI_NOW: str = ""
-    KIMI_WORK_DIR: Any = None
-    KIMI_WORK_DIR_LS: str = ""
-    KIMI_AGENTS_MD: str = ""
-    KIMI_SKILLS: str = ""
-    KIMI_ADDITIONAL_DIRS_INFO: str = ""
-    KIMI_OS: str = ""
-    KIMI_SHELL: str = ""
 
 
 @dataclass(slots=True, kw_only=True)

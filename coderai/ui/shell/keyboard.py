@@ -1,4 +1,3 @@
-# Ported from coderai/cli/keyboard.py - kimi structure (ui/shell/keyboard.py).
 """Keyboard listener for non-blocking key capture during interactive turns.
 
 Daemon thread VMIN0/VTIME0, pause/resume events, KeyEvent CTRL_E/NUM_1..6,

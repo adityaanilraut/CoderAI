@@ -1,4 +1,3 @@
-# Ported from coderai/core/hooks.py - kimi structure (hooks/runner.py).
 """Lifecycle Hooks Framework
 
 Provides full event-driven lifecycle interception:
@@ -157,10 +156,10 @@ def run_on_subagent_spawn(
 
 
 # ---------------------------------------------------------------------------
-# Kimi-parity event payload builders (mirrors kimi_cli/hooks/events.py)
+# Event payload builders
 # ---------------------------------------------------------------------------
 
-def _kimi_base(event: str, session_id: str, cwd: str) -> dict[str, Any]:
+def _event_base(event: str, session_id: str, cwd: str) -> dict[str, Any]:
     return {"hook_event_name": event, "session_id": session_id, "cwd": cwd}
 
 
@@ -173,7 +172,7 @@ def build_pre_tool_use_payload(
     tool_call_id: str = "",
 ) -> dict[str, Any]:
     return {
-        **_kimi_base("PreToolUse", session_id, cwd),
+        **_event_base("PreToolUse", session_id, cwd),
         "tool_name": tool_name,
         "tool_input": tool_input,
         "tool_call_id": tool_call_id,
@@ -190,7 +189,7 @@ def build_post_tool_use_payload(
     tool_call_id: str = "",
 ) -> dict[str, Any]:
     return {
-        **_kimi_base("PostToolUse", session_id, cwd),
+        **_event_base("PostToolUse", session_id, cwd),
         "tool_name": tool_name,
         "tool_input": tool_input,
         "tool_output": tool_output,
@@ -208,7 +207,7 @@ def build_post_tool_use_failure_payload(
     tool_call_id: str = "",
 ) -> dict[str, Any]:
     return {
-        **_kimi_base("PostToolUseFailure", session_id, cwd),
+        **_event_base("PostToolUseFailure", session_id, cwd),
         "tool_name": tool_name,
         "tool_input": tool_input,
         "error": error,
@@ -219,14 +218,14 @@ def build_post_tool_use_failure_payload(
 def build_user_prompt_submit_payload(
     *, session_id: str, cwd: str, prompt: str
 ) -> dict[str, Any]:
-    return {**_kimi_base("UserPromptSubmit", session_id, cwd), "prompt": prompt}
+    return {**_event_base("UserPromptSubmit", session_id, cwd), "prompt": prompt}
 
 
 def build_stop_payload(
     *, session_id: str, cwd: str, stop_hook_active: bool = False
 ) -> dict[str, Any]:
     return {
-        **_kimi_base("Stop", session_id, cwd),
+        **_event_base("Stop", session_id, cwd),
         "stop_hook_active": stop_hook_active,
     }
 
@@ -235,7 +234,7 @@ def build_stop_failure_payload(
     *, session_id: str, cwd: str, error_type: str, error_message: str
 ) -> dict[str, Any]:
     return {
-        **_kimi_base("StopFailure", session_id, cwd),
+        **_event_base("StopFailure", session_id, cwd),
         "error_type": error_type,
         "error_message": error_message,
     }
@@ -244,20 +243,20 @@ def build_stop_failure_payload(
 def build_session_start_payload(
     *, session_id: str, cwd: str, source: str
 ) -> dict[str, Any]:
-    return {**_kimi_base("SessionStart", session_id, cwd), "source": source}
+    return {**_event_base("SessionStart", session_id, cwd), "source": source}
 
 
 def build_session_end_payload(
     *, session_id: str, cwd: str, reason: str
 ) -> dict[str, Any]:
-    return {**_kimi_base("SessionEnd", session_id, cwd), "reason": reason}
+    return {**_event_base("SessionEnd", session_id, cwd), "reason": reason}
 
 
 def build_subagent_start_payload(
     *, session_id: str, cwd: str, agent_name: str, prompt: str
 ) -> dict[str, Any]:
     return {
-        **_kimi_base("SubagentStart", session_id, cwd),
+        **_event_base("SubagentStart", session_id, cwd),
         "agent_name": agent_name,
         "prompt": prompt,
     }
@@ -267,7 +266,7 @@ def build_subagent_stop_payload(
     *, session_id: str, cwd: str, agent_name: str, response: str = ""
 ) -> dict[str, Any]:
     return {
-        **_kimi_base("SubagentStop", session_id, cwd),
+        **_event_base("SubagentStop", session_id, cwd),
         "agent_name": agent_name,
         "response": response,
     }
@@ -277,7 +276,7 @@ def build_pre_compact_payload(
     *, session_id: str, cwd: str, trigger: str, token_count: int
 ) -> dict[str, Any]:
     return {
-        **_kimi_base("PreCompact", session_id, cwd),
+        **_event_base("PreCompact", session_id, cwd),
         "trigger": trigger,
         "token_count": token_count,
     }
@@ -287,7 +286,7 @@ def build_post_compact_payload(
     *, session_id: str, cwd: str, trigger: str, estimated_token_count: int
 ) -> dict[str, Any]:
     return {
-        **_kimi_base("PostCompact", session_id, cwd),
+        **_event_base("PostCompact", session_id, cwd),
         "trigger": trigger,
         "estimated_token_count": estimated_token_count,
     }
@@ -304,7 +303,7 @@ def build_notification_payload(
     severity: str = "info",
 ) -> dict[str, Any]:
     return {
-        **_kimi_base("Notification", session_id, cwd),
+        **_event_base("Notification", session_id, cwd),
         "sink": sink,
         "notification_type": notification_type,
         "title": title,
@@ -314,7 +313,7 @@ def build_notification_payload(
 
 
 # ---------------------------------------------------------------------------
-# Kimi-parity fire helpers (sync; async variants delegate to run_hook_point_async)
+# Hook fire helpers (sync; async variants delegate to run_hook_point_async)
 # ---------------------------------------------------------------------------
 
 def run_user_prompt_submit(

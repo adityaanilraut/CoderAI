@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/read.py - kimi structure (kimi_cli/tools/file/read.py).
 """read tool — returns snippet_id for scoped edits."""
 
 from __future__ import annotations
@@ -731,7 +730,7 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
     )
 
 
-# --- Kimi CallableTool2 Parity ---
+# --- CallableTool2 Implementation ---
 
 from collections import deque as _deque
 from pathlib import Path as _Path
@@ -809,7 +808,7 @@ class ReadFile(_CallableTool2[ReadParams]):
         super().__init__(description=description)
         self._runtime = runtime
         builtin = getattr(runtime, "builtin_args", None)
-        self._work_dir = getattr(builtin, "CODERAI_WORK_DIR", getattr(builtin, "KIMI_WORK_DIR", _KaosPath.cwd()))
+        self._work_dir = getattr(builtin, "CODERAI_WORK_DIR", _KaosPath.cwd())
         self._additional_dirs = getattr(runtime, "additional_dirs", [])
 
     async def _validate_path(self, path: _KaosPath) -> _ToolError | None:

@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/plan_mode.py - kimi structure (kimi_cli/tools/plan/__init__.py).
 """exit_plan_mode — leave Plan Mode while mutation tools stay in the schema (KV-cache stability)."""
 
 from __future__ import annotations

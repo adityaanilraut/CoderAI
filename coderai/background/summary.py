@@ -6,7 +6,7 @@ from .models import is_terminal_status
 
 if TYPE_CHECKING:
     # Full ports land in later phases (manager: Phase 1 worker ADAPT;
-    # TaskView: with the Kimi background models). Only needed for
+    # TaskView: with the background models). Only needed for
     # annotations here, so keep them out of the runtime import graph.
     from .manager import BackgroundTaskManager
     from .models import TaskView

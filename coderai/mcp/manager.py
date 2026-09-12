@@ -117,7 +117,7 @@ class McpManager:
         self.session_tool_masks: dict[str, dict[str, set[str]]] = {}
         self.initialized = False
         self.disposed = False
-        # Kimi parity: mcp.client.tool_call_timeout_ms (settings-driven).
+        # mcp.client.tool_call_timeout_ms (settings-driven).
         self.default_tool_timeout_s: float = 60.0
         self.on_tools_list_changed: Callable[[], None] | None = None
         self.on_status_changed: Callable[[], None] | None = None

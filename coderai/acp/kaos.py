@@ -1,4 +1,3 @@
-# Ported from kimi_cli/acp/kaos.py - kimi structure.
 """KAOS backend that routes filesystem and terminal execution through ACP."""
 
 from __future__ import annotations

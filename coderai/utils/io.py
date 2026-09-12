@@ -1,5 +1,4 @@
-# Ported from coderai/core/common/atomic.py - kimi structure (kimi_cli/utils/io.py).
-"""Atomic JSON persistence (Kimi ``utils/io.py`` parity).
+"""Atomic JSON persistence.
 
 Tmp-file + ``os.replace`` + ``fsync`` so a crash mid-write keeps either the
 old file intact or the new file fully committed — never a torn file.

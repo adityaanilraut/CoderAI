@@ -1,5 +1,4 @@
-# Ported from coderai/core/mcp/oauth.py - kimi structure (kimi_cli/mcp_oauth.py).
-"""Bearer-token auth for OAuth-protected MCP servers (Kimi ``mcp_oauth`` parity, slim).
+"""Bearer-token auth for OAuth-protected MCP servers (slim).
 
 No browser flow is vendored (and no ``fastmcp`` dependency): servers with
 ``"auth": "oauth"`` authenticate with a pre-obtained bearer token resolved

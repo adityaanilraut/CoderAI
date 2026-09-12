@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 ReasoningEffortLevel = Literal["off", "minimal", "low", "medium", "high", "max"]
 
-#: Default response field carrying reasoning text (Kimi ``reasoning_key`` parity).
+#: Default response field carrying reasoning text.
 DEFAULT_REASONING_KEY = "reasoning_content"
 
 _OFF_ALIASES = {"off", "none", "disabled", "false", "0", "disable"}
@@ -104,7 +104,7 @@ def build_thinking_request_options(
 def extract_reasoning_content(message: Any, reasoning_key: str | None = None) -> Any:
     """Read reasoning text from a response message via the provider's key.
 
-    Kimi parity: ``reasoning_key`` (default ``"reasoning_content"``) selects
+    ``reasoning_key`` (default ``"reasoning_content"``) selects
     the response field, so providers that deviate from the OpenAI convention
     still surface their thinking trace. Accepts dicts and objects.
     """

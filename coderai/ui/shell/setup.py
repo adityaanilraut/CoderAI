@@ -1,4 +1,3 @@
-# Ported from coderai/cli/setup_wizard.py - kimi structure (ui/shell/setup.py).
 """Interactive setup wizard and configuration subsystem for CoderAI.
 
 Provides both interactive TUI wizard (/setup, coderai setup) and non-interactive

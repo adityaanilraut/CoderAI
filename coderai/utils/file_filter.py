@@ -1,5 +1,4 @@
-# Ported from coderai/core/common/file_filter.py - kimi structure (kimi_cli/utils/file_filter.py).
-"""File filter with git-aware listing and ignored-names (Kimi parity)."""
+"""File filter with git-aware listing and ignored-names (parity)."""
 
 from __future__ import annotations
 

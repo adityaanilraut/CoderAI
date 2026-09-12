@@ -1,4 +1,3 @@
-# Ported from coderai/core/agents.py - kimi structure (subagents/core.py).
 """Continuable sub-agent control plane (list / send / interrupt) over SubAgentManager and TaskSupervisor."""
 from __future__ import annotations
 
@@ -293,7 +292,7 @@ def _call_llm_sync(client: Any, request: dict[str, Any]) -> dict[str, Any]:
         reasoning_key_for_model,
     )
 
-    # Kimi parity: the response reasoning field follows the provider's
+    # The response reasoning field follows the provider's
     # reasoning_key (normalized back to "reasoning_content" downstream).
     reasoning_key = reasoning_key_for_model(str(request.get("model") or ""))
     resp = client.chat.completions.create(**request)

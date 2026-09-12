@@ -1,4 +1,3 @@
-# Ported from coderai/core/hooks.py - kimi structure (hooks/config.py).
 """Lifecycle Hooks Framework
 
 Provides full event-driven lifecycle interception:

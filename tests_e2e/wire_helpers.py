@@ -26,7 +26,7 @@ def repo_root() -> Path:
 
 
 def _print_trace(label: str, text: str) -> None:
-    if os.getenv(TRACE_ENV) == "1" or os.getenv("KIMI_TEST_TRACE") == "1":
+    if os.getenv(TRACE_ENV) == "1":
         print("-----")
         print(f"{label}: {text}")
 
@@ -36,12 +36,6 @@ def make_home_dir(tmp_path: Path) -> Path:
     home_dir.mkdir(parents=True, exist_ok=True)
     coderai_dir = home_dir / ".coderai"
     coderai_dir.mkdir(parents=True, exist_ok=True)
-    kimi_dir = home_dir / ".kimi"
-    try:
-        if not kimi_dir.exists():
-            kimi_dir.symlink_to(coderai_dir, target_is_directory=True)
-    except Exception:
-        kimi_dir.mkdir(parents=True, exist_ok=True)
     register_path_replacements(tmp_path=tmp_path, home_dir=home_dir)
     return home_dir
 
@@ -64,7 +58,6 @@ def make_env(home_dir: Path) -> dict[str, str]:
     env["HOME"] = str(home_dir)
     env["USERPROFILE"] = str(home_dir)
     env["CODERAI_SHARE_DIR"] = str(share_dir(home_dir))
-    env["KIMI_SHARE_DIR"] = str(share_dir(home_dir))
     user_site = site.getusersitepackages()
     prior = env.get("PYTHONPATH", "")
     paths = [str(repo_root()), user_site]
@@ -127,7 +120,6 @@ def write_scripted_config(
                 "api_key": "",
                 "env": {
                     "CODERAI_SCRIPTED_ECHO_SCRIPTS": str(scripts_path),
-                    "KIMI_SCRIPTED_ECHO_SCRIPTS": str(scripts_path),
                 },
             }
         },
@@ -507,8 +499,8 @@ def _normalize_server_version(value: Any) -> Any:
     """Normalize the server version in initialize response to '<VERSION>'."""
     if isinstance(value, dict):
         value = {k: _normalize_server_version(v) for k, v in value.items()}
-        if value.get("name") in {"Kimi Code CLI", "coderai"} and "version" in value:
-            value = {**value, "name": "Kimi Code CLI", "version": "<VERSION>"}
+        if value.get("name") == "coderai" and "version" in value:
+            value = {**value, "name": "coderai", "version": "<VERSION>"}
     elif isinstance(value, list):
         value = [_normalize_server_version(v) for v in value]
     return value
@@ -528,7 +520,7 @@ def normalize_response(
 
 
 def base_command() -> list[str]:
-    override = os.getenv(WIRE_COMMAND_ENV) or os.getenv("KIMI_E2E_WIRE_CMD")
+    override = os.getenv(WIRE_COMMAND_ENV)
     if override is not None:
         override = override.strip()
     parts = (

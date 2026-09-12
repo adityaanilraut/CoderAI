@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/update_plan.py - kimi structure (kimi_cli/tools/todo/__init__.py).
 """UpdatePlan tool — updates the task plan."""
 
 from __future__ import annotations
@@ -124,7 +123,7 @@ def handle_todo_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
     result.metadata = meta
     if result.ok:
         result.output = "Todos updated."
-        # Phase 2: persist todos into SessionState (Kimi: state.todos) so
+        # Phase 2: persist todos into SessionState (state.todos) so
         # resume/compaction survivors keep the checklist. Best-effort.
         try:
             session_id = None

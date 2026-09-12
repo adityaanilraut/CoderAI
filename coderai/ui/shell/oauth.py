@@ -1,5 +1,4 @@
-# Ported from coderai/cli/login_cmd.py - kimi structure (ui/shell/oauth.py).
-"""``coderai login`` / ``coderai logout`` (Kimi OAuth device-flow parity).
+"""``coderai login`` / ``coderai logout``.
 
 ``login`` runs the RFC 8628 device flow against the configured OAuth host,
 persists the token (0600 file), and writes the managed provider + synced

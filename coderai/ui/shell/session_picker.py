@@ -1,4 +1,3 @@
-# Ported from coderai/cli/interactive_menu.py - kimi structure (ui/shell/session_picker.py).
 """Interactive selection and inspection menus (/model, /sessions, /skills, /mcp, /config, /tokens, /history)."""
 
 from __future__ import annotations
@@ -550,7 +549,7 @@ def get_available_models(current_model: str = "") -> list[tuple[str, str, str]]:
                 p_type = (provider.type if provider else m.provider) or "custom"
                 category = (
                     "Kimi Code"
-                    if "kimi" in p_type.lower() or "kimi" in key.lower()
+                    if "coderai" in p_type.lower() or "coderai" in key.lower()
                     else f"Configured ({p_type})"
                 )
                 desc = m.display_name or f"Configured model ({m.model})"

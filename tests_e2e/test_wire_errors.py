@@ -186,10 +186,10 @@ def test_llm_not_set(tmp_path) -> None:
         },
         "providers": {
             "bad-provider": {
-                "type": "kimi",
+                "type": "openai",
                 "base_url": "",
                 "api_key": "",
-                "env": {"KIMI_SCRIPTED_ECHO_SCRIPTS": str(scripts_path)},
+                "env": {"CODERAI_SCRIPTED_ECHO_SCRIPTS": str(scripts_path)},
             }
         },
     }

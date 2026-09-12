@@ -1,4 +1,3 @@
-# Ported from coderai/cli/theme.py - kimi structure (ui/theme.py).
 """Centralized terminal color theme definitions.
 
 Provides dark/light switching for diff background colors, syntax theme,

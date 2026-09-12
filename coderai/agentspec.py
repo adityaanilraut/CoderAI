@@ -1,5 +1,4 @@
-# Ported from coderai/core/agentspec.py - kimi structure (agentspec.py).
-"""Agent specification loading with ``extend`` inheritance (Kimi ``agentspec.py`` parity).
+"""Agent specification loading with ``extend`` inheritance.
 
 Specs are small YAML files declaring the system prompt, tools, and subagents
 for an agent flavor (``default`` + ``okabe`` bundled under
@@ -7,7 +6,7 @@ for an agent flavor (``default`` + ``okabe`` bundled under
 towards the child, ``system_prompt_args`` merge key-wise.
 
 The builtin ``default`` spec uses CoderAI tool names (``bash``, ``read``,
-``edit/write``...) rather than Kimi's ``kimi_cli.tools.*`` paths.
+``edit/write``...).
 """
 
 from __future__ import annotations

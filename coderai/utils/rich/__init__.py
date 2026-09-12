@@ -1,1 +1,1 @@
-"""Rich rendering helpers (Kimi structure)."""
+"""Rich rendering helpers."""

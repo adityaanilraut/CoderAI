@@ -1,5 +1,4 @@
-# Ported from coderai/cli/proctitle.py - kimi structure (utils/proctitle.py).
-"""Process/terminal title helpers (Kimi ``utils/proctitle.py`` parity).
+"""Process/terminal title helpers.
 
 Lean stdlib-only port: ``setproctitle`` is optional; terminal TAB title uses
 an ANSI OSC sequence and only fires on a TTY so piped output stays clean.

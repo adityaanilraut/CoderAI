@@ -3,7 +3,7 @@
 CoderAI emits ``ApprovalRequest`` for shell execution; the client answers
 with ``approve`` / ``reject`` / ``approve_for_session`` and the turn runs to
 a terminal ``finished`` status. Assertions target the live event shapes
-(``tool_call_id`` / ``sender`` linkage) rather than Kimi's display blocks.
+(``tool_call_id`` / ``sender`` linkage).
 """
 
 from __future__ import annotations

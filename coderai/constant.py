@@ -62,9 +62,6 @@ def get_build_sha() -> str:
     """
     if build_id := os.environ.get("CODERAI_BUILD_SHA", "").strip():
         return build_id
-    # Kimi compat: honor the upstream env var when set.
-    if build_id := os.environ.get("KIMI_BUILD_SHA", "").strip():
-        return build_id
 
     try:
         from coderai._build_info import BUILD_SHA  # type: ignore[reportMissingImports]

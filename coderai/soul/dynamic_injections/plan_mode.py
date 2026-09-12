@@ -1,6 +1,6 @@
-# Moved from coderai/soul/dynamic_injection.py - kimi structure
-# (kimi_cli/soul/dynamic_injections/plan_mode.py).
-"""Plan-mode injection provider (Kimi ``plan_mode`` parity).
+# Moved from coderai/soul/dynamic_injection.py - coderai structure
+# (coderai/soul/dynamic_injections/plan_mode.py).
+"""Plan-mode injection provider (CoderAI ``plan_mode`` parity).
 
 Re-exported from :mod:`coderai.soul.dynamic_injection` so the old path
 keeps working.

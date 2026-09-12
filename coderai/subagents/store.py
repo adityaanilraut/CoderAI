@@ -1,5 +1,4 @@
-# Ported from coderai/core/subagent_store.py - kimi structure (subagents/store.py).
-"""Durable subagent instance records (Kimi ``subagents/store.py`` parity).
+"""Durable subagent instance records.
 
 Each instance owns a directory under
 ``<project>/.coderai/sessions/<session>/subagents/<agent_id>/`` with
@@ -211,7 +210,7 @@ class SubagentStore:
     def mark_stale_foreground_failed(self) -> list[str]:
         """Fail ``running_foreground`` leftovers from a crashed process.
 
-        Mirrors Kimi's startup cleanup; returns the failed agent ids.
+        Cleans up dangling runs on startup; returns the failed agent ids.
         """
         failed: list[str] = []
         for record in self.list_instances():

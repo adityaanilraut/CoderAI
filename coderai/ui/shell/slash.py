@@ -1,4 +1,3 @@
-# Ported from coderai/cli/commands.py - kimi structure (ui/shell/slash.py).
 """Canonical slash-command catalog shared by help, completion, and dispatch."""
 
 from __future__ import annotations
@@ -640,7 +639,7 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "title": "Log In",
         "syntax": "/login",
         "summary": "Log in / configure API platform (OAuth or API key), then pick model.",
-        "description": "Platform select, API key entry, model selection, save + reload. Mirrors Kimi /login.",
+        "description": "Platform select, API key entry, model selection, save + reload.",
         "examples": ["/login"],
     },
     "logout": {
@@ -988,7 +987,7 @@ except Exception:
 _FEEDBACK_URL = "https://github.com/adityaanilraut/CoderAI/issues/new"
 
 
-_KIMI_HOOK_EVENTS = (
+_CODERAI_HOOK_EVENTS = (
     "PreToolUse",
     "PostToolUse",
     "PostToolUseFailure",
@@ -1006,7 +1005,7 @@ _KIMI_HOOK_EVENTS = (
 
 
 def cmd_version(console: Any = None) -> str:
-    """Print CLI version (Kimi ``/version`` parity). Returns the version string."""
+    """Print CLI version. Returns the version string."""
     text = f"coderai, version {_CODERAI_VERSION}"
     if console is not None:
         try:
@@ -1019,7 +1018,7 @@ def cmd_version(console: Any = None) -> str:
 
 
 def cmd_changelog(console: Any = None, limit: int = 10) -> str:
-    """Print recent CHANGELOG entries (Kimi ``/changelog`` parity)."""
+    """Print recent CHANGELOG entries."""
     root = pathlib.Path(__file__).resolve().parents[2]
     changelog = root / "CHANGELOG.md"
     body = ""
@@ -1055,7 +1054,7 @@ def cmd_changelog(console: Any = None, limit: int = 10) -> str:
 def cmd_feedback(console: Any = None, text: str = "") -> str:
     """Collect feedback; try GitHub issue URL, fall back to printing it.
 
-    Kimi parity: prompt for feedback, POST, fallback to opening GitHub Issues.
+    Prompt for feedback, POST, fallback to opening GitHub Issues.
     Offline-safe: opens/prints the issue URL with the body prefilled.
     """
     feedback = (text or "").strip()
@@ -1086,7 +1085,7 @@ def cmd_feedback(console: Any = None, text: str = "") -> str:
 
 
 def cmd_reload(mgr: Any, console: Any = None) -> bool:
-    """Reload resolved settings without exiting (Kimi ``/reload`` parity)."""
+    """Reload resolved settings without exiting."""
     try:
         from coderai.config import resolve_current_settings
 
@@ -1127,7 +1126,7 @@ def cmd_reload(mgr: Any, console: Any = None) -> bool:
 def cmd_title(
     mgr: Any, session_id: str | None, arg: str = "", console: Any = None
 ) -> str | None:
-    """View or set the session title (Kimi ``/title`` parity, max 200 chars)."""
+    """View or set the session title (max 200 chars)."""
     entry = mgr.get_session(session_id) if session_id else None
     if entry is None:
         msg = "No active session."
@@ -1147,7 +1146,7 @@ def cmd_title(
                 mgr.rename_session(session_id, text)
             else:
                 entry.summary = text
-            # Manual set locks auto-generation (Kimi parity).
+            # Manual set locks auto-generation.
             setattr(entry, "title_locked", True)
         except Exception:
             pass
@@ -1167,7 +1166,7 @@ def cmd_title(
 
 
 def cmd_hooks(console: Any = None, project_root: str = ".") -> dict[str, Any]:
-    """Show configured hooks (Kimi ``/hooks`` parity: event types + counts)."""
+    """Show configured hooks (event types + counts)."""
     from coderai.hooks import load_hook_config, normalize_hook_point
 
     cfg = load_hook_config(project_root)
@@ -1203,16 +1202,16 @@ def cmd_hooks(console: Any = None, project_root: str = ".") -> dict[str, Any]:
                 t = Table(title="Configured Hooks", border_style="cyan")
                 t.add_column("Event", style="bold cyan")
                 t.add_column("Handlers", style="white")
-                for ev in sorted(events, key=lambda e: (_KIMI_HOOK_EVENTS.index(e) if e in _KIMI_HOOK_EVENTS else 99, e)):
+                for ev in sorted(events, key=lambda e: (_CODERAI_HOOK_EVENTS.index(e) if e in _CODERAI_HOOK_EVENTS else 99, e)):
                     t.add_row(ev, str(events[ev]))
                 console.print(t)
-                missing = [e for e in _KIMI_HOOK_EVENTS if e not in events]
+                missing = [e for e in _CODERAI_HOOK_EVENTS if e not in events]
                 if missing:
                     console.print(f"[dim]No handlers for: {', '.join(missing)}[/]")
             else:
                 console.print(
                     "[dim]No hooks configured. Events: "
-                    + ", ".join(_KIMI_HOOK_EVENTS)
+                    + ", ".join(_CODERAI_HOOK_EVENTS)
                     + "[/]"
                 )
         except Exception:
@@ -1251,7 +1250,7 @@ def cmd_login(
     mgr: Any = None,
     initial: str | None = None,
 ) -> int:
-    """Kimi ``/login`` parity: platform select → OAuth/API key → model → save + reload."""
+    """Platform select → OAuth/API key → model → save + reload."""
     from coderai.ui.shell.setup import run_setup_wizard
 
     run_setup_wizard(
@@ -1266,7 +1265,7 @@ def cmd_login(
 
 
 def cmd_logout(console: Any = None, project_root: str = ".", mgr: Any = None) -> int:
-    """Kimi ``/logout`` parity: clear stored credentials."""
+    """Clear stored credentials."""
     try:
         from coderai.config import (
             get_configured_provider_keys,
@@ -1299,7 +1298,7 @@ def cmd_logout(console: Any = None, project_root: str = ".", mgr: Any = None) ->
         for name in list(os.environ.keys()):
             if name.startswith("CODERAI_") and "KEY" in name:
                 del os.environ[name]
-        # Kimi parity: drop OAuth tokens + the managed provider too.
+        # Drop OAuth tokens + the managed provider too.
         try:
             from coderai.auth.oauth import clear_login_config, logout_all
 

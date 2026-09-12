@@ -1,11 +1,10 @@
-# Ported from coderai/core/notifications.py - kimi structure (notifications/models.py).
-"""Task/agent/system notifications (Kimi ``notifications/`` parity, slim).
+"""Task/agent/system notifications.
 
 Events persist under ``<project>/.coderai/notifications/<id>/{event,delivery}.json``
 with per-sink ``pending|claimed|acked`` delivery states. Sinks:
 
 - ``llm`` — delivered into the next turn as an advisory user message
-  (``SessionManager._activate`` claims up to 4, Kimi ``deliver_pending`` parity)
+  (``SessionManager._activate`` claims up to 4)
 - ``wire`` — forwarded as wire ``Notification`` events for wire clients
 - ``shell`` — claimable by interactive UIs (toasts)
 
@@ -31,8 +30,8 @@ NotificationSink = str  # "llm" | "wire" | "shell"
 NotificationDeliveryStatus = str  # "pending" | "claimed" | "acked"
 
 DEFAULT_SINKS: tuple[str, ...] = ("llm", "wire", "shell")
-CLAIM_STALE_AFTER_S = 15.0  # Kimi NotificationConfig.claim_stale_after_ms parity
-DELIVER_LIMIT = 8  # per-sink claim cap; turns consume at most 4 (Kimi parity)
+CLAIM_STALE_AFTER_S = 15.0  # Claim timeout in seconds
+DELIVER_LIMIT = 8  # per-sink claim cap; turns consume at most 4
 TURN_DELIVER_LIMIT = 4
 
 _VALID_ID = re.compile(r"^[a-z0-9]{2,20}$")

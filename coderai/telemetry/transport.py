@@ -21,7 +21,7 @@ from coderai.share import get_share_dir
 
 logger = logging.getLogger(__name__)
 
-TELEMETRY_ENDPOINT = "https://telemetry-logs.kimi.com/v1/event"
+TELEMETRY_ENDPOINT = os.getenv("CODERAI_TELEMETRY_ENDPOINT") or "https://telemetry.coderai.dev/v1/event"
 
 SEND_TIMEOUT = aiohttp.ClientTimeout(total=10, sock_connect=5)
 DISK_EVENT_MAX_AGE_S = 7 * 24 * 3600  # 7 days
@@ -35,11 +35,11 @@ RETRY_BACKOFFS_S = (1.0, 4.0, 16.0)
 # (``track("started")``); the prefix is applied only at the outbound
 # HTTP boundary. Keeping it as a single constant means changing the
 # server-side namespace in the future is a one-line change.
-SERVER_EVENT_PREFIX = "kfc_"
+SERVER_EVENT_PREFIX = "coderai_"
 
 # Prefix for the payload-level ``user_id``. The full id is
-# ``USER_ID_PREFIX + device_id``, e.g. ``kfc_device_id_a1b2c3...``.
-USER_ID_PREFIX = "kfc_device_id_"
+# ``USER_ID_PREFIX + device_id``, e.g. ``coderai_device_id_a1b2c3...``.
+USER_ID_PREFIX = "coderai_device_id_"
 
 
 def _build_user_id(device_id: str) -> str:

@@ -1,11 +1,10 @@
-# Ported from coderai/core/notifications.py - kimi structure (notifications/store.py).
-"""Task/agent/system notifications (Kimi ``notifications/`` parity, slim).
+"""Task/agent/system notifications.
 
 Events persist under ``<project>/.coderai/notifications/<id>/{event,delivery}.json``
 with per-sink ``pending|claimed|acked`` delivery states. Sinks:
 
 - ``llm`` — delivered into the next turn as an advisory user message
-  (``SessionManager._activate`` claims up to 4, Kimi ``deliver_pending`` parity)
+  (``SessionManager._activate`` claims up to 4)
 - ``wire`` — forwarded as wire ``Notification`` events for wire clients
 - ``shell`` — claimable by interactive UIs (toasts)
 

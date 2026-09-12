@@ -23,7 +23,7 @@ from coderai.utils.rich.diff_render import (
     render_diff_summary_panel,
     render_diff_summary_preview,
 )
-from coderai.utils.rich.syntax import KimiSyntax
+from coderai.utils.rich.syntax import CoderAISyntax
 from coderai.wire.types import (
     ApprovalRequest,
     ApprovalResponse,
@@ -132,7 +132,7 @@ class ApprovalRequestPanel:
                     if line_count > non_diff_budget:
                         truncated = "\n".join(text.split("\n")[:non_diff_budget])
                         self._non_diff_truncated = True
-                    self._preview_renderables.append(KimiSyntax(truncated, block.language))
+                    self._preview_renderables.append(CoderAISyntax(truncated, block.language))
                     non_diff_budget -= min(line_count, non_diff_budget)
                 else:
                     self._non_diff_truncated = True
@@ -240,7 +240,7 @@ class ApprovalRequestPanel:
             text = "\n".join(text.split("\n")[:max_lines])
 
         if block.lexer:
-            return KimiSyntax(text, block.lexer)
+            return CoderAISyntax(text, block.lexer)
         return Text(text, style=block.style)
 
     def render_full(self) -> list[RenderableType]:
@@ -315,7 +315,7 @@ def show_approval_in_pager(panel: ApprovalRequestPanel) -> None:
                         console.print(render_diff_panel(path, hunks, added, removed))
                         rendered_any = True
             elif isinstance(block, ShellDisplayBlock):
-                console.print(KimiSyntax(block.command.rstrip("\n"), block.language))
+                console.print(CoderAISyntax(block.command.rstrip("\n"), block.language))
                 rendered_any = True
                 idx += 1
             elif isinstance(block, BriefDisplayBlock) and block.text:

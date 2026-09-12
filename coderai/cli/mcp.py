@@ -1,7 +1,6 @@
-# Ported from coderai/cli/mcp_cmd.py - kimi structure (cli/mcp.py).
-"""``coderai mcp`` subcommand (Kimi ``cli/mcp.py`` parity, stdlib only).
+"""``coderai mcp`` subcommand (stdlib only).
 
-Manages the global ``~/.coderai/mcp.json`` registry (Kimi: ``~/.kimi/mcp.json``):
+Manages the global ``~/.coderai/mcp.json`` registry:
 
 - ``add --transport stdio <name> -- <command> [args...] [--env KEY=VALUE ...]``
 - ``add --transport http <name> <url> [--header 'K: V' ...]``

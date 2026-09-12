@@ -1,5 +1,4 @@
-# Ported from coderai/core/approval.py - kimi structure (approval_runtime/runtime.py).
-"""Coordinated approval runtime (Kimi ``approval_runtime/`` parity, slim).
+"""Coordinated approval runtime (slim).
 
 Foreground turns and background agents route approval decisions through one
 registry so the UI channel sees every request exactly once. Sources carry
@@ -59,7 +58,7 @@ class ApprovalRuntime:
         self._root_wire_hub: Any | None = None
 
     def bind_root_wire_hub(self, root_wire_hub: Any) -> None:
-        """Attach the session wire hub (Kimi parity: approval↔wire bridge)."""
+        """Attach the session wire hub (approval↔wire bridge)."""
         if self._root_wire_hub is root_wire_hub:
             return
         self._root_wire_hub = root_wire_hub

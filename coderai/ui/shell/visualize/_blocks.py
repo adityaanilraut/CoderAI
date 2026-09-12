@@ -1,9 +1,4 @@
-# Ported from coderai/cli/stream_blocks.py - kimi structure (ui/shell/visualize/_blocks.py).
-"""Live visualizer blocks for streaming and progress output.
-
-Single Live(Group, transient, vertical_overflow=visible) handles streaming
-markdown commitment, thinking pulses, and status/notification blocks.
-"""
+"""Stream blocks and visual rendering for interactive turns."""
 
 from __future__ import annotations
 
@@ -102,7 +97,7 @@ def _tail_lines(text: str, n: int) -> str:
 
 
 def _find_committed_boundary(text: str) -> int | None:
-    """Parser-aware boundary — Kimi _blocks.py:128 parity. None if <2 blocks."""
+    """Parser-aware boundary. None if <2 blocks."""
     # Prefer delegating to markdown_stream helper if available (same logic)
     # but markdown_stream returns 0 instead of None for authorative fallback —
     # so we re-implement here faithfully.
@@ -128,7 +123,7 @@ def _find_committed_boundary(text: str) -> int | None:
         return None
     target_line = block_maps[-2][1]
     offset = 0
-    # ponytail: O(n) scan, matches Kimi 161
+    # ponytail: O(n) scan
     try:
         for _ in range(target_line):
             offset = text.index("\n", offset) + 1
@@ -137,9 +132,9 @@ def _find_committed_boundary(text: str) -> int | None:
     return offset
 
 
-# Markdown import — prefer Kimi-style wrapper if exists, else rich
+# Markdown import — prefer CoderAI-style wrapper if exists, else rich
 try:
-    from coderai.utils.rich.syntax import KIMI_ANSI_THEME  # noqa: F401
+    from coderai.utils.rich.syntax import CODERAI_ANSI_THEME  # noqa: F401
 
     from rich.markdown import Markdown  # type: ignore[assignment]
 except Exception:
@@ -150,7 +145,7 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# _ContentBlock — core streaming block Kimi 176-361
+# _ContentBlock — core streaming block
 # ---------------------------------------------------------------------------
 class _ContentBlock:
     """Streaming content block with incremental markdown commitment.
@@ -546,7 +541,7 @@ class _ToolCallBlock:
 
 
 # ---------------------------------------------------------------------------
-# Notification / Status blocks — Kimi 594-640
+# Notification / Status blocks
 # ---------------------------------------------------------------------------
 @dataclass
 class Notification:
@@ -633,7 +628,7 @@ TodoBlock = _TodoBlock
 
 # Helpers exposed for testing / Live view
 def _format_step_retry(retry: Any) -> Text:
-    """Minimal StepRetry banner — matches Kimi _live_view.py:82."""
+    """Minimal StepRetry banner."""
     # retry may be dict or object with wait_s/next_attempt/max_attempts/status_code/error_type
     wait = getattr(retry, "wait_s", 0) or 0
     next_attempt = getattr(retry, "next_attempt", "?")
@@ -940,7 +935,7 @@ def _render_collapsible_block(
 ) -> None:
     """Render lines with collapsible preview (changed-lines-only style).
 
-    Shows first preview_limit lines + hint for remaining (Kimi-style).
+    Shows first preview_limit lines + hint for remaining.
     """
     if not lines:
         return
@@ -976,7 +971,7 @@ def _render_bash_card(
     )
 
     if console is not None and _RICH:
-        # Grouped block with side border (Kimi-style)
+        # Grouped block with side border
 
         console.print(header_text)
         content_lines: list[str] = []
@@ -1123,13 +1118,13 @@ def _render_read_card(
             display_limit = 15
             # Try syntax highlighting per file extension
             try:
-                from coderai.utils.rich.syntax import KimiSyntax
+                from coderai.utils.rich.syntax import CoderAISyntax
 
                 ext = file_path.rsplit(".", 1)[-1] if "." in file_path else "text"
                 # Highlight as a block for better token colors
                 code = "\n".join(lines[:display_limit])
-                syntax = KimiSyntax(
-                    code, ext, theme="kimi-ansi", line_numbers=True, start_line=offset or 1
+                syntax = CoderAISyntax(
+                    code, ext, theme="coderai-ansi", line_numbers=True, start_line=offset or 1
                 )
                 console.print(syntax)
             except Exception:
@@ -1226,7 +1221,7 @@ def _render_session_card(
 def render_tool_card(console: Any | None, message: SessionMessage) -> None:
     """Render a compact sequential tool result event with grouped blocks, collapsible output, and status."""
     name, summary_text, ok, metadata = parse_tool_message(message)
-    # Kimi-style bullet: green dot ok, dark_red error, with spinner semantics
+    # Bullet: green dot ok, dark_red error, with spinner semantics
     bullet = "[bold green]●[/]" if ok else "[bold red]✗[/]"
 
     raw_output: str | None = None
@@ -1498,7 +1493,7 @@ def render_plan_preview(
 
 
 # --- from coderai/cli/progress.py ---
-"""Progress & status indicators — ported from Kimi CLI visualize/_blocks.py + utils/rich.
+"""Progress & status indicators.
 
 Provides:
 - Dynamic spinners (dots/moon/balloon) with elapsed ticker
@@ -1538,7 +1533,7 @@ def _install_sigwinch(handler) -> None:  # type: ignore[no-untyped-def]
 
 
 def _reset_live_shape(live: Live | None) -> None:
-    """Clear cached Live height so next refresh re-anchors after pager or resize (Kimi _live_view.py:173)."""
+    """Clear cached Live height so next refresh re-anchors after pager or resize."""
     if live is None:
         return
     try:
@@ -1551,7 +1546,7 @@ def _reset_live_shape(live: Live | None) -> None:
 class StatusSpinner:
     """Wraps rich Spinner with elapsed ticker.
 
-    Mirrors Kimi _ContentBlock spinner: 'Composing... X s · N tokens'
+    Spinner: 'Composing... X s · N tokens'
     """
 
     def __init__(self, message: str = "Working", spinner: str = "dots") -> None:
@@ -1610,7 +1605,7 @@ class StatusSpinner:
             self._live = None
 
     def pause_for_pager(self, pager_fn) -> None:  # type: ignore[no-untyped-def]
-        """Ctrl-E pager hook: Live.stop → pager → Live.start with shape reset (Kimi 188)."""
+        """Ctrl-E pager hook: Live.stop → pager → Live.start with shape reset."""
         if not self._live:
             try:
                 pager_fn()
@@ -1724,9 +1719,9 @@ from rich.text import Text
 from coderai.cli.elapsed import bullet_frame_for, format_elapsed
 
 try:
-    from coderai.utils.rich.syntax import KIMI_ANSI_THEME  # noqa: F401
+    from coderai.utils.rich.syntax import CODERAI_ANSI_THEME  # noqa: F401
 except Exception:
-    KIMI_ANSI_THEME = None  # type: ignore[assignment]
+    CODERAI_ANSI_THEME = None  # type: ignore[assignment]
 
 try:
     from coderai.cli.elapsed import estimate_tokens_float as _estimate_tokens_float  # type: ignore[import]
@@ -1763,7 +1758,7 @@ def _strip_background(text: Text) -> Text:
 
 # Forked Markdown — uses _strip_background for headings/code when leak observed
 def _heading_leaks_background() -> bool:
-    if os.getenv("CODERAI_MARKDOWN_LEAK") == "1" or os.getenv("KIMI_MARKDOWN_LEAK") == "1":
+    if os.getenv("CODERAI_MARKDOWN_LEAK") == "1":
         return True
     try:
         return False

@@ -1,5 +1,4 @@
-# Ported from coderai/cli/columns.py - kimi structure (utils/rich/columns.py).
-"""BulletColumns helper — Phase1 port of Kimi utils/rich/columns.py.
+"""BulletColumns helper — Phase1 port of upstream utils/rich/columns.py.
 
 Wraps `Columns([bullet, _ShrinkToWidth])` with bullet="•" first then space,
 handles trailing spaces and width clamping. Pure CLI.

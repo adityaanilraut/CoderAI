@@ -53,9 +53,7 @@ def test_assemble_build_id():
 def test_inject_build_sha_env_override(tmp_path, monkeypatch):
     mod = _load_module("inject_build_sha_env", "inject_build_sha.py")
     monkeypatch.setenv("CODERAI_BUILD_SHA", "testenvsha")
-    # Point detection at an empty repo-agnostic value by clearing git fallback:
     # env var takes precedence, so git is never consulted for the SHA.
-    monkeypatch.delenv("KIMI_BUILD_SHA", raising=False)
     assert mod._detect_sha() == "testenvsha"
 
     target = tmp_path / "_build_info.py"
@@ -74,7 +72,6 @@ def test_inject_build_sha_env_override(tmp_path, monkeypatch):
 def test_inject_build_sha_cli_smoke(tmp_path):
     env = dict(os.environ)
     env["CODERAI_BUILD_SHA"] = "smoke123"
-    env["KIMI_BUILD_SHA"] = ""
     # Run against a throwaway copy so the real repo is untouched.
     # The script resolves the project root as parent-of-scripts/ and writes
     # to <root>/coderai/_build_info.py, so mirror that layout.

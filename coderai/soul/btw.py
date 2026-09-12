@@ -1,5 +1,4 @@
-# Ported from coderai/core/sidecall.py - kimi structure (soul/btw.py).
-"""Isolated side-question calls (Kimi ``soul/btw.py`` parity).
+"""Isolated side-question calls.
 
 ``run_side_question`` answers a question against a read-only snapshot of the
 conversation history. It never mutates the session: no tools, text-only.
@@ -18,7 +17,7 @@ BTW_SYSTEM = (
     "Answer concisely in plain text. No tools are available."
 )
 
-# Kimi parity (soul/btw.py): the side instance is told tools are visible only
+# The side instance is told tools are visible only
 # for prompt-cache alignment and must never be called (maxTurns=2 retry).
 SIDE_QUESTION_SYSTEM_REMINDER = """\
 This is a side question from the user. Answer directly in a single response.
@@ -47,7 +46,7 @@ def build_side_messages(
         content = str(m.get("content", ""))[:4000]
         if content.strip():
             msgs.append({"role": role, "content": content})
-    # Kimi parity: side instance gets the no-tools reminder + question as one
+    # Side instance gets the no-tools reminder + question as one
     # user message, so cache-friendly history stays intact.
     msgs.append(
         {
@@ -79,7 +78,7 @@ async def run_side_question(
         pass
     messages = build_side_messages(history, question)
 
-    # Kimi parity: BtwBegin emitted before the call, BtwEnd after.
+    # BtwBegin emitted before the call, BtwEnd after.
     bid = ""
     try:
         from coderai.wire.emitter import get_emitter

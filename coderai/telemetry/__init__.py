@@ -1,4 +1,3 @@
-# Ported from coderai/core/* - kimi structure (telemetry/__init__.py).
 from __future__ import annotations
 
 import asyncio

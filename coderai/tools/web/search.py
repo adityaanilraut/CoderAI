@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/web_search.py - kimi structure (kimi_cli/tools/web/search.py).
 """WebSearch tool — multi-query web search over pluggable providers (Exa, Perplexity, DeepSeek, HTTP)."""
 
 from __future__ import annotations

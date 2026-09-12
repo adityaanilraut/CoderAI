@@ -1,4 +1,3 @@
-# Ported from coderai/core/notifications.py - kimi structure (notifications/llm.py).
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -6,7 +5,7 @@ from typing import Any
 
 from coderai.notifications.models import NotificationView, _NOTIFICATION_ID_RE
 def build_notification_message(view: NotificationView) -> str:
-    """Render the advisory user-message text for the ``llm`` sink (Kimi parity)."""
+    """Render the advisory user-message text for the ``llm`` sink."""
     event = view.event
     lines = [
         f'<notification id="{event.id}" category="{event.category}" '
@@ -20,7 +19,7 @@ def build_notification_message(view: NotificationView) -> str:
 
 
 def extract_notification_ids(contents: list[str] | Sequence[Any]) -> set[str]:
-    """Ids already present in history (skip re-delivery, Kimi parity)."""
+    """Ids already present in history (skip re-delivery)."""
     ids: set[str] = set()
     for item in contents:
         text = item if isinstance(item, str) else getattr(item, "extract_text", lambda: str(item))()

@@ -1,4 +1,3 @@
-# Ported from coderai/core/settings.py + typed_config.py - kimi structure (config.py).
 """Resolve canonical CoderAI settings from files and environment.
 
 Layering (lowest → highest): global ``~/.coderai/mcp.json`` + user settings
@@ -147,7 +146,7 @@ def resolve_typed_config_overlay(project_root: str = ".") -> dict[str, Any]:
     Returns ``{}`` when no typed config exists or it fails validation — the
     legacy ``settings.json`` + env path remains authoritative. Explicit
     ``CODERAI_CONFIG_FILE`` / ``CODERAI_CONFIG_STRING`` redirects are honored
-    (Kimi ``--config-file`` / ``--config`` parity).
+   .
     """
     try:
         from coderai.config import (
@@ -157,8 +156,8 @@ def resolve_typed_config_overlay(project_root: str = ".") -> dict[str, Any]:
     except Exception:
         return {}
     try:
-        override_file = os.environ.get("CODERAI_CONFIG_FILE") or os.environ.get("KIMI_CONFIG_FILE")
-        override_text = os.environ.get("CODERAI_CONFIG_STRING") or os.environ.get("KIMI_CONFIG_STRING")
+        override_file = os.environ.get("CODERAI_CONFIG_FILE")
+        override_text = os.environ.get("CODERAI_CONFIG_STRING")
         if override_text:
             typed = load_typed_config_from_string(override_text)
         elif override_file:
@@ -199,7 +198,7 @@ def resolve_typed_config_overlay(project_root: str = ".") -> dict[str, Any]:
 
 
 def _typed_global_knobs(typed: Any) -> dict[str, Any]:
-    """Model-independent knobs from the typed config (Kimi global-config parity)."""
+    """Model-independent knobs from the typed config."""
     try:
         return {
             "mergeAllAvailableSkills": bool(typed.merge_all_available_skills),
@@ -388,7 +387,7 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
 
     typed_overlay = resolve_typed_config_overlay(project_root)
 
-    # Kimi parity: merge_all_available_skills (default True).
+    # merge_all_available_skills (default True).
     _merge_all_parsed = first_parsed(
         _parse_bool,
         system_env.get("MERGE_ALL_AVAILABLE_SKILLS"),
@@ -447,7 +446,7 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         context_window,
     )
 
-    # Kimi parity: loop_control knobs (defaults match kimi LoopControl)
+    # loop_control knobs
     def _parse_int(v: Any) -> int | None:
         try:
             iv = int(str(v).strip())
@@ -756,7 +755,7 @@ def _merge_mcp_servers(
 ) -> dict[str, dict] | None:
     """Merge MCP servers: global file → user → project → CLI overlays.
 
-    Global ``~/.coderai/mcp.json`` seeds the merge (Kimi: ``~/.kimi/mcp.json``);
+    Global ``~/.coderai/mcp.json`` seeds the merge;
     ``--mcp-config-file`` / ``--mcp-config`` overlays win per server.
     """
     from coderai.mcp.files import (
@@ -1120,7 +1119,7 @@ def get_configured_provider_keys(project_root: str = ".") -> dict[str, dict[str,
 
 
 # --- merged from coderai/core/typed_config.py ---
-"""Validated TOML/JSON configuration (Kimi ``config.py`` parity).
+"""Validated TOML/JSON configuration.
 
 This is the *typed* config layer: ``providers`` / ``models`` / ``services`` /
 ``loop_control`` / ``hooks`` validated with pydantic, loaded from
@@ -1194,7 +1193,7 @@ class LLMModel(BaseModel):
 
 
 class LoopControl(BaseModel):
-    """Agent loop control configuration (defaults match Kimi)."""
+    """Agent loop control configuration."""
 
     max_steps_per_turn: int = Field(
         default=1000,
@@ -1241,7 +1240,7 @@ class Services(BaseModel):
 
 
 class HookDef(BaseModel):
-    """A single hook definition in config.toml (Kimi ``hooks/config.py`` shape)."""
+    """A single hook definition in config.toml."""
 
     event: str
     command: str
@@ -1269,7 +1268,7 @@ class BackgroundConfig(BaseModel):
 
 
 class NotificationsConfig(BaseModel):
-    """Notification delivery tuning (Kimi ``NotificationConfig`` parity)."""
+    """Notification delivery tuning."""
 
     claim_stale_after_ms: int = Field(default=15_000, ge=1000)
 
@@ -1330,7 +1329,7 @@ class TypedConfig(BaseModel):
         return self
 
 
-# Kimi parity alias
+# Alias
 Config = TypedConfig
 
 
@@ -1364,11 +1363,25 @@ def _parse_text(config_text: str, source: str) -> dict:
     return dict(data)
 
 
+#: In-process cache for ``load_typed_config`` keyed by
+#: ``(resolved path, mtime_ns, size)``. Typed-config parsing + pydantic
+#: validation runs on every ``resolve_current_settings`` /
+#: ``create_openai_client`` call (i.e. on the TTFT path of every turn), so
+#: caching it removes repeated TOML parse + validation when the file is
+#: unchanged. Invalidated by mtime/size and by ``save_typed_config``.
+_typed_config_cache: dict[tuple[str, int, int], TypedConfig] = {}
+
+
+def clear_typed_config_cache() -> None:
+    """Drop cached typed configs (tests / explicit config rewrites)."""
+    _typed_config_cache.clear()
+
+
 def load_typed_config(config_file: Path | None = None) -> TypedConfig:
     """Load + validate config from file (creating a default when missing)."""
     default_path = get_config_file().expanduser().resolve(strict=False)
     if config_file is None:
-        override_file = os.environ.get("CODERAI_CONFIG_FILE") or os.environ.get("KIMI_CONFIG_FILE")
+        override_file = os.environ.get("CODERAI_CONFIG_FILE")
         if override_file:
             config_file = Path(override_file).expanduser()
         else:
@@ -1388,6 +1401,16 @@ def load_typed_config(config_file: Path | None = None) -> TypedConfig:
         return config
 
     try:
+        stat = config_file.stat()
+        cache_key = (str(config_file), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        cache_key = None
+    if cache_key is not None:
+        cached = _typed_config_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    try:
         data = _parse_text(config_file.read_text(encoding="utf-8"), str(config_file))
         config = TypedConfig.model_validate(data)
     except ConfigError:
@@ -1398,6 +1421,12 @@ def load_typed_config(config_file: Path | None = None) -> TypedConfig:
         raise ConfigError(f"Cannot read configuration file {config_file}: {e}") from e
     config.is_from_default_location = is_default
     config.source_file = config_file
+    if cache_key is not None:
+        # Bound growth: entries are keyed by (path, mtime, size); stale keys
+        # are naturally orphaned on rewrite. Keep the newest few only.
+        if len(_typed_config_cache) > 16:
+            _typed_config_cache.clear()
+        _typed_config_cache[cache_key] = config
     return config
 
 
@@ -1418,6 +1447,13 @@ def save_typed_config(config: TypedConfig, config_file: Path | None = None) -> N
     """Persist config as TOML (or JSON for ``.json`` paths)."""
     target = config_file or get_config_file()
     logger.debug("Saving typed config to file: {file}", file=str(target))
+    # Invalidate cached loads of this path (content is about to change).
+    try:
+        resolved = str(target.expanduser().resolve(strict=False))
+        for key in [k for k in _typed_config_cache if k[0] == resolved]:
+            _typed_config_cache.pop(key, None)
+    except Exception:
+        pass
     target.parent.mkdir(parents=True, exist_ok=True)
     data = config.model_dump(mode="json", exclude_none=True)
     if target.suffix.lower() == ".json" or tomlkit is None:
@@ -1426,7 +1462,7 @@ def save_typed_config(config: TypedConfig, config_file: Path | None = None) -> N
         target.write_text(tomlkit.dumps(data), encoding="utf-8")
 
 
-# Kimi parity aliases
+# Aliases
 load_config = load_typed_config
 save_config = save_typed_config
 

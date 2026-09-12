@@ -1,4 +1,3 @@
-# Ported from coderai/core/spawn.py - kimi structure (subagents/builder.py).
 """Dynamic subagent spawning, descriptor validation, depth quotas, and scratchpad sandboxing."""
 
 from __future__ import annotations

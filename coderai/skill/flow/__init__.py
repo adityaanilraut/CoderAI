@@ -1,4 +1,4 @@
-"""Prompt-flow graphs (Kimi ``skill/flow/__init__.py`` parity).
+"""Prompt-flow graphs.
 
 A flow skill (``SKILL.md`` frontmatter ``type: flow`` + one fenced
 ``mermaid``/``d2`` block) compiles to a ``Flow``: BEGIN → task/decision

@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/__init__.py - kimi structure (kimi_cli/tools/__init__.py).
 from __future__ import annotations
 
 import json

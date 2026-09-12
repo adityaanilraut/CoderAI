@@ -1,5 +1,4 @@
-# Ported from coderai/core/injections.py - kimi structure (soul/dynamic_injection.py).
-"""Dynamic per-step prompt injections (Kimi ``soul/dynamic_injection.py`` parity).
+"""Dynamic per-step prompt injections.
 
 Providers are consulted before each LLM step and may contribute
 ``<system-reminder>`` payloads. Each provider owns its throttling. The loop
@@ -7,7 +6,7 @@ passes plain message dicts (``role``/``content``) so this module stays
 independent of any chat-provider SDK.
 
 The afk + plan-mode providers live in :mod:`coderai.soul.dynamic_injections`
-(Kimi path) and are re-exported here so this path keeps working.
+and are re-exported here.
 """
 
 from __future__ import annotations
@@ -58,7 +57,7 @@ class DynamicInjectionProvider(ABC):
         return None
 
 
-# -- re-exports from the Kimi-path subpackage -------------------------------
+# -- re-exports -------------------------------------------------------------
 # Provider modules import the base classes above, so they are imported lazily
 # here (PEP 562) to avoid a module-level import cycle.
 

@@ -1,10 +1,9 @@
-# Ported from coderai/cli/info_cmds.py - kimi structure (ui/shell/usage.py).
 from __future__ import annotations
 
 from typing import Any
 
 def cmd_usage(mgr: Any, session_id: str | None, console: Any = None) -> dict[str, Any]:
-    """Show API usage/quota with progress bars (Kimi ``/usage`` parity).
+    """Show API usage/quota with progress bars.
 
     Uses local token accounting; quota endpoints are provider-specific so this
     reports consumption against the configured context window.

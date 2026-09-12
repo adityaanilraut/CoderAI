@@ -1,4 +1,3 @@
-# Ported from coderai/core/common/process_tree.py - kimi structure (kimi_cli/utils/environment.py).
 """Process tree management, escalated killing, and secure environment scrubbing."""
 
 from __future__ import annotations

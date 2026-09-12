@@ -183,7 +183,7 @@ class SessionManager:
         self.schedule_manager = ScheduleManager(sched_storage)
         self.agent_registry = AgentRegistry()
 
-        # YOLO/AFK approval mode (Kimi parity: yolo auto-approves all, afk auto-dismisses questions)
+        # YOLO/AFK approval mode: yolo auto-approves all, afk auto-dismisses questions
         self._yolo_mode: bool = False
         self._afk_mode: bool = False
         self.active_agent_role: str = "default"
@@ -192,7 +192,7 @@ class SessionManager:
         from coderai.approval_runtime import ApprovalRuntime
 
         self.approval_runtime = ApprovalRuntime()
-        # Kimi parity: session-level wire hub (approval/notifications fan-out)
+        # Session-level wire hub (approval/notifications fan-out)
         # + persistent notification manager (llm/wire/shell sinks).
         from coderai.wire.root_hub import RootWireHub
 
@@ -285,7 +285,7 @@ class SessionManager:
             print(f"Warning: Failed to switch agent role to '{clean_role}': {exc}", file=sys.stderr)
             return False
 
-    # ---- YOLO / AFK (Kimi parity) ----
+    # ---- YOLO / AFK ----
     def is_yolo(self) -> bool:
         return self._yolo_mode
 
@@ -747,7 +747,7 @@ class SessionManager:
             self._save_session_state(session_id)
         except Exception:
             pass
-        try:  # Kimi metadata.py parity: remember latest session per workdir.
+        try:  # Remember latest session per workdir.
             from coderai.metadata import record_last_session
 
             record_last_session(self.project_root, session_id)
@@ -788,7 +788,7 @@ class SessionManager:
         content_params: list[dict[str, Any]] | None = None,
     ) -> str:
         session_id = uuid.uuid4().hex
-        # Kimi parity: max_ralph_iterations != 0 turns the prompt into an
+        # When max_ralph_iterations != 0, turn the prompt into an
         # automated repeat loop instead of a single turn (checked up front so
         # the prompt is not appended twice).
         try:
@@ -826,11 +826,12 @@ class SessionManager:
         )[:MAX_SESSION_ENTRIES]
         self._save_index(index)
 
-        # File history session checkpoint
-        self.file_history.ensure_session(session_id)
-        ckpt_res = self.file_history.record_tracked_files_checkpoint(
-            session_id, "User prompt checkpoint"
-        )
+        # File history session checkpoint. The branch is brand-new (fresh uuid),
+        # so its manifest is empty and a tracked-files record would be a no-op
+        # returning the initial hash (~3 wasted git spawns on the TTFT path).
+        # Use the initial commit hash directly.
+        initial_hash = self.file_history.ensure_session(session_id)
+        ckpt_hash = initial_hash
 
         model = self.get_active_model()
         settings = self.get_resolved_settings()
@@ -879,7 +880,7 @@ class SessionManager:
                     "user",
                     effective_user_prompt,
                     meta={
-                        "checkpointHash": ckpt_res.checkpoint_hash,
+                        "checkpointHash": ckpt_hash,
                         "userPrompt": {"planMode": plan_mode},
                         "rawPrompt": user_prompt,
                         **({"contentParams": list(content_params)} if content_params else {}),
@@ -888,14 +889,14 @@ class SessionManager:
             )
             await self._inject_matched_skills(session_id, user_prompt, skills)
         self._active_session_id = session_id
-        # Kimi parity: SessionStart fires on creation.
+        # SessionStart fires on creation.
         try:
             from coderai.hooks import run_session_start
 
             run_session_start(session_id, self.project_root, "create")
         except Exception:
             pass
-        try:  # Kimi metadata.py parity: remember latest session per workdir.
+        try:  # Remember latest session per workdir.
             from coderai.metadata import record_last_session
 
             record_last_session(self.project_root, session_id)
@@ -1047,7 +1048,7 @@ class SessionManager:
                         )
                     )
                 # Phase 2: persist plan-mode flips + schedule the activation
-                # reminder for the next LLM step (Kimi: Soul._set_plan_mode).
+                # reminder for the next LLM step.
                 try:
                     state = self.get_session_state(session_id)
                     state.plan_mode = bool(plan_mode)
@@ -1072,7 +1073,7 @@ class SessionManager:
             # Image-only turns carry no text; the images ride in contentParams
             # (same path as the CLI /image command) so they still append.
             user_text = user_prompt or ""
-            # Kimi parity: UserPromptSubmit fires before the turn starts; hooks
+            # UserPromptSubmit fires before the turn starts; hooks
             # may inject additionalContext (appended) or deny (abort turn).
             try:
                 from coderai.hooks import run_user_prompt_submit
@@ -1107,7 +1108,7 @@ class SessionManager:
                     )
             except Exception:
                 pass
-            # Kimi parity: max_ralph_iterations != 0 runs the automated repeat
+            # When max_ralph_iterations != 0, run the automated repeat
             # loop instead of a single turn (after UserPromptSubmit so hooks
             # still see the prompt, before anything is appended).
             try:
@@ -1313,7 +1314,7 @@ class SessionManager:
         dedupe_key: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> Any:
-        """Publish a notification (Kimi ``NotificationManager.publish`` parity)."""
+        """Publish a notification."""
         from coderai.notifications import NotificationEvent, to_wire_notification
 
         manager = getattr(self, "notification_manager", None)
@@ -1342,9 +1343,9 @@ class SessionManager:
         return view
 
     async def _deliver_llm_notifications(self, session_id: str) -> None:
-        """Claim up to 4 pending ``llm`` notifications into this turn (Kimi parity).
+        """Claim up to 4 pending ``llm`` notifications into this turn.
 
-        Runs at activation start (Kimi delivers at step start; same effect for
+        Runs at activation start (delivers at step start; same effect for
         the first step without loop surgery). Already-seen ids are acked
         without re-appending; each delivery fires Notification hooks.
         """
@@ -1853,7 +1854,7 @@ class SessionManager:
         self, session_id: str, trigger: str = "pressure", custom_instruction: str | None = None
     ) -> None:
         """Execute session compaction through the pluggable CompactionEngine."""
-        # Kimi parity: PreCompact fires first; deny aborts compaction.
+        # PreCompact fires first; deny aborts compaction.
         try:
             from coderai.hooks import run_pre_compact
 
@@ -1900,7 +1901,7 @@ class SessionManager:
                     "updateTime": now,
                 },
             )
-            # Kimi parity: PostCompact fires after successful compaction.
+            # PostCompact fires after successful compaction.
             try:
                 from coderai.hooks import run_post_compact
 
@@ -1980,7 +1981,7 @@ class SessionManager:
     def rename_session(self, session_id: str, new_title: str) -> bool:
         """Rename an existing session title/summary in index and memory.
 
-        Kimi ``/title`` parity: manual titles are capped at 200 chars and set
+        Manual titles are capped at 200 chars and set
         ``title_locked`` so auto-generation never overwrites them.
         """
         cleaned_title = (new_title or "").strip()[:200]
@@ -1999,7 +2000,7 @@ class SessionManager:
                 "updateTime": _now(),
             },
         )
-        # Phase 2: mirror manual titles into persisted state (Kimi: custom_title
+        # Phase 2: mirror manual titles into persisted state (custom_title
         # + title_generated guard against auto-generation overwrites).
         try:
             state = self.get_session_state(target_id)
@@ -2074,7 +2075,7 @@ class SessionManager:
         self.mcp_tool_definitions = self.mcp_manager.get_mcp_tool_definitions()
 
     def refresh_plugin_tools(self) -> None:
-        """Reload plugin definitions + refresh injected configs (Kimi parity: startup)."""
+        """Reload plugin definitions + refresh injected configs."""
         try:
             self.tool_executor.refresh_plugin_tools()
         except Exception:
@@ -2086,6 +2087,12 @@ class SessionManager:
                 refresh_plugin_configs,
             )
 
+            plugins_dir = get_plugins_dir()
+            if not plugins_dir.is_dir():
+                # No plugins installed: config re-injection is a no-op, so
+                # skip the full client construction (settings resolve +
+                # typed-config load + OpenAI client) on the startup path.
+                return
             merged = dict(self.get_resolved_settings())
             try:
                 info = self.create_openai_client() or {}
@@ -2093,7 +2100,7 @@ class SessionManager:
                     merged.update(info)
             except Exception:
                 pass
-            refresh_plugin_configs(get_plugins_dir(), collect_host_values(merged))
+            refresh_plugin_configs(plugins_dir, collect_host_values(merged))
         except Exception:
             pass
 
@@ -2111,7 +2118,7 @@ class SessionManager:
         return defs
 
     def start_background_mcp_loading(self) -> None:
-        """Connect MCP servers in the background (Kimi defer parity: fast shell start).
+        """Connect MCP servers in the background for fast shell start.
 
         The first turn joins the load via ``_await_mcp_ready``; non-interactive
         callers keep awaiting :meth:`init_mcp_servers` inline instead.
@@ -2161,7 +2168,7 @@ class SessionManager:
             pass
 
     def emit_mcp_status(self, loading: bool = False) -> None:
-        """Publish a wire ``StatusUpdate`` with the current MCP snapshot (Kimi parity)."""
+        """Publish a wire ``StatusUpdate`` with the current MCP snapshot."""
         try:
             from coderai.wire.emitter import get_emitter
             from coderai.wire.types import (

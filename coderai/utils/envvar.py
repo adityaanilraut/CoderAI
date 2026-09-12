@@ -1,4 +1,3 @@
-# Ported from coderai/core/common/env.py - kimi structure (kimi_cli/utils/envvar.py).
 """Environment variable helpers.
 
 Pure-stdlib: boolean/int env parsing with safe defaults.

@@ -1,5 +1,4 @@
-# Ported from coderai/core/common/signals.py - kimi structure (kimi_cli/utils/signals.py).
-"""Async-safe SIGINT handler — mirrors Kimi CLI utils/signals.py (std lib only)."""
+"""Async-safe SIGINT handler — mirrors CoderAI CLI utils/signals.py (std lib only)."""
 
 from __future__ import annotations
 

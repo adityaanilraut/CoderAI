@@ -1,4 +1,3 @@
-# Ported from coderai/core/network/client.py - kimi structure (kimi_cli/utils/aiohttp.py).
 """Resilient HTTP Client with connection pooling, retries, SSRF rails, and caching."""
 
 from __future__ import annotations
@@ -298,7 +297,7 @@ def get_http_client() -> HttpClient:
     return _default_http_client
 
 
-# --- Kimi parity (kimi_cli/utils/aiohttp.py) ---
+# --- Native aiohttp session factory ---
 # Native aiohttp session factory for async callers (e.g. telemetry transport).
 
 

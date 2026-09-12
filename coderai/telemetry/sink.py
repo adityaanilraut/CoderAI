@@ -1,4 +1,3 @@
-# Ported from coderai/core/telemetry.py - kimi structure (telemetry/sink.py).
 """Telemetry and streaming event middleware interceptor chain for CoderAI."""
 
 from __future__ import annotations

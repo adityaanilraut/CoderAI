@@ -6,8 +6,7 @@ SHA (with remote origin) into the package so telemetry can reliably distinguish
 official builds from forks or dirty installs.
 
 Resolution order for the SHA:
-1. ``CODERAI_BUILD_SHA`` environment variable (dev / CI override,
-   ``KIMI_BUILD_SHA`` is honored as a legacy alias).
+1. ``CODERAI_BUILD_SHA`` environment variable (dev / CI override).
 2. ``git rev-parse HEAD`` in the repository (truncated to 12 chars).
 """
 
@@ -70,9 +69,8 @@ def _detect_remote() -> str:
 
 def _detect_sha() -> str:
     """Return the build SHA from env or git, empty string if unavailable."""
-    for env_var in ("CODERAI_BUILD_SHA", "KIMI_BUILD_SHA"):
-        if sha := os.environ.get(env_var, "").strip():
-            return sha
+    if sha := os.environ.get("CODERAI_BUILD_SHA", "").strip():
+        return sha
 
     try:
         result = subprocess.run(

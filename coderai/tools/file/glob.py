@@ -312,7 +312,7 @@ def glob_tool_definition() -> ToolDefinition:
     )
 
 
-# --- Kimi CallableTool2 Parity ---
+# --- CallableTool2 Implementation ---
 
 from pathlib import Path as _Path
 from kaos.path import KaosPath as _KaosPath
@@ -365,7 +365,7 @@ class Glob(_CallableTool2[GlobParams]):
         os_kind = getattr(env, "os_kind", "")
         super().__init__(description=_glob_description_for_os(os_kind))
         builtin = getattr(runtime, "builtin_args", None)
-        self._work_dir = getattr(builtin, "CODERAI_WORK_DIR", getattr(builtin, "KIMI_WORK_DIR", _KaosPath.cwd()))
+        self._work_dir = getattr(builtin, "CODERAI_WORK_DIR", _KaosPath.cwd())
         self._additional_dirs = getattr(runtime, "additional_dirs", [])
         self._skills_dirs = getattr(runtime, "skills_dirs", [])
 

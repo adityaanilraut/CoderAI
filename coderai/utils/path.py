@@ -1,4 +1,3 @@
-# Ported from coderai/core/common/file_utils.py - kimi structure (kimi_cli/utils/path.py).
 """"""
 
 from __future__ import annotations

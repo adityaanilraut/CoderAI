@@ -1,4 +1,3 @@
-# Ported from coderai/cli/app.py (_build_parser only; monolith stays) - kimi structure (ui/shell/startup.py).
 from __future__ import annotations
 
 import argparse
@@ -158,7 +157,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Save configuration to user global settings (~/.coderai)",
     )
     parser.add_argument("--plan", action="store_true", help="start session in Plan Mode")
-    # Kimi-parity run-mode flags
+    # run-mode flags
     parser.add_argument(
         "--continue",
         "-C",

@@ -1,10 +1,9 @@
-# Ported from coderai/cli/console.py - kimi structure (ui/shell/console.py).
-"""Neutral console, pager, and OSC-8 helpers — Phase0 port of Kimi ui/shell/console.py.
+"""Neutral console, pager, and OSC-8 helpers.
 
 Provides:
 - NEUTRAL_MARKDOWN_THEME that disables noisy markdown colors
-- _KimiPager that strips MANPAGER to avoid `col|bat` mangling
-- _KimiConsole that defaults to _KimiPager
+- _CoderAIPager that strips MANPAGER to avoid `col|bat` mangling
+- _CoderAIConsole that defaults to _CoderAIPager
 - render_to_ansi with OSC-8 zero-width wrapping for prompt_toolkit
 """
 
@@ -51,7 +50,7 @@ NEUTRAL_MARKDOWN_THEME = Theme(
 _NEUTRAL_MARKDOWN_THEME = NEUTRAL_MARKDOWN_THEME
 
 
-class _KimiPager(Pager):
+class _CoderAIPager(Pager):
     """Pager that ignores MANPAGER to avoid garbled ANSI output."""
 
     def show(self, content: str) -> None:
@@ -63,8 +62,8 @@ class _KimiPager(Pager):
                 os.environ["MANPAGER"] = saved
 
 
-class _KimiConsole(Console):
-    """Console subclass that defaults to :class:`_KimiPager`."""
+class _CoderAIConsole(Console):
+    """Console subclass that defaults to :class:`_CoderAIPager`."""
 
     def pager(
         self,
@@ -73,12 +72,12 @@ class _KimiConsole(Console):
         links: bool = False,
     ) -> PagerContext:
         if pager is None:
-            pager = _KimiPager()
+            pager = _CoderAIPager()
         return super().pager(pager=pager, styles=styles, links=links)
 
 
-# Global console — use this everywhere (Kimi parity: highlight=False)
-console = _KimiConsole(highlight=False, theme=NEUTRAL_MARKDOWN_THEME)
+# Global console — use this everywhere
+console = _CoderAIConsole(highlight=False, theme=NEUTRAL_MARKDOWN_THEME)
 
 # Matches OSC 8 hyperlink open/close markers: ESC ] 8 ; params ; uri ST (ST = ESC \ or BEL)
 _OSC8_RE = re.compile(r"\x1b\]8;[^\x07\x1b]*(?:\x1b\\|\x07)")

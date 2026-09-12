@@ -52,18 +52,18 @@ from rich.panel import Panel
 from coderai.utils.term import ensure_new_line, ensure_tty_sane
 
 _RICH = True
-# Phase0: neutral-themed console with MANPAGER-safe pager (Kimi parity: ui/shell/console.py:63)
+# Phase0: neutral-themed console with MANPAGER-safe pager
 console: Any
 try:
-    from coderai.ui.shell.console import console as _kimi_console  # type: ignore[assignment]
+    from coderai.ui.shell.console import console as _coderai_console  # type: ignore[assignment]
 
-    console = _kimi_console
+    console = _coderai_console
 except Exception:
     console = Console()
 
 
 def error_callout(console: Any | None, title: str, detail: str, hint: str = "") -> None:
-    """Standardized error panel (Kimi parity): red border, actionable hint."""
+    """Standardized error panel: red border, actionable hint."""
     msg = f"[bold red]✗ {title}[/]\n[white]{detail}[/]"
     if hint:
         msg += f"\n[dim]→ {hint}[/]"
@@ -175,7 +175,7 @@ def _prompt_permissions(
                 panel = ApprovalRequestPanel(req)
                 console.print()
                 console.print(panel.render())
-                # Build prompt mirroring Kimi → [1] Approve once cyan, etc.
+                # Build prompt → [1] Approve once cyan, etc.
                 has_always_panel = any(v == "approve_for_session" for _, v in panel.options)
                 # reuse same prompt strings but map to panel indices
                 if has_always_panel:
@@ -192,7 +192,7 @@ def _prompt_permissions(
                         raw_choice = "n"
                     # Ctrl-E is \x05 when read via input in raw mode; handle both "ctrl-e" string and byte
                     if raw_choice in ("\x05", "ctrl-e", "expand") and panel.has_expandable_content:
-                        # Live.stop→pager→start shape reset (Kimi _live_view.py:204)
+                        # Live.stop→pager→start shape reset
                         live = getattr(_STREAM_STATE, "_live_ref", None)
                         if live is not None:
                             try:
@@ -390,7 +390,7 @@ def _prompt_permissions(
             if diff_preview and isinstance(diff_preview, str) and diff_preview.strip():
                 render_diff_preview(None, diff_preview, title=f"Pre-Approval Diff ({name})")
 
-        # Granular [y/n/a] style prompt (Kimi parity) — numeric aliases 1/2/3 kept for compat
+        # Granular [y/n/a] style prompt — numeric aliases 1/2/3 kept for compat
         options: list[tuple[str, str, str]] = [("allow", "y", "Yes (allow once)")]
         if has_always and always_target:
             options.append(("always", "a", f"Yes, always allow {describe_scope(always_target)}"))
@@ -741,7 +741,7 @@ class _StreamState:
         self._btw_panel: Any | None = None
         self._live_ref: Any | None = None  # current Live for Ctrl-E pause/resume
         self._btw_pending_queue: list[str] = []  # queued inputs while streaming (QUEUE)
-        # Kimi ``--final-message-only`` parity: collect chunks silently, emit once.
+        # Collect chunks silently, emit once.
         self.silent: bool = False
 
     def reset(self) -> None:
@@ -911,7 +911,7 @@ class _StreamState:
         return self._unified_block
 
     def on_retry(self, retry: Any) -> None:
-        """Handle StepRetry banner + discard partial stream (Kimi discard_retry_attempt)."""
+        """Handle StepRetry banner + discard partial stream."""
         try:
             from coderai.ui.shell.visualize._blocks import _format_step_retry
 
@@ -931,7 +931,7 @@ class _StreamState:
             pass
 
     def on_status_update(self, status: Any) -> None:
-        """Handle StatusUpdate context % — Kimi _StatusBlock."""
+        """Handle StatusUpdate context %."""
         try:
             from coderai.ui.shell.visualize._blocks import StatusUpdate, _StatusBlock
 
@@ -952,7 +952,7 @@ class _StreamState:
 
     # -- Phase4 modal composers ---------------------------------------------
     def compose_interactive_panels(self) -> list[Any]:
-        """Approval and question and btw panels — interactive overlays (Kimi compose_interactive_panels)."""
+        """Approval and question and btw panels — interactive overlays."""
         blocks: list[Any] = []
         if self._current_approval_panel is not None:
             try:
@@ -1085,7 +1085,7 @@ class _StreamState:
             return None
 
     def visualize(self, console_override: Any | None = None) -> Any | None:
-        """Factory: Rich Live vs PromptLive sharing state (Kimi _live_view.py:188).
+        """Factory: Rich Live vs PromptLive sharing state.
 
         Returns a Live context (or None for non-TTY/fallback). Chooses vertical_overflow
         visible + transient Group, SIGWINCH-aware. PromptLive path defers to
@@ -1392,7 +1392,7 @@ async def _run_interactive(
         nonlocal active_plan_mode
         active_plan_mode = new_mode
 
-    # Phase2: Prompt Toolkit session (Kimi ui/shell/prompt.py parity) — lazy, tty check
+    # Phase2: Prompt Toolkit session — lazy, tty check
     _ptk_session = None
     try:
         from coderai.ui.shell.prompt import CoderAIPromptSession, is_ptk_available
@@ -1407,9 +1407,9 @@ async def _run_interactive(
     except Exception:
         _ptk_session = None
 
-    # Setup Custom SIGINT Handler for Interactive REPL (async-safe, mirrors Kimi utils/signals.py)
+    # Setup Custom SIGINT Handler for Interactive REPL (async-safe)
     active_turn_task: asyncio.Task[Any] | None = None
-    # Graceful SIGINT: first Ctrl+C interrupts turn, second exits (Kimi parity)
+    # Graceful SIGINT: first Ctrl+C interrupts turn, second exits
     sigint_count: list[int] = [0]
 
     def _sigint_handler(signum: int, frame: Any) -> None:  # sync fallback
@@ -1466,7 +1466,7 @@ async def _run_interactive(
         except (ValueError, AttributeError):
             pass
 
-    # Phase0: ensure TTY sane and cursor at column 0 before banner (Kimi utils/term.py:10/28)
+    # Phase0: ensure TTY sane and cursor at column 0 before banner
     try:
         ensure_tty_sane()
         ensure_new_line()
@@ -1593,7 +1593,7 @@ async def _run_interactive(
                         )
                     ).strip()
                     active_plan_mode = _ptk_session.plan_mode
-                    # Kimi Ctrl-X parity: shell mode executes directly.
+                    # Shell mode executes directly.
                     if getattr(_ptk_session, "shell_mode", False) and raw and not raw.startswith("/"):
                         import subprocess as _sp
 
@@ -1634,7 +1634,7 @@ async def _run_interactive(
             if not raw:
                 continue
 
-            # Phase4: input router — BTW/QUEUE/SEND (Kimi _input_router.py:31)
+            # Phase4: input router — BTW/QUEUE/SEND
             # ponytail: lean classify; BTW modal not ❯ queue, QUEUE holds until turn ends
             try:
                 from coderai.ui.shell.visualize._input_router import classify_input
@@ -1649,7 +1649,7 @@ async def _run_interactive(
                     continue
                 if action.kind == "btw":
                     q = action.args
-                    # BTW side question — BtwPanel modal + isolated LLM call (Kimi btw.py).
+                    # BTW side question — BtwPanel modal + isolated LLM call.
                     try:
                         from coderai.soul.btw import run_side_question
 
@@ -1689,7 +1689,7 @@ async def _run_interactive(
                         print(f"btw failed: {e}")
                     continue
                 if action.kind == "queue":
-                    # HOLD and send as new turn after current turn ends (Kimi QUEUE)
+                    # HOLD and send as new turn after current turn ends (QUEUE)
                     try:
                         _STREAM_STATE._btw_pending_queue.append(raw)
                     except Exception:
@@ -1730,7 +1730,7 @@ async def _run_interactive(
                 else:
                     continue
 
-            # Phase5: placeholders — large paste collapse + image cache (Kimi placeholders.py:313 refold)
+            # Phase5: placeholders — large paste collapse + image cache
             # ponytail: display token [Pasted text #n +N lines] for history, resolved_text for LLM via PromptPlaceholderManager
             display_command = raw
             try:
@@ -1742,7 +1742,7 @@ async def _run_interactive(
                     display_command = maybe
                     if console is not None and _RICH:
                         console.print(f"[dim]{display_command}[/]")
-                    # toast dedup (Kimi prompt.py:1131)
+                    # toast dedup
                     try:
                         from coderai.ui.shell.prompt import toast
 
@@ -1964,7 +1964,7 @@ async def _run_interactive(
                     print("\nTurn interrupted by user.")
                 continue
     finally:
-        # Phase0: restore TTY sane before exit summary (Kimi ensure_tty_sane parity)
+        # Phase0: restore TTY sane before exit summary
         try:
             ensure_tty_sane()
         except Exception:
@@ -1979,7 +1979,7 @@ async def _run_interactive(
                 signal.signal(signal.SIGINT, old_sigint_handler)
             except (ValueError, AttributeError):
                 pass
-        # Kimi parity: SessionEnd + Notification hooks fire on REPL exit.
+        # SessionEnd + Notification hooks fire on REPL exit.
         try:
             from coderai.hooks.runner import run_notification, run_session_end
 
@@ -2006,7 +2006,7 @@ async def _run_interactive(
 
 
 def _emit_final_message_only(mgr: SessionManager, session_id: str) -> None:
-    """Print only the final assistant text (Kimi ``--final-message-only`` parity).
+    """Print only the final assistant text.
 
     Stdout-only, no Rich markup: safe for pipes (``| head``, ``$(...)``).
     Falls back to the index ``assistantReply`` when the log has no text.
@@ -2042,13 +2042,13 @@ async def _run_once(
     effective_prompt, _ = expand_file_mentions(prompt, mgr.project_root)
     _STREAM_STATE.reset()
     if final_message_only:
-        # Kimi parity: silence streaming cards/spinners; emit final text only.
+        # Silence streaming cards/spinners; emit final text only.
         _STREAM_STATE.silent = True
     try:
         session_id = await mgr.create_session(effective_prompt, plan_mode=plan_mode)
         await _drain_pending_interactions(mgr, session_id, yes)
         if output_format == "stream-json":
-            # Kimi parity: emit buffered wire events as JSON lines on stdout.
+            # Emit buffered wire events as JSON lines on stdout.
             try:
                 from coderai.wire.emitter import get_emitter
 
@@ -2085,11 +2085,11 @@ def main(argv: list[str] | None = None) -> int:
     init_process_name("CoderAI")
     normalize_proxy_env()
     # --debug enables file logging; resolved pre-parse so startup crashes land
-    # in ~/.coderai/logs/coderai.log (Kimi: enable_logging(debug)).
+    # in ~/.coderai/logs/coderai.log.
     _debug_early = "--debug" in (argv if argv is not None else sys.argv[1:])
     enable_logging(debug=_debug_early, redirect_stderr=False)
-    # Kimi parity: real subcommands bypass the interactive parser entirely
-    # (``kimi info|export|mcp`` stay usable with zero config / offline).
+    # Real subcommands bypass the interactive parser entirely
+    # (``coderai info|export|mcp`` stay usable with zero config / offline).
     # Only treat the first token as a subcommand when it is NOT consumed by
     # an option (e.g. ``-p info`` is a prompt, not the info subcommand).
     _raw = list(argv if argv is not None else sys.argv[1:])
@@ -2120,7 +2120,7 @@ def main(argv: list[str] | None = None) -> int:
 
             return run_logout(_raw[1:])
         if _first == "acp":
-            # Kimi parity: run the ACP server on stdio (Agent Control Protocol).
+            # Run the ACP server on stdio (Agent Control Protocol).
             from coderai.acp import acp_main
 
             acp_main()
@@ -2142,7 +2142,7 @@ def main(argv: list[str] | None = None) -> int:
         value = getattr(args, flag, None)
         if value is not None:
             os.environ[env_name] = str(value)
-    # Kimi parity: --work-dir switches the project root; --config-file/--config
+    # --work-dir switches the project root; --config-file/--config
     # redirect settings resolution; --skills-dir/--add-dir/--mcp-config-file preload.
     if getattr(args, "work_dir", None):
         project_root = str(pathlib.Path(args.work_dir).expanduser().resolve())
@@ -2213,7 +2213,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # Kimi parity: --quiet == --print --output-format text --final-message-only.
+    # --quiet == --print --output-format text --final-message-only.
     # --print implies afk auto-approval for the invocation (no extra flag needed).
     if getattr(args, "quiet", False):
         args.print_mode = True
@@ -2280,7 +2280,7 @@ def main(argv: list[str] | None = None) -> int:
         preset_mode = "core"
 
     async def _main() -> int:
-        # Kimi parity: --print/--quiet non-interactive single-shot path.
+        # Non-interactive single-shot path (--print / --quiet).
         effective_yes = bool(args.yes or getattr(args, "print_mode", False))
         if getattr(args, "afk", False):
             os.environ["CODERAI_START_AFK"] = "1"
@@ -2309,14 +2309,14 @@ def main(argv: list[str] | None = None) -> int:
             on_stream_chunk=_STREAM_STATE.on_chunk,
             on_thinking_chunk=_STREAM_STATE.on_thinking_chunk,
         )
-        # Kimi parity: refresh OAuth-backed provider tokens at startup.
+        # Refresh OAuth-backed provider tokens at startup.
         try:
             from coderai.llm import ensure_oauth_fresh
 
             await ensure_oauth_fresh()
         except Exception:
             pass
-        # Kimi parity: --add-dir preload + --continue resolution.
+        # --add-dir preload + --continue resolution.
         if getattr(args, "add_dirs", None):
             import pathlib as _plm
 
@@ -2332,7 +2332,7 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
         if getattr(args, "wire", False):
-            # Kimi parity: --wire serves the wire protocol on stdio with a
+            # --wire serves the wire protocol on stdio with a
             # quiet manager: interactive stream callbacks print Rich markup,
             # which would corrupt the JSON-RPC stream on stdout.
             from coderai.wire.server import run_wire_stdio
@@ -2358,7 +2358,7 @@ def main(argv: list[str] | None = None) -> int:
                 return await run_wire_stdio(wire_mgr, wire_session)
             finally:
                 await close_session_manager(wire_mgr)
-        # Kimi parity: headless modes connect MCP inline; the interactive
+        # Headless modes connect MCP inline; the interactive
         # shell defers to a background task (fast start, joined per turn).
         _will_print = bool(getattr(args, "print_mode", False) and prompt_value)
         _will_run_once = bool(prompt_value and not (resume_arg or args.fork or last_arg))
@@ -2388,7 +2388,7 @@ def main(argv: list[str] | None = None) -> int:
                         full_prompt = stdin_prompt or prompt_value
                 elif stdin_prompt and not has_prompt_flag and not has_positional:
                     full_prompt = stdin_prompt
-                # Kimi parity: --continue with a prompt resumes the latest
+                # --continue with a prompt resumes the latest
                 # session instead of forking a fresh one.
                 _resume_target: str | None = None
                 if last_arg and not (resume_arg or args.fork):

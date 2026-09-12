@@ -20,7 +20,7 @@ from rich.text import Text
 
 from coderai.tools.display import DiffDisplayBlock
 from coderai.ui.theme import get_diff_colors
-from coderai.utils.rich.syntax import KimiSyntax
+from coderai.utils.rich.syntax import CoderAISyntax
 
 _INLINE_DIFF_MIN_RATIO = 0.5  # skip inline diff when lines are too dissimilar
 
@@ -166,13 +166,13 @@ def _build_diff_lines(
 # ---------------------------------------------------------------------------
 
 
-def _make_highlighter(path: str) -> KimiSyntax:
-    """Create a KimiSyntax instance for highlighting code by file extension."""
+def _make_highlighter(path: str) -> CoderAISyntax:
+    """Create a CoderAISyntax instance for highlighting code by file extension."""
     ext = path.rsplit(".", 1)[-1] if "." in path else ""
-    return KimiSyntax("", ext if ext else "text")
+    return CoderAISyntax("", ext if ext else "text")
 
 
-def _highlight(highlighter: KimiSyntax, code: str) -> Text:
+def _highlight(highlighter: CoderAISyntax, code: str) -> Text:
     t = highlighter.highlight(code)
     # Pygments appends a trailing newline (ensurenl=True); strip only that,
     # not trailing whitespace which may be meaningful in diffs.
@@ -217,7 +217,7 @@ def _build_offset_map(raw: str, rendered: str, tab_size: int) -> list[int]:
 
 
 def _apply_inline_diff(
-    highlighter: KimiSyntax,
+    highlighter: CoderAISyntax,
     del_lines: list[DiffLine],
     add_lines: list[DiffLine],
 ) -> None:
@@ -253,7 +253,7 @@ def _apply_inline_diff(
         add_lines[j].is_inline_paired = True
 
 
-def _highlight_hunk(highlighter: KimiSyntax, hunk: list[DiffLine]) -> None:
+def _highlight_hunk(highlighter: CoderAISyntax, hunk: list[DiffLine]) -> None:
     """Highlight all lines in a hunk, applying inline diff for paired -/+ blocks."""
     # First pass: find consecutive -/+ blocks and apply inline diff
     i = 0

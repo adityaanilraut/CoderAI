@@ -1,4 +1,3 @@
-# Ported from coderai/core/subagent.py - kimi structure (subagents/runner.py).
 """Sub-Agent Architecture & Engine for CoderAI.
 
 Provides reliable sub-agent spawning, context isolation, tool/permission sandboxing,
@@ -214,7 +213,7 @@ class SubAgentManager:
             )
         except Exception:
             pass
-        # Kimi parity: SubagentStart fires alongside legacy SubagentSpawn.
+        # SubagentStart fires alongside legacy SubagentSpawn.
         try:
             run_subagent_start(
                 spec.parent_agent_id or "root",
@@ -323,7 +322,7 @@ class SubAgentManager:
                     spec,
                     {"status": result.status, "error": result.error},
                 )
-            # Kimi parity: SubagentStop fires on settlement.
+            # SubagentStop fires on settlement.
             try:
                 from coderai.hooks.runner import run_subagent_stop
 
@@ -609,7 +608,7 @@ class SubAgentManager:
             if spec.extra_context:
                 initial_user_prompt += f"\n\nAdditional Context:\n{spec.extra_context}"
             # Phase 2: explore agents orient with a <git-context> block
-            # (Kimi: subagents/git_context.py).
+            # git repository context.
             if (spec.subagent_type or "").lower() == "explore":
                 try:
                     from coderai.subagents.registry import build_explore_extra_context

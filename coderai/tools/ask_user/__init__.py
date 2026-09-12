@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/ask_user_question.py - kimi structure (kimi_cli/tools/ask_user/__init__.py).
 """AskUserQuestion tool — pauses for user clarification."""
 
 from __future__ import annotations

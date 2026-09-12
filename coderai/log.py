@@ -1,4 +1,4 @@
-"""Central logging (Kimi ``utils/logging.py`` + ``__init__.py`` parity).
+"""Central logging.
 
 Uses ``loguru`` when installed (lazy import, disabled by default for library
 use) and falls back to stdlib ``logging`` otherwise — so the test interpreter

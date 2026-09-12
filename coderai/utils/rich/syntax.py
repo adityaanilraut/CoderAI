@@ -1,5 +1,4 @@
-# Ported from coderai/cli/syntax_theme.py - kimi structure (utils/rich/syntax.py).
-"""Pygments syntax theme — ported from Kimi CLI utils/rich/syntax.py."""
+"""Pygments syntax theme."""
 
 from __future__ import annotations
 
@@ -21,8 +20,8 @@ from pygments.token import Token as PygmentsToken
 from rich.style import Style
 from rich.syntax import ANSISyntaxTheme, Syntax, SyntaxTheme
 
-KIMI_ANSI_THEME_NAME = "kimi-ansi"
-KIMI_ANSI_THEME = ANSISyntaxTheme(
+CODERAI_ANSI_THEME_NAME = "coderai-ansi"
+CODERAI_ANSI_THEME = ANSISyntaxTheme(
     {
         PygmentsToken: Style(color="default"),
         PygmentsText: Style(color="default"),
@@ -74,10 +73,9 @@ KIMI_ANSI_THEME = ANSISyntaxTheme(
     }
 )
 
-
 def resolve_code_theme(theme: str | SyntaxTheme) -> str | SyntaxTheme:
-    if isinstance(theme, str) and theme.lower() == KIMI_ANSI_THEME_NAME:
-        return KIMI_ANSI_THEME
+    if isinstance(theme, str) and theme.lower() == CODERAI_ANSI_THEME_NAME:
+        return CODERAI_ANSI_THEME
     return theme
 
 
@@ -91,8 +89,8 @@ def resolve_color_system() -> str | None:
         return None
 
 
-class KimiSyntax(Syntax):
+class CoderAISyntax(Syntax):
     def __init__(self, code: str, lexer: str, **kwargs: Any) -> None:
         if "theme" not in kwargs or kwargs["theme"] is None:
-            kwargs["theme"] = KIMI_ANSI_THEME
+            kwargs["theme"] = CODERAI_ANSI_THEME
         super().__init__(code, lexer, **kwargs)

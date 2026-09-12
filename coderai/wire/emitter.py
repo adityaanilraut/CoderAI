@@ -1,4 +1,4 @@
-"""Process-global wire emitter (Kimi ``soul.wire_send`` parity).
+"""Process-global wire emitter.
 
 The core publishes lifecycle events here; UIs subscribe via ``get_emitter()``
 or attach a session ``Wire``. When no session wire is attached, messages are
@@ -25,7 +25,7 @@ def get_emitter() -> WireEmitter:
 
 
 def wire_send(msg: Any) -> None:
-    """Publish a wire message from anywhere in the core (Kimi ``wire_send``)."""
+    """Publish a wire message from anywhere in the core."""
     try:
         get_emitter().send(msg)
     except Exception:
@@ -92,7 +92,7 @@ class WireEmitter:
         with self._lock:
             self._buffer.clear()
 
-    # -- typed helpers (Kimi soul event parity) --------------------------------
+    # -- typed helpers --------------------------------------------------------
     def turn_begin(self, user_input: Any) -> None:
         from coderai.wire.types import TurnBegin
 

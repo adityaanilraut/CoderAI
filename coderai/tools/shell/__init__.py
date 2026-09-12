@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/bash.py - kimi structure (kimi_cli/tools/shell/__init__.py).
 """bash tool — subprocess with timeout, background execution, and persistent cwd."""
 
 from __future__ import annotations
@@ -1020,7 +1019,7 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
             delete_seatbelt_profile(profile_path)
 
 
-# --- Kimi parity: Params and Shell callable tool ---
+# --- Params and Shell callable tool ---
 from typing import Self
 from pydantic import BaseModel, Field, model_validator
 from kosong.tooling import CallableTool2, ToolReturnValue

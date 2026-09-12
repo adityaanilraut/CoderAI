@@ -93,7 +93,7 @@ class McpClient:
 
     @property
     def last_http_status(self) -> int | None:
-        """Last HTTP status seen by the transport (401 → unauthorized, Kimi parity)."""
+        """Last HTTP status seen by the transport (401 → unauthorized, parity)."""
         return getattr(self.transport, "last_http_status", None)
 
     def set_on_disconnect(self, handler: Callable[[str], None]) -> None:

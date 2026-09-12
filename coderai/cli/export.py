@@ -1,5 +1,4 @@
-# Ported from coderai/cli/export_cmd.py - kimi structure (cli/export.py).
-"""``coderai export`` subcommand (Kimi ``cli/export.py`` parity, stdlib only).
+"""``coderai export`` subcommand (stdlib only).
 
 Packages a session directory + recent diagnostics into a distributable ZIP:
 
@@ -7,7 +6,7 @@ Packages a session directory + recent diagnostics into a distributable ZIP:
 - recent ``~/.coderai/logs/coderai.log*`` files near session activity (±2d)
 - ``manifest.json`` with CLI/python/OS versions + activity window
 
-Kimi names: ``session-<id>.zip`` default output; ``-o`` override; ``-y``
+Names: ``session-<id>.zip`` default output; ``-o`` override; ``-y``
 skips the "export previous session?" confirmation.
 """
 
@@ -23,8 +22,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-_LOG_RETENTION_SECONDS = 2 * 24 * 60 * 60  # 2 days, mirrors Kimi
-_MAX_LOG_BYTES = 100 * 1024 * 1024  # 100 MB cap, mirrors Kimi
+_LOG_RETENTION_SECONDS = 2 * 24 * 60 * 60  # 2 days, mirrors upstream
+_MAX_LOG_BYTES = 100 * 1024 * 1024  # 100 MB cap, mirrors upstream
 
 
 def _version() -> str:

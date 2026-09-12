@@ -1,11 +1,10 @@
-# Ported from coderai/core/notifications.py - kimi structure (notifications/manager.py).
-"""Task/agent/system notifications (Kimi ``notifications/`` parity, slim).
+"""Task/agent/system notifications.
 
 Events persist under ``<project>/.coderai/notifications/<id>/{event,delivery}.json``
 with per-sink ``pending|claimed|acked`` delivery states. Sinks:
 
 - ``llm`` — delivered into the next turn as an advisory user message
-  (``SessionManager._activate`` claims up to 4, Kimi ``deliver_pending`` parity)
+  (``SessionManager._activate`` claims up to 4)
 - ``wire`` — forwarded as wire ``Notification`` events for wire clients
 - ``shell`` — claimable by interactive UIs (toasts)
 
@@ -34,7 +33,7 @@ from coderai.notifications.models import (
 )
 from coderai.notifications.store import NotificationStore
 class NotificationManager:
-    """Claim/ack delivery over a :class:`NotificationStore` (Kimi parity)."""
+    """Claim/ack delivery over a :class:`NotificationStore`."""
 
     def __init__(self, root: Path, *, claim_stale_after_s: float = CLAIM_STALE_AFTER_S) -> None:
         self._store = NotificationStore(root)
@@ -106,7 +105,7 @@ class NotificationManager:
         """Claim + handle + ack pending notifications for one sink.
 
         A failing handler leaves the notification ``claimed`` for later
-        recovery; delivery continues with the rest (Kimi parity).
+        recovery; delivery continues with the rest.
         """
         delivered: list[NotificationView] = []
         for view in self.claim_for_sink(sink, limit=limit):

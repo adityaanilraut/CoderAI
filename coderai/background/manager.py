@@ -1,4 +1,3 @@
-# Ported from coderai/core/jobs.py - kimi structure (background/manager.py).
 from __future__ import annotations
 
 import atexit

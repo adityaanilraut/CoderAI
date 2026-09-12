@@ -1,4 +1,3 @@
-# Ported from coderai/cli/export_render.py - kimi structure (utils/export.py).
 """Session export utilities (Markdown & JSON export with syntax formatting)."""
 
 from __future__ import annotations

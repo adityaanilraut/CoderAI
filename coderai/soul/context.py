@@ -18,7 +18,7 @@ from coderai.utils.path import next_available_rotation
 
 
 class Context:
-    """Persistent JSONL context backing a session (Kimi ``context.py`` parity)."""
+    """Persistent JSONL context backing a session."""
 
     def __init__(self, file_backend: Path):
         self._file_backend = file_backend

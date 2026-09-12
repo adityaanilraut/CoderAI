@@ -1,5 +1,4 @@
-# Ported from coderai/cli/info_cmd.py - kimi structure (cli/info.py).
-"""``coderai info`` subcommand (Kimi ``cli/info.py`` parity, stdlib only).
+"""``coderai info`` subcommand (stdlib only).
 
 Single source of version truth: ``coderai/_version.py``. Emits either human
 lines or ``--json`` for scripting.

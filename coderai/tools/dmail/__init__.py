@@ -1,5 +1,4 @@
-# Ported from coderai/core/tools/dmail.py - kimi structure (kimi_cli/tools/dmail/__init__.py).
-"""SendDMail tool (Kimi ``tools/dmail`` + ``soul/denwarenji`` parity).
+"""SendDMail tool.
 
 DenwaRenji steering: ``(message, checkpoint_id)`` is validated against the
 soul's checkpoint count (``core/denwarenji.py``) so the directive re-steers

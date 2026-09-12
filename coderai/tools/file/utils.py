@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/file_mutation.py - kimi structure (kimi_cli/tools/file/utils.py).
 """Shared context, sandbox, and callback plumbing for file mutations."""
 
 from __future__ import annotations
@@ -133,7 +132,7 @@ async def async_write_file_with_locks(
         )
 
 
-# --- File Type & Media Sniffing (Kimi Parity) ---
+# --- File Type & Media Sniffing ---
 
 import mimetypes
 from dataclasses import dataclass

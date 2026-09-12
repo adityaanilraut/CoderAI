@@ -1,7 +1,6 @@
-# Split from coderai/tools/file/glob.py; Params modeled on kimi_cli/tools/file/grep_local.py.
 """First-class grep tool backed by bundled ripgrep.
 
-Kimi-parity search surface (`output_mode`, context windows, `head_limit` /
+Search surface (`output_mode`, context windows, `head_limit` /
 `offset` pagination, sensitive-file filtering) on top of CoderAI's `--json`
 ripgrep engine plus the Python-fallback backend.
 """
@@ -159,7 +158,7 @@ def build_grep_command(
     context: int | None = None,
 ) -> list[str]:
     parts = ["--json", f"--regexp={pattern}"]
-    # Hidden files are always searched (Kimi parity, matches the Python
+    # Hidden files are always searched (matches the Python
     # fallback which walks dotfiles); sensitive files are filtered afterwards.
     parts.append("--hidden")
     if ignore_case:
@@ -371,7 +370,7 @@ def _python_grep(
 
 
 def _filter_sensitive(matches: list[GrepMatch]) -> tuple[list[GrepMatch], str]:
-    """Drop matches from sensitive files (Kimi parity). Returns (kept, notice)."""
+    """Drop matches from sensitive files. Returns (kept, notice)."""
     filtered: list[str] = []
     kept: list[GrepMatch] = []
     for match in matches:
@@ -672,7 +671,7 @@ def grep_tool_definition() -> ToolDefinition:
     )
 
 
-# --- Kimi CallableTool2 Parity ---
+# --- CallableTool2 Implementation ---
 
 from pathlib import Path as _Path
 from kosong.tooling import CallableTool2 as _CallableTool2, ToolError as _ToolError, ToolOk as _ToolOk, ToolReturnValue as _ToolReturnValue

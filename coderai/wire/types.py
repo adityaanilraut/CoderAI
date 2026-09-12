@@ -1,5 +1,4 @@
-# Ported from coderai/core/wire/types.py - kimi structure (kimi_cli/wire/types.py).
-"""Wire message taxonomy (Kimi ``wire/types.py`` parity).
+"""Wire message taxonomy.
 
 Dataclass-based (no pydantic dependency): events + requests + typed envelope
 with ``{"type": ..., "payload": {...}}`` framing. Request objects carry an
@@ -477,7 +476,7 @@ def is_wire_message(msg: Any) -> bool:
 
 
 _NAME_TO_TYPE: dict[str, type] = {cls.__name__: cls for cls in (*EVENT_TYPES, *REQUEST_TYPES)}
-# Kimi backwards-compat alias.
+# Backwards-compat alias.
 _NAME_TO_TYPE["ApprovalRequestResolved"] = ApprovalResponse
 if KosongToolResult is not None:
     _NAME_TO_TYPE["ToolResult"] = KosongToolResult

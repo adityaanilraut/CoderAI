@@ -1,4 +1,3 @@
-# Ported from coderai/core/oauth.py - kimi structure (auth/platforms.py).
 from __future__ import annotations
 
 import os

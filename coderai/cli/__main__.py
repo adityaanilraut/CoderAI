@@ -1,4 +1,4 @@
-"""Entry for ``python -m coderai.cli`` (Kimi ``cli/__main__.py`` parity).
+"""Entry for ``python -m coderai.cli``.
 
 Enables subcommand-style invocation from a source checkout or from an ACP
 client configuration that shells out to ``python -m coderai.cli acp``.
@@ -15,7 +15,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from coderai.ui.shell.app import main as run_cli
     from coderai.telemetry.crash import install_crash_handlers, set_phase
 
-    # Installed first so startup-phase crashes are captured (Kimi parity).
+    # Installed first so startup-phase crashes are captured (parity).
     install_crash_handlers()
     try:
         return int(run_cli(list(argv) if argv is not None else sys.argv[1:]) or 0)

@@ -1,5 +1,4 @@
-# Ported from coderai/cli/plugin_cmd.py - kimi structure (cli/plugin.py).
-"""``coderai plugin`` subcommand (Kimi ``cli/plugin.py`` parity, stdlib only).
+"""``coderai plugin`` subcommand (stdlib only).
 
 - ``install <directory | .zip | .zip URL | git URL>``
 - ``list [--json]``

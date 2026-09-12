@@ -1,4 +1,4 @@
-"""D2 flowchart → Flow (Kimi ``skill/flow/d2.py`` parity, verbatim port)."""
+"""D2 flowchart → Flow (verbatim port)."""
 
 from __future__ import annotations
 

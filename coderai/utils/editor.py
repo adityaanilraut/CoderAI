@@ -1,4 +1,3 @@
-# Ported from coderai/cli/input_engine.py - kimi structure (utils/editor.py).
 from __future__ import annotations
 
 import os

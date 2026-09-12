@@ -1,4 +1,3 @@
-# Ported from coderai/core/subagent_types.py - kimi structure (subagents/registry.py).
 from __future__ import annotations
 
 import os
@@ -8,7 +7,7 @@ from typing import Any
 
 from coderai.subagents.models import BUILTIN_SUBAGENT_TYPES, SubagentTypeDefinition, ToolPolicyMode
 
-# Map common tool aliases between PascalCase (Kimi) and snake_case (CoderAI Core)
+# Map common tool aliases between PascalCase and snake_case (CoderAI Core)
 TOOL_ALIASES: dict[str, set[str]] = {
     "read": {"read", "readfile", "read_file"},
     "readfile": {"read", "readfile", "read_file"},

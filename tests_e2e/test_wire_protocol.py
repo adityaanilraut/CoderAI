@@ -53,7 +53,7 @@ def test_initialize_handshake(tmp_path) -> None:
         normalized = normalize_response(resp)
         server = normalized["result"]["server"]
         # The CoderAI server name normalizes to the shared CLI identity.
-        assert server == {"name": "Kimi Code CLI", "version": "<VERSION>"}
+        assert server == {"name": "coderai", "version": "<VERSION>"}
         hooks = normalized["result"]["hooks"]
         assert "PreToolUse" in hooks["supported_events"]
         assert normalized["result"]["capabilities"] == {"supports_question": True}

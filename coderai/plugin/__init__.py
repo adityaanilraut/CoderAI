@@ -1,5 +1,4 @@
-# Ported from coderai/core/plugin/__init__.py - kimi structure (kimi_cli/plugin/__init__.py).
-"""Plugin specification parsing and config injection (Kimi ``plugin/`` parity).
+"""Plugin specification parsing and config injection.
 
 A plugin is a directory with a ``plugin.json`` manifest (name, version,
 optional ``config_file`` + ``inject`` map, declared ``tools``). The host

@@ -1,4 +1,3 @@
-# Ported from kimi_cli/tools/plan/heroes.py - kimi structure (tools/plan/heroes.py).
 """Plan file slug generation using Marvel and DC hero names."""
 
 from __future__ import annotations

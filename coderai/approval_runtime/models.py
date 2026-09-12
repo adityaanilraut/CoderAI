@@ -1,5 +1,4 @@
-# Ported from coderai/core/approval.py - kimi structure (approval_runtime/models.py).
-"""Coordinated approval runtime (Kimi ``approval_runtime/`` parity, slim).
+"""Coordinated approval runtime (slim).
 
 Foreground turns and background agents route approval decisions through one
 registry so the UI channel sees every request exactly once. Sources carry

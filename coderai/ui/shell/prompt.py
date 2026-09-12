@@ -398,7 +398,7 @@ class SlashCommandCompleter(Completer):
                     display=self._display_name(cmd, trigger),
                     display_meta=self._cmd_description(cmd),
                 )
-        # Case 3: /skill:<name> + /flow:<name> colon dispatch (Kimi parity).
+        # Case 3: /skill:<name> + /flow:<name> colon dispatch.
         if typed.startswith(("skill:", "flow:")):
             prefix, _, partial = typed.partition(":")
             try:
@@ -2660,7 +2660,7 @@ class CoderAICompleter:
 def get_history_file_path(project_root: str | None = None) -> pathlib.Path:
     """Return path to persistent history file.
 
-    Kimi parity: per-workspace history via md5(project_root) hash, fallback to global.
+    Per-workspace history via md5(project_root) hash, fallback to global.
     """
     if project_root:
         import hashlib
@@ -2852,7 +2852,7 @@ def expand_file_mentions(prompt: str, project_root: str) -> tuple[str, list[str]
 
 
 def _list_files_git(project_root: str, limit: int = 1000) -> list[str] | None:
-    """Fast git ls-files path with index mtime cache (Kimi LocalFileMentionCompleter parity)."""
+    """Fast git ls-files path with index mtime cache."""
     import subprocess
     import time as _t
 
@@ -2891,7 +2891,7 @@ def _list_files_git(project_root: str, limit: int = 1000) -> list[str] | None:
 def suggest_workspace_files(query: str, project_root: str, limit: int = 15) -> list[str]:
     """Search and fuzzy rank workspace files for autocompletion.
 
-    Phase2: git-aware fast path + basename re-rank (Kimi parity).
+    Phase2: git-aware fast path + basename re-rank.
     """
     root = pathlib.Path(project_root).resolve()
     query_clean = query.lstrip("@")
@@ -2923,7 +2923,7 @@ def suggest_workspace_files(query: str, project_root: str, limit: int = 15) -> l
         else all_files[: limit * 2]
     )
 
-    # Basename re-rank: exact basename == query -> top, prefix -> next (Kimi parity)
+    # Basename re-rank: exact basename == query -> top, prefix -> next
     if query_clean:
         ql = query_clean.lower()
 
@@ -3127,7 +3127,7 @@ if HAS_PTK:
             self._turns: int = 0
             self._mcp_count: int = 0
 
-            # Build completers — pass canonical SlashCommand objects with aliases (Kimi prompt.py:97)
+            # Build completers — pass canonical SlashCommand objects with aliases
             slash_objs: list[Any]
             try:
                 from coderai.ui.shell.slash import _COMMANDS
@@ -3170,7 +3170,7 @@ if HAS_PTK:
                 pass
             self._history = FileHistory(str(hist_file))
 
-            # Key bindings (Kimi keyboard.md parity):
+            # Key bindings:
             # c-j / escape-enter newline, s-tab plan toggle, c-o external
             # editor, c-s steer flag, c-x agent/shell mode flag.
             kb = KeyBindings()
@@ -3201,14 +3201,14 @@ if HAS_PTK:
 
             @kb.add("c-x")
             def _toggle_shell_mode(event: Any) -> None:  # type: ignore
-                """Kimi Ctrl-X parity: toggle agent/shell mode indicator."""
+                """Ctrl-X: toggle agent/shell mode indicator."""
                 self.shell_mode = not self.shell_mode
                 if hasattr(event, "app") and event.app is not None:
                     event.app.invalidate()
 
             @kb.add("c-s")
             def _steer(event: Any) -> None:  # type: ignore
-                """Kimi Ctrl-S parity: mark steer — inject input into running turn."""
+                """Ctrl-S: mark steer — inject input into running turn."""
                 self.steer_requested = True
                 if hasattr(event, "app") and event.app is not None:
                     try:
@@ -3218,7 +3218,7 @@ if HAS_PTK:
 
             @kb.add("c-o")
             def _external_editor(event: Any) -> None:  # type: ignore
-                """Kimi Ctrl-O parity: open $VISUAL/$EDITOR for the current buffer."""
+                """Ctrl-O: open $VISUAL/$EDITOR for the current buffer."""
                 buf = event.current_buffer
                 try:
                     from coderai.utils.editor import open_external_editor
@@ -3232,7 +3232,7 @@ if HAS_PTK:
 
             @kb.add("c-e")
             def _expand_pager(event: Any) -> None:  # type: ignore
-                """Kimi Ctrl-E parity: no-op in input (handled in approval panel)."""
+                """Ctrl-E: no-op in input (handled in approval panel)."""
 
             self._kb = kb
 
@@ -3328,7 +3328,7 @@ if HAS_PTK:
                 self._agent_role = agent_role
 
         def _get_prompt_message(self) -> list[tuple[str, str]]:
-            """Return dynamic formatted prompt tokens (Kimi: ✨/💫 agent, 📋 plan, $ shell)."""
+            """Return dynamic formatted prompt tokens (✨/💫 agent, 📋 plan, $ shell)."""
             if getattr(self, "shell_mode", False):
                 return [("class:prompt", "$ ")]
             if self.plan_mode:
@@ -3336,7 +3336,7 @@ if HAS_PTK:
             return [("class:prompt", "❯ ")]
 
         def pop_steer(self) -> bool:
-            """Consume the Ctrl-S steer flag (Kimi parity)."""
+            """Consume the Ctrl-S steer flag."""
             flag = bool(getattr(self, "steer_requested", False))
             self.steer_requested = False
             return flag
@@ -3344,7 +3344,7 @@ if HAS_PTK:
         async def prompt_async(self, message: Any = None) -> str:
             """Async prompt with styled message and live plan/build toggle support."""
             try:
-                # Use patch_stdout to not interfere with Live (Kimi parity)
+                # Use patch_stdout to not interfere with Live
                 from prompt_toolkit.patch_stdout import patch_stdout
 
                 msg = self._get_prompt_message if message in (None, "❯ ", "[plan] ❯ ") else message
@@ -4063,7 +4063,7 @@ def read_paste_mode(
 
 
 def _is_multiline_trigger(line: str) -> bool:
-    """Check if line ends with Kimi-style multiline triggers (\\, ```, or triple-quote)."""
+    """Check if line ends with multiline triggers (\\, ```, or triple-quote)."""
     stripped = line.rstrip()
     if stripped.endswith("\\") and not stripped.endswith("\\\\"):
         return True
@@ -4075,7 +4075,7 @@ def read_user_turn(
     continuation_prompt: str = "... ",
     input_func: Callable[[str], str] = input,
 ) -> str:
-    """Read a user turn with Kimi-parity multiline support.
+    """Read a user turn with multiline support.
 
     Supports:
     - Trailing \\ continuation
@@ -4116,7 +4116,7 @@ PROMPT_STYLES = {
 
 
 def styled_prompt(plan_mode: bool = False, compacting: bool = False) -> str:
-    """Return styled prompt indicator (Kimi parity)."""
+    """Return styled prompt indicator."""
     if compacting:
         return PROMPT_STYLES["compacting"]
     if plan_mode:

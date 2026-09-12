@@ -21,7 +21,7 @@ from coderai.utils.string import random_string
 from coderai.wire.types import ContentPart, ImageURLPart, TextPart
 
 _DEFAULT_PROMPT_CACHE_ROOT = get_share_dir() / "prompt-cache"
-_LEGACY_PROMPT_CACHE_ROOT = Path("/tmp/kimi")
+_LEGACY_PROMPT_CACHE_ROOT = Path("/tmp/coderai")
 
 _IMAGE_PLACEHOLDER_RE = re.compile(
     r"\[(?P<type>[a-zA-Z0-9_\-]+):(?P<id>[a-zA-Z0-9_\-\.]+)"
@@ -31,8 +31,8 @@ _PASTED_TEXT_PLACEHOLDER_RE = re.compile(
     r"\[Pasted text #(?P<id>\d+)(?: \+(?P<lines>\d+) lines?)?\]"
 )
 
-_TEXT_PASTE_CHAR_THRESHOLD = get_env_int("KIMI_CLI_PASTE_CHAR_THRESHOLD", 1000)
-_TEXT_PASTE_LINE_THRESHOLD = get_env_int("KIMI_CLI_PASTE_LINE_THRESHOLD", 15)
+_TEXT_PASTE_CHAR_THRESHOLD = get_env_int("CODERAI_CLI_PASTE_CHAR_THRESHOLD", 1000)
+_TEXT_PASTE_LINE_THRESHOLD = get_env_int("CODERAI_CLI_PASTE_LINE_THRESHOLD", 15)
 
 
 def sanitize_surrogates(text: str) -> str:

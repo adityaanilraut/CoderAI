@@ -1,1 +1,1 @@
-"""CoderAI terminal UI package (Kimi structure)."""
+"""CoderAI terminal UI package."""

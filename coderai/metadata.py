@@ -1,6 +1,6 @@
-"""Work-directory metadata (Kimi ``metadata.py`` parity).
+"""Work-directory metadata.
 
-Single JSON file at ``<share_dir>/coderai.json`` (Kimi: ``kimi.json``) holding
+Single JSON file at ``<share_dir>/coderai.json`` holding
 a ``work_dirs`` list of :class:`WorkDirMeta` records. This module is the *only*
 implementation: it replaces the former ``coderai/cli/metadata.py``, which wrote
 the same file in an incompatible ``{path: {...}}`` mapping shape and silently
@@ -81,9 +81,9 @@ def normalize_workdir(workdir: KaosPath | str) -> str:
 
 
 def _coerce_work_dirs(data: Any) -> list[dict[str, Any]]:
-    """Normalise both known on-disk shapes into the Kimi list form.
+    """Normalise both known on-disk shapes into the canonical list form.
 
-    Kimi stores ``work_dirs`` as a list of :class:`WorkDirMeta` dicts. The
+    Stores ``work_dirs`` as a list of :class:`WorkDirMeta` dicts. The
     removed ``coderai/cli/metadata.py`` stored it as ``{path: {...}}``. Accept
     either so an existing ``coderai.json`` is not silently discarded.
     """
@@ -133,7 +133,7 @@ def save_metadata(metadata: Metadata) -> None:
 def record_last_session(workdir: KaosPath | str, session_id: str) -> None:
     """Remember ``session_id`` as the latest session for ``workdir``.
 
-    Kimi parity (``web/api/sessions.py::_update_last_session_id``): update the
+    Update the
     existing work-directory record, creating it on first use.
     """
     if not session_id:

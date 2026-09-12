@@ -1,4 +1,3 @@
-# Ported from coderai/core/common/shell_utils.py - kimi structure (kimi_cli/utils/subprocess_env.py).
 """"""
 
 from __future__ import annotations

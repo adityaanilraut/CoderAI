@@ -1,4 +1,4 @@
-"""Flow execution (Kimi ``soul/kimisoul.py:FlowRunner`` parity).
+"""Flow execution.
 
 ``FlowRunner`` walks a :class:`~coderai.skill.flow.Flow` turn-by-turn in the
 current session: task nodes run one agent turn each, decision nodes branch on
@@ -21,7 +21,7 @@ from coderai.skill.flow import (
     parse_choice,
 )
 
-DEFAULT_MAX_FLOW_MOVES = 1000  # Kimi DEFAULT_MAX_FLOW_MOVES parity
+DEFAULT_MAX_FLOW_MOVES = 1000
 
 # Sessions currently inside a flow/ralph run. Flow node turns call
 # ``_activate`` directly so the ralph branch in ``reply_session`` skips them
@@ -61,7 +61,7 @@ class FlowRunner:
 
     @staticmethod
     def ralph_loop(prompt_text: str, max_ralph_iterations: int) -> FlowRunner:
-        """Build the automated repeat-prompt loop (Kimi parity).
+        """Build the automated repeat-prompt loop.
 
         ``max_ralph_iterations`` extra runs after the first; ``-1`` repeats
         until the model chooses STOP.
@@ -302,7 +302,7 @@ def is_flow_active(session_id: str) -> bool:
 
 
 def resolve_max_ralph_iterations(settings: dict[str, Any] | None = None) -> int:
-    """Resolve the Kimi ``max_ralph_iterations`` knob (0 = off, -1 = unlimited).
+    """Resolve the ``max_ralph_iterations`` knob (0 = off, -1 = unlimited).
 
     Precedence: ``CODERAI_MAX_RALPH_ITERATIONS`` env (what the CLI flag sets)
     → resolved ``maxRalphIterations`` → typed ``typedLoopControl`` overlay.
@@ -333,7 +333,7 @@ async def maybe_run_ralph(mgr: Any, session_id: str, prompt_text: str) -> bool:
     """Run the automated ralph loop instead of a normal turn when configured.
 
     Returns True when a loop ran (caller must skip the normal turn).
-    Mirrors Kimi ``soul.run``: only for fresh non-slash prompts, never nested.
+    Mirrors upstream ``soul.run``: only for fresh non-slash prompts, never nested.
     """
     if is_flow_active(session_id):
         return False

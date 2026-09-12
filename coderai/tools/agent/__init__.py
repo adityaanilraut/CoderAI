@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/agents.py - kimi structure (kimi_cli/tools/agent/__init__.py).
 """subagent / subagent_fork / send_message / interrupt_agent / list_agents / report."""
 
 from __future__ import annotations

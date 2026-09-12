@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/write.py - kimi structure (kimi_cli/tools/file/write.py).
 """write tool — create or overwrite files."""
 
 from __future__ import annotations
@@ -236,7 +235,7 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
     )
 
 
-# --- Kimi CallableTool2 Parity ---
+# --- CallableTool2 Implementation ---
 
 from collections.abc import Callable as _Callable
 from pathlib import Path as _Path
@@ -283,7 +282,7 @@ class WriteFile(_CallableTool2[WriteParams]):
     def __init__(self, runtime: _Runtime, approval: _Approval):
         super().__init__()
         builtin = getattr(runtime, "builtin_args", None)
-        self._work_dir = getattr(builtin, "CODERAI_WORK_DIR", getattr(builtin, "KIMI_WORK_DIR", _KaosPath.cwd()))
+        self._work_dir = getattr(builtin, "CODERAI_WORK_DIR", _KaosPath.cwd())
         self._additional_dirs = getattr(runtime, "additional_dirs", [])
         self._approval = approval
         self._plan_mode_checker: _Callable[[], bool] | None = None

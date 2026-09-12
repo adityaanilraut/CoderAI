@@ -1,4 +1,3 @@
-# Ported from coderai/core/jobs.py - kimi structure (background/models.py).
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -49,9 +48,9 @@ class Job:
         return d
 
 
-# --- Kimi parity (kimi_cli/background/models.py) ---
+# --- CoderAI parity (coderai/background/models.py) ---
 # Task-kind vocabulary shared by background/ids.py + background/summary.py.
-# The full Kimi TaskSpec/TaskView/BackgroundTaskStore models arrive with the
+# The full TaskSpec/TaskView/BackgroundTaskStore models arrive with the
 # background worker port (Phase 1); these leaves only need the kind literal
 # and the terminal-status predicate, so just those live here for now.
 

@@ -1,5 +1,4 @@
-# Ported from coderai/core/oauth.py - kimi structure (auth/oauth.py).
-"""OAuth device-flow engine (Kimi ``auth/oauth.py`` + ``platforms.py`` parity, slim).
+"""OAuth device-flow engine and platform definitions.
 
 Covers the interoperable subset without new dependencies (``requests`` is
 already required):
@@ -50,9 +49,12 @@ from coderai.auth.platforms import (
     managed_model_key,
     managed_provider_key,
 )
-KIMI_CODE_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
+CODERAI_CODE_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
+CODERAI_CODE_OAUTH_KEY = "oauth/coderai-code"
+# Provider identifiers (preserved for compatibility, do not rename values).
+KIMI_CODE_CLIENT_ID = CODERAI_CODE_CLIENT_ID
 KIMI_CODE_OAUTH_KEY = "oauth/kimi-code"
-DEFAULT_OAUTH_HOST = "https://auth.kimi.com"
+DEFAULT_OAUTH_HOST = "https://auth.coderai.com"
 KEYRING_SERVICE = "coderai"
 REFRESH_THRESHOLD_SECONDS = 300
 REFRESH_THRESHOLD_RATIO = 0.5
@@ -184,7 +186,7 @@ def _lock_path(key: str) -> Path:
 
 
 class CrossProcessLock:
-    """File lock coordinating token refresh across processes (Kimi parity)."""
+    """File lock coordinating token refresh across processes."""
 
     def __init__(self, key: str) -> None:
         self._path = _lock_path(key)
@@ -270,7 +272,7 @@ def _delete_from_keyring(key: str) -> None:
 
 
 def load_token(key: str) -> OAuthToken | None:
-    """Load a token from file, migrating legacy keyring entries (Kimi parity)."""
+    """Load a token from file, migrating legacy keyring entries."""
     path = credentials_path(key)
     if path.exists():
         try:
@@ -304,7 +306,7 @@ def delete_token(key: str) -> None:
         credentials_path(key).unlink()
 
 
-# Kimi parity aliases
+# Token management aliases
 def load_tokens(ref: Any) -> OAuthToken | None:
     key = getattr(ref, "key", ref) if not isinstance(ref, str) else ref
     return load_token(str(key))
@@ -475,7 +477,7 @@ _REJECTED_REFRESH_TOKENS: dict[str, _RejectedRefreshState] = {}
 
 
 class OAuthManager:
-    """Resolve + refresh OAuth-backed provider credentials (Kimi parity, sync core)."""
+    """Resolve + refresh OAuth-backed provider credentials."""
 
     def __init__(self, oauth_keys: list[str] | None = None) -> None:
         self._access_tokens: dict[str, str] = {}
@@ -507,7 +509,7 @@ class OAuthManager:
         return self._access_tokens.get(key)
 
     def resolve_api_key(self, api_key: str, oauth_key: str | None) -> str:
-        """Prefer the OAuth access token; fall back to the static key (Kimi parity).
+        """Prefer the OAuth access token; fall back to the static key.
 
         A recently-rejected token stays suppressed so a dead credential never
         shadows a configured static fallback.
@@ -538,7 +540,7 @@ class OAuthManager:
         return state is None or time.time() >= state.retry_after
 
     async def ensure_fresh(self, *, force: bool = False) -> None:
-        """Refresh cached tokens near expiry (startup / on-demand, Kimi parity)."""
+        """Refresh cached tokens near expiry (startup / on-demand)."""
         for key in self._keys:
             token = load_token(key)
             if token is None or not token.refresh_token:
@@ -567,7 +569,7 @@ class OAuthManager:
                             _REJECTED_REFRESH_TOKENS.pop(key, None)
                             self._access_tokens[key] = locked.access_token
                             continue
-                    # Kimi parity: a recently-rejected token is not retried
+                    # A recently-rejected token is not retried
                     # within the cooldown; force re-raises instead.
                     if not self._can_retry_rejected(key, current.refresh_token):
                         self._access_tokens.pop(key, None)
@@ -607,7 +609,7 @@ class OAuthManager:
 async def login_device_flow(
     *, open_browser: bool = True
 ) -> AsyncIterator[OAuthEvent]:
-    """Run the RFC 8628 device flow, yielding progress events (Kimi parity)."""
+    """Run the RFC 8628 device flow, yielding progress events."""
     platform = get_platform_by_id(KIMI_CODE_PLATFORM_ID)
     if platform is None:
         yield OAuthEvent("error", "Login platform is unavailable.")
@@ -672,7 +674,7 @@ async def login_device_flow(
 def apply_login_config(models: list[RemoteModelInfo]) -> str:
     """Persist the managed provider + synced models to the typed config.
 
-    Returns the default model key. Mirrors Kimi ``_apply_kimi_code_config``.
+    Returns the default model key.
     """
     from pydantic import SecretStr
 

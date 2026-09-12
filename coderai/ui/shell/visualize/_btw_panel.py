@@ -1,5 +1,4 @@
-# Ported from coderai/cli/btw_panel.py - kimi structure (ui/shell/visualize/_btw_panel.py).
-"""BTW side question modal — Phase4 lean port of Kimi _btw_panel.py:31-224.
+"""BTW side question modal — Phase4 lean port of upstream _btw_panel.py:31-224.
 
 Q: question bold cyan, ─ sep, Spinner dots yellow+Markdown, auto-scroll
 tail 20 lines, ↑ X above·↓ Y below bordered hint, modal_priority=5.

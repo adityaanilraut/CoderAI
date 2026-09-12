@@ -1,8 +1,7 @@
-# Ported from coderai/core/errors.py - kimi structure (exception.py).
-"""Canonical exception hierarchy (Kimi ``exception.py`` parity).
+"""Canonical exception hierarchy.
 
 Single import point for typed errors so call sites don't scatter bare
-``ValueError``/``RuntimeError`` subclasses. Mirrors Kimi's hierarchy 1:1.
+``ValueError``/``RuntimeError`` subclasses.
 """
 
 from __future__ import annotations

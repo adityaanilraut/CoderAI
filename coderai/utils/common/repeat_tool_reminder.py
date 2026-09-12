@@ -1,4 +1,4 @@
-"""Consecutive identical-call detector (Kimi parity: 3/5/8/12 + force-stop).
+"""Consecutive identical-call detector (3/5/8/12 + force-stop).
 
 Thresholds 3/5/8 inject escalating <system-reminder>, streak 12 signals caller
 to force-stop the turn. Excluded tools neither count nor reset the chain.
@@ -14,7 +14,7 @@ DEFAULT_THRESHOLDS = (3, 5, 8, 12)
 DEFAULT_EXCLUDE = ("UpdatePlan", "update_plan", "todo_write")
 DEFAULT_ARGUMENTS_PREVIEW_CHARS = 500
 
-# Kimi-compatible reminder texts (wrapped in <system-reminder>)
+# System reminder texts (wrapped in <system-reminder>)
 _REMINDER_R1 = (
     "\n\n<system-reminder>\n"
     "You are repeating the exact same tool call with identical parameters. "
@@ -63,7 +63,7 @@ def _reminder_r2(tool_name: str, count: int, canonical: str) -> str:
 def build_repeat_reminder(
     streak: int, tool_name: str, canonical_args: str
 ) -> tuple[RepeatAction, str | None]:
-    """Map streak count to (action, reminder_text) — Kimi thresholds 3/5/8/12."""
+    """Map streak count to (action, reminder_text) — thresholds 3/5/8/12."""
     if streak >= 12:
         return "stop", _REMINDER_R3
     if streak >= 8:
@@ -76,7 +76,7 @@ def build_repeat_reminder(
 
 
 def args_hash(canonical_args: str) -> str:
-    """Stable 8-char hash of canonical tool-call arguments (Kimi parity)."""
+    """Stable 8-char hash of canonical tool-call arguments."""
     return hashlib.sha256(canonical_args.encode()).hexdigest()[:8]
 
 
@@ -147,7 +147,7 @@ class RepeatToolReminder:
             self._key = key
             self._count = 1
         if self._count not in self.thresholds:
-            # Compute action for force-stop even when not firing (Kimi parity)
+            # Compute action for force-stop even when not firing
             action, _ = build_repeat_reminder(self._count, tool_name, canonical)
             return None, action
         # At threshold: return appropriate reminder + action

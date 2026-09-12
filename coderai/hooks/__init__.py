@@ -1,4 +1,3 @@
-# Ported from coderai/core/* - kimi structure (hooks/__init__.py).
 
 from coderai.hooks.events import (
     DEFAULT_HOOK_TIMEOUT_SECONDS,

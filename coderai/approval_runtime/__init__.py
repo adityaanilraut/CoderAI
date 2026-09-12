@@ -1,4 +1,3 @@
-# Ported from coderai/core/* - kimi structure (approval_runtime/__init__.py).
 
 from coderai.approval_runtime.models import (
     ApprovalResponseKind,

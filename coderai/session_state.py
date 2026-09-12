@@ -1,5 +1,4 @@
-# Ported from coderai/core/session_state.py - kimi structure (session_state.py).
-"""Per-session persisted state (Kimi ``session_state.py`` parity).
+"""Per-session persisted state.
 
 ``SessionState`` lives at ``<project>/.coderai/sessions/<id>/state.json`` —
 alongside (not inside) the JSONL log. It owns approval flags, workspace

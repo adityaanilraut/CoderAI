@@ -1,4 +1,4 @@
-"""Print mode — non-interactive, single-shot UI (`kimi_cli/ui/print/` parity).
+"""Print mode — non-interactive, single-shot UI (`coderai/ui/print/` parity).
 
 Drives one prompt to completion headlessly for automated pipelines, CI/CD
 scripts, and command-line one-shot invocations, with structured exit codes.

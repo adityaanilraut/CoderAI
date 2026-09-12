@@ -903,14 +903,27 @@ def _shell_path() -> str:
         return "sh"
 
 
+#: Cache for :func:`_version` subprocess probes (e.g. ``python3 --version``).
+#: The interpreter version cannot change within a process, so a lookup that
+#: runs on every ``get_runtime_context`` (every new session, i.e. TTFT path)
+#: is memoized here instead of spawning a subprocess each time.
+_version_cache: dict[tuple[str, ...], str | None] = {}
+
+
 def _version(command: str, args: list[str]) -> str | None:
+    cache_key = (command, *args)
+    if cache_key in _version_cache:
+        return _version_cache[cache_key]
     try:
         out = subprocess.run([command, *args], capture_output=True, text=True, timeout=3)
         if out.returncode == 0:
-            return out.stdout.strip().splitlines()[0]
+            result: str | None = out.stdout.strip().splitlines()[0]
+        else:
+            result = None
     except Exception:
-        return None
-    return None
+        result = None
+    _version_cache[cache_key] = result
+    return result
 
 
 __all__ = [

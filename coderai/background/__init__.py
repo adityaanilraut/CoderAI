@@ -1,4 +1,3 @@
-# Ported from coderai/core/* - kimi structure (background/__init__.py).
 
 from coderai.background.models import (
     JobStatus,

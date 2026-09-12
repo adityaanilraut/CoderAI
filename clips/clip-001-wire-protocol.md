@@ -22,7 +22,7 @@ messages (`SteerInput`, `ApprovalResponse`, `QuestionResponse`).
   clients, headless `--wire` peers) without per-consumer branching.
 - Streaming LLM output, tool execution, approvals, and interruptions must
   interleave deterministically so replays and tests observe total order.
-- `tests_e2e/` drives the protocol with `FakeKimiSoul` — no live LLM needed.
+- `tests_e2e/` drives the protocol with `FakeCoderAISoul` — no live LLM needed.
 
 ## Event taxonomy (`coderai/wire/types.py`)
 

@@ -1,4 +1,3 @@
-# Ported from coderai/core/common/shell_utils.py - kimi structure (kimi_cli/utils/shell_quoting.py).
 """"""
 
 from __future__ import annotations

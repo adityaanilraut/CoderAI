@@ -1,5 +1,4 @@
-# Ported from coderai/cli/term.py - kimi structure (utils/term.py).
-"""TTY sanity helpers — Phase0 port of Kimi utils/term.py.
+"""TTY sanity helpers — Phase0 port of upstream utils/term.py.
 
 Provides ensure_new_line() and ensure_tty_sane() for Phase0.
 Pure CLI, no new deps.

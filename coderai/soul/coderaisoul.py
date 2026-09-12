@@ -1,4 +1,3 @@
-# Ported from coderai/core/agent_loop.py - kimi structure (soul/kimisoul.py).
 """Activation and tool-iteration controller for one agent turn.
 
 Turn/Step lifecycle::
@@ -299,7 +298,7 @@ class AgentLoop:
                 auto_compact_threshold = (
                     settings.get("autoCompactWindow") or budget["pressure_threshold"]
                 )
-                # Kimi parity: dual trigger with reserved budget + ratio
+                # Dual trigger with reserved budget + ratio
                 trigger = evaluate_compaction_trigger(
                     active_tokens,
                     budget["context_limit"],
@@ -307,7 +306,7 @@ class AgentLoop:
                     overflow_ratio=0.95,
                     reserved_context_size=settings.get("reservedContextSize", 50000),
                 )
-                # ponytail: max_steps_per_turn guard prevents cost bomb (Kimi LoopControl=1000)
+                # ponytail: max_steps_per_turn guard prevents cost bomb
                 max_steps = int(settings.get("maxStepsPerTurn") or 1000)
                 if self._step >= max_steps:
                     self.emit_turn_end("max_steps")
@@ -368,7 +367,7 @@ class AgentLoop:
                 converted = manager.message_converter.convert_session_messages(
                     messages, model, thinking_enabled=thinking_enabled
                 )
-                # Phase 2: dynamic injections (Kimi: Soul._collect_injections
+                # Phase 2: dynamic injections (collect injections
                 # before each LLM step). Providers own throttling; appended
                 # as a trailing user <system-reminder>, never persisted.
                 try:

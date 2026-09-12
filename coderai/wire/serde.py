@@ -1,8 +1,7 @@
-# Ported from coderai/core/wire/serde.py - kimi structure (kimi_cli/wire/serde.py).
-"""Wire message serde (Kimi ``wire/serde.py`` parity).
+"""Wire message serde.
 
 Thin re-export over :mod:`coderai.wire.types` so wire consumers import
-from one canonical location, matching the Kimi layout.
+from one canonical location.
 """
 
 from __future__ import annotations

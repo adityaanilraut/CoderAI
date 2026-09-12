@@ -1,4 +1,3 @@
-# Ported from kimi_cli/acp/__init__.py - kimi structure.
 """Agent Control Protocol (ACP) server package."""
 
 from __future__ import annotations

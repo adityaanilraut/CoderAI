@@ -1,7 +1,6 @@
-# Ported from kimi_cli/background/worker.py - kimi structure (background/worker.py).
-"""Background shell-task worker (Kimi ``background/worker.py`` parity, adapted).
+"""Background shell-task worker (adapted).
 
-Kimi's worker is an out-of-process entry driven by a file-backed
+CoderAI's worker is an out-of-process entry driven by a file-backed
 ``BackgroundTaskStore`` (spec/runtime/control JSON). CoderAI's jobs are
 in-process (:class:`~coderai.background.store.JobStore`) with kill-tree
 termination, so this worker supervises one shell command and reports
@@ -11,7 +10,7 @@ terminal state through ``JobStore.complete()``:
 - heartbeat callback every ``heartbeat_interval_s``
 - ``is_cancelled()`` polled every ``control_poll_interval_s`` →
   TERM kill-tree, then KILL after ``kill_grace_period_s`` (same escalation
-  as Kimi's control loop)
+  as CoderAI's control loop)
 - ``timeout_s`` → same TERM → KILL escalation, terminal ``failed`` with a
   timeout detail
 - cancellation marks the job ``killed`` (via ``JobStore.kill`` +

@@ -22,7 +22,6 @@ def _scripted_provider_env(scripts_path) -> dict:
         "api_key": "",
         "env": {
             "CODERAI_SCRIPTED_ECHO_SCRIPTS": str(scripts_path),
-            "KIMI_SCRIPTED_ECHO_SCRIPTS": str(scripts_path),
         },
     }
 

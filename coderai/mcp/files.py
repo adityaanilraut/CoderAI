@@ -1,7 +1,7 @@
-"""Global + CLI MCP config overlays (Kimi ``cli/mcp.py`` parity, stdlib only).
+"""Global + CLI MCP config overlays (stdlib only).
 
 Layering (lowest → highest):
-  1. ``~/.coderai/mcp.json`` global file (Kimi: ``~/.kimi/mcp.json``)
+  1. ``~/.coderai/mcp.json`` global file
   2. user + project ``mcpServers`` from settings files (see ``settings.py``)
   3. ``--mcp-config-file`` / ``--mcp-config`` CLI overlays (highest wins)
 
@@ -112,7 +112,7 @@ def collect_cli_mcp_overlays(
     """Load ``--mcp-config-file`` / ``--mcp-config`` overlays.
 
     Returns ``(merged_servers, warnings)``; bad entries are skipped with a
-    warning instead of aborting startup (Kimi raises; we warn to stay
+    warning instead of aborting startup (upstream raises; we warn to stay
     offline-safe and non-interactive friendly).
     """
     merged: dict[str, dict[str, Any]] = {}

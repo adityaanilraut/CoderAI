@@ -1,4 +1,3 @@
-# Ported from coderai/core/agents.py - kimi structure (background/agent_runner.py).
 from __future__ import annotations
 
 import asyncio

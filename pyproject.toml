@@ -30,24 +30,29 @@ dependencies = [
     "pydantic>=2.0",
     "tomlkit>=0.12.0",
     # loguru is optional: log.py falls back to stdlib logging when absent.
-    # Core engine deps (kosong 0.56.0, pykaos 0.9.0, typer 0.21.1,
-    # fastmcp 3.2.4, agent-client-protocol 0.8.0).
-    "kosong[contrib]==0.56.0",
-    "pykaos==0.9.0",
-    "typer>=0.21",
-    "fastmcp>=3.2",
-    "streamingjson==0.0.5",
+    # Core engine deps (kosong 0.56.x, pykaos 0.9.x,
+    # fastmcp 3.2.x, agent-client-protocol 0.8.x).
+    # NOTE: ranges are capped at next-minor/major to avoid silent breaking
+    # upgrades; bump deliberately. CLI is argparse-only (no typer/click).
+    "kosong[contrib]>=0.56,<0.57",
+    "pykaos>=0.9,<0.10",
+    "fastmcp>=3.2,<4",
+    "streamingjson>=0.0.5,<1",
     "jinja2>=3.1",
     "aiofiles>=24",
-    "agent-client-protocol>=0.8",
-    # Clipboard (pillow/pyperclip) + telemetry transport (aiohttp).
-    "pillow>=10",
-    "pyperclip>=1.8",
+    "agent-client-protocol>=0.8,<0.9",
+    # Telemetry transport (async).
     "aiohttp>=3.10",
     "certifi>=2024",
 ]
 
 [project.optional-dependencies]
+media = [
+    # Clipboard / image paste (optional: headless/server installs skip this).
+    # Import via `pip install coderai-agent[media]`.
+    "pillow>=10",
+    "pyperclip>=1.8",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

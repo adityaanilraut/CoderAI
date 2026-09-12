@@ -1022,12 +1022,8 @@ def convert_mcp_tool_result(result: Any) -> ToolReturnValue:
         return ToolOk(output=content)
 
 
-# Kimi parity alias
-KimiToolset = CoderAIToolset
-
 __all__ = [
     "CoderAIToolset",
-    "KimiToolset",
     "MCPServerInfo",
     "MCPTool",
     "WireExternalTool",

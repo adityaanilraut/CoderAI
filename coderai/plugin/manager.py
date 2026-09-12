@@ -1,5 +1,4 @@
-# Ported from coderai/core/plugin/manager.py - kimi structure (kimi_cli/plugin/manager.py).
-"""Plugin installation, removal, and listing (Kimi ``plugin/manager.py`` parity)."""
+"""Plugin installation, removal, and listing."""
 
 from __future__ import annotations
 
@@ -30,7 +29,7 @@ def collect_host_values(source: dict[str, Any]) -> dict[str, str]:
 
     ``source`` is usually ``{**resolved_settings, **client_info}`` so both
     the static key and the OAuth-resolved key are visible. Prefers the OAuth
-    access token when the active provider is OAuth-backed (Kimi parity).
+    access token when the active provider is OAuth-backed (parity).
     """
     api_key = str(source.get("apiKey") or source.get("api_key") or "")
     oauth_key = str(source.get("oauthKey") or "")

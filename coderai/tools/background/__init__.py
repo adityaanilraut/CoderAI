@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/jobs.py - kimi structure (kimi_cli/tools/background/__init__.py).
 """job_list / job_output / job_kill — model-facing background job controls."""
 
 from __future__ import annotations
@@ -49,7 +48,7 @@ async def handle_job_output_tool(
     if wait:
         timeout_ms = args.get("timeout_ms")
         if timeout_ms is None and args.get("timeout") is not None:
-            # Kimi TaskOutput parity: timeout in seconds.
+            # timeout in seconds.
             try:
                 timeout_ms = float(args.get("timeout")) * 1000.0
             except (TypeError, ValueError):

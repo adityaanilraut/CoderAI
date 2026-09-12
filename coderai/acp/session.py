@@ -1,4 +1,3 @@
-# Ported from kimi_cli/acp/session.py - kimi structure.
 """In-process ACP Session coordinating wire messages, tool execution, and client updates."""
 
 from __future__ import annotations

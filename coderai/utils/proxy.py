@@ -1,4 +1,3 @@
-# Ported from coderai/core/common/env.py - kimi structure (kimi_cli/utils/proxy.py).
 """Proxy environment helpers.
 
 Proxy-scheme normalization so ``socks://`` values set by tools like

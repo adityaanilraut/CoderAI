@@ -1,4 +1,3 @@
-# Ported from coderai/core/* - kimi structure (subagents/__init__.py).
 
 from coderai.subagents.models import (
     ToolPolicyMode,

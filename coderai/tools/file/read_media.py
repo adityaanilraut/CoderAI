@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/understand_image.py - kimi structure (kimi_cli/tools/file/read_media.py).
 """UnderstandImage tool — analyze a local image via a vision-capable model."""
 
 from __future__ import annotations
@@ -126,7 +125,7 @@ def handle_understand_image_tool(args: dict[str, Any], context: Any) -> ToolResu
             on_process_exit(activity_id)
 
 
-# --- Kimi CallableTool2 Parity ---
+# --- CallableTool2 Implementation ---
 
 import base64 as _base64
 from io import BytesIO as _BytesIO
@@ -191,7 +190,7 @@ class ReadMediaFile(_CallableTool2[ReadMediaParams]):
         super().__init__(description=description)
         self._runtime = runtime
         builtin = getattr(runtime, "builtin_args", None)
-        self._work_dir = getattr(builtin, "CODERAI_WORK_DIR", getattr(builtin, "KIMI_WORK_DIR", _KaosPath.cwd()))
+        self._work_dir = getattr(builtin, "CODERAI_WORK_DIR", _KaosPath.cwd())
         self._additional_dirs = getattr(runtime, "additional_dirs", [])
         self._capabilities = capabilities
 

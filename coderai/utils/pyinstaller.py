@@ -1,4 +1,4 @@
-"""PyInstaller bundle helpers (Kimi ``utils/pyinstaller.py`` parity).
+"""PyInstaller bundle helpers.
 
 Importing this module requires PyInstaller to be installed
 (``pip install pyinstaller``); it is only imported by ``coderai.spec`` at
@@ -77,8 +77,8 @@ datas = (
             "prompts/**/*.md",
             "skills/**",
             "tools/**/*.md",
-            # NOTE: Kimi bundles ``CHANGELOG.md`` inside its package; ours lives
-            # at the repo root, so there is no in-package changelog to collect.
+            # NOTE: the changelog lives at the repo root, so there is no
+            # in-package changelog to collect.
         ],
         excludes=[
             "tools/*.md",

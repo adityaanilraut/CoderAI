@@ -15,10 +15,10 @@ from kosong.tooling.error import ToolRuntimeError
 
 from coderai.llm import ModelCapability
 
-# NOTE (Kimi parity): upstream imports these names from ``kimi_cli.wire.types``,
+# NOTE: upstream imports these names from ``coderai.wire.types``,
 # which re-exports kosong. CoderAI's ``wire/types.py`` is a diverged
 # dataclass-based taxonomy without these symbols, so this module imports them
-# from kosong directly (the same source Kimi re-exports).
+# from kosong directly (the same source upstream re-exports).
 
 
 def system(message: str) -> ContentPart:

@@ -1,6 +1,6 @@
 """Tool-execution context variables shared by the permission and ACP layers.
 
-These helpers previously lived in ``coderai.soul.toolset`` next to the Kimi
+These helpers live in ``coderai.soul.tool_context``.
 ``CoderAIToolset`` engine. That engine is gone; the context vars remain because
 the permission layer reads the active tool call to correlate an approval
 request with the tool call that triggered it.

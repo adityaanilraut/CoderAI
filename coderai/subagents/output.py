@@ -1,4 +1,3 @@
-# Ported from coderai/core/subagent.py - kimi structure (subagents/output.py).
 from __future__ import annotations
 
 from dataclasses import dataclass, field

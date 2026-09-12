@@ -1,5 +1,4 @@
-# Ported from coderai/core/tools/think.py - kimi structure (kimi_cli/tools/think/__init__.py).
-"""Think tool (Kimi ``tools/think`` parity).
+"""Think tool.
 
 Appends a reasoning note to the session log without performing any I/O.
 Use when complex reasoning or scratch memory is needed.

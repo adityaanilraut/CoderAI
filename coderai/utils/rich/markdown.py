@@ -22,7 +22,7 @@ from rich.syntax import Syntax, SyntaxTheme
 from rich.table import Table
 from rich.text import Text, TextType
 
-from coderai.utils.rich.syntax import KIMI_ANSI_THEME_NAME, resolve_code_theme
+from coderai.utils.rich.syntax import CODERAI_ANSI_THEME_NAME, resolve_code_theme
 
 LIST_INDENT_WIDTH = 2
 
@@ -551,7 +551,7 @@ class MarkdownContext:
         style: Style,
         fallback_styles: Mapping[str, Style],
         inline_code_lexer: str | None = None,
-        inline_code_theme: str | SyntaxTheme = KIMI_ANSI_THEME_NAME,
+        inline_code_theme: str | SyntaxTheme = CODERAI_ANSI_THEME_NAME,
     ) -> None:
         self.console = console
         self.options = options
@@ -610,7 +610,7 @@ class Markdown(JupyterMixin):
 
     Args:
         markup (str): A string containing markdown.
-        code_theme (str, optional): Pygments theme for code blocks. Defaults to "kimi-ansi".
+        code_theme (str, optional): Pygments theme for code blocks. Defaults to "coderai-ansi".
             See https://pygments.org/styles/ for code themes.
         justify (JustifyMethod, optional): Justify value for paragraphs. Defaults to None.
         style (Union[str, Style], optional): Optional style to apply to markdown.
@@ -645,7 +645,7 @@ class Markdown(JupyterMixin):
     def __init__(
         self,
         markup: str,
-        code_theme: str = KIMI_ANSI_THEME_NAME,
+        code_theme: str = CODERAI_ANSI_THEME_NAME,
         justify: JustifyMethod | None = None,
         style: str | Style = "none",
         hyperlinks: bool = True,
@@ -828,8 +828,8 @@ if __name__ == "__main__":
         "-t",
         "--code-theme",
         dest="code_theme",
-        default=KIMI_ANSI_THEME_NAME,
-        help='code theme (pygments name or "kimi-ansi")',
+        default=CODERAI_ANSI_THEME_NAME,
+        help='code theme (pygments name or "coderai-ansi")',
     )
     parser.add_argument(
         "-i",

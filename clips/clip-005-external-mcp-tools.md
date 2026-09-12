@@ -66,7 +66,7 @@ restarting the session.
 Helpers that outlive a single call (watchers, dev servers, REPL-attached
 runtimes) run as sidecars: spawned once, addressed by name, torn down with
 the session. Sidecar stdout routes to `Notification` wire events so the
-foreground turn isn't blocked. (Upstream reference: Kimi `kagent`
+foreground turn isn't blocked. (Upstream reference: `kagent`
 sidecar integration.)
 
 ## Failure handling

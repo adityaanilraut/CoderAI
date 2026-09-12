@@ -1,5 +1,4 @@
-# Ported from coderai/core/wire/hub.py - kimi structure (kimi_cli/wire/root_hub.py).
-"""Session-level wire broadcast hub (Kimi ``wire/root_hub.py`` parity).
+"""Session-level wire broadcast hub.
 
 Out-of-turn publishers (approval runtime, notifications, background tasks)
 publish here; each wire server holds one subscription and forwards what it

@@ -1,4 +1,4 @@
-"""Interactive shell package (Kimi structure)."""
+"""Interactive shell package."""
 from __future__ import annotations
 
 

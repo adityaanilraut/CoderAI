@@ -1,5 +1,4 @@
-# Ported from coderai/core/wire/server.py - kimi structure (kimi_cli/wire/server.py).
-"""Wire-protocol stdio server (Kimi ``wire/server.py`` parity, slim).
+"""Wire-protocol stdio server.
 
 Speaks JSON-RPC 2.0 on stdin/stdout so IDEs and headless clients can drive a
 session: ``initialize / prompt / steer / replay / set_plan_mode / cancel``,
@@ -252,7 +251,7 @@ class WireServer:
             {"name": cmd.name, "description": cmd.summary, "aliases": list(cmd.aliases)}
             for cmd in COMMAND_CATALOG.values()
         ]
-        # Dynamic /skill: + /flow: entries (Kimi soul slash parity).
+        # Dynamic /skill: + /flow: entries.
         try:
             for skill in self._mgr.list_available_skills(self._session_id):
                 name = str(skill.get("name", ""))
@@ -637,7 +636,7 @@ class WireServer:
     def _record_session_allow(self, item: dict[str, Any]) -> None:
         """Best-effort session allow (approve_for_session degrades to allow-once).
 
-        Kimi parity note: the CLI maps "always" to project allows; the wire
+        Note: the CLI maps "always" to project allows; the wire
         server has no interactive allowlist UI, so approve_for_session behaves
         as allow-once here. A persistent session allowlist is follow-up work.
         """
@@ -645,7 +644,7 @@ class WireServer:
 
     async def _bridge_question(self) -> bool:
         if not self._client_supports_question:
-            # Kimi parity: clients without question support get an empty answer
+            # Clients without question support get an empty answer
             # so the agent proceeds with its own assumption.
             return True
         mgr = self._mgr

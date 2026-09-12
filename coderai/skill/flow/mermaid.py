@@ -1,4 +1,4 @@
-"""Mermaid flowchart → Flow (Kimi ``skill/flow/mermaid.py`` parity, verbatim port)."""
+"""Mermaid flowchart → Flow (verbatim port)."""
 
 from __future__ import annotations
 

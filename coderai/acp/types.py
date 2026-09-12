@@ -1,4 +1,3 @@
-# Ported from coderai/core/acp/protocol.py - kimi structure (kimi_cli/acp/types.py).
 """Agent Control Protocol (ACP) — Protocol types and ndjson streaming codec."""
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ import acp
 
 PROTOCOL_VERSION = "0.25.1"
 
-# Kimi parity (kimi_cli/acp/types.py): ACP SDK schema aliases used by acp/mcp.py.
+# ACP SDK schema aliases used by acp/mcp.py.
 MCPServer = acp.schema.HttpMcpServer | acp.schema.SseMcpServer | acp.schema.McpServerStdio
 
 ACPContentBlock = (

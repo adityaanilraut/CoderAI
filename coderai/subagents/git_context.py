@@ -1,5 +1,4 @@
-# Ported from coderai/core/git_context.py - kimi structure (subagents/git_context.py).
-"""Git repository context for explore subagents (Kimi ``subagents/git_context`` parity).
+"""Git repository context for explore subagents.
 
 Collects remote/branch/dirty-files/recent-commits into a ``<git-context>``
 block. Every git command is individually guarded with a short timeout — a

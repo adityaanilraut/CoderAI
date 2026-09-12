@@ -1,6 +1,7 @@
-# Ported from coderai/core/* - kimi structure (auth/__init__.py).
 
 from coderai.auth.oauth import (
+    CODERAI_CODE_CLIENT_ID,
+    CODERAI_CODE_OAUTH_KEY,
     KIMI_CODE_CLIENT_ID,
     KIMI_CODE_OAUTH_KEY,
     DEFAULT_OAUTH_HOST,
@@ -43,6 +44,8 @@ from coderai.auth.platforms import (
 )
 
 __all__ = [
+    "CODERAI_CODE_CLIENT_ID",
+    "CODERAI_CODE_OAUTH_KEY",
     "KIMI_CODE_CLIENT_ID",
     "KIMI_CODE_OAUTH_KEY",
     "DEFAULT_OAUTH_HOST",

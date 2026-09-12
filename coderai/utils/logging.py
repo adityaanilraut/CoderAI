@@ -1,4 +1,3 @@
-# Ported from coderai/core/common/debug_logger.py - kimi structure (kimi_cli/utils/logging.py).
 """"""
 
 from __future__ import annotations

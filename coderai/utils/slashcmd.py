@@ -58,7 +58,15 @@ class SlashCommandRegistry(Generic[F]):
         """Decorator to register a slash command with optional custom name and aliases."""
 
         def _register(f: F) -> F:
-            primary = name or f.__name__
+            func_name = f.__name__
+            # Convention: `cmd_<name>` functions register as `/<name>`.
+            # e.g. `cmd_model` -> `/model`, `cmd_help` -> `/help`.
+            if name is not None:
+                primary = name
+            elif func_name.startswith("cmd_"):
+                primary = func_name[4:] or func_name
+            else:
+                primary = func_name
             alias_list = list(aliases) if aliases else []
 
             # Create the primary command with aliases

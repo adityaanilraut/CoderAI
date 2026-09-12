@@ -1,4 +1,3 @@
-# Ported from coderai/core/hooks.py - kimi structure (hooks/engine.py).
 """Lifecycle Hooks Framework
 
 Provides full event-driven lifecycle interception:
@@ -323,7 +322,7 @@ def run_hook_point(
     payload["hook_event_name"] = point_name
     payload["cwd"] = project_root
 
-    # Kimi parity: HookTriggered/HookResolved wire events bracket execution.
+    # HookTriggered/HookResolved wire events bracket execution.
     import time as _hook_t
 
     _wire = None
@@ -451,7 +450,7 @@ async def run_hook_point_async(
 
 
 # ---------------------------------------------------------------------------
-# Kimi-parity HookEngine class for agent lifecycle
+# HookEngine class for agent lifecycle
 # ---------------------------------------------------------------------------
 
 from collections.abc import Awaitable, Callable

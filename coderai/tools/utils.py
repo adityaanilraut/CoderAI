@@ -1,4 +1,3 @@
-# Ported from kimi_cli/tools/utils.py - kimi structure.
 """Tool execution helpers, result builder, and description loader."""
 
 from __future__ import annotations

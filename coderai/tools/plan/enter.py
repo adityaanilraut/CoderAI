@@ -1,4 +1,3 @@
-# Ported from kimi_cli/tools/plan/enter.py - kimi structure (tools/plan/enter.py).
 """enter_plan_mode — enter Plan Mode (counterpart to ``exit_plan_mode``).
 
 CoderAI function-style handler (mirrors ``handle_exit_plan_mode_tool``):

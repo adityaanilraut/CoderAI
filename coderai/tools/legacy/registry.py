@@ -539,7 +539,7 @@ class ToolRegistry:
                     },
                     "task_id": {
                         "type": "string",
-                        "description": "Alias of job_id (Kimi TaskOutput parity).",
+                        "description": "Alias of job_id.",
                     },
                     "wait": {
                         "type": "boolean",
@@ -547,7 +547,7 @@ class ToolRegistry:
                     },
                     "block": {
                         "type": "boolean",
-                        "description": "Alias of wait (Kimi TaskOutput parity).",
+                        "description": "Alias of wait.",
                     },
                     "timeout_ms": {
                         "type": "number",
@@ -555,7 +555,7 @@ class ToolRegistry:
                     },
                     "timeout": {
                         "type": "number",
-                        "description": "Max wait in seconds (Kimi TaskOutput parity; converted to ms).",
+                        "description": "Max wait in seconds (converted to ms).",
                     },
                 },
                 required=[],

@@ -1,7 +1,6 @@
-# Ported from coderai/core/session.py - kimi structure (session.py).
 """Session facade for work directory lifecycle and persistence.
 
-Parity with Kimi ``session.py``:
+Provides:
 - `Session` dataclass with work_dir, work_dir_meta, context_file, wire_file, state
 - Session lifecycle methods: `create`, `find`, `list`, `list_all`, `continue_`, `delete`
 - Backward-compatible access to CoderAI `SessionManager`, `SessionMessage`, `SessionEntry`

@@ -7,17 +7,15 @@ precedence:
 2. User settings: `~/.coderai/settings.json`
 3. Project settings: `<project>/.coderai/settings.json` (project wins over user)
 4. Typed config: `~/.coderai/config.toml` (`CODERAI_CONFIG_FILE` /
-   `CODERAI_CONFIG_STRING` redirect it; `KIMI_CONFIG_FILE` /
-   `KIMI_CONFIG_STRING` are honored as legacy aliases)
+   `CODERAI_CONFIG_STRING` redirect it)
 5. CLI overlays: `--mcp-config-file`, `--mcp-config`, `--add-dir`,
    `--skills-dir`, `--config-file`, `--config`
-6. Environment: `CODERAI_*` (plus `KIMI_*` legacy aliases for share/config keys)
+6. Environment: `CODERAI_*`
 7. `.env` files: `<project>/.env` and `~/.coderai/.env` (`key=value` pairs
    loaded into `os.environ`)
 
-Share directory: `CODERAI_SHARE_DIR` overrides, otherwise `~/.coderai`
-(`KIMI_SHARE_DIR` is the legacy alias). Sessions, device identity, and
-telemetry spillover live under the share dir.
+Share directory: `CODERAI_SHARE_DIR` overrides, otherwise `~/.coderai`.
+Sessions, device identity, and telemetry spillover live under the share dir.
 
 ---
 
@@ -46,7 +44,7 @@ carries a `type` selecting the wire client:
 | `openai_responses` | OpenAI Responses API |
 | `anthropic` | Anthropic Claude API (`provider_type "anthropic"` in `coderai/llm.py`) |
 | `gemini` / `google_genai` | Google Gemini API |
-| `kimi` | Kimi API |
+| `coderai` | CoderAI API |
 
 Per-invocation overrides:
 

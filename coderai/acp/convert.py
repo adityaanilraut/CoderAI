@@ -1,5 +1,4 @@
-# Ported from coderai/core/acp/protocol.py - kimi structure (kimi_cli/acp/convert.py).
-"""ACP content codecs (Kimi ``acp/convert.py`` parity) + NDJSON streaming parser.
+"""ACP content codecs and NDJSON streaming parser.
 
 - :class:`AcpNdjsonParser`: line-based NDJSON parser for ACP child output
   (pre-existing CoderAI codec, kept intact).

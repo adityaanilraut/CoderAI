@@ -1,5 +1,4 @@
-# Ported from coderai/core/denwarenji.py - kimi structure (soul/denwarenji.py).
-"""Checkpoint-scoped D-Mail steering (Kimi ``soul/denwarenji.py`` parity).
+"""Checkpoint-scoped D-Mail steering.
 
 A D-Mail carries ``(message, checkpoint_id)``: the directive is injected at
 the checkpoint with that id so the agent re-steers from a known-good point.

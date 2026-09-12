@@ -1,4 +1,4 @@
-"""Elapsed time formatting and bullet animation — ported from Kimi CLI utils/datetime.py + visualize/_blocks.py."""
+"""Elapsed time formatting, bullet animation, and token estimation utilities."""
 
 from __future__ import annotations
 
@@ -19,10 +19,10 @@ def bullet_frame_for(elapsed: float) -> str:
 
 
 def _estimate_tokens_float(text: str) -> float:
-    """Precise float token estimate — Kimi _blocks.py:_estimate_tokens parity.
+    """Precise float token estimate.
 
     Returns float so callers can accumulate across small chunks without floor
-    truncation (e.g. 3-char ASCII chunk -> 0.75 not 0). Ranges match Kimi:
+    truncation (e.g. 3-char ASCII chunk -> 0.75 not 0):
     CJK Unified/ExtA/Compat/Symbols/Fullwidth -> 1.5 per char, latin -> 0.25.
     """
     cjk = 0
@@ -48,7 +48,7 @@ def estimate_tokens(text: str) -> int:
 
 
 def estimate_tokens_float(text: str) -> float:
-    """Float estimator for incremental accumulation (Kimi parity)."""
+    """Float estimator for incremental accumulation."""
     return _estimate_tokens_float(text)
 
 
@@ -58,7 +58,7 @@ def format_token_count(n: int) -> str:
 
 
 def format_token_count_compact(n: int) -> str:
-    """Compact token count — Kimi soul.format_token_count parity (1.5k, 1.2m)."""
+    """Compact token count (1.5k, 1.2m)."""
     if n >= 1_000_000:
         v = n / 1_000_000
         suf = "m"
@@ -74,7 +74,7 @@ def format_token_count_compact(n: int) -> str:
 def format_context_status(
     context_usage: float, context_tokens: int = 0, max_context_tokens: int = 0
 ) -> str:
-    """Format context status — Kimi soul.format_context_status parity."""
+    """Format context status."""
     bounded = max(0.0, min(context_usage, 1.0))
     if max_context_tokens > 0:
         used = format_token_count_compact(context_tokens)

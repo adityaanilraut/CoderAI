@@ -1,9 +1,8 @@
-# Ported from coderai/core/llm_types.py + openai_client.py - kimi structure (llm.py).
 """Provider / model capability vocabulary and LLM constructor factories.
 
-Parity with Kimi ``llm.py``:
+Features:
 - ProviderType and ModelCapability literals and derivation
-- ChatProvider factories (Kimi, Anthropic, OpenAI Legacy/Responses, Google GenAI/Gemini, Echo, Chaos)
+- ChatProvider factories (Anthropic, OpenAI Legacy/Responses, Google GenAI/Gemini, Moonshot, Echo, Chaos)
 - Request-scoped token estimators and max completion token computation
 - Preserved CoderAI client pool and OpenAI client compatibility
 """
@@ -316,16 +315,15 @@ def supports_media(model_name: str, capabilities: set[ModelCapability] | None = 
 
 def augment_provider_with_env_vars(provider: Any) -> Any:
     """Overlay environment variables onto a provider config copy."""
-    prefix = f"KIMI_PROVIDER_{provider.type.upper()}_"
-    alt_prefix = f"CODERAI_PROVIDER_{provider.type.upper()}_"
+    prefix = f"CODERAI_PROVIDER_{provider.type.upper()}_"
 
     def _env(key: str) -> str | None:
-        return os.getenv(prefix + key) or os.getenv(alt_prefix + key)
+        return os.getenv(prefix + key)
 
     updates: dict[str, Any] = {}
-    if base_url := (_env("BASE_URL") or os.getenv("KIMI_BASE_URL") or os.getenv("CODERAI_BASE_URL")):
+    if base_url := (_env("BASE_URL") or os.getenv("CODERAI_BASE_URL") or (os.getenv("KIMI_BASE_URL") if provider.type == "kimi" else None)):
         updates["base_url"] = base_url
-    if api_key := (_env("API_KEY") or os.getenv("KIMI_API_KEY") or os.getenv("CODERAI_API_KEY")):
+    if api_key := (_env("API_KEY") or os.getenv("CODERAI_API_KEY") or (os.getenv("KIMI_API_KEY") if provider.type == "kimi" else None)):
         updates["api_key"] = SecretStr(api_key)
     if not updates:
         return provider
@@ -389,14 +387,13 @@ def create_llm(
             gen_kwargs: Kimi.GenerationKwargs = {}
             if session_id:
                 gen_kwargs["prompt_cache_key"] = session_id
-            if temperature := os.getenv("KIMI_MODEL_TEMPERATURE") or os.getenv("CODERAI_MODEL_TEMPERATURE"):
+            if temperature := os.getenv("CODERAI_MODEL_TEMPERATURE"):
                 gen_kwargs["temperature"] = float(temperature)
-            if top_p := os.getenv("KIMI_MODEL_TOP_P") or os.getenv("CODERAI_MODEL_TOP_P"):
+            if top_p := os.getenv("CODERAI_MODEL_TOP_P"):
                 gen_kwargs["top_p"] = float(top_p)
             for env_name in (
-                "KIMI_MODEL_MAX_COMPLETION_TOKENS",
-                "KIMI_MODEL_MAX_TOKENS",
                 "CODERAI_MODEL_MAX_COMPLETION_TOKENS",
+                "CODERAI_MODEL_MAX_TOKENS",
             ):
                 raw_max_completion_tokens = os.getenv(env_name)
                 if not raw_max_completion_tokens:
@@ -488,7 +485,7 @@ def create_llm(
             if env_vars:
                 os.environ.update(env_vars)
             scripts = _load_scripted_echo_scripts()
-            trace_value = os.getenv("KIMI_SCRIPTED_ECHO_TRACE", "") or os.getenv("CODERAI_SCRIPTED_ECHO_TRACE", "")
+            trace_value = os.getenv("CODERAI_SCRIPTED_ECHO_TRACE", "")
             trace = trace_value.strip().lower() in {"1", "true", "yes", "on"}
             chat_provider = ScriptedEchoChatProvider(scripts, trace=trace)
 
@@ -535,7 +532,7 @@ def create_llm(
         from kosong.chat_provider.kimi import Kimi
 
         if isinstance(chat_provider, Kimi) and (
-            thinking_keep := (os.getenv("KIMI_MODEL_THINKING_KEEP") or os.getenv("CODERAI_MODEL_THINKING_KEEP"))
+            thinking_keep := os.getenv("CODERAI_MODEL_THINKING_KEEP")
         ):
             chat_provider = chat_provider.with_extra_body({"thinking": {"keep": thinking_keep}})
 
@@ -580,9 +577,9 @@ def clone_llm_with_model_alias(
 
 
 def _load_scripted_echo_scripts() -> list[str]:
-    script_path = os.getenv("KIMI_SCRIPTED_ECHO_SCRIPTS") or os.getenv("CODERAI_SCRIPTED_ECHO_SCRIPTS")
-    if not script_path:
-        raise ValueError("CODERAI_SCRIPTED_ECHO_SCRIPTS or KIMI_SCRIPTED_ECHO_SCRIPTS is required for _scripted_echo.")
+    script_path = os.getenv("CODERAI_SCRIPTED_ECHO_SCRIPTS")
+    if not script_path or not Path(script_path).is_file():
+        raise ValueError("CODERAI_SCRIPTED_ECHO_SCRIPTS is required for _scripted_echo.")
     path = Path(script_path).expanduser()
     if not path.exists():
         raise ValueError(f"Scripted echo file not found: {path}")
@@ -1002,9 +999,8 @@ def create_openai_client(
     current = {"base_url": configured_base_url or "", "api_key": configured_key or ""}
     try:
         prefix = f"CODERAI_PROVIDER_{provider_type.upper()}_"
-        alt_prefix = f"KIMI_PROVIDER_{provider_type.upper()}_"
-        b_url = os.getenv(prefix + "BASE_URL") or os.getenv(alt_prefix + "BASE_URL")
-        a_key = os.getenv(prefix + "API_KEY") or os.getenv(alt_prefix + "API_KEY")
+        b_url = os.getenv(prefix + "BASE_URL")
+        a_key = os.getenv(prefix + "API_KEY")
         if b_url:
             current["base_url"] = b_url
         if a_key:

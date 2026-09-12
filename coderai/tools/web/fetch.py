@@ -1,4 +1,3 @@
-# Ported from coderai/core/tools/web_fetch.py - kimi structure (kimi_cli/tools/web/fetch.py).
 from __future__ import annotations
 # --- from coderai/core/network/sanitizer.py (trafilatura-side; placed first: network/__init__ imports these names eagerly, so they must exist before any import below can trigger it) ---
 """Content Sanitization, HTML-to-Markdown Parsing, Metadata Extraction & Prompt Injection Defense."""

@@ -1,4 +1,3 @@
-# Ported from coderai/core/compaction.py - kimi structure (soul/compaction.py).
 """Compaction Engine
 
 Provides structured compaction with:
@@ -104,12 +103,12 @@ def evaluate_compaction_trigger(
 ) -> str | None:
     """Evaluate whether active tokens meet dual-trigger thresholds ('overflow' vs 'pressure').
 
-    Mirrors Kimi CLI should_auto_compact: triggers when either
+    Triggers auto compaction when either
     active_tokens >= context_limit * ratio OR active_tokens + reserved >= context_limit.
     """
     if context_limit <= 0 or active_tokens <= 0:
         return None
-    # Kimi parity: reserved budget guard
+    # Reserved budget guard
     if reserved_context_size and reserved_context_size > 0:
         if active_tokens + reserved_context_size >= context_limit:
             return (
@@ -150,7 +149,7 @@ def should_auto_compact(
     trigger_ratio: float = 0.85,
     reserved_context_size: int = 50_000,
 ) -> bool:
-    """Kimi-parity adapter: True when token_count triggers compaction (either condition)."""
+    """Check if token_count triggers compaction (either condition)."""
     return (
         token_count >= max_context_size * trigger_ratio
         or token_count + reserved_context_size >= max_context_size
@@ -417,7 +416,7 @@ class BasicCompaction(CompactionEngine):
         region = self._find_safe_region(messages, preserve_ids=preserve_ids)
         if not region:
             return None
-        # Kimi parity: custom instruction appended to directive when /compact <focus>
+        # Custom instruction appended to directive when /compact <focus>
         if custom_instruction:
             # Inject via temporary directive augmentation in compact_region
             self._pending_custom_instruction = custom_instruction  # type: ignore

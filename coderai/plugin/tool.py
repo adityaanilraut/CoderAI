@@ -1,5 +1,4 @@
-# Ported from coderai/core/plugin/tool.py - kimi structure (kimi_cli/plugin/tool.py).
-"""Plugin tool execution (Kimi ``plugin/tool.py`` parity, slim).
+"""Plugin tool execution (slim).
 
 Each declared tool runs as a subprocess with its parameters on stdin (JSON);
 stdout is the result. Host credentials reach the subprocess as env vars at
@@ -23,7 +22,7 @@ PLUGIN_TOOL_TIMEOUT_S = 120.0
 
 
 def _clean_env() -> dict[str, str]:
-    """Subprocess env without secret-bearing variables (Kimi ``get_clean_env``)."""
+    """Subprocess env without secret-bearing variables (``get_clean_env``)."""
     scrub = ("KEY", "PASSWORD", "SECRET", "TOKEN")
     return {
         k: v for k, v in os.environ.items() if not any(marker in k.upper() for marker in scrub)

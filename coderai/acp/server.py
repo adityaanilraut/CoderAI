@@ -1,4 +1,3 @@
-# Ported from kimi_cli/acp/server.py - kimi structure.
 """In-process multi-session ACP server implementing the Agent Control Protocol."""
 
 from __future__ import annotations
@@ -226,7 +225,7 @@ class ACPServer:
         self._check_auth()
 
         session = await Session.create(KaosPath.unsafe_from_local_path(Path(cwd)))
-        # ACP session identity lives in the Kimi session store, which hides
+        # ACP session identity lives in the session store, which hides
         # sessions with no history. Title it so it is listable/resumable from
         # the moment it is created, before the first prompt lands.
         try:
@@ -246,7 +245,7 @@ class ACPServer:
         self.sessions[session.id] = (acp_session, model_id_conv)
 
         # Advertise the live CoderAI slash catalog (Stack A), not the retired
-        # Kimi soul-slash registry.
+        # Soul-slash registry.
         from coderai.ui.shell.slash import completion_entries
 
         available_commands = [

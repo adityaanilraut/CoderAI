@@ -1,4 +1,3 @@
-# Ported from coderai/core/* - kimi structure (soul/__init__.py).
 
 from coderai.soul.agent import (
     SessionSoul,

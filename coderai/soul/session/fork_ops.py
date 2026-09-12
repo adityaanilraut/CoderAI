@@ -90,7 +90,7 @@ def fork_session(
     manager.file_history.ensure_session(forked_id)
     manager.file_history.fork_session(target_src_id, forked_id, checkpoint_hash=checkpoint_hash)
 
-    # Phase 2: copy persisted state (Kimi: fork titles "Fork: <title>").
+    # Phase 2: copy persisted state (fork titles "Fork: <title>").
     try:
         from coderai.session_state import SessionState
 
@@ -130,7 +130,7 @@ def fork_session(
     index["entries"].insert(0, forked_entry)
     index["entries"] = index["entries"][:MAX_SESSION_ENTRIES]
     manager._save_index(index)
-    try:  # Kimi metadata.py parity: forked session becomes the latest.
+    try:  # Forked session becomes the latest.
         from coderai.metadata import record_last_session
 
         record_last_session(manager.project_root, forked_id)

@@ -1,5 +1,4 @@
-# Ported from coderai/core/wire/store.py - kimi structure (kimi_cli/wire/file.py).
-"""wire.jsonl persistence + replay (Kimi ``wire/file.py`` parity).
+"""wire.jsonl persistence + replay.
 
 Format: first line ``{"type": "metadata", "protocol_version": "1.10"}``,
 then one ``{"timestamp": ..., "message": {"type": ..., "payload": ...}}``

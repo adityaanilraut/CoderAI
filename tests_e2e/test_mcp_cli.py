@@ -22,7 +22,6 @@ def _isolate_home(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setenv("HOME", str(home_dir))
     monkeypatch.setenv("USERPROFILE", str(home_dir))
     monkeypatch.setenv("CODERAI_SHARE_DIR", str(home_dir / ".coderai"))
-    monkeypatch.setenv("KIMI_SHARE_DIR", str(home_dir / ".coderai"))
     return home_dir
 
 

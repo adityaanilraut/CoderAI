@@ -1,4 +1,3 @@
-# Ported from coderai/core/skill/filesystem.py - kimi structure (kimi_cli/skill/__init__.py).
 """Skill filesystem discovery — scan roots and exempt paths."""
 
 from __future__ import annotations
@@ -334,7 +333,7 @@ class SkillRegistry:
                     "path": str(skill_file),
                     "location": location,
                     "description": meta.get("description", ""),
-                    # Kimi parity: flow skills (frontmatter ``type: flow``) run
+                    # flow skills (frontmatter ``type: flow``) run
                     # via /flow:<name>, never auto-injected (see match_skills).
                     "type": str(meta.get("type", "standard") or "standard").strip().lower(),
                     "allowImplicitInvocation": _implicit_invocation_allowed(meta),
@@ -347,7 +346,7 @@ class SkillRegistry:
                 }
         skills = sorted(skills_by_name.values(), key=lambda s: str(s["name"]))
         if not self.merge_all_available_skills:
-            # Kimi parity: with merging off, only explicitly enabled skills show.
+            # with merging off, only explicitly enabled skills show.
             skills = [s for s in skills if enabled.get(s["name"]) is True]
         return skills
 
@@ -396,7 +395,7 @@ class SkillRegistry:
             if skill.get("allowImplicitInvocation") is False:
                 continue
             # Flow skills run explicitly via /flow:<name>; never auto-inject
-            # diagram source into the prompt (Kimi parity).
+            # diagram source into the prompt (parity).
             if str(skill.get("type", "standard")).lower() == "flow":
                 continue
 
