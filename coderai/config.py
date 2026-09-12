@@ -1249,16 +1249,47 @@ class HookDef(BaseModel):
     timeout: int = Field(default=30, ge=1, le=600)
 
 
+class BackgroundConfig(BaseModel):
+    """Background task runtime configuration."""
+
+    max_running_tasks: int = Field(default=4, ge=1)
+    read_max_bytes: int = Field(default=30_000, ge=1024)
+    notification_tail_lines: int = Field(default=20, ge=1)
+    notification_tail_chars: int = Field(default=3_000, ge=256)
+    wait_poll_interval_ms: int = Field(default=500, ge=50)
+    worker_heartbeat_interval_ms: int = Field(default=5_000, ge=100)
+    worker_stale_after_ms: int = Field(default=15_000, ge=1000)
+    kill_grace_period_ms: int = Field(default=2_000, ge=100)
+    keep_alive_on_exit: bool = Field(
+        default=False,
+        description="Keep background tasks alive when CLI exits. Default: kill on exit.",
+    )
+    agent_task_timeout_s: int = Field(default=900, ge=60)
+    print_wait_ceiling_s: int = Field(default=3600, ge=1)
+
+
 class NotificationsConfig(BaseModel):
     """Notification delivery tuning (Kimi ``NotificationConfig`` parity)."""
 
     claim_stale_after_ms: int = Field(default=15_000, ge=1000)
 
 
-class McpConfig(BaseModel):
-    """MCP client tuning (Kimi ``mcp.client`` parity)."""
+NotificationConfig = NotificationsConfig
+
+
+class MCPClientConfig(BaseModel):
+    """MCP client tuning."""
 
     tool_call_timeout_ms: int = Field(default=60_000, ge=1000)
+
+
+class MCPConfig(BaseModel):
+    """MCP configuration."""
+
+    client: MCPClientConfig = Field(default_factory=MCPClientConfig)
+
+
+McpConfig = MCPConfig
 
 
 class TypedConfig(BaseModel):
@@ -1275,13 +1306,14 @@ class TypedConfig(BaseModel):
     models: dict[str, LLMModel] = Field(default_factory=dict)
     providers: dict[str, LLMProvider] = Field(default_factory=dict)
     loop_control: LoopControl = Field(default_factory=LoopControl)
+    background: BackgroundConfig = Field(default_factory=BackgroundConfig)
     services: Services = Field(default_factory=Services)
     hooks: list[HookDef] = Field(default_factory=list)
     telemetry: bool = Field(default=True)
     merge_all_available_skills: bool = Field(default=True)
     extra_skill_dirs: list[str] = Field(default_factory=list)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
-    mcp: McpConfig = Field(default_factory=McpConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
 
     @model_validator(mode="after")
     def validate_model(self) -> Self:

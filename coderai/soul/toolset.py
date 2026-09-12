@@ -1,0 +1,1035 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import importlib
+import inspect
+import json
+import time
+from collections.abc import Callable, Coroutine
+from contextvars import ContextVar
+from dataclasses import dataclass
+from datetime import timedelta
+from pathlib import Path
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    Literal,
+    Optional,
+    TypeVar,
+    Union,
+    cast,
+    overload,
+)
+
+from kosong.tooling import (
+    CallableTool,
+    CallableTool2,
+    HandleResult,
+    Tool,
+    ToolError,
+    ToolOk,
+    Toolset,
+)
+from kosong.tooling.error import (
+    ToolNotFoundError,
+    ToolParseError,
+    ToolRuntimeError,
+)
+from kosong.tooling.mcp import convert_mcp_content
+from kosong.utils.typing import JsonType
+
+from coderai.exception import InvalidToolError, MCPRuntimeError
+from coderai.hooks.engine import HookEngine
+from coderai.tools import SkipThisTool
+from coderai.utils.logging import logger
+from coderai.wire.types import (
+    AudioURLPart,
+    ContentPart,
+    ImageURLPart,
+    MCPServerSnapshot,
+    MCPStatusSnapshot,
+    TextPart,
+    ToolCall,
+    ToolCallRequest,
+    ToolResult,
+    ToolReturnValue,
+    VideoURLPart,
+)
+from coderai.soul.tool_context import (
+    current_tool_call,
+    get_current_step_no,
+    get_current_tool_call_or_none,
+    get_session_id,
+    set_current_step_no,
+    set_current_tool_call,
+    set_session_id,
+)
+
+if TYPE_CHECKING:
+    import fastmcp
+    import mcp
+    from fastmcp.client.client import CallToolResult
+    from fastmcp.client.transports import ClientTransport
+    from fastmcp.mcp_config import MCPConfig
+
+    from coderai.soul.agent import Runtime
+
+ToolType = Union[CallableTool, CallableTool2[Any]]
+ToolCallKey = tuple[str, str]
+T = TypeVar("T", bound=ToolType)
+T_transport = TypeVar("T_transport", bound="ClientTransport")
+
+
+def _get_session_id() -> str:
+    return get_session_id()
+
+
+def _trace_id_kwargs() -> dict[str, str]:
+    """``trace_id`` telemetry kwargs for the current request, empty when unavailable."""
+    from coderai.telemetry import get_current_trace_id
+
+    tid = get_current_trace_id()
+    if tid:
+        return {"trace_id": tid}
+    return {}
+
+
+def _args_hash(canonical_args: str) -> str:
+    """Stable 8-char hash of canonical tool-call arguments."""
+    import hashlib
+
+    return hashlib.sha256(canonical_args.encode()).hexdigest()[:8]
+
+
+_REMINDER_TEXT_1 = (
+    "\n\n<system-reminder>\n"
+    "You are repeating the exact same tool call with identical parameters."
+    " Please carefully analyze the previous result. If the task is not yet complete,"
+    " try a different method or parameters instead of repeating the same call."
+    "\n</system-reminder>"
+)
+
+
+def _make_reminder_text_2(tool_name: str, repeat_count: int, canonical_args: str) -> str:
+    return (
+        "\n\n<system-reminder>\n"
+        "You have repeatedly called the same tool with identical parameters many times.\n"
+        "Repeated tool call detected:\n"
+        f"- tool: {tool_name}\n"
+        f"- repeated_times: {repeat_count}\n"
+        f"- arguments: {canonical_args}\n"
+        "The previous repeated calls did not make progress. Do not call this exact same tool "
+        "with the exact same arguments again.\n"
+        "Carefully inspect the latest tool result and choose a different next action, "
+        "different parameters, or finish the task if enough evidence has been gathered."
+        "\n</system-reminder>"
+    )
+
+
+_REMINDER_TEXT_3 = (
+    "\n\n<system-reminder>\n"
+    "You are stuck in a dead end and have repeatedly made the same function call without "
+    "progress.\n"
+    "Stop all function calls immediately. Do not call any tool in your next response.\n"
+    "In analysis, review the current execution state and identify why progress is blocked.\n"
+    "Then return a text-only summary to the user that reports the current problem, what has "
+    "already been tried, and what information or decision is needed next."
+    "\n</system-reminder>"
+)
+
+_REPEAT_REMINDER_1_START = 3
+_REPEAT_REMINDER_2_START = 5
+_REPEAT_REMINDER_3_START = 8
+_REPEAT_FORCE_STOP_STREAK = 12
+
+RepeatAction = Literal["none", "r1", "r2", "r3", "stop"]
+
+
+def _build_repeat_reminder(
+    streak: int, tool_name: str, canonical_args: str
+) -> tuple[RepeatAction, str | None]:
+    if streak >= _REPEAT_FORCE_STOP_STREAK:
+        return "stop", _REMINDER_TEXT_3
+    if streak >= _REPEAT_REMINDER_3_START:
+        return "r3", _REMINDER_TEXT_3
+    if streak >= _REPEAT_REMINDER_2_START:
+        return "r2", _make_reminder_text_2(tool_name, streak, canonical_args)
+    if streak >= _REPEAT_REMINDER_1_START:
+        return "r1", _REMINDER_TEXT_1
+    return "none", None
+
+
+def _sort_json_value(value: object) -> object:
+    if isinstance(value, list):
+        return [_sort_json_value(item) for item in cast("list[object]", value)]
+    if isinstance(value, dict):
+        value_dict = cast("dict[str, object]", value)
+        return {key: _sort_json_value(value_dict[key]) for key in sorted(value_dict)}
+    return value
+
+
+def _canonical_tool_arguments(arguments: Any) -> str:
+    try:
+        return json.dumps(
+            _sort_json_value(arguments),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        return str(arguments)
+
+
+def _canonical_tool_arguments_text(arguments: str) -> str:
+    try:
+        return _canonical_tool_arguments(json.loads(arguments, strict=False))
+    except json.JSONDecodeError:
+        return arguments
+
+
+def _normalize_call_key(tool_name: str, arguments: str) -> ToolCallKey:
+    return (tool_name, _canonical_tool_arguments_text(arguments))
+
+
+def _append_reminder_to_return_value(
+    return_value: Any, reminder_text: str = _REMINDER_TEXT_1
+) -> Any:
+    """Append dedup reminder text to a ToolReturnValue output."""
+    if not isinstance(return_value, ToolReturnValue):
+        return return_value
+
+    output = return_value.output
+
+    if isinstance(output, str):
+        new_output = output + reminder_text
+    else:
+        new_output = list(output)
+        if new_output and isinstance(new_output[-1], TextPart):
+            new_output[-1] = TextPart(text=new_output[-1].text + reminder_text)
+        else:
+            new_output.append(TextPart(text=reminder_text))
+
+    return return_value.model_copy(update={"output": new_output})
+
+
+class CoderAIToolset:
+    """Core Toolset implementation driving tool execution, deduplication and MCP."""
+
+    def __init__(self) -> None:
+        self._tool_dict: dict[str, ToolType] = {}
+        self._hidden_tools: set[str] = set()
+        self._mcp_servers: dict[str, MCPServerInfo] = {}
+        self._mcp_loading_task: asyncio.Task[None] | None = None
+        self._deferred_mcp_load: tuple[list[MCPConfig], Runtime] | None = None
+        self._hook_engine: HookEngine = HookEngine()
+
+        # Deduplication state
+        self._previous_step_calls: list[ToolCallKey] = []
+        self._current_step_calls: list[ToolCallKey] = []
+        self._current_step_tasks: dict[ToolCallKey, asyncio.Task[ToolResult]] = {}
+        self._seen_call_keys: set[ToolCallKey] = set()
+        self._consecutive_key: ToolCallKey | None = None
+        self._consecutive_count: int = 0
+        self._step_closed: bool = False
+        self._dedup_triggered: bool = False
+        self._force_stop_turn: bool = False
+        self._current_step_no: int = 0
+
+    def set_hook_engine(self, engine: HookEngine) -> None:
+        self._hook_engine = engine
+
+    def add(self, tool: ToolType) -> None:
+        self._tool_dict[tool.name] = tool
+
+    def hide(self, tool_name: str) -> bool:
+        """Hide a tool from the LLM tool list. Returns True if the tool exists."""
+        if tool_name in self._tool_dict:
+            self._hidden_tools.add(tool_name)
+            return True
+        return False
+
+    def unhide(self, tool_name: str) -> None:
+        """Restore a hidden tool to the LLM tool list."""
+        self._hidden_tools.discard(tool_name)
+
+    @overload
+    def find(self, tool_name_or_type: str) -> ToolType | None: ...
+    @overload
+    def find(self, tool_name_or_type: type[T]) -> T | None: ...
+    def find(self, tool_name_or_type: Union[str, type[ToolType]]) -> ToolType | None:
+        if isinstance(tool_name_or_type, str):
+            return self._tool_dict.get(tool_name_or_type)
+        else:
+            for tool in self._tool_dict.values():
+                if isinstance(tool, tool_name_or_type):
+                    return tool
+        return None
+
+    @property
+    def tools(self) -> list[Tool]:
+        return [
+            tool.base for tool in self._tool_dict.values() if tool.name not in self._hidden_tools
+        ]
+
+    def begin_step(self, previous_calls: list[tuple[str, str]], *, step_no: int = 0) -> None:
+        """Called before each step to set up deduplication state."""
+        self._current_step_no = step_no
+        set_current_step_no(step_no)
+        self._previous_step_calls = [
+            _normalize_call_key(tool_name, arguments) for tool_name, arguments in previous_calls
+        ]
+        self._current_step_calls = []
+        self._current_step_tasks = {}
+        self._step_closed = False
+        self._dedup_triggered = False
+        self._force_stop_turn = False
+        if not self._previous_step_calls:
+            self._seen_call_keys = set()
+            self._consecutive_key = None
+            self._consecutive_count = 0
+        else:
+            self._seen_call_keys.update(self._previous_step_calls)
+            if self._consecutive_key is None and self._consecutive_count == 0:
+                self._advance_consecutive_streak(self._previous_step_calls)
+
+    def end_step(self) -> list[tuple[str, str]]:
+        """Called after each step to capture the calls made in this step."""
+        if not self._step_closed:
+            self._advance_consecutive_streak(self._current_step_calls)
+            self._seen_call_keys.update(self._current_step_calls)
+            self._step_closed = True
+        return list(self._current_step_calls)
+
+    def _advance_consecutive_streak(self, calls: list[ToolCallKey]) -> None:
+        for call_key in calls:
+            if call_key == self._consecutive_key:
+                self._consecutive_count += 1
+            else:
+                self._consecutive_key = call_key
+                self._consecutive_count = 1
+
+    def _projected_streak_for_call(self, call_index: int) -> int:
+        consecutive_key = self._consecutive_key
+        consecutive_count = self._consecutive_count
+        for call_key in self._current_step_calls[: call_index + 1]:
+            if call_key == consecutive_key:
+                consecutive_count += 1
+            else:
+                consecutive_key = call_key
+                consecutive_count = 1
+        return consecutive_count
+
+    @property
+    def dedup_triggered(self) -> bool:
+        """Whether a cross-step duplicate was blocked in the current step."""
+        return self._dedup_triggered
+
+    @property
+    def force_stop_turn(self) -> bool:
+        return self._force_stop_turn
+
+    def handle(self, tool_call: ToolCall) -> HandleResult:
+        token = current_tool_call.set(tool_call)
+        try:
+            tool_name = tool_call.function.name
+
+            if tool_name not in self._tool_dict:
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    return_value=ToolNotFoundError(tool_name),
+                )
+
+            try:
+                arguments: JsonType = json.loads(tool_call.function.arguments or "{}", strict=False)
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    "Tool call JSON parse error: {tool_name} (call_id={call_id}): {error}",
+                    tool_name=tool_name,
+                    call_id=tool_call.id,
+                    error=e,
+                )
+                return ToolResult(tool_call_id=tool_call.id, return_value=ToolParseError(str(e)))
+
+            canonical_args = _canonical_tool_arguments(arguments)
+            call_key = (tool_name, canonical_args)
+            call_index = len(self._current_step_calls)
+            self._current_step_calls.append(call_key)
+
+            # Same-step dedup: wait for the original task and copy its result.
+            if call_key in self._current_step_tasks:
+                from coderai.telemetry import track
+
+                track(
+                    "tool_call_dedup_detected",
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_name,
+                    step_no=self._current_step_no,
+                    dup_type="same_step",
+                    args_hash=_args_hash(canonical_args),
+                    **_trace_id_kwargs(),
+                )
+                original_task = self._current_step_tasks[call_key]
+
+                async def _await_dup() -> ToolResult:
+                    t0 = time.monotonic()
+                    try:
+                        original_result = await original_task
+                    except asyncio.CancelledError:
+                        track(
+                            "tool_call",
+                            tool_call_id=tool_call.id,
+                            tool_name=tool_name,
+                            outcome="cancelled",
+                            duration_ms=int((time.monotonic() - t0) * 1000),
+                            dup_type="same_step",
+                            error_type="cancelled",
+                            **_trace_id_kwargs(),
+                        )
+                        raise
+                    dup_error = (
+                        original_result.return_value
+                        if isinstance(original_result.return_value, ToolError)
+                        else None
+                    )
+                    dup_kwargs: dict[str, Any] = {
+                        "tool_call_id": tool_call.id,
+                        "tool_name": tool_name,
+                        "outcome": "error" if dup_error is not None else "success",
+                        "duration_ms": int((time.monotonic() - t0) * 1000),
+                        "dup_type": "same_step",
+                        **_trace_id_kwargs(),
+                    }
+                    if dup_error is not None:
+                        dup_kwargs["error_type"] = "error"
+                        dup_kwargs["error_class"] = type(dup_error).__name__
+                    track("tool_call", **dup_kwargs)
+                    return ToolResult(
+                        tool_call_id=tool_call.id,
+                        return_value=original_result.return_value,
+                    )
+
+                return asyncio.create_task(_await_dup())
+
+            is_cross_step_dup = call_key in self._seen_call_keys
+            reminder_text: str | None = None
+            if is_cross_step_dup:
+                from coderai.telemetry import track
+
+                repeat_count = self._projected_streak_for_call(call_index)
+                action, reminder_text = _build_repeat_reminder(
+                    repeat_count, tool_name, canonical_args
+                )
+                track(
+                    "tool_call_repeat",
+                    tool_name=tool_name,
+                    repeat_count=repeat_count,
+                    action=action,
+                    **_trace_id_kwargs(),
+                )
+                track(
+                    "tool_call_dedup_detected",
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_name,
+                    step_no=self._current_step_no,
+                    dup_type="cross_step",
+                    args_hash=_args_hash(canonical_args),
+                    **_trace_id_kwargs(),
+                )
+                self._dedup_triggered = True
+                if action == "stop":
+                    self._force_stop_turn = True
+
+            tool = self._tool_dict[tool_name]
+
+            async def _call():
+                tool_input_dict = arguments if isinstance(arguments, dict) else {}
+
+                # --- PreToolUse ---
+                from coderai.hooks import events
+
+                results = await self._hook_engine.trigger(
+                    "PreToolUse",
+                    matcher_value=tool_name,
+                    input_data=events.pre_tool_use(
+                        session_id=_get_session_id(),
+                        cwd=str(Path.cwd()),
+                        tool_name=tool_name,
+                        tool_input=tool_input_dict,
+                        tool_call_id=tool_call.id,
+                    ),
+                )
+                for result in results:
+                    if result.action == "block":
+                        return ToolResult(
+                            tool_call_id=tool_call.id,
+                            return_value=ToolError(
+                                message=result.reason or "Blocked by PreToolUse hook",
+                                brief="Hook blocked",
+                            ),
+                        )
+
+                # --- Execute tool ---
+                t0 = time.monotonic()
+                try:
+                    ret = await tool.call(arguments)
+                except asyncio.CancelledError:
+                    from coderai.telemetry import track
+
+                    track(
+                        "tool_call",
+                        tool_call_id=tool_call.id,
+                        tool_name=tool_name,
+                        outcome="cancelled",
+                        duration_ms=int((time.monotonic() - t0) * 1000),
+                        dup_type="cross_step" if is_cross_step_dup else "normal",
+                        error_type="cancelled",
+                        **_trace_id_kwargs(),
+                    )
+                    raise
+                except Exception as e:
+                    tool_elapsed = time.monotonic() - t0
+                    logger.exception(
+                        "Tool execution failed: {tool_name} (call_id={call_id})",
+                        tool_name=tool_name,
+                        call_id=tool_call.id,
+                    )
+                    _hook_task = asyncio.create_task(
+                        self._hook_engine.trigger(
+                            "PostToolUseFailure",
+                            matcher_value=tool_name,
+                            input_data=events.post_tool_use_failure(
+                                session_id=_get_session_id(),
+                                cwd=str(Path.cwd()),
+                                tool_name=tool_name,
+                                tool_input=tool_input_dict,
+                                error=str(e),
+                                tool_call_id=tool_call.id,
+                            ),
+                        )
+                    )
+                    _hook_task.add_done_callback(
+                        lambda t: t.exception() if not t.cancelled() else None
+                    )
+                    from coderai.telemetry import track
+
+                    track(
+                        "tool_call",
+                        tool_call_id=tool_call.id,
+                        tool_name=tool_name,
+                        outcome="error",
+                        duration_ms=int(tool_elapsed * 1000),
+                        error_type="error",
+                        error_class=type(e).__name__,
+                        dup_type="cross_step" if is_cross_step_dup else "normal",
+                        **_trace_id_kwargs(),
+                    )
+                    return ToolResult(
+                        tool_call_id=tool_call.id,
+                        return_value=ToolRuntimeError(str(e)),
+                    )
+
+                tool_elapsed = time.monotonic() - t0
+                logger.info(
+                    "Tool {tool_name} completed in {elapsed:.1f}s (call_id={call_id})",
+                    tool_name=tool_name,
+                    elapsed=tool_elapsed,
+                    call_id=tool_call.id,
+                )
+                from coderai.telemetry import track as _track_tool_call
+
+                if isinstance(ret, ToolError):
+                    _track_tool_call(
+                        "tool_call",
+                        tool_call_id=tool_call.id,
+                        tool_name=tool_name,
+                        outcome="error",
+                        duration_ms=int(tool_elapsed * 1000),
+                        error_type="error",
+                        error_class=type(ret).__name__,
+                        dup_type="cross_step" if is_cross_step_dup else "normal",
+                        **_trace_id_kwargs(),
+                    )
+                else:
+                    _track_tool_call(
+                        "tool_call",
+                        tool_call_id=tool_call.id,
+                        tool_name=tool_name,
+                        outcome="success",
+                        duration_ms=int(tool_elapsed * 1000),
+                        dup_type="cross_step" if is_cross_step_dup else "normal",
+                        **_trace_id_kwargs(),
+                    )
+
+                _hook_task = asyncio.create_task(
+                    self._hook_engine.trigger(
+                        "PostToolUse",
+                        matcher_value=tool_name,
+                        input_data=events.post_tool_use(
+                            session_id=_get_session_id(),
+                            cwd=str(Path.cwd()),
+                            tool_name=tool_name,
+                            tool_input=tool_input_dict,
+                            tool_output=str(ret)[:2000],
+                            tool_call_id=tool_call.id,
+                        ),
+                    )
+                )
+                _hook_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+
+                return ToolResult(tool_call_id=tool_call.id, return_value=ret)
+
+            task = asyncio.create_task(_call())
+            if reminder_text is not None:
+
+                async def _wrap_with_reminder(
+                    inner_task: asyncio.Task[ToolResult],
+                    text: str,
+                ) -> ToolResult:
+                    tr = await inner_task
+                    return ToolResult(
+                        tool_call_id=tr.tool_call_id,
+                        return_value=_append_reminder_to_return_value(tr.return_value, text),
+                    )
+
+                task = asyncio.create_task(_wrap_with_reminder(task, reminder_text))
+
+            self._current_step_tasks[call_key] = task
+            return task
+        finally:
+            current_tool_call.reset(token)
+
+    def register_external_tool(
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+    ) -> tuple[bool, str | None]:
+        if name in self._tool_dict:
+            existing = self._tool_dict[name]
+            if not isinstance(existing, WireExternalTool):
+                return False, "tool name conflicts with existing tool"
+        try:
+            tool = WireExternalTool(
+                name=name,
+                description=description,
+                parameters=parameters,
+            )
+        except Exception as e:
+            return False, str(e)
+        self.add(tool)
+        return True, None
+
+    @property
+    def mcp_servers(self) -> dict[str, MCPServerInfo]:
+        """Get MCP servers info."""
+        return self._mcp_servers
+
+    def mcp_status_snapshot(self) -> MCPStatusSnapshot | None:
+        """Return a read-only snapshot of current MCP startup state."""
+        if not self._mcp_servers:
+            return None
+
+        servers = tuple(
+            MCPServerSnapshot(
+                name=name,
+                status=info.status,
+                tools=tuple(tool.name for tool in info.tools),
+            )
+            for name, info in self._mcp_servers.items()
+        )
+        return MCPStatusSnapshot(
+            loading=self.has_pending_mcp_tools(),
+            connected=sum(1 for server in servers if server.status == "connected"),
+            total=len(servers),
+            tools=sum(len(server.tools) for server in servers),
+            servers=servers,
+        )
+
+    def defer_mcp_tool_loading(self, mcp_configs: list[MCPConfig], runtime: Runtime) -> None:
+        """Store MCP configs for a later background startup."""
+        self._deferred_mcp_load = (list(mcp_configs), runtime)
+
+    def has_deferred_mcp_tools(self) -> bool:
+        """Return True when MCP loading is configured but has not started yet."""
+        return self._deferred_mcp_load is not None
+
+    async def start_deferred_mcp_tool_loading(self) -> bool:
+        """Start any deferred MCP loading in the background."""
+        if self._deferred_mcp_load is None:
+            return False
+        if self._mcp_loading_task is not None or self._mcp_servers:
+            self._deferred_mcp_load = None
+            return False
+
+        mcp_configs, runtime = self._deferred_mcp_load
+        self._deferred_mcp_load = None
+        await self.load_mcp_tools(mcp_configs, runtime, in_background=True)
+        return True
+
+    def load_tools(self, tool_paths: list[str], dependencies: dict[type[Any], Any]) -> None:
+        """
+        Load tools from paths like `coderai.tools.shell:Shell`.
+
+        Raises:
+            InvalidToolError: When any tool cannot be loaded.
+        """
+        good_tools: list[str] = []
+        bad_tools: list[str] = []
+
+        for tool_path in tool_paths:
+            try:
+                tool = self._load_tool(tool_path, dependencies)
+            except SkipThisTool:
+                logger.info("Skipping tool: {tool_path}", tool_path=tool_path)
+                continue
+            if tool:
+                self.add(tool)
+                good_tools.append(tool_path)
+            else:
+                bad_tools.append(tool_path)
+        logger.info("Loaded tools: {good_tools}", good_tools=good_tools)
+        if bad_tools:
+            raise InvalidToolError(f"Invalid tools: {bad_tools}")
+
+    @staticmethod
+    def _load_tool(tool_path: str, dependencies: dict[type[Any], Any]) -> ToolType | None:
+        logger.debug("Loading tool: {tool_path}", tool_path=tool_path)
+        module_name, class_name = tool_path.rsplit(":", 1)
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError as e:
+            logger.warning(
+                "Tool module import failed: {module_name}: {error}",
+                module_name=module_name,
+                error=e,
+            )
+            return None
+        tool_cls = getattr(module, class_name, None)
+        if tool_cls is None:
+            logger.warning(
+                "Tool class not found: {class_name} in {module_name}",
+                class_name=class_name,
+                module_name=module_name,
+            )
+            return None
+        args: list[Any] = []
+        if "__init__" in tool_cls.__dict__:
+            for param in inspect.signature(tool_cls).parameters.values():
+                if param.kind == inspect.Parameter.KEYWORD_ONLY:
+                    break
+                if param.annotation not in dependencies:
+                    raise ValueError(f"Tool dependency not found: {param.annotation}")
+                args.append(dependencies[param.annotation])
+        return tool_cls(*args)
+
+    async def load_mcp_tools(
+        self, mcp_configs: list[MCPConfig], runtime: Runtime, in_background: bool = True
+    ) -> None:
+        """Load MCP tools from specified MCP configs."""
+        import fastmcp
+        from fastmcp.mcp_config import MCPConfig, RemoteMCPServer
+
+        from coderai.auth.oauth import has_oauth_token
+        from coderai.ui.shell.prompt import toast
+
+        async def _check_oauth_tokens(server_url: str) -> bool:
+            return True
+
+        def _toast_mcp(message: str) -> None:
+            if in_background:
+                toast(
+                    message,
+                    duration=10.0,
+                    topic="mcp",
+                    immediate=True,
+                    position="right",
+                )
+
+        def _mark_oauth_unauthorized(server_name: str) -> None:
+            logger.warning(
+                "Skipping OAuth MCP server '{server_name}': not authorized.",
+                server_name=server_name,
+            )
+            self._mcp_servers[server_name] = MCPServerInfo(
+                status="unauthorized", client=None, tools=[]
+            )
+
+        async def _connect_server(
+            server_name: str, server_info: MCPServerInfo
+        ) -> tuple[str, Exception | None]:
+            if server_info.status != "pending":
+                return server_name, None
+
+            server_info.status = "connecting"
+            try:
+                assert server_info.client is not None
+                async with server_info.client as client:
+                    for tool in await client.list_tools():
+                        server_info.tools.append(
+                            MCPTool(server_name, tool, client, runtime=runtime)
+                        )
+
+                for tool in server_info.tools:
+                    self.add(tool)
+
+                server_info.status = "connected"
+                logger.info("Connected MCP server: {server_name}", server_name=server_name)
+                return server_name, None
+            except Exception as e:
+                logger.error(
+                    "Failed to connect MCP server: {server_name}, error: {error}",
+                    server_name=server_name,
+                    error=e,
+                )
+                server_info.status = "failed"
+                return server_name, e
+
+        async def _connect():
+            _toast_mcp("connecting to mcp servers...")
+            tasks = [
+                asyncio.create_task(_connect_server(server_name, server_info))
+                for server_name, server_info in self._mcp_servers.items()
+                if server_info.status == "pending"
+            ]
+            results = await asyncio.gather(*tasks) if tasks else []
+            failed_servers = {name: error for name, error in results if error is not None}
+
+            if failed_servers:
+                _toast_mcp("mcp connection failed")
+                raise MCPRuntimeError(f"Failed to connect MCP servers: {failed_servers}")
+            if any(info.status == "unauthorized" for info in self._mcp_servers.values()):
+                _toast_mcp("mcp authorization needed")
+            else:
+                _toast_mcp("mcp servers connected")
+
+        for mcp_config in mcp_configs:
+            if not mcp_config.mcpServers:
+                logger.debug("Skipping empty MCP config: {mcp_config}", mcp_config=mcp_config)
+                continue
+
+            for server_name, server_config in mcp_config.mcpServers.items():
+                client = fastmcp.Client(MCPConfig(mcpServers={server_name: server_config}))
+                self._mcp_servers[server_name] = MCPServerInfo(
+                    status="pending", client=client, tools=[]
+                )
+
+        if in_background:
+            self._mcp_loading_task = asyncio.create_task(_connect())
+        else:
+            await _connect()
+
+    def has_pending_mcp_tools(self) -> bool:
+        """Return True if the background MCP tool-loading task is still running."""
+        return self._mcp_loading_task is not None and not self._mcp_loading_task.done()
+
+    async def wait_for_mcp_tools(self) -> None:
+        """Wait for background MCP tool loading to finish."""
+        task = self._mcp_loading_task
+        if not task:
+            return
+        try:
+            await task
+        finally:
+            if self._mcp_loading_task is task and task.done():
+                self._mcp_loading_task = None
+
+    async def cleanup(self) -> None:
+        """Cleanup any resources held by the toolset."""
+        self._deferred_mcp_load = None
+        if self._mcp_loading_task:
+            self._mcp_loading_task.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await self._mcp_loading_task
+        for server_info in self._mcp_servers.values():
+            if server_info.client is not None:
+                try:
+                    await server_info.client.close()
+                except Exception:
+                    logger.warning("Failed to close MCP client", exc_info=True)
+
+
+@dataclass(slots=True)
+class MCPServerInfo:
+    status: Literal["pending", "connecting", "connected", "failed", "unauthorized"]
+    client: Optional[fastmcp.Client[Any]]
+    tools: list[MCPTool[Any]]
+
+
+class MCPTool(CallableTool, Generic[T_transport]):
+    def __init__(
+        self,
+        server_name: str,
+        mcp_tool: mcp.Tool,
+        client: fastmcp.Client[T_transport],
+        *,
+        runtime: Runtime,
+        **kwargs: Any,
+    ):
+        super().__init__(
+            name=mcp_tool.name,
+            description=(
+                f"This is an MCP (Model Context Protocol) tool from MCP server `{server_name}`.\n\n"
+                f"{mcp_tool.description or 'No description provided.'}"
+            ),
+            parameters=mcp_tool.inputSchema,
+            **kwargs,
+        )
+        self._mcp_tool = mcp_tool
+        self._client = client
+        self._runtime = runtime
+        self._timeout = timedelta(milliseconds=runtime.config.mcp.client.tool_call_timeout_ms)
+        self._action_name = f"mcp:{mcp_tool.name}"
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> ToolReturnValue:
+        description = f"Call MCP tool `{self._mcp_tool.name}`."
+        result = await self._runtime.approval.request(self.name, self._action_name, description)
+        if not result:
+            return result.rejection_error()
+
+        try:
+            async with self._client as client:
+                call_res = await client.call_tool(
+                    self._mcp_tool.name,
+                    kwargs,
+                    timeout=self._timeout,
+                    raise_on_error=False,
+                )
+                if call_res.is_error:
+                    logger.warning(
+                        "MCP tool returned error: {tool_name}: {content}",
+                        tool_name=self._mcp_tool.name,
+                        content=[str(p) for p in call_res.content][:3],
+                    )
+                return convert_mcp_tool_result(call_res)
+        except Exception as e:
+            logger.exception("MCP tool execution failed: {tool_name}:", tool_name=self._mcp_tool.name)
+            return ToolError(
+                message=f"MCP tool execution failed: {e}",
+                brief="MCP tool error",
+            )
+
+
+class WireExternalTool(CallableTool):
+    def __init__(self, *, name: str, description: str, parameters: dict[str, Any]) -> None:
+        super().__init__(
+            name=name,
+            description=description or "No description provided.",
+            parameters=parameters,
+        )
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> ToolReturnValue:
+        tool_call = get_current_tool_call_or_none()
+        if tool_call is None:
+            return ToolError(
+                message="External tool calls must be invoked from a tool call context.",
+                brief="Invalid tool call",
+            )
+
+        from coderai.soul import get_wire_or_none
+
+        wire = get_wire_or_none()
+        if wire is None:
+            logger.error(
+                "Wire is not available for external tool call: {tool_name}", tool_name=self.name
+            )
+            return ToolError(
+                message="Wire is not available for external tool calls.",
+                brief="Wire unavailable",
+            )
+
+        external_tool_call = ToolCallRequest.from_tool_call(tool_call)
+        wire.soul_side.send(external_tool_call)
+        try:
+            return await external_tool_call.wait()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception("External tool call failed: {tool_name}:", tool_name=self.name)
+            return ToolError(
+                message=f"External tool call failed: {e}",
+                brief="External tool error",
+            )
+
+
+MCP_MAX_OUTPUT_CHARS = 100_000
+
+
+def _media_part_size(part: ContentPart) -> int | None:
+    if isinstance(part, ImageURLPart):
+        return len(part.image_url.url)
+    if isinstance(part, AudioURLPart):
+        return len(part.audio_url.url)
+    if isinstance(part, VideoURLPart):
+        return len(part.video_url.url)
+    return None
+
+
+def convert_mcp_tool_result(result: Any) -> ToolReturnValue:
+    content: list[ContentPart] = []
+    char_budget = MCP_MAX_OUTPUT_CHARS
+    truncated = False
+
+    for part in result.content:
+        try:
+            converted = convert_mcp_content(part)
+        except ValueError as exc:
+            logger.warning(
+                "Skipping unsupported MCP content part: {error}",
+                error=exc,
+            )
+            converted = TextPart(text=f"[Unsupported content: {exc}]")
+
+        if isinstance(converted, TextPart):
+            if char_budget <= 0:
+                truncated = True
+                continue
+            if len(converted.text) > char_budget:
+                converted = TextPart(text=converted.text[:char_budget])
+                truncated = True
+            char_budget -= len(converted.text)
+            content.append(converted)
+            continue
+
+        media_size = _media_part_size(converted)
+        if media_size is not None:
+            if media_size > char_budget:
+                truncated = True
+                continue
+            char_budget -= media_size
+            content.append(converted)
+            continue
+
+        content.append(converted)
+
+    if truncated:
+        content.append(
+            TextPart(
+                text=(
+                    f"\n\n[Output truncated: exceeded {MCP_MAX_OUTPUT_CHARS} character limit. "
+                    "Use pagination or more specific queries to get remaining content.]"
+                )
+            )
+        )
+
+    if result.is_error:
+        return ToolError(
+            output=content,
+            message="Tool returned an error. The output may be error message or incomplete output",
+            brief="",
+        )
+    else:
+        return ToolOk(output=content)
+
+
+# Kimi parity alias
+KimiToolset = CoderAIToolset
+
+__all__ = [
+    "CoderAIToolset",
+    "KimiToolset",
+    "MCPServerInfo",
+    "MCPTool",
+    "WireExternalTool",
+    "convert_mcp_tool_result",
+]

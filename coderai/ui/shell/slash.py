@@ -4,6 +4,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from coderai.ui.shell.dispatch import (
+    SlashAction,
+    ShellContext,
+    dispatch_slash_command,
+    registry,
+    shell_mode_registry,
+)
 
 
 @dataclass(frozen=True)

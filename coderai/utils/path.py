@@ -308,6 +308,27 @@ def shorten_home(path: Any) -> Any:
         return path
 
 
+def normalize_user_path(raw: str) -> str:
+    """Normalize a user-provided path string to a native form."""
+    import platform
+
+    if platform.system() != "Windows":
+        return raw
+
+    if raw.startswith("//") or raw.startswith("/cygdrive/"):
+        return raw.lstrip("/")
+    if len(raw) >= 2 and raw[0] == "/" and raw[1].isalpha() and (len(raw) == 2 or raw[2] == "/"):
+        drive = raw[1].upper()
+        rest = raw[2:].replace("/", "\\")
+        return f"{drive}:{rest}"
+    return raw
+
+
+def kaos_path_from_user_input(raw: str) -> KaosPath:
+    """Convert a model-supplied path string into a usable KaosPath."""
+    return KaosPath(normalize_user_path(raw)).expanduser()
+
+
 def sanitize_cli_path(raw: str) -> str:
     """Strip surrounding quotes from a CLI path argument."""
     raw = raw.strip()
@@ -325,3 +346,85 @@ def is_within_directory(path: Any, directory: Any) -> bool:
         return True
     except ValueError:
         return False
+
+
+def is_within_workspace(
+    path: Any,
+    work_dir: Any,
+    additional_dirs: Any = (),
+) -> bool:
+    """Check whether path is within the workspace (work_dir or any additional directory)."""
+    if is_within_directory(path, work_dir):
+        return True
+    return any(is_within_directory(path, d) for d in (additional_dirs or []))
+
+
+_LIST_DIR_ROOT_WIDTH = 30
+_LIST_DIR_CHILD_WIDTH = 10
+
+
+async def _collect_entries(
+    dir_path: KaosPath, max_width: int
+) -> tuple[list[tuple[str, bool]], int]:
+    from stat import S_ISDIR
+
+    all_entries: list[tuple[str, bool]] = []
+    async for entry in dir_path.iterdir():
+        try:
+            st = await entry.stat()
+            is_dir = S_ISDIR(st.st_mode)
+        except OSError:
+            is_dir = False
+        all_entries.append((entry.name, is_dir))
+    all_entries.sort(key=lambda e: (not e[1], e[0]))
+    return all_entries[:max_width], len(all_entries)
+
+
+async def list_directory(work_dir: KaosPath) -> str:
+    """Return a compact tree listing of work_dir (up to 2 levels)."""
+    lines: list[str] = []
+    entries, total = await _collect_entries(work_dir, _LIST_DIR_ROOT_WIDTH)
+    remaining = total - len(entries)
+
+    for i, (name, is_dir) in enumerate(entries):
+        is_last = (i == len(entries) - 1) and remaining == 0
+        connector = "└── " if is_last else "├── "
+
+        if is_dir:
+            lines.append(f"{connector}{name}/")
+            child_prefix = "    " if is_last else "│   "
+            try:
+                child_entries, child_total = await _collect_entries(
+                    work_dir / name, _LIST_DIR_CHILD_WIDTH
+                )
+            except OSError:
+                lines.append(f"{child_prefix}└── [not readable]")
+                continue
+            child_remaining = child_total - len(child_entries)
+            for j, (child_name, child_is_dir) in enumerate(child_entries):
+                child_is_last = (j == len(child_entries) - 1) and child_remaining == 0
+                child_connector = "└── " if child_is_last else "├── "
+                suffix = "/" if child_is_dir else ""
+                lines.append(f"{child_prefix}{child_connector}{child_name}{suffix}")
+            if child_remaining > 0:
+                lines.append(f"{child_prefix}└── ... and {child_remaining} more")
+        else:
+            lines.append(f"{connector}{name}")
+
+    if remaining > 0:
+        lines.append(f"└── ... and {remaining} more")
+
+    return "\n".join(lines)
+
+
+async def find_project_root(work_dir: KaosPath) -> KaosPath:
+    """Walk up from work_dir to find the nearest directory containing .git."""
+    current = work_dir
+    while True:
+        if await (current / ".git").exists():
+            return current
+        parent = current.parent
+        if parent == current:
+            return work_dir
+        current = parent
+

@@ -234,3 +234,171 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
         validator=_validate_write_schema,
         preprocessor=preprocessor,
     )
+
+
+# --- Kimi CallableTool2 Parity ---
+
+from collections.abc import Callable as _Callable
+from pathlib import Path as _Path
+from typing import Literal as _Literal
+from kaos.path import KaosPath as _KaosPath
+from kosong.tooling import CallableTool2 as _CallableTool2, ToolError as _ToolError, ToolReturnValue as _ToolReturnValue
+from pydantic import BaseModel as _BaseModel, Field as _Field
+
+from coderai.soul.agent import Runtime as _Runtime
+from coderai.soul.approval import Approval as _Approval
+from coderai.tools.display import DisplayBlock as _DisplayBlock
+from coderai.tools.file.plan_mode import inspect_plan_edit_target as _inspect_plan_edit_target
+from coderai.tools.utils import load_desc as _load_desc
+from coderai.utils.diff import build_diff_blocks as _build_diff_blocks
+from coderai.utils.logging import logger as _logger
+from coderai.utils.path import is_within_workspace as _is_within_workspace, kaos_path_from_user_input as _kaos_path_from_user_input
+
+_BASE_WRITE_DESCRIPTION = _load_desc(_Path(__file__).parent / "write.md")
+
+
+class WriteParams(_BaseModel):
+    path: str = _Field(
+        description=(
+            "The path to the file to write. Absolute paths are required when writing files "
+            "outside the working directory."
+        )
+    )
+    content: str = _Field(description="The content to write to the file")
+    mode: _Literal["overwrite", "append"] = _Field(
+        description=(
+            "The mode to use to write to the file. "
+            "Two modes are supported: `overwrite` for overwriting the whole file and "
+            "`append` for appending to the end of an existing file."
+        ),
+        default="overwrite",
+    )
+
+
+class WriteFile(_CallableTool2[WriteParams]):
+    name: str = "WriteFile"
+    description: str = _BASE_WRITE_DESCRIPTION
+    params: type[WriteParams] = WriteParams
+
+    def __init__(self, runtime: _Runtime, approval: _Approval):
+        super().__init__()
+        builtin = getattr(runtime, "builtin_args", None)
+        self._work_dir = getattr(builtin, "CODERAI_WORK_DIR", getattr(builtin, "KIMI_WORK_DIR", _KaosPath.cwd()))
+        self._additional_dirs = getattr(runtime, "additional_dirs", [])
+        self._approval = approval
+        self._plan_mode_checker: _Callable[[], bool] | None = None
+        self._plan_file_path_getter: _Callable[[], _Path | None] | None = None
+
+    def bind_plan_mode(
+        self, checker: _Callable[[], bool], path_getter: _Callable[[], _Path | None]
+    ) -> None:
+        self._plan_mode_checker = checker
+        self._plan_file_path_getter = path_getter
+
+    async def _validate_path(self, path: _KaosPath) -> _ToolError | None:
+        resolved_path = path.canonical()
+        if (
+            not _is_within_workspace(resolved_path, self._work_dir, self._additional_dirs)
+            and not path.is_absolute()
+        ):
+            return _ToolError(
+                message=(
+                    f"`{path}` is not an absolute path. "
+                    "You must provide an absolute path to write a file "
+                    "outside the working directory."
+                ),
+                brief="Invalid path",
+            )
+        return None
+
+    async def __call__(self, params: WriteParams) -> _ToolReturnValue:
+        if not params.path:
+            return _ToolError(
+                message="File path cannot be empty.",
+                brief="Empty file path",
+            )
+
+        try:
+            p = _kaos_path_from_user_input(params.path)
+            if err := await self._validate_path(p):
+                return err
+            p = p.canonical()
+
+            plan_target = _inspect_plan_edit_target(
+                p,
+                plan_mode_checker=self._plan_mode_checker,
+                plan_file_path_getter=self._plan_file_path_getter,
+            )
+            if isinstance(plan_target, _ToolError):
+                return plan_target
+
+            is_plan_file_write = plan_target.is_plan_target
+            if is_plan_file_write and plan_target.plan_path is not None:
+                plan_target.plan_path.parent.mkdir(parents=True, exist_ok=True)
+
+            if not await p.parent.exists():
+                return _ToolError(
+                    message=f"`{params.path}` parent directory does not exist.",
+                    brief="Parent directory not found",
+                )
+
+            if params.mode not in ["overwrite", "append"]:
+                return _ToolError(
+                    message=(
+                        f"Invalid write mode: `{params.mode}`. "
+                        "Mode must be either `overwrite` or `append`."
+                    ),
+                    brief="Invalid write mode",
+                )
+
+            file_existed = await p.exists()
+            old_text = None
+            if file_existed:
+                old_text = await p.read_text(errors="replace")
+
+            new_text = (
+                params.content if params.mode == "overwrite" else (old_text or "") + params.content
+            )
+            diff_blocks = await _build_diff_blocks(
+                str(p),
+                old_text or "",
+                new_text,
+            )
+
+            if not is_plan_file_write:
+                from coderai.tools.file import FileActions
+                action = (
+                    FileActions.EDIT
+                    if _is_within_workspace(p, self._work_dir, self._additional_dirs)
+                    else FileActions.EDIT_OUTSIDE
+                )
+                result = await self._approval.request(
+                    self.name,
+                    action,
+                    f"Write file `{p}`",
+                    display=diff_blocks,
+                )
+                if not result:
+                    return result.rejection_error()
+
+            match params.mode:
+                case "overwrite":
+                    await p.write_text(params.content)
+                case "append":
+                    await p.append_text(params.content)
+
+            file_size = (await p.stat()).st_size
+            action_desc = "overwritten" if params.mode == "overwrite" else "appended to"
+            return _ToolReturnValue(
+                is_error=False,
+                output="",
+                message=(f"File successfully {action_desc}. Current size: {file_size} bytes."),
+                display=diff_blocks,
+            )
+        except Exception as e:
+            _logger.warning("WriteFile failed: {path}: {error}", path=params.path, error=e)
+            return _ToolError(
+                message=f"Failed to write to {params.path}. Error: {e}",
+                brief="Failed to write file",
+            )
+

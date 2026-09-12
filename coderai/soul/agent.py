@@ -11,9 +11,72 @@ plan-mode paths, pending-activation flag, checkpoint counting) while
 from __future__ import annotations
 
 import pathlib
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 from coderai.soul.dynamic_injection import InjectionRegistry, SoulView, default_registry
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BuiltinSystemPromptArgs:
+    """Builtin system prompt arguments."""
+
+    CODERAI_NOW: str = ""
+    CODERAI_WORK_DIR: Any = None
+    CODERAI_WORK_DIR_LS: str = ""
+    CODERAI_AGENTS_MD: str = ""
+    CODERAI_SKILLS: str = ""
+    CODERAI_ADDITIONAL_DIRS_INFO: str = ""
+    CODERAI_OS: str = ""
+    CODERAI_SHELL: str = ""
+    # Kimi parity aliases
+    KIMI_NOW: str = ""
+    KIMI_WORK_DIR: Any = None
+    KIMI_WORK_DIR_LS: str = ""
+    KIMI_AGENTS_MD: str = ""
+    KIMI_SKILLS: str = ""
+    KIMI_ADDITIONAL_DIRS_INFO: str = ""
+    KIMI_OS: str = ""
+    KIMI_SHELL: str = ""
+
+
+@dataclass(slots=True, kw_only=True)
+class Runtime:
+    """Agent runtime."""
+
+    config: Any = None
+    oauth: Any = None
+    llm: Any = None
+    session: Any = None
+    builtin_args: Any = None
+    denwa_renji: Any = None
+    approval: Any = None
+    labor_market: Any = None
+    environment: Any = None
+    notifications: Any = None
+    background_tasks: Any = None
+    skills: dict[str, Any] = field(default_factory=dict)
+    additional_dirs: list[Any] = field(default_factory=list)
+    skills_dirs: list[Any] = field(default_factory=list)
+    subagent_store: Any = None
+    approval_runtime: Any = None
+    root_wire_hub: Any = None
+    subagent_id: str | None = None
+    subagent_type: str | None = None
+    role: str = "root"
+    ui_mode: str = "shell"
+    resumed: bool = False
+    hook_engine: Any = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Agent:
+    """The loaded agent."""
+
+    name: str
+    system_prompt: str
+    toolset: Any
+    runtime: Runtime
 
 
 class SessionSoul(SoulView):

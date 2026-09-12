@@ -131,14 +131,4 @@ async def close_session_manager(manager: SessionManager) -> None:
     cleanup_seatbelt_profiles()
     cleanup_all_spills()
 
-    lsp_client = lsp_module._default_lsp_client
-    if lsp_client is not None:
-        instances = list(lsp_client._instances.values())
-        lsp_client._instances.clear()
-        if instances:
-            await asyncio.gather(
-                *(instance.close() for instance in instances),
-                return_exceptions=True,
-            )
-
     await manager.mcp_manager.disconnect()

@@ -310,3 +310,151 @@ def glob_tool_definition() -> ToolDefinition:
         is_mutating=False,
         is_concurrency_safe=True,
     )
+
+
+# --- Kimi CallableTool2 Parity ---
+
+from pathlib import Path as _Path
+from kaos.path import KaosPath as _KaosPath
+from kosong.tooling import CallableTool2 as _CallableTool2, ToolError as _ToolError, ToolOk as _ToolOk, ToolReturnValue as _ToolReturnValue
+from pydantic import BaseModel as _BaseModel, Field as _Field
+
+from coderai.soul.agent import Runtime as _Runtime
+from coderai.tools.utils import load_desc as _load_desc
+from coderai.utils.logging import logger as _logger
+from coderai.utils.path import (
+    is_within_directory as _is_within_directory,
+    is_within_workspace as _is_within_workspace,
+    kaos_path_from_user_input as _kaos_path_from_user_input,
+    list_directory as _list_directory,
+)
+
+MAX_GLOB_MATCHES = 1000
+GLOB_DESC_PATH = _Path(__file__).parent / "glob.md"
+
+
+def _glob_description_for_os(os_kind: str) -> str:
+    return _load_desc(
+        GLOB_DESC_PATH,
+        {
+            "MAX_MATCHES": str(MAX_GLOB_MATCHES),
+            "WINDOWS_PATH_HINT": "",
+        },
+    )
+
+
+class GlobParams(_BaseModel):
+    pattern: str = _Field(description="Glob pattern to match files/directories.")
+    directory: str | None = _Field(
+        description="Absolute path to the directory to search in (defaults to working directory).",
+        default=None,
+    )
+    include_dirs: bool = _Field(
+        description="Whether to include directories in results.",
+        default=True,
+    )
+
+
+class Glob(_CallableTool2[GlobParams]):
+    name: str = "Glob"
+    description: str = _glob_description_for_os("")
+    params: type[GlobParams] = GlobParams
+
+    def __init__(self, runtime: _Runtime) -> None:
+        env = getattr(runtime, "environment", None)
+        os_kind = getattr(env, "os_kind", "")
+        super().__init__(description=_glob_description_for_os(os_kind))
+        builtin = getattr(runtime, "builtin_args", None)
+        self._work_dir = getattr(builtin, "CODERAI_WORK_DIR", getattr(builtin, "KIMI_WORK_DIR", _KaosPath.cwd()))
+        self._additional_dirs = getattr(runtime, "additional_dirs", [])
+        self._skills_dirs = getattr(runtime, "skills_dirs", [])
+
+    async def _validate_pattern(self, pattern: str) -> _ToolError | None:
+        if pattern.startswith("**"):
+            ls_result = await _list_directory(self._work_dir)
+            return _ToolError(
+                output=ls_result,
+                message=(
+                    f"Pattern `{pattern}` starts with '**' which is not allowed. "
+                    "This would recursively search all directories and may include large "
+                    "directories like `node_modules`. Use more specific patterns instead."
+                ),
+                brief="Unsafe pattern",
+            )
+        return None
+
+    async def _validate_directory(self, directory: _KaosPath) -> _ToolError | None:
+        resolved_dir = directory.canonical()
+        if _is_within_workspace(resolved_dir, self._work_dir, self._additional_dirs):
+            return None
+        if any(_is_within_directory(resolved_dir, d) for d in self._skills_dirs):
+            return None
+        return _ToolError(
+            message=(
+                f"`{directory}` is outside the workspace. "
+                "You can only search within the working directory, "
+                "additional directories, and skills directories."
+            ),
+            brief="Directory outside workspace",
+        )
+
+    async def __call__(self, params: GlobParams) -> _ToolReturnValue:
+        try:
+            pattern_error = await self._validate_pattern(params.pattern)
+            if pattern_error:
+                return pattern_error
+
+            dir_path = (
+                _kaos_path_from_user_input(params.directory) if params.directory else self._work_dir
+            )
+
+            if not dir_path.is_absolute():
+                return _ToolError(
+                    message=f"`{params.directory}` is not an absolute path.",
+                    brief="Invalid directory",
+                )
+
+            dir_error = await self._validate_directory(dir_path)
+            if dir_error:
+                return dir_error
+
+            if not await dir_path.exists():
+                return _ToolError(
+                    message=f"`{params.directory}` does not exist.",
+                    brief="Directory not found",
+                )
+            if not await dir_path.is_dir():
+                return _ToolError(
+                    message=f"`{params.directory}` is not a directory.",
+                    brief="Invalid directory",
+                )
+
+            matches: list[_KaosPath] = []
+            async for match in dir_path.glob(params.pattern):
+                matches.append(match)
+
+            if not params.include_dirs:
+                matches = [p for p in matches if await p.is_file()]
+
+            matches.sort()
+
+            message = (
+                f"Found {len(matches)} matches for pattern `{params.pattern}`."
+                if len(matches) > 0
+                else f"No matches found for pattern `{params.pattern}`."
+            )
+            if len(matches) > MAX_GLOB_MATCHES:
+                matches = matches[:MAX_GLOB_MATCHES]
+                message += f" Only the first {MAX_GLOB_MATCHES} matches are returned."
+
+            return _ToolOk(
+                output="\n".join(str(p.relative_to(dir_path)) for p in matches),
+                message=message,
+            )
+        except Exception as e:
+            _logger.warning("Glob failed: pattern={pattern}: {error}", pattern=params.pattern, error=e)
+            return _ToolError(
+                message=f"Failed to search for pattern {params.pattern}. Error: {e}",
+                brief="Glob failed",
+            )
+

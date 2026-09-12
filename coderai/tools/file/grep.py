@@ -670,3 +670,63 @@ def grep_tool_definition() -> ToolDefinition:
         is_mutating=False,
         is_concurrency_safe=True,
     )
+
+
+# --- Kimi CallableTool2 Parity ---
+
+from pathlib import Path as _Path
+from kosong.tooling import CallableTool2 as _CallableTool2, ToolError as _ToolError, ToolOk as _ToolOk, ToolReturnValue as _ToolReturnValue
+from pydantic import BaseModel as _BaseModel, Field as _Field
+
+from coderai.soul.agent import Runtime as _Runtime
+from coderai.tools.utils import load_desc as _load_desc
+from coderai.utils.logging import logger as _logger
+
+_BASE_GREP_DESCRIPTION = _load_desc(_Path(__file__).parent / "grep.md")
+
+
+class GrepParams(_BaseModel):
+    pattern: str = _Field(description="The regular expression pattern to search for in file contents")
+    path: str = _Field(
+        description="File or directory to search in. Defaults to current working directory.",
+        default=".",
+    )
+    glob: str | None = _Field(
+        description="Glob pattern to filter files (e.g. `*.js`, `*.{ts,tsx}`). No filter by default.",
+        default=None,
+    )
+    output_mode: str = _Field(
+        description="`content`, `files_with_matches`, or `count_matches`. Defaults to `files_with_matches`.",
+        default="files_with_matches",
+    )
+    case_insensitive: bool = _Field(default=False)
+    head_limit: int = _Field(default=250)
+    offset: int = _Field(default=0)
+    multiline: bool = _Field(default=False)
+
+
+class Grep(_CallableTool2[GrepParams]):
+    name: str = "Grep"
+    description: str = _BASE_GREP_DESCRIPTION
+    params: type[GrepParams] = GrepParams
+
+    def __init__(self, runtime: _Runtime) -> None:
+        super().__init__()
+        self._runtime = runtime
+
+    async def __call__(self, params: GrepParams) -> _ToolReturnValue:
+        args = {
+            "pattern": params.pattern,
+            "path": params.path,
+            "include": params.glob,
+            "output_mode": params.output_mode,
+            "case_insensitive": params.case_insensitive,
+            "head_limit": params.head_limit,
+            "offset": params.offset,
+            "multiline": params.multiline,
+        }
+        res = handle_grep_tool(args, None)
+        if not res.ok:
+            return _ToolError(message=res.error or "Grep failed", brief="Grep error")
+        return _ToolOk(output=res.output or "", message=f"Grep found matches for `{params.pattern}`.")
+

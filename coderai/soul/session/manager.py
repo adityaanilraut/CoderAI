@@ -1267,7 +1267,7 @@ class SessionManager:
         permission_replies: list[dict[str, Any]] | None = None,
         deferred_prompt: str | None = None,
     ) -> None:
-        from coderai.soul.kimisoul import AgentLoop
+        from coderai.soul.coderaisoul import AgentLoop
         from coderai.subagents.core import (
             register_session_notice_sink,
             unregister_session_notice_sink,
