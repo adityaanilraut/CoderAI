@@ -233,6 +233,41 @@ def test_prompt_cache_anthropic_breakpoints_mark_system_and_penultimate(tmp_path
     assert converted[3]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
 
+def test_prompt_cache_tool_breakpoints():
+    """Tool payloads attach cache_control to the final tool definition for Claude."""
+    from coderai.utils.common.message_converter import apply_tool_cache_control
+
+    tools = [
+        {"type": "function", "function": {"name": "read"}},
+        {"type": "function", "function": {"name": "bash"}},
+        {"type": "function", "function": {"name": "write"}},
+    ]
+    cached_tools = apply_tool_cache_control(tools, "claude-3-7-sonnet")
+    assert cached_tools is not None
+    assert "cache_control" not in cached_tools[0]
+    assert cached_tools[-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_prompt_cache_multi_step_tool_loop_breakpoint(tmp_path: pathlib.Path):
+    """Multi-step tool execution loops mark the latest tool result with cache_control."""
+    conv = OpenAIMessageConverter()
+    msgs = [
+        _msg("s1", "system", get_system_prompt({"workspaceRoot": str(tmp_path)})),
+        _msg("u1", "user", "Perform multi-step task"),
+        _msg("a1", "assistant", "", tool_calls=[{"id": "tc1", "function": {"name": "bash", "arguments": "{}"}}]),
+        _msg("t1", "tool", "output of step 1", tool_call_id="tc1"),
+        _msg("a2", "assistant", "", tool_calls=[{"id": "tc2", "function": {"name": "read", "arguments": "{}"}}]),
+        _msg("t2", "tool", "output of step 2", tool_call_id="tc2"),
+    ]
+    converted = conv.convert_session_messages(msgs, "claude-3-7-sonnet")
+    # System prompt marked
+    assert converted[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    # Initial user prompt marked
+    assert converted[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    # Latest completed tool result marked to cache entire execution prefix up to step 2
+    assert converted[-1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
 def test_prompt_cache_stabilized_messages_insert_boundary_token():
     """Stabilized payloads prefix the boundary token and order tools deterministically."""
     stabilized, tools = build_cache_stabilized_messages(
@@ -367,6 +402,54 @@ def test_reasoning_effort_model_capabilities_report_supported_levels():
     assert get_default_reasoning_effort("deepseek-v4-pro") == "max"
     assert get_default_reasoning_effort("gemini-3.7-flash") == "low"
     assert defaults_to_thinking_mode("claude-3-7-sonnet") is True
+
+
+def test_deepseek_flash_v41_capabilities():
+    """deepseek-flash (V4.1) is thinking-default, fast, multimodal with full efforts."""
+    from coderai.utils.common.model_capabilities import (
+        DEEPSEEK_MODELS,
+        is_fast_model,
+        supports_multimodal,
+    )
+
+    assert "deepseek-flash" in DEEPSEEK_MODELS
+    assert defaults_to_thinking_mode("deepseek-flash") is True
+    assert is_fast_model("deepseek-flash") is True
+    assert supports_multimodal("deepseek-flash") is True
+    assert not supports_multimodal("deepseek-flash", mode="off")
+    assert get_supported_reasoning_efforts("deepseek-flash") == [
+        "off",
+        "low",
+        "medium",
+        "high",
+        "max",
+    ]
+    # Legacy v4-flash alias is served by the same V4.1 backend.
+    assert defaults_to_thinking_mode("deepseek-v4-flash") is True
+    assert supports_multimodal("deepseek-v4-flash") is True
+    # Pro remains the non-multimodal reasoning flagship.
+    assert not supports_multimodal("deepseek-v4-pro")
+
+
+def test_deepseek_provider_lists_current_models():
+    """DeepSeek provider registry drops retired chat/reasoner aliases."""
+    from coderai.config import KNOWN_PROVIDERS
+
+    info = KNOWN_PROVIDERS["deepseek"]
+    assert info["default_model"] == "deepseek-flash"
+    assert "deepseek-flash" in info["models"]
+    assert "deepseek-v4-pro" in info["models"]
+    assert "deepseek-chat" not in info["models"]
+    assert "deepseek-reasoner" not in info["models"]
+
+
+def test_deepseek_context_window_is_1m():
+    """Current DeepSeek models resolve to the 1M-token context window."""
+    from coderai.prompt import get_model_context_limit
+
+    assert get_model_context_limit("deepseek-flash") == 1_000_000
+    assert get_model_context_limit("deepseek-v4-pro") == 1_000_000
+    assert get_model_context_limit("deepseek-v4-flash") == 1_000_000
 
 
 def test_reasoning_effort_session_manager_normalizes_on_set():

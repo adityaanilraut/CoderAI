@@ -17,6 +17,39 @@ from typing import Any
 
 from coderai.utils.logging import logger
 
+class SandboxUnavailableError(RuntimeError):
+    """Raised when an OS sandbox was requested but no backend exists.
+
+    Fail-closed: callers must refuse to spawn the subprocess instead of
+    running it without OS-level isolation.
+    """
+
+
+def resolve_exec_cwd(
+    cwd: str | pathlib.Path | None,
+    workspace_root: str | pathlib.Path | None,
+    isolated_cwd: str | pathlib.Path | None = None,
+) -> str:
+    """Central cwd policy: resolve `cwd` and clamp it inside the effective root.
+
+    The effective root is `isolated_cwd` when set, else `workspace_root`.
+    Relative cwds resolve under the effective root. Raises ValueError when the
+    resolved cwd would escape the effective root (fail-closed).
+    """
+    root_raw = isolated_cwd or workspace_root or os.getcwd()
+    root = pathlib.Path(root_raw).resolve()
+    raw = cwd or str(root)
+    candidate = pathlib.Path(raw)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise ValueError(f"CWD '{raw}' escapes execution root '{root}'.")
+    return str(resolved)
+
+
 SANDBOX_MODES = ("read-only", "workspace-write", "danger-full-access")
 # Closed by default: fresh installs constrain file writes to the workspace and
 # prompt for anything else. `danger-full-access` remains available as an
@@ -334,17 +367,22 @@ def wrap_sandbox_command(
         if parsed == "workspace-write":
             bwrap.extend(["--bind", root, root])
         workdir = cwd or root
+        try:
+            pathlib.Path(workdir).resolve().relative_to(pathlib.Path(root).resolve())
+        except (ValueError, OSError):
+            workdir = root
         bwrap.extend(["--chdir", workdir, *argv])
         meta["sandboxApplied"] = True
         meta["sandboxBackend"] = "bwrap"
         return bwrap, meta
     meta["sandboxSkipped"] = "no sandbox backend on this platform"
-    logger.warning(
+    meta["sandboxDenied"] = (
         f"OS sandbox requested ({parsed}) but no backend is available "
-        "(sandbox-exec on macOS / bwrap on Linux); running without OS-level "
-        "isolation. Permission prompts still apply."
+        "(sandbox-exec on macOS / bwrap on Linux); refusing to run without "
+        "OS-level isolation."
     )
-    return argv, meta
+    logger.warning(meta["sandboxDenied"] + " Permission prompts still apply.")
+    raise SandboxUnavailableError(meta["sandboxDenied"])
 
 
 def check_sandbox_path_access(

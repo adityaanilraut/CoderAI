@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 THINKING_CAPABLE_MODELS = {
+    "deepseek-flash",
+    "deepseek-v4-flash",
     "deepseek-v4-pro",
     "gemini-3.7-flash",
     "gpt-5.6-sol",
@@ -12,12 +14,15 @@ THINKING_CAPABLE_MODELS = {
 }
 
 DEEPSEEK_MODELS = {
+    "deepseek-flash",
     "deepseek-v4-flash",
     "deepseek-v4-pro",
 }
 DEEPSEEK_V4_MODELS = DEEPSEEK_MODELS
 
 MULTIMODAL_MODELS = {
+    "deepseek-flash",
+    "deepseek-v4-flash",
     "gemini-3.7-flash",
     "gpt-5.6-luna",
     "gpt-5.6-sol",
@@ -29,11 +34,11 @@ MULTIMODAL_MODELS = {
 }
 
 NON_MULTIMODAL_MODELS = {
-    "deepseek-v4-flash",
     "deepseek-v4-pro",
 }
 
 FAST_MODELS = {
+    "deepseek-flash",
     "deepseek-v4-flash",
     "gemini-3.7-flash",
     "gpt-5.6-luna",
@@ -46,7 +51,7 @@ ALL_REASONING_EFFORTS = ["off", "low", "medium", "high", "max"]
 def defaults_to_thinking_mode(model: str) -> bool:
     """Return True if the model defaults to deep thinking/reasoning mode."""
     m = model.strip().lower()
-    if m in ("deepseek-v4-flash", "gpt-5.6-luna", "kimi-k1.5"):
+    if m in ("gpt-5.6-luna", "kimi-k1.5"):
         return False
     if m in THINKING_CAPABLE_MODELS:
         return True
@@ -58,6 +63,8 @@ def defaults_to_thinking_mode(model: str) -> bool:
             "o4",
             "deepseek-reasoner",
             "deepseek-r1",
+            "deepseek-flash",
+            "deepseek-v4-flash",
             "claude-3-7",
             "deepseek-v4-pro",
             "kimi",
@@ -71,6 +78,7 @@ def get_supported_reasoning_efforts(model: str) -> list[str]:
     """Return the list of supported reasoning efforts for a given model."""
     m = model.strip().lower()
     if defaults_to_thinking_mode(model) or m in (
+        "deepseek-flash",
         "deepseek-v4-flash",
         "gemini-3.7-flash",
         "deepseek-v4-pro",
@@ -102,7 +110,7 @@ def resolve_adaptive_reasoning_effort(
     """Dynamically resolve reasoning effort to minimize latency on iterative steps.
 
     If explicit_effort is provided and not in ('adaptive', 'auto', None, ''), respect it.
-    For fast/flash thinking models (e.g. deepseek-v4-flash, gemini-3.7-flash, gpt-5.6-luna):
+    For fast/flash thinking models (e.g. deepseek-flash, gemini-3.7-flash, gpt-5.6-luna):
     - Turn 1 / Step 1: use 'high' or 'max' for initial planning & root-cause reasoning.
     - Iterative tool execution steps (Turn > 1 or Step > 1): use 'low' (or 'medium')
       to avoid 500+ token reasoning stalls during routine inspection and file updates.
@@ -220,13 +228,22 @@ CURATED_MODELS: list[tuple[str, str, str]] = [
         "Next-gen hybrid reasoning with visible thinking (Efforts: low..max)",
         "Google Gemini",
     ),
-    # DeepSeek V4
+    # DeepSeek V4.1 / V4
+    (
+        "deepseek-flash",
+        "Latest V4.1 Flash: thinking + vision, 1M context, high-throughput coding (Default)",
+        "DeepSeek",
+    ),
     (
         "deepseek-v4-pro",
         "Flagship agentic coding & deep reasoning 1M context (Effort: max)",
         "DeepSeek V4",
     ),
-    ("deepseek-v4-flash", "High-throughput coding & tool-calling engine", "DeepSeek V4"),
+    (
+        "deepseek-v4-flash",
+        "Legacy alias — served by deepseek-flash (V4.1), prefer deepseek-flash",
+        "DeepSeek V4",
+    ),
     # Anthropic Claude
     ("claude-3-7-sonnet", "Hybrid reasoning & deep frontier tool calling", "Anthropic"),
 ]

@@ -129,6 +129,8 @@ class ToolExecutionContext:
     dry_run: bool = False
     list_session_messages: Callable[[str], list[Any]] | None = None
     list_session_events: Callable[[str], list[Any]] | None = None
+    plan_mode: bool = False
+    session_manager: Any = None
     deferred_contexts: list[ToolExecutionFollowUpMessage | dict[str, Any]] = field(
         default_factory=list
     )
@@ -180,6 +182,8 @@ class ToolExecutionHooks:
     timeout_ms: int | None = None
     list_session_messages: Callable[[str], list[Any]] | None = None
     list_session_events: Callable[[str], list[Any]] | None = None
+    plan_mode: bool = False
+    session_manager: Any = None
 
 
 TOOL_ABORTED_BEFORE_DISPATCH = "TOOL_ABORTED_BEFORE_DISPATCH"

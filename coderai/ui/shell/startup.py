@@ -371,14 +371,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--tools-preset",
         dest="tools_preset",
-        choices=TOOL_PRESETS,
+        choices=list(TOOL_PRESETS),
         default=None,
-        help="Permission preset (read-only, workspace-write, danger-full-access, local-network-read, unrestricted-read).",
+        help="Tool preset: full, core, or shell_edit (alias: --permission, --preset).",
     )
     parser.add_argument(
         "--permission",
         dest="permission",
-        choices=TOOL_PRESETS,
+        choices=list(TOOL_PRESETS),
         default=None,
         help="Alias for --tools-preset.",
     )

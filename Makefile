@@ -79,18 +79,18 @@ run:
 
 lint:
 	@echo "Running ruff..."
-	$(PYTHON) -m ruff check coderai/ tests/ scripts/
+	$(PYTHON) -m ruff check coderai/ tests/ tests_e2e/ scripts/
 
 typecheck:
 	@echo "Running mypy..."
 	$(PYTHON) -m mypy coderai/
 
 format:
-	$(PYTHON) -m ruff format coderai/ tests/ scripts/
+	$(PYTHON) -m ruff format coderai/ tests/ tests_e2e/ scripts/
 	@echo "Code formatted with ruff"
 
 format-check:
-	$(PYTHON) -m ruff format --check coderai/ tests/ scripts/
+	$(PYTHON) -m ruff format --check coderai/ tests/ tests_e2e/ scripts/
 
 check: format-check lint typecheck test
 

@@ -697,10 +697,23 @@ class SubAgentManager:
                 messages.append({"role": "user", "content": steering_text})
 
             # Build request
+            effective_messages = messages
+            effective_tools = available_tools
+            from coderai.utils.common.message_converter import (
+                apply_cache_control_breakpoints,
+                apply_tool_cache_control,
+                is_cache_control_supported,
+            )
+
+            if is_cache_control_supported(model):
+                effective_messages = apply_cache_control_breakpoints(messages, model)
+                if effective_tools:
+                    effective_tools = apply_tool_cache_control(effective_tools, model)
+
             request: dict[str, Any] = {
                 "model": model,
-                "messages": messages,
-                "tools": available_tools if available_tools else None,
+                "messages": effective_messages,
+                "tools": effective_tools if effective_tools else None,
             }
             if temperature is not None:
                 request["temperature"] = temperature

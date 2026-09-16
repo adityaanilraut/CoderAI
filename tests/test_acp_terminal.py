@@ -6,6 +6,7 @@ so PTY behavior stays covered by the existing terminal tool tests instead.
 
 from __future__ import annotations
 
+import acp
 import pytest
 
 from coderai.acp.server import ACPServer
@@ -162,9 +163,18 @@ async def test_ext_method_terminal_list_empty_session():
 @pytest.mark.asyncio
 async def test_ext_method_terminal_validation_errors():
     server = ACPServer()
-    assert "error" in await server.ext_method("terminal/bogus", {"session_id": "s"})
-    assert "error" in await server.ext_method("terminal/list", {})
-    assert "error" in await server.ext_method("terminal/read", {"session_id": "s"})
+    with pytest.raises(acp.RequestError) as exc_bogus:
+        await server.ext_method("terminal/bogus", {"session_id": "s"})
+    assert exc_bogus.value.code == -32601
+
+    with pytest.raises(acp.RequestError) as exc_list:
+        await server.ext_method("terminal/list", {})
+    assert exc_list.value.code == -32602
+
+    with pytest.raises(acp.RequestError) as exc_read:
+        await server.ext_method("terminal/read", {"session_id": "s"})
+    assert exc_read.value.code == -32602
+
     assert "error" in await server.ext_method(
         "terminal/read", {"session_id": "s", "terminal_id": "missing"}
     )

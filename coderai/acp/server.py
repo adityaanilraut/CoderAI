@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import sys
 import time
@@ -29,6 +28,13 @@ from coderai.constant import NAME, VERSION
 from coderai.llm import derive_model_capabilities
 from coderai.session import Session
 from coderai.utils.logging import logger
+
+#: Page size for ``session/list`` cursor pagination (cursor = integer offset).
+_SESSION_LIST_PAGE_SIZE = 50
+
+#: Methods served by :meth:`ACPServer.ext_method` (``terminal/<op>`` handled
+#: separately via :data:`coderai.acp.terminal.TERMINAL_METHODS`).
+_EXT_METHOD_ALLOWLIST = frozenset({"ping", "version", "list_roles", "terminal/bridge"})
 
 
 def _mcp_configs_to_servers(mcp_configs: list[Any] | None) -> dict[str, dict[str, Any]]:
@@ -191,7 +197,7 @@ class ACPServer:
         except Exception:
             pass
 
-        return None
+        return "no credentials configured (run `coderai login` first)"
 
     def _check_auth(self) -> None:
         """Check if authentication is complete. Raise AUTH_REQUIRED if not."""
@@ -207,8 +213,10 @@ class ACPServer:
                             "name": m.name,
                             "description": m.description,
                             "type": terminal_auth.get("type", "terminal"),
+                            "command": terminal_auth.get("command", ""),
                             "args": terminal_auth.get("args", []),
                             "env": terminal_auth.get("env", {}),
+                            "label": terminal_auth.get("label", ""),
                         }
                     )
 
@@ -219,8 +227,12 @@ class ACPServer:
         self, cwd: str, mcp_servers: list[MCPServer] | None = None, **kwargs: Any
     ) -> acp.NewSessionResponse:
         logger.info("Creating new session for working directory: %s", cwd)
-        assert self.conn is not None, "ACP client not connected"
-        assert self.client_capabilities is not None, "ACP connection not initialized"
+        if self.conn is None:
+            raise acp.RequestError.invalid_request({"connection": "ACP client not connected"})
+        if self.client_capabilities is None:
+            raise acp.RequestError.invalid_request(
+                {"connection": "ACP connection not initialized"}
+            )
 
         self._check_auth()
 
@@ -252,15 +264,18 @@ class ACPServer:
             acp.schema.AvailableCommand(name=name, description=description)
             for name, description in completion_entries()
         ]
-        asyncio.create_task(
-            self.conn.session_update(
+        # Awaited (best-effort) instead of fire-and-forget so delivery
+        # failures surface in logs instead of as unretrieved exceptions.
+        try:
+            await self.conn.session_update(
                 session_id=session.id,
                 update=acp.schema.AvailableCommandsUpdate(
                     session_update="available_commands_update",
                     available_commands=available_commands,
                 ),
             )
-        )
+        except Exception:
+            logger.warning("Failed to publish available commands for %s", session.id)
         return acp.NewSessionResponse(
             session_id=session.id,
             modes=acp.schema.SessionModeState(
@@ -285,8 +300,12 @@ class ACPServer:
         session_id: str,
         mcp_servers: list[MCPServer] | None = None,
     ) -> tuple[ACPSession, _ModelIDConv]:
-        assert self.conn is not None, "ACP client not connected"
-        assert self.client_capabilities is not None, "ACP connection not initialized"
+        if self.conn is None:
+            raise acp.RequestError.invalid_request({"connection": "ACP client not connected"})
+        if self.client_capabilities is None:
+            raise acp.RequestError.invalid_request(
+                {"connection": "ACP connection not initialized"}
+            )
 
         work_dir = KaosPath.unsafe_from_local_path(Path(cwd))
         session = await Session.find(work_dir, session_id)
@@ -337,6 +356,8 @@ class ACPServer:
     ) -> acp.schema.ResumeSessionResponse:
         logger.info("Resuming session: %s for working directory: %s", session_id, cwd)
 
+        self._check_auth()
+
         if session_id not in self.sessions:
             await self._setup_session(cwd, session_id, mcp_servers)
 
@@ -364,10 +385,21 @@ class ACPServer:
     ) -> acp.schema.ForkSessionResponse:
         logger.info("Forking session: %s for working directory: %s", session_id, cwd)
         self._check_auth()
-        assert self.conn is not None, "ACP client not connected"
-        assert self.client_capabilities is not None, "ACP connection not initialized"
+        if self.conn is None:
+            raise acp.RequestError.invalid_request({"connection": "ACP client not connected"})
+        if self.client_capabilities is None:
+            raise acp.RequestError.invalid_request(
+                {"connection": "ACP connection not initialized"}
+            )
 
         work_dir = KaosPath.unsafe_from_local_path(Path(cwd))
+        # Validate the parent before creating anything: forking an unknown
+        # session must not leave an orphan session behind.
+        parent_session = self.sessions.get(session_id)
+        if parent_session is None and await Session.find(work_dir, session_id) is None:
+            logger.error("Session not found: %s", session_id)
+            raise acp.RequestError.invalid_params({"session_id": "Session not found"})
+
         forked_session = await Session.create(work_dir)
 
         mcp_config = acp_mcp_servers_to_mcp_config(mcp_servers or [])
@@ -376,20 +408,32 @@ class ACPServer:
         acp_kaos = ACPKaos(self.conn, forked_session.id, self.client_capabilities)
         acp_session = ACPSession(forked_session.id, engine, self.conn, kaos=acp_kaos)
         model_id_conv = _ModelIDConv(config.default_model or "", bool(config.default_thinking))
+        if parent_session is not None and parent_session[1].model_key:
+            # Carry the parent's session-scoped model choice across; a fresh
+            # engine would otherwise silently reset to the global default.
+            parent_conv = parent_session[1]
+            try:
+                engine.set_model(parent_conv.model_key)
+                set_thinking = getattr(engine, "set_thinking", None)
+                if callable(set_thinking):
+                    set_thinking(parent_conv.thinking)
+                model_id_conv = parent_conv
+            except Exception:
+                logger.warning("Failed to inherit parent model for forked session")
         self.sessions[forked_session.id] = (acp_session, model_id_conv)
 
         # Carry the parent conversation across with a real SessionManager fork
         # (clones message history, event log, and file checkpoint).
-        parent_session = self.sessions.get(session_id)
         source_id = None
         if parent_session is not None:
             source_id = getattr(parent_session[0].cli, "session_id", None)
         else:
-            # Fallback 1: Resolve from on-disk ACP session directory
+            # Fallback 1: Resolve the engine binding from the parent's real
+            # session directory (where save_engine_session_id persists it).
             try:
-                candidate_dir = Path(cwd) / ".coderai" / "acp_sessions" / session_id
-                if candidate_dir.exists():
-                    source_id = load_engine_session_id(candidate_dir)
+                parent = await Session.find(work_dir, session_id)
+                if parent is not None:
+                    source_id = load_engine_session_id(parent.dir)
             except Exception:
                 pass
             # Fallback 2: Check if session_id is directly a SessionManager session ID
@@ -439,8 +483,22 @@ class ACPServer:
         logger.info("Listing sessions for working directory: %s", cwd)
         if cwd is None:
             return acp.schema.ListSessionsResponse(sessions=[], next_cursor=None)
+        offset = 0
+        if cursor is not None:
+            try:
+                offset = max(0, int(cursor))
+            except (TypeError, ValueError):
+                raise acp.RequestError.invalid_params(
+                    {"cursor": "Cursor must be an integer offset"}
+                )
         work_dir = KaosPath.unsafe_from_local_path(Path(cwd))
         sessions = await Session.list(work_dir)
+        page = sessions[offset : offset + _SESSION_LIST_PAGE_SIZE]
+        next_cursor = (
+            str(offset + _SESSION_LIST_PAGE_SIZE)
+            if offset + _SESSION_LIST_PAGE_SIZE < len(sessions)
+            else None
+        )
         return acp.schema.ListSessionsResponse(
             sessions=[
                 acp.schema.SessionInfo(
@@ -449,13 +507,16 @@ class ACPServer:
                     title=s.title,
                     updated_at=datetime.fromtimestamp(s.updated_at).astimezone().isoformat(),
                 )
-                for s in sessions
+                for s in page
             ],
-            next_cursor=None,
+            next_cursor=next_cursor,
         )
 
     async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> None:
-        assert mode_id == "default", "Only default mode is supported"
+        if mode_id != "default":
+            raise acp.RequestError.invalid_params(
+                {"mode_id": "Only default mode is supported"}
+            )
 
     async def set_session_model(self, model_id: str, session_id: str, **kwargs: Any) -> None:
         logger.info("Setting session model to %s for session: %s", model_id, session_id)
@@ -531,6 +592,7 @@ class ACPServer:
 
     async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         logger.info("Handling ext_method: %s", method)
+        self._check_auth()
         if method == "ping":
             return {"status": "ok", "timestamp": time.time()}
         if method == "version":
@@ -546,8 +608,12 @@ class ACPServer:
             return {"operations": [f"terminal/{op}" for op in TERMINAL_METHODS]}
         if method.startswith("terminal/"):
             return await self._terminal_ext_method(method[len("terminal/") :], params)
-        logger.warning("Unsupported ext_method: %s", method)
-        return {"error": f"Method {method} not supported"}
+        if method not in _EXT_METHOD_ALLOWLIST:
+            logger.warning("Unsupported ext_method: %s", method)
+            raise acp.RequestError.method_not_found(method)
+        # Fail closed: every allowlisted method returns above, so reaching
+        # here means the allowlist and dispatch drifted apart.
+        raise acp.RequestError.method_not_found(method)
 
     def _terminal_bridge(self, session_id: str) -> Any:
         """Per-ACP-session terminal bridge (lazily created, session-scoped)."""
@@ -569,10 +635,12 @@ class ACPServer:
         from coderai.acp.terminal import TERMINAL_METHODS
 
         if operation not in TERMINAL_METHODS:
-            return {"error": f"Method terminal/{operation} not supported"}
+            raise acp.RequestError.method_not_found(f"terminal/{operation}")
         session_id = str((params or {}).get("session_id") or (params or {}).get("sessionId") or "")
         if not session_id:
-            return {"error": "terminal/* methods require a session_id param"}
+            raise acp.RequestError.invalid_params(
+                {"session_id": "terminal/* methods require a session_id param"}
+            )
         bridge = self._terminal_bridge(session_id)
         try:
             if operation == "list":
@@ -588,7 +656,9 @@ class ACPServer:
                 (params or {}).get("terminal_id") or (params or {}).get("terminalId") or ""
             )
             if not terminal_id:
-                return {"error": "terminal/* methods require a terminal_id param"}
+                raise acp.RequestError.invalid_params(
+                    {"terminal_id": "terminal/* methods require a terminal_id param"}
+                )
             if operation == "send":
                 return bridge.send_terminal(
                     terminal_id,
@@ -603,9 +673,13 @@ class ACPServer:
                     terminal_id, str((params or {}).get("signal") or "SIGINT")
                 )
             return bridge.close_terminal(terminal_id)
+        except acp.RequestError:
+            raise
         except Exception as exc:
             logger.warning("terminal/%s failed: %s", operation, exc)
-            return {"error": f"terminal/{operation} failed: {exc}"}
+            raise acp.RequestError.internal_error(
+                {"operation": operation, "error": str(exc)}
+            ) from exc
 
     async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
         logger.info("Received ext_notification: %s", method)

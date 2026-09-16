@@ -57,10 +57,38 @@ def is_cache_control_supported(model: str) -> bool:
     return "claude" in m or "anthropic" in m
 
 
+def apply_tool_cache_control(
+    tools: list[dict[str, Any]] | None, model: str
+) -> list[dict[str, Any]] | None:
+    """Attach cache_control breakpoint to the final tool definition for supported models."""
+    if not tools or not is_cache_control_supported(model):
+        return tools
+    out = [dict(t) for t in tools]
+    last = dict(out[-1])
+    last["cache_control"] = {"type": "ephemeral"}
+    out[-1] = last
+    return out
+
+
+def _add_cache_control_to_message(msg: dict[str, Any]) -> dict[str, Any]:
+    c = msg.get("content")
+    if isinstance(c, str):
+        return {
+            **msg,
+            "content": [{"type": "text", "text": c, "cache_control": {"type": "ephemeral"}}],
+        }
+    elif isinstance(c, list) and c and isinstance(c[-1], dict):
+        parts = [dict(p) for p in c]
+        parts[-1]["cache_control"] = {"type": "ephemeral"}
+        return {**msg, "content": parts}
+    else:
+        return {**msg, "cache_control": {"type": "ephemeral"}}
+
+
 def apply_cache_control_breakpoints(
     messages: list[dict[str, Any]], model: str
 ) -> list[dict[str, Any]]:
-    """Place prompt cache breakpoints on system prompt and penultimate turn for supported models."""
+    """Place prompt cache breakpoints on system prompt, turns, and tool results for supported models."""
     if not is_cache_control_supported(model) or not messages:
         return messages
 
@@ -69,35 +97,22 @@ def apply_cache_control_breakpoints(
     # 1. System prompt breakpoint
     for i, msg in enumerate(out):
         if msg.get("role") == "system":
-            c = msg.get("content")
-            if isinstance(c, str):
-                out[i] = {
-                    **msg,
-                    "content": [
-                        {"type": "text", "text": c, "cache_control": {"type": "ephemeral"}}
-                    ],
-                }
-            elif isinstance(c, list) and c and isinstance(c[-1], dict):
-                parts = [dict(p) for p in c]
-                parts[-1]["cache_control"] = {"type": "ephemeral"}
-                out[i] = {**msg, "content": parts}
+            out[i] = _add_cache_control_to_message(msg)
             break
 
-    # 2. Penultimate turn breakpoint
+    # 2. Penultimate turn breakpoint (or latest user turn if single user turn)
     user_indices = [i for i, m in enumerate(out) if m.get("role") == "user"]
+    target_idx: int | None = None
     if user_indices:
         target_idx = user_indices[-2] if len(user_indices) >= 2 else user_indices[-1]
-        msg = out[target_idx]
-        c = msg.get("content")
-        if isinstance(c, str):
-            out[target_idx] = {
-                **msg,
-                "content": [{"type": "text", "text": c, "cache_control": {"type": "ephemeral"}}],
-            }
-        elif isinstance(c, list) and c and isinstance(c[-1], dict):
-            parts = [dict(p) for p in c]
-            parts[-1]["cache_control"] = {"type": "ephemeral"}
-            out[target_idx] = {**msg, "content": parts}
+        out[target_idx] = _add_cache_control_to_message(out[target_idx])
+
+    # 3. Multi-step tool execution loop breakpoint:
+    # If the conversation has progressed beyond target_idx into tool results / assistant steps,
+    # place a breakpoint on the latest completed message (tool result or turn) so step N reuses step N-1 cache.
+    last_idx = len(out) - 1
+    if target_idx is not None and last_idx > target_idx:
+        out[last_idx] = _add_cache_control_to_message(out[last_idx])
 
     return out
 

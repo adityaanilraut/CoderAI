@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any
+
+
+def normalize_search_query(query: str) -> str:
+    """Collapse case/whitespace variants to one canonical form."""
+    return " ".join(query.strip().split()).casefold()
+
+
+def build_search_key(provider: str, query: str, max_results: int) -> str:
+    """Build a provider-scoped search cache key.
+
+    The key honors the result-count parameter so a truncated cached answer is
+    never served to a caller that asked for more results.
+    """
+    return f"search:{provider.strip().lower()}:{normalize_search_query(query)}:{int(max_results)}"
 
 
 @dataclass
@@ -23,7 +38,11 @@ class CacheEntry:
 
 
 class ResponseCache:
-    """Thread-safe in-memory TTL response cache."""
+    """Thread-safe in-memory TTL response cache with LRU eviction.
+
+    Dict insertion order tracks recency: hits move entries to the back and
+    eviction takes from the front, so hot keys survive cold-insert churn.
+    """
 
     def __init__(self, default_ttl_seconds: float = 300.0, max_entries: int = 500) -> None:
         self.default_ttl = default_ttl_seconds
@@ -57,7 +76,10 @@ class ResponseCache:
                 return None
 
             self.hits += 1
-            return entry.value
+            # LRU: refresh recency and hand out a copy so callers can neither
+            # mislabel (from_cache flips) nor poison the stored value.
+            self._cache[key] = self._cache.pop(key)
+            return copy.deepcopy(entry.value)
 
     def set(
         self,
@@ -70,7 +92,8 @@ class ResponseCache:
         now = time.time()
         entry = CacheEntry(
             key=key,
-            value=value,
+            # Store a copy so later caller-side mutation cannot poison the cache.
+            value=copy.deepcopy(value),
             created_at=now,
             expires_at=now + ttl,
             metadata=metadata,
@@ -83,10 +106,10 @@ class ResponseCache:
                 for k in expired_keys:
                     del self._cache[k]
 
-                # If still at or over capacity, evict oldest entry
-                if len(self._cache) >= self.max_entries:
-                    oldest_key = min(self._cache.keys(), key=lambda k: self._cache[k].created_at)
-                    del self._cache[oldest_key]
+                # If still at or over capacity, evict least-recently-used entry
+                if len(self._cache) >= self.max_entries and key not in self._cache:
+                    lru_key = next(iter(self._cache))
+                    del self._cache[lru_key]
 
             self._cache[key] = entry
 

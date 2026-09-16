@@ -92,6 +92,10 @@ async def test_acp_server_session_lifecycle(tmp_path: Path):
     caps = acp.schema.ClientCapabilities(terminal=False)
     await server.initialize(protocol_version=1, client_capabilities=caps)
 
+    # Auth gate is covered by dedicated tests; mock it here past the gate
+    # (same convention as test_acp_server_fork_and_ext_methods).
+    server._check_auth = MagicMock()
+
     # 1. Create new session
     new_resp = await server.new_session(cwd=str(tmp_path))
     session_id = new_resp.session_id
@@ -467,3 +471,152 @@ def test_engine_set_thinking_tolerates_minimal_managers():
 
     engine = SessionManagerEngine(SimpleNamespace())
     engine.set_thinking(True)  # must not raise
+
+
+# -- Group C: auth gate + ext allowlist + fork validation ----------------------
+
+
+def _authed_server(monkeypatch=None):
+    server = ACPServer()
+    mock_conn = MagicMock()
+    mock_conn.session_update = AsyncMock()
+    server.on_connect(mock_conn)
+    server.client_capabilities = acp.schema.ClientCapabilities(terminal=False)
+    server._check_auth = MagicMock()
+    return server
+
+
+def test_token_fallthrough_requires_auth(monkeypatch):
+    """No OAuth token and no API keys must report a reason, not fall through."""
+    from types import SimpleNamespace
+
+    import coderai.acp.server as server_module
+
+    def _boom(ref):
+        raise OSError("no token file")
+
+    monkeypatch.setattr(server_module, "load_tokens", _boom)
+    monkeypatch.setattr(
+        server_module, "load_config", lambda: SimpleNamespace(providers={})
+    )
+
+    server = ACPServer()
+    reason = server._check_token_usable()
+    assert isinstance(reason, str) and reason
+
+
+@pytest.mark.asyncio
+async def test_new_session_requires_auth_without_credentials(monkeypatch, tmp_path: Path):
+    """The fixed fallthrough must surface as AUTH_REQUIRED, not a session."""
+    from types import SimpleNamespace
+
+    import coderai.acp.server as server_module
+
+    def _boom(ref):
+        raise OSError("no token file")
+
+    monkeypatch.setattr(server_module, "load_tokens", _boom)
+    monkeypatch.setattr(
+        server_module, "load_config", lambda: SimpleNamespace(providers={})
+    )
+
+    server = ACPServer()
+    mock_conn = MagicMock()
+    mock_conn.session_update = AsyncMock()
+    server.on_connect(mock_conn)
+    server.client_capabilities = acp.schema.ClientCapabilities(terminal=False)
+
+    with pytest.raises(acp.RequestError):
+        await server.new_session(cwd=str(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_ext_method_rejects_unknown():
+    """Unlisted ext methods must raise method_not_found, not an error dict."""
+    server = _authed_server()
+
+    with pytest.raises(acp.RequestError) as exc_info:
+        await server.ext_method("nope/not-real", {})
+    assert exc_info.value.code == -32601
+
+    with pytest.raises(acp.RequestError) as exc_info:
+        await server.ext_method("terminal/bogus-op", {"session_id": "s"})
+    assert exc_info.value.code == -32601
+
+
+@pytest.mark.asyncio
+async def test_fork_unknown_parent_creates_nothing(tmp_path: Path):
+    """Fork validation must run before Session.create (no orphan sessions)."""
+    server = _authed_server()
+
+    with pytest.raises(acp.RequestError):
+        await server.fork_session(cwd=str(tmp_path), session_id="missing-parent")
+    assert server.sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_rejects_bad_cursor(tmp_path: Path):
+    server = _authed_server()
+
+    with pytest.raises(acp.RequestError):
+        await server.list_sessions(cursor="not-an-offset", cwd=str(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_session_streams_wire_think_and_tool_parts():
+    """Wire ThinkPart(text=) and ToolCallPart(arguments=) must reach the client."""
+    from coderai.wire.types import (
+        QuestionRequest,
+        ThinkPart,
+        ToolCallPart,
+        TurnBegin,
+        TurnEnd,
+    )
+    from kosong.message import ToolCall
+
+    async def mock_run(user_input, cancel_event):
+        yield TurnBegin(user_input=user_input)
+        yield ThinkPart(text="hmm")
+        yield ToolCall(id="c1", function={"name": "bash", "arguments": "{}"})
+        yield ToolCallPart(id="c1", name="bash", arguments="--more")
+        yield QuestionRequest(id="q1", tool_call_id="", questions=[])
+        yield TurnEnd()
+
+    mock_cli = MagicMock()
+    mock_cli.run = mock_run
+    mock_conn = MagicMock()
+    mock_conn.session_update = AsyncMock()
+
+    session = ACPSession(id="s-think", cli=mock_cli, acp_conn=mock_conn, kaos=None)
+    resp = await session.prompt([acp.schema.TextContentBlock(type="text", text="hi")])
+    assert resp.stop_reason == "end_turn"
+
+    updates = [call.kwargs["update"] for call in mock_conn.session_update.await_args_list]
+    assert any(
+        type(update).__name__ == "AgentThoughtChunk" for update in updates
+    ), "wire ThinkPart was not forwarded as a thought chunk"
+    progress_updates = [
+        update for update in updates if type(update).__name__ == "ToolCallProgress"
+    ]
+    assert progress_updates, "wire ToolCallPart produced no tool_call_update"
+
+
+@pytest.mark.asyncio
+async def test_runner_close_releases_process():
+    """close() must reap the child, pipes, and reader thread."""
+    import asyncio
+
+    config = CoreRunConfig(command="echo", args=["hi"])
+    runner = CoreSubagentRunner(config)
+    runner._start_process()
+    await asyncio.sleep(0.2)
+    await runner.close()
+    assert runner.process is None
+    assert runner._reader_thread is None
+
+
+def test_runner_sends_integer_protocol_version():
+    """ACP protocolVersion is a negotiation integer, not a spec-tag string."""
+    from coderai.acp.version import CURRENT_VERSION
+
+    assert isinstance(CURRENT_VERSION.protocol_version, int)

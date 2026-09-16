@@ -257,16 +257,26 @@ class GitFileHistory:
         checkpoint_hash: str | None = None,
     ) -> None:
         source_ref = self._get_session_branch_ref(source_session_id)
+        if not source_ref:
+            raise ValueError(f"Invalid source session id: {source_session_id!r}")
         target_ref = self._get_session_branch_ref(target_session_id)
-        if not source_ref or not target_ref or not os.path.exists(self.git_dir):
-            return
-        target_hash = (
-            checkpoint_hash
-            if (checkpoint_hash and _is_commit_hash(checkpoint_hash))
-            else self.get_current_checkpoint_hash(source_session_id)
-        )
-        if target_hash:
-            self._spawn_git(["update-ref", target_ref, target_hash])
+        if not target_ref:
+            raise ValueError(f"Invalid target session id: {target_session_id!r}")
+        if not os.path.exists(self.git_dir):
+            raise RuntimeError("File history Git repository was not found for this project.")
+        if checkpoint_hash and _is_commit_hash(checkpoint_hash):
+            target_hash: str | None = checkpoint_hash
+        else:
+            target_hash = self.get_current_checkpoint_hash(source_session_id)
+            if target_hash is None:
+                # Bootstrap history-less sources so the fork still points at
+                # a real commit instead of silently leaving a stale branch.
+                target_hash = self.ensure_session(source_session_id)
+        if not target_hash:
+            raise RuntimeError(
+                f"No file-history checkpoint available to fork from {source_session_id!r}."
+            )
+        self._spawn_git(["update-ref", target_ref, target_hash])
 
     def list_checkpoints(self, session_id: str) -> list[dict[str, str]]:
         branch_ref = self._get_session_branch_ref(session_id)

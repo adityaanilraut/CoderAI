@@ -6,9 +6,29 @@ import asyncio
 import contextlib
 import logging
 import pathlib
+import re
 from collections.abc import AsyncIterator
 
 logger = logging.getLogger(__name__)
+
+_REDIRECT_RE = re.compile(r"(?<!>)(>{1,2})\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s;&|<>]+))")
+
+
+def extract_redirect_paths(command: str) -> list[str]:
+    """Best-effort extraction of `>`/`>>` redirect targets from a shell command.
+
+    Skips fd-duplication (`>&2`, `2>&1`) and `/dev/null`. Callers must validate
+    each returned target (sandbox + cwd policy) and hold a write lock for it,
+    otherwise shell redirects bypass per-path locks.
+    """
+    targets: list[str] = []
+    for match in _REDIRECT_RE.finditer(command or ""):
+        target = match.group(2) or match.group(3) or match.group(4) or ""
+        target = target.strip()
+        if not target or target.startswith("&") or target == "/dev/null":
+            continue
+        targets.append(target)
+    return targets
 
 
 class PathLockEntry:

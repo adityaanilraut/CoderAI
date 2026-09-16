@@ -16,14 +16,25 @@ def context_value(context: Any, name: str, default: Any = None) -> Any:
     return getattr(context, name, default)
 
 
+def _coerce_dry_run(value: Any) -> bool:
+    """Coerce boolean-like dry-run inputs ("true"/1/yes) instead of `is True` checks."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return False
+
+
 def is_dry_run(context: Any, args: dict[str, Any] | None = None) -> bool:
     """Return True if the execution context or tool arguments specify dry-run mode."""
-    dry_val = context_value(context, "dry_run", False)
-    if isinstance(dry_val, bool) and dry_val is True:
+    if _coerce_dry_run(context_value(context, "dry_run", False)):
         return True
     if args and isinstance(args, dict):
-        arg_val = args.get("dry_run")
-        if isinstance(arg_val, bool) and arg_val is True:
+        if _coerce_dry_run(args.get("dry_run")):
             return True
     return False
 
@@ -69,23 +80,37 @@ def generate_virtual_patch(
 
 def check_file_write_access(context: Any, file_path: str) -> str | None:
     """Validate whether write access is permitted under current sandbox and isolated_cwd."""
+    raw = file_path if isinstance(file_path, (str, pathlib.Path)) else ""
+    if not str(raw).strip():
+        return "SANDBOX_VIOLATION: empty file path."
     isolated_cwd = context_value(context, "isolated_cwd")
+    isolated_root: str | None = None
     if (
         isinstance(isolated_cwd, (str, pathlib.Path))
         and str(isolated_cwd).strip()
         and "MagicMock" not in str(type(isolated_cwd))
     ):
-        valid, resolved, err = validate_sandboxed_path(file_path, root=str(isolated_cwd))
-        if not valid:
-            return err
+        isolated_root = str(isolated_cwd)
 
     sb_mode = context_value(context, "sandbox_mode")
     mode_str = sb_mode if isinstance(sb_mode, str) else None
     ws_root = context_value(context, "project_root")
     ws_str = ws_root if isinstance(ws_root, (str, pathlib.Path)) else "."
 
+    # Clamp relative paths against the effective root before any check so
+    # `../` escapes cannot slip past either gate as a raw string.
+    candidate = str(raw)
+    if not pathlib.Path(candidate).is_absolute():
+        candidate = str(pathlib.Path(str(isolated_root or ws_str)) / candidate)
+
+    if isolated_root:
+        valid, resolved, err = validate_sandboxed_path(candidate, root=isolated_root)
+        if not valid:
+            return err
+        candidate = str(resolved)
+
     allowed, error = check_sandbox_path_access(
-        file_path,
+        candidate,
         op="write",
         mode=mode_str,
         workspace_root=ws_str,

@@ -211,18 +211,25 @@ class SubAgentSpec:
     system_prompt: str | None = None
 
     def __post_init__(self) -> None:
-        # Resolve type policy and role instructions from registry
+        # Resolve type policy and role instructions from registry.
+        # Deny-by-default: an unknown subagent_type yields an empty allowlist
+        # (no tools permitted) rather than silently running unrestricted.
         if self.subagent_type:
             try:
                 from coderai.subagents.registry import get_subagent_definition, resolve_tool_policy
 
                 if not self.allowed_tools:
                     mode, tools = resolve_tool_policy(self.subagent_type, project_root=self.isolated_cwd)
-                    if mode == "allowlist" and tools:
+                    if mode == "allowlist":
                         self.allowed_tools = list(tools)
 
                 defn = get_subagent_definition(self.subagent_type, project_root=self.isolated_cwd)
-                if defn:
+                if defn is None:
+                    logger.warning(
+                        "Unknown subagent_type '%s'; denying all tools by default.",
+                        self.subagent_type,
+                    )
+                else:
                     if defn.mode and self.mode == "read_only":
                         self.mode = defn.mode
                     if defn.system_prompt and not self.system_prompt:

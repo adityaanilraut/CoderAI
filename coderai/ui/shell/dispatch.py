@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Coroutine
 from enum import Enum, auto
-import os
 import pathlib
 import time
 from dataclasses import dataclass, field
@@ -98,7 +97,19 @@ def cmd_help(ctx: ShellContext, args: str) -> SlashAction:
 @registry.command
 def cmd_clear(ctx: ShellContext, args: str) -> SlashAction:
     """Clear the terminal screen."""
-    os.system("cls" if os.name == "nt" else "clear")
+    try:
+        if ctx.console is not None and hasattr(ctx.console, "clear"):
+            ctx.console.clear()
+        else:
+            import sys
+
+            sys.stdout.write("\033[2J\033[H")
+            sys.stdout.flush()
+    except Exception:
+        try:
+            print("\n" * 40)
+        except Exception:
+            pass
     return SlashAction.HANDLED
 
 
@@ -221,16 +232,25 @@ def cmd_schedule(ctx: ShellContext, args: str) -> SlashAction:
         sched_prompt = tokens_sub[2]
         rec = sched_mgr.create(prompt=sched_prompt, every_seconds=sec, session_id=ctx.session_id)
         print(f"✓ Scheduled recurring reminder #{rec.id} every {sec}s: {sched_prompt}")
+    elif sched_action == "at" and len(tokens_sub) >= 3:
+        at_arg = tokens_sub[1]
+        sched_prompt = tokens_sub[2]
+        try:
+            rec = sched_mgr.create(prompt=sched_prompt, at=at_arg, session_id=ctx.session_id)
+        except ValueError as exc:
+            print(f"Invalid schedule time: {exc}")
+        else:
+            print(f"✓ Scheduled reminder #{rec.id} at {rec.scheduled_at}: {sched_prompt}")
     elif sched_action in ("cancel", "rm", "delete") and len(tokens_sub) >= 2:
         cid = tokens_sub[1]
         res = sched_mgr.delete(cid)
         print(f"✓ Cancelled schedule #{cid}" if res else f"Schedule #{cid} not found.")
     else:
-        print("Usage: /schedule [list|after <sec> <prompt>|every <sec> <prompt>|cancel <id>]")
+        print("Usage: /schedule [list|after <sec> <prompt>|at <ISO-time> <prompt>|every <sec> <prompt>|cancel <id>]")
     return SlashAction.HANDLED
 
 
-@registry.command(name="agent", aliases=["role", "agents", "roles", "subagents", "subagent"])
+@registry.command(name="agent", aliases=["role", "roles"])
 def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
     """View or switch active agent role."""
     arg_clean = args.strip()
@@ -289,6 +309,26 @@ def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
         else:
             print(f"Failed to switch to agent role '{target_role}'. Use '/agent roles' to see available specs.")
         return SlashAction.HANDLED
+
+
+@registry.command(name="agents", aliases=["subagents", "subagent"])
+def cmd_agents(ctx: ShellContext, args: str) -> SlashAction:
+    """Inspect subagent runs and discovered roles."""
+    parts = args.strip().split()
+    sub = parts[0].lower() if parts else "list"
+    if sub in ("roles", "list", "specs"):
+        return cmd_agent(ctx, "roles")
+    if sub in ("tree", "report", "send"):
+        print(
+            f"/agents {sub} is not yet implemented in this CLI. "
+            "Use '/agents roles' to list roles or '/agent roles' to switch."
+        )
+        return SlashAction.HANDLED
+    print(
+        "No live subagent run registry in this session. "
+        "Use '/agents roles' to list available roles."
+    )
+    return SlashAction.HANDLED
 
 
 @registry.command(name="title", aliases=["rename"])
@@ -522,10 +562,10 @@ def cmd_theme(ctx: ShellContext, args: str) -> SlashAction:
 def cmd_thinking(ctx: ShellContext, args: str) -> SlashAction:
     """Toggle reasoning trace display."""
     arg = args.strip().lower()
-    if arg in ("full", "on", "expand", "expanded", "normal", "raw-scrollback"):
+    if arg in ("full", "on", "normal"):
         ctx.thinking_expanded = True
         msg = "Full expanded view enabled."
-    elif arg in ("summary", "off", "collapse", "collapsed", "lite"):
+    elif arg in ("summary", "off", "lite"):
         ctx.thinking_expanded = False
         msg = "Concise summary view enabled."
     else:
@@ -548,10 +588,14 @@ def cmd_export_action(ctx: ShellContext, args: str) -> SlashAction:
         print("No active session to export.")
         return SlashAction.HANDLED
     clean_arg = args.strip()
-    if clean_arg.endswith(".json"):
-        exported_file = export_session_to_json(ctx.mgr, ctx.session_id, clean_arg)
-    else:
-        exported_file = export_session_to_markdown(ctx.mgr, ctx.session_id, clean_arg if clean_arg else None)
+    try:
+        if clean_arg.endswith(".json"):
+            exported_file = export_session_to_json(ctx.mgr, ctx.session_id, clean_arg)
+        else:
+            exported_file = export_session_to_markdown(ctx.mgr, ctx.session_id, clean_arg if clean_arg else None)
+    except Exception as exc:
+        print(f"Export failed: {exc}")
+        return SlashAction.HANDLED
     if ctx.console is not None:
         ctx.console.print(f"[bold green]✓ Session successfully exported to:[/] [cyan]{exported_file}[/]")
     else:
@@ -713,13 +757,21 @@ def cmd_model(ctx: ShellContext, args: str) -> SlashAction:
 
         chosen = select_model_interactive(ctx.console, ctx.mgr.get_active_model())
         if chosen and chosen != ctx.mgr.get_active_model():
-            ctx.mgr.set_model(chosen)
+            try:
+                ctx.mgr.set_model(chosen)
+            except ValueError as exc:
+                print(f"Invalid model: {exc}")
+                return SlashAction.HANDLED
             if ctx.console is not None:
                 ctx.console.print(f"[bold green]✓ Switched active model to:[/] [cyan]{chosen}[/]")
             else:
                 print(f"✓ Switched active model to: {chosen}")
     else:
-        ctx.mgr.set_model(arg_clean)
+        try:
+            ctx.mgr.set_model(arg_clean)
+        except ValueError as exc:
+            print(f"Invalid model: {exc}")
+            return SlashAction.HANDLED
         if ctx.console is not None:
             ctx.console.print(f"[bold green]✓ Switched active model to:[/] [cyan]{arg_clean}[/]")
         else:
@@ -826,7 +878,31 @@ def cmd_undo(ctx: ShellContext, args: str) -> SlashAction:
     if not ctx.session_id:
         print("No active session to undo.")
         return SlashAction.HANDLED
-    select_undo_interactive(ctx.console, ctx.mgr, ctx.session_id)
+    try:
+        targets = ctx.mgr.list_undo_targets(ctx.session_id)
+    except Exception as exc:
+        print(f"Undo unavailable: {exc}")
+        return SlashAction.HANDLED
+    if not targets:
+        print("No undoable turns in this session.")
+        return SlashAction.HANDLED
+    chosen, mode = select_undo_interactive(ctx.console, targets)
+    if chosen is None:
+        print("Undo cancelled.")
+        return SlashAction.HANDLED
+    try:
+        ok = ctx.mgr.undo(
+            ctx.session_id,
+            target_message_id=(chosen.get("message_id") if isinstance(chosen, dict) else None),
+            mode=mode,
+        )
+    except Exception as exc:
+        print(f"Undo failed: {exc}")
+        return SlashAction.HANDLED
+    if ok:
+        print(f"✓ Restored checkpoint for turn #{chosen.get('index', '?')} ({mode}).")
+    else:
+        print("Undo failed: checkpoint unavailable or already at target.")
     return SlashAction.HANDLED
 
 
@@ -922,16 +998,33 @@ def cmd_add_dir(ctx: ShellContext, args: str) -> SlashAction:
 @registry.command(name="import")
 def cmd_import(ctx: ShellContext, args: str) -> SlashAction:
     """Import context from file or session."""
+    _MAX_IMPORT_CHARS = 100_000
     target = args.strip().strip("'\"")
     if not target:
         print("Usage: /import <file_path or session_id>")
         return SlashAction.HANDLED
     p = pathlib.Path(target)
     if p.exists() and p.is_file():
-        content = p.read_text(encoding="utf-8", errors="replace")
-        if ctx.session_id:
+        try:
+            content = p.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            print(f"Failed to read import source {target}: {exc}")
+            return SlashAction.HANDLED
+        if len(content) > _MAX_IMPORT_CHARS:
+            content = content[:_MAX_IMPORT_CHARS] + "\n...[truncated: import capped at 100,000 chars]"
+            print(f"Import truncated to {_MAX_IMPORT_CHARS} chars.")
+        if not ctx.session_id:
+            print(
+                f"Read {len(content)} chars from {target} but no active session; "
+                "start one with /new first."
+            )
+            return SlashAction.HANDLED
+        try:
             msg = ctx.mgr._build_message(ctx.session_id, "user", f"<system>Imported from {p.name}:\n{content}</system>")
             ctx.mgr._append_message(msg)
+        except Exception as exc:
+            print(f"Import failed: {exc}")
+            return SlashAction.HANDLED
         print(f"✓ Imported file context from {target} ({len(content)} chars).")
     else:
         print(f"Import source not found: {target}")
@@ -970,7 +1063,7 @@ def cmd_feedback(ctx: ShellContext, args: str) -> SlashAction:
     """Submit feedback."""
     from coderai.ui.shell.slash import cmd_feedback as _fb
 
-    _fb(ctx.console, args)
+    _fb(ctx.console, args[:2000] if isinstance(args, str) else args)
     return SlashAction.HANDLED
 
 

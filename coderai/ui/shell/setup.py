@@ -95,6 +95,17 @@ LOCAL_PRESETS = [
     ),
 ]
 
+# Canonical cloud provider registry (5 providers) lives in
+# coderai.config.KNOWN_PROVIDERS. LOCAL_PRESETS below are local/custom
+# OpenAI-compatible endpoint presets, not providers, and must never shadow
+# a canonical registry key.
+_CANONICAL_PROVIDER_IDS = tuple(KNOWN_PROVIDERS)
+_PRESET_TAGS = [preset[0] for preset in LOCAL_PRESETS]
+if set(_PRESET_TAGS) & set(_CANONICAL_PROVIDER_IDS):
+    raise RuntimeError(
+        "Local endpoint preset tags must not shadow canonical provider registry keys."
+    )
+
 
 def _read_input(
     prompt: str,
@@ -558,7 +569,7 @@ def run_quick_setup_wizard(
         ),
         (
             "deepseek",
-            "DeepSeek (V4 Pro / Flash / Reasoner)",
+            "DeepSeek (Flash V4.1 / V4 Pro)",
             "1M context, state-of-the-art coding & low cost",
         ),
         (
@@ -797,7 +808,11 @@ def run_setup_cli(args: Any, project_root: str = ".") -> int:
         return 0 if success else 1
 
     if provider and key:
-        saved_var = save_provider_api_key(provider, key, scope=scope, project_root=project_root)
+        try:
+            saved_var = save_provider_api_key(provider, key, scope=scope, project_root=project_root)
+        except ValueError as exc:
+            console.print(f"[bold red]✗ Setup failed:[/] {exc}")
+            return 1
         clear_client_pool()
         console.print(
             f"[bold green]✓ Successfully configured {provider} ({saved_var}) in {scope} settings.[/]"
@@ -806,6 +821,13 @@ def run_setup_cli(args: Any, project_root: str = ".") -> int:
             save_active_model_setting(model, scope=scope, project_root=project_root)
             console.print(f"[bold green]✓ Set active model to {model} ({scope}).[/]")
         return 0
+
+    if (provider or key) and not base_url:
+        missing = "key (--key)" if provider and not key else "provider (--provider)"
+        console.print(
+            f"[bold red]✗ Incomplete setup:[/] --provider and --key must be given together (missing {missing})."
+        )
+        return 1
 
     if base_url:
         save_custom_endpoint_config(

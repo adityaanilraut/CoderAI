@@ -25,7 +25,11 @@ from kaos.path import KaosPath
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.clipboard.pyperclip import PyperclipClipboard
+
+try:
+    from prompt_toolkit.clipboard.pyperclip import PyperclipClipboard
+except ImportError:  # pragma: no cover - minimal installs without `media` extra
+    PyperclipClipboard = None  # type: ignore[assignment,misc]
 from prompt_toolkit.completion import (
     CompleteEvent,
     Completer,
@@ -1759,7 +1763,11 @@ class CustomPromptSession:
         # PromptSession built-in keybindings (ctrl-k, ctrl-w, ctrl-y)
         # use clipboard without error handling, so a broken clipboard
         # object would crash the UI.
-        clipboard = PyperclipClipboard() if clipboard_available else None
+        clipboard = (
+            PyperclipClipboard()
+            if (clipboard_available and PyperclipClipboard is not None)
+            else None
+        )
 
         self._session = PromptSession[str](
             message=self._render_message,

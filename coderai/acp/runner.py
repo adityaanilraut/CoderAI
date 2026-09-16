@@ -6,6 +6,7 @@ Drives a child ACP agent in a spawned subprocess over the Agent Control Protocol
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import subprocess
@@ -16,7 +17,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from coderai.acp.convert import AcpNdjsonParser
-from coderai.acp.types import AcpMessage, PROTOCOL_VERSION
+from coderai.acp.types import AcpMessage
+from coderai.acp.version import CURRENT_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +59,9 @@ class AcpSubagentRunner:
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # Never PIPE stderr: nothing drains it, so a chatty child would
+            # block once the OS buffer fills.
+            stderr=subprocess.DEVNULL,
             cwd=self.config.cwd,
             env=run_env,
         )
@@ -166,7 +170,9 @@ class AcpSubagentRunner:
             await self._send_request(
                 "initialize",
                 {
-                    "protocolVersion": PROTOCOL_VERSION,
+                    # Negotiation integer (ACP schema: 0-65535), not the
+                    # "0.25.1"-style spec tag string.
+                    "protocolVersion": CURRENT_VERSION.protocol_version,
                     "clientInfo": {"name": "CoderAI", "version": "1.0"},
                     "capabilities": {"permission": True, "fs": True},
                 },
@@ -214,15 +220,30 @@ class AcpSubagentRunner:
 
     async def close(self) -> None:
         self._closed = True
+        proc, thread = self.process, self._reader_thread
         try:
-            if self.process and self.process.poll() is None:
-                self.process.terminate()
+            if proc and proc.poll() is None:
+                proc.terminate()
                 try:
-                    self.process.wait(timeout=2.0)
+                    proc.wait(timeout=2.0)
                 except subprocess.TimeoutExpired:
-                    self.process.kill()
+                    proc.kill()
         except Exception:
             pass
+        # Release every pipe so fds never leak across runs, then reap the
+        # reader thread (it exits once stdout hits EOF/close).
+        if proc is not None:
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    pass
+        if thread is not None and thread is not threading.current_thread():
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(thread.join, 2.0)
+        self.process = None
+        self._reader_thread = None
 
 
 __all__ = ["AcpRunConfig", "AcpSubagentRunner"]

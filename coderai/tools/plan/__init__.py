@@ -67,6 +67,12 @@ def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult
                     is_plan_mode = bool((entry or {}).get("planMode"))
                 except Exception:
                     pass
+                if not is_plan_mode and hasattr(mgr, "get_session_state"):
+                    try:
+                        state = mgr.get_session_state(session_id)
+                        is_plan_mode = bool(getattr(state, "plan_mode", False))
+                    except Exception:
+                        pass
 
     has_plan_key = "plan" in args and args.get("plan") is not None
     if not session_id:
@@ -77,26 +83,26 @@ def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult
                 name="exit_plan_mode",
                 error="exit_plan_mode requires a non-empty markdown plan starting with a # heading",
             )
-        if not plan:
-            return ToolResult(
-                ok=False,
-                name="exit_plan_mode",
-                error="exit_plan_mode requires a non-empty markdown plan starting with a # heading",
-            )
-        summary = plan
+        summary = plan or "Plan completed."
         return ToolResult(
             ok=True,
             name="exit_plan_mode",
             output=summary,
             metadata={"exitPlanMode": True, "summary": summary, "approved": True},
+            concludes_turn=True,
         )
+
     if not is_plan_mode:
+        summary = plan or "Plan mode is not active."
         return ToolResult(
-            ok=False,
+            ok=True,
             name="exit_plan_mode",
-            error="exit_plan_mode is only available in plan mode",
+            output="Plan mode is not active. Proceeding in standard execution mode.",
+            metadata={"exitPlanMode": True, "summary": summary, "approved": True},
+            concludes_turn=True,
         )
-    # Header validation applies when `plan` param is used; `summary` alias remains lenient
+
+    # Header validation applies when `plan` param is used; `summary` alias or omitted remains lenient
     if has_plan_key:
         if not plan or not _HEADING_RE.search(plan):
             return ToolResult(
@@ -105,11 +111,7 @@ def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult
                 error="exit_plan_mode requires a non-empty markdown plan starting with a # heading",
             )
     elif not plan:
-        return ToolResult(
-            ok=False,
-            name="exit_plan_mode",
-            error="exit_plan_mode requires a non-empty markdown plan starting with a # heading",
-        )
+        plan = "Plan completed."
 
     summary = plan
     return ToolResult(
@@ -117,4 +119,5 @@ def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult
         name="exit_plan_mode",
         output=summary,
         metadata={"exitPlanMode": True, "summary": summary, "approved": True},
+        concludes_turn=True,
     )

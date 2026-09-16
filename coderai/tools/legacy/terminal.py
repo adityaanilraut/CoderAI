@@ -22,12 +22,28 @@ def handle_terminal_open_tool(args: dict[str, Any], context: Any) -> ToolResult:
 
     project_root = getattr(context, "project_root", ".") if context else "."
     sandbox_mode = getattr(context, "sandbox_mode", None)
+    isolated_cwd = getattr(context, "isolated_cwd", None)
     if isinstance(context, dict):
         sandbox_mode = context.get("sandbox_mode", sandbox_mode)
         project_root = context.get("project_root", project_root)
+        isolated_cwd = context.get("isolated_cwd", isolated_cwd)
+    if not isinstance(isolated_cwd, str) or not isolated_cwd.strip():
+        isolated_cwd = None
 
     if not cwd:
         cwd = project_root
+
+    # Central cwd policy: refuse arbitrary cwd outside the execution root.
+    from coderai.sandbox import resolve_exec_cwd
+
+    try:
+        cwd = resolve_exec_cwd(cwd, str(project_root), isolated_cwd)
+    except (ValueError, OSError) as exc:
+        return ToolResult(
+            ok=False,
+            name="terminal_open",
+            error=f"CWD rejected: {exc}",
+        )
 
     mgr = get_terminal_manager()
     try:

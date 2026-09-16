@@ -6,7 +6,7 @@ import asyncio
 import inspect
 from typing import Any
 
-from coderai.network.cache import get_search_cache
+from coderai.network.cache import build_search_key, get_search_cache
 from coderai.tools.legacy.types import ToolResult, as_str
 from coderai.web_providers import (
     WebSearchResult,
@@ -52,23 +52,37 @@ async def handle_web_search_tool(args: dict[str, Any], context: Any) -> ToolResu
     provider_name = as_str(args.get("provider", "")).strip() or None
 
     provider = resolve_web_search_provider(provider_name)
+    cache = get_search_cache()
 
-    # Execute search for each query
-    async def _search_one(q: str) -> WebSearchResult:
-        cache = get_search_cache()
-        cached = cache.get(f"search:{q}")
-        if cached:
+    # Single cache owner: provider-scoped key covers provider, normalized
+    # query, and max_results, so a truncated or foreign-provider answer can
+    # never be served as a hit. Error results are not cached.
+    async def _fetch_unique(key: str, q: str) -> WebSearchResult:
+        cached = cache.get(key)
+        if cached is not None:
             return cached
 
         search_async_fn = getattr(provider, "search_async", None)
         if inspect.iscoroutinefunction(search_async_fn):
-            return await search_async_fn(q, max_results)
+            res = await search_async_fn(q, max_results)
+        else:
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, provider.search, q, max_results)
 
-        loop = asyncio.get_running_loop()
-        res = await loop.run_in_executor(None, provider.search, q, max_results)
+        if res is not None and res.error is None:
+            cache.set(key, res)
         return res
 
-    results: list[WebSearchResult] = await asyncio.gather(*[_search_one(q) for q in queries])
+    # Dedupe identical cache keys within one call: one fetch serves every
+    # duplicate instead of racing duplicate misses through the provider.
+    keys = [build_search_key(provider.id, q, max_results) for q in queries]
+    query_by_key: dict[str, str] = {}
+    for q, key in zip(queries, keys):
+        query_by_key.setdefault(key, q)
+    unique_keys = list(query_by_key)
+    fetched = await asyncio.gather(*[_fetch_unique(key, query_by_key[key]) for key in unique_keys])
+    result_by_key = dict(zip(unique_keys, fetched))
+    results: list[WebSearchResult] = [result_by_key[key] for key in keys]
 
     # Format output for LLM
     output_lines: list[str] = []

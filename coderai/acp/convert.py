@@ -79,6 +79,10 @@ def acp_blocks_to_content_parts(prompt: list[ACPContentBlock]) -> list[ContentPa
                         )
                     )
                 )
+            case acp.schema.AudioContentBlock():
+                # No audio input path (Stack A is text/image); keep a marker
+                # so an audio-only prompt cannot become a silent empty turn.
+                content.append(TextPart(text="[unsupported audio content]"))
             case acp.schema.EmbeddedResourceContentBlock():
                 resource = block.resource
                 if isinstance(resource, acp.schema.TextResourceContents):

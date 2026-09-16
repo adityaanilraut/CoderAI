@@ -1,14 +1,22 @@
 # 🤖 CoderAI
 
 <p align="center">
-  <strong>Autonomous AI Pair Programming in Your Terminal</strong>
+  <strong>Autonomous AI Pair Programming & Multi-Agent Swarm in Your Terminal</strong>
 </p>
 
 <p align="center">
-  <a href="#key-features">Key Features</a> •
-  <a href="#-benchmark--performance">Benchmark & Performance</a> •
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
+  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT">
+  <img src="https://img.shields.io/badge/Benchmark-100%25%20SWT--Bench-success" alt="Benchmark">
+</p>
+
+<p align="center">
+  <a href="#overview">Overview</a> •
+  <a href="#-benchmark--performance">Benchmark</a> •
   <a href="#quickstart">Quickstart</a> •
   <a href="#interactive-cli--slash-commands">Interactive CLI</a> •
+  <a href="#agent-roles--swarms">Agent Roles & Swarms</a> •
   <a href="#core-tools">Core Tools</a> •
   <a href="#security--permissions">Security</a> •
   <a href="#configuration">Configuration</a> •
@@ -19,6 +27,7 @@
 ---
 
 ## Overview
+<a id="key-features"></a>
 
 **CoderAI** is an autonomous terminal AI pair programmer designed for high reliability, deterministic tool execution, token efficiency, and developer velocity. It couples a headless core engine (`coderai.core`) with a rich interactive terminal interface (`coderai.cli`).
 
@@ -147,6 +156,17 @@ One-shot prompts default to the `core` tool preset. Use `--preset` to select one
 coderai --yes "Run unit tests and fix any failing assertions in tests/test_core.py"
 ```
 
+### 6. Launch with Specialized Agent Roles
+
+```bash
+# Launch interactive session with a specific role
+coderai --agent architect
+coderai --agent tdd-guide
+
+# Launch with custom role specification file
+coderai --agent-file .coderai/agents/code-reviewer.md
+```
+
 ---
 
 ## Interactive CLI & Slash Commands
@@ -171,6 +191,9 @@ When running `coderai`, you enter an interactive REPL featuring an ASCII banner,
 | `/goal [action]`       | View or manage session goals and milestones                                           |
 | `/permission [preset]` | View or set permission preset (`read-only`, `workspace-write`, `danger-full-access`)  |
 | `/init`                | Generate or update `AGENTS.md` contributor guidelines for the workspace               |
+| `/agent [role]`        | View or switch active agent role (`architect`, `tdd-guide`, `code-reviewer`, etc.)    |
+| `/agents [action]`     | Inspect subagent runs and browse discovered role specifications (`/agents roles`)    |
+| `/schedule [action]`   | View or manage scheduled reminders and background cron jobs                           |
 | `/skills`              | Browse active and workspace-discovered skills                                         |
 | `/skill <name>`        | Load a skill into the active session                                                  |
 | `/mcp`                 | Inspect connected Model Context Protocol (MCP) servers, tools, prompts, and resources |
@@ -212,6 +235,28 @@ coderai> Explain the architecture in @coderai/soul/session/manager.py and how it
 ```
 
 CoderAI automatically detects referenced files and attaches their contents to the prompt context. Specific line ranges can also be targeted with `@file.py:10-30` or `@file.py:L25`.
+
+---
+
+## Agent Roles & Swarms
+
+CoderAI supports dynamic discovery of specialized markdown agent specifications (`.coderai/agents/*.md`, `.agents/agents/*.md`, `~/.agents/agents/*.md`), as well as decentralized multi-agent swarms:
+
+| Role / Spec | Type | Mode | Description |
+|---|---|---|---|
+| `default` | Bundled | Primary | Full software engineering tool suite. |
+| `okabe` | Bundled | Extended | Experimental persona with advanced toolsets. |
+| `architect` | Discovered | General | Systems architect designing components, interfaces, and boundary layers. |
+| `build-error-resolver` | Discovered | General | Pinpoints root causes of compiler, build, and typecheck errors. |
+| `code-reviewer` | Discovered | Read-Only | Read-only security, correctness, and architecture review. |
+| `planner` | Discovered | Read-Only | Generates actionable implementation plans with phased milestones. |
+| `security-reviewer` | Discovered | Read-Only | Security auditor auditing OWASP vulnerabilities, authorization, and sanitization. |
+| `tdd-guide` | Discovered | General | Test-driven development specialist writing failing reproduction tests first. |
+
+### Swarm Coordination
+- **`spawn_teammate`**: Decentralized agent spawning with isolated inboxes and priority actor channels.
+- **`TeamTaskBoard`**: DAG-validated task boards preventing circular dependencies and tracking blocked/in-progress statuses.
+- **`wait_agent`**: Synchronization barriers supporting completion, message settlement, or timeout-based join.
 
 ---
 

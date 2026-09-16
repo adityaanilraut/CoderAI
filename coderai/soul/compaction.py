@@ -373,6 +373,36 @@ class BasicCompaction(CompactionEngine):
                 and (m.meta.get("preserve") is True or m.meta.get("pinned") is True)
             )
         ]
+        replaced_id_set = set(replaced_ids)
+
+        # Honor shadowed seqs: derive() hides history by event seq, so record
+        # the persisted seqs covered by [start_idx, end_idx). Rows are walked
+        # in log order with a message-position cursor so the range aligns with
+        # the messages slice above even as the log grows.
+        shadowed_seqs: list[int] = []
+        try:
+            rows = self.manager.session_store.read_rows(session_id)
+        except Exception:
+            rows = []
+        pos = 0
+        for row in rows:
+            try:
+                probe = self.manager._deserialize_message(row, session_id)
+            except Exception:
+                probe = None
+            if probe is None:
+                continue
+            if start_idx <= pos < end_idx:
+                seq = row.get("seq")
+                if isinstance(seq, int):
+                    if seq not in shadowed_seqs:
+                        shadowed_seqs.append(seq)
+                elif row.get("id") in replaced_id_set:
+                    # Legacy rows carry no persisted seq; their derive-time
+                    # seq is the positional index, which is unstable, so they
+                    # stay shadowed by id only.
+                    pass
+            pos += 1
 
         # Emit compaction/summary event
         summary_seq = self.manager._next_seq(session_id)
@@ -382,7 +412,7 @@ class BasicCompaction(CompactionEngine):
                 summary_seq,
                 compaction_id,
                 summary,
-                shadowed_seqs=[],
+                shadowed_seqs=shadowed_seqs,
                 shadowed_ids=replaced_ids,
             ),
         )
@@ -402,6 +432,7 @@ class BasicCompaction(CompactionEngine):
             summary=summary,
             shadowed_range={"start": start_idx, "end": end_idx},
             shadowed_ids=replaced_ids,
+            shadowed_seqs=shadowed_seqs,
             shadowed_token_count=tokens,
         )
 

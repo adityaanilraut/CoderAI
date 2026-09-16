@@ -9,7 +9,12 @@ from unittest.mock import MagicMock, patch
 from rich.console import Console
 
 from coderai.ui.shell.visualize._blocks import _render_search_card, render_tool_card
-from coderai.network.cache import ResponseCache, get_search_cache
+from coderai.network.cache import (
+    ResponseCache,
+    build_search_key,
+    get_search_cache,
+    normalize_search_query,
+)
 from coderai.utils.aiohttp import HttpClient, HttpResponse
 from coderai.tools.web.fetch import (
     extract_and_sanitize_html,
@@ -157,6 +162,133 @@ def test_web_cache_evicts_expired_entry():
     assert len(cache._cache) <= 2
     time.sleep(0.15)
     assert cache.get("k3") is None
+
+
+def test_search_cache_key_scopes_provider_query_and_max_results():
+    """Cache keys separate providers and result counts; merge case/space variants."""
+    assert normalize_search_query("  Python  DOCS ") == normalize_search_query("python docs")
+    assert build_search_key("http", "Python", 8) == build_search_key("http", "  python ", 8)
+    assert build_search_key("http", "q", 2) != build_search_key("http", "q", 8)
+    assert build_search_key("http", "q", 8) != build_search_key("exa", "q", 8)
+
+
+def test_web_cache_lru_protects_hot_key():
+    """Frequently read keys survive cold-insert churn under capacity pressure."""
+    cache = ResponseCache(default_ttl_seconds=60.0, max_entries=2)
+    cache.set("hot", "v")
+    cache.set("cold1", "v")
+    for _ in range(10):
+        assert cache.get("hot") == "v"
+    cache.set("cold2", "v")
+    assert cache.get("hot") == "v"
+    assert cache.get("cold1") is None
+
+
+def test_web_cache_copies_isolate_callers():
+    """Mutating a returned value neither mislabels nor poisons the stored entry."""
+    cache = ResponseCache(default_ttl_seconds=60.0, max_entries=10)
+    first = HttpResponse(
+        status_code=200,
+        text="hello",
+        content=b"hello",
+        headers={},
+        url="https://example.com",
+        elapsed_ms=1.0,
+        ok=True,
+    )
+    cache.set("k", first)
+    first.text = "MUTATED-AFTER-SET"
+    cached = cache.get("k")
+    assert cached is not None and cached.text == "hello"
+    assert cached is not first
+    cached.from_cache = True
+    second = cache.get("k")
+    assert second is not None and second is not cached
+    assert second.from_cache is False
+
+
+async def test_web_search_repeat_query_hits_tool_cache():
+    """A repeated tool query costs one provider call and one miss total."""
+    calls = {"n": 0}
+
+    class CountingProvider:
+        id = "counting-cache-probe"
+
+        def available(self):
+            return True
+
+        def search(self, q, max_results=8, timeout_seconds=15.0):
+            calls["n"] += 1
+            return WebSearchResult(query=q, content="cached answer", sources=[])
+
+    register_web_search_provider(CountingProvider())
+    cache = get_search_cache()
+    cache.clear()
+    args = {"query": "repeat cache probe", "provider": "counting-cache-probe"}
+    first = await handle_web_search_tool(args, None)
+    second = await handle_web_search_tool(args, None)
+    assert first.ok and second.ok
+    assert calls["n"] == 1
+    assert cache.stats()["hits"] == 1
+    assert cache.stats()["misses"] == 1
+
+
+async def test_web_search_max_results_busts_cache(monkeypatch):
+    """A larger max_results refetches instead of serving a truncated hit."""
+
+    async def mock_get_async(self, url, **kwargs):
+        body = json.dumps(
+            {
+                "AbstractText": "abstract",
+                "RelatedTopics": [
+                    {"FirstURL": f"https://e{i}.test/x", "Text": f"Topic {i}"} for i in range(8)
+                ],
+            }
+        )
+        return HttpResponse(
+            status_code=200,
+            text=body,
+            content=body.encode("utf-8"),
+            headers={"content-type": "application/json"},
+            url=url,
+            elapsed_ms=5.0,
+            ok=True,
+        )
+
+    monkeypatch.setattr(HttpClient, "get_async", mock_get_async)
+    cache = get_search_cache()
+    cache.clear()
+    first = await handle_web_search_tool(
+        {"query": "max results cache probe", "max_results": 2}, None
+    )
+    assert first.output.count("https://e") == 2
+    second = await handle_web_search_tool(
+        {"query": "max results cache probe", "max_results": 8}, None
+    )
+    assert second.output.count("https://e") == 8
+
+
+async def test_web_search_dedupes_duplicate_queries_in_one_call():
+    """Duplicate queries inside one call share a single provider fetch."""
+    calls = {"n": 0}
+
+    class DupProvider:
+        id = "dup-cache-probe"
+
+        def available(self):
+            return True
+
+        def search(self, q, max_results=8, timeout_seconds=15.0):
+            calls["n"] += 1
+            return WebSearchResult(query=q, content="dup answer", sources=[])
+
+    register_web_search_provider(DupProvider())
+    get_search_cache().clear()
+    res = await handle_web_search_tool(
+        {"queries": ["dup probe q", "dup probe q"], "provider": "dup-cache-probe"}, None
+    )
+    assert res.ok
+    assert calls["n"] == 1
 
 
 def test_web_sanitizer_converts_html_to_markdown():

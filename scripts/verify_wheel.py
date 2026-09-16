@@ -36,6 +36,12 @@ BUNDLED_MEMBERS = (
     "coderai/vendor/rg",
     *_source_members("SKILL.md"),
     *_source_members("references/*.md"),
+    # Mirrors [tool.setuptools.package-data] in pyproject.toml: prompt,
+    # plan-tool, and agent-spec data files shipped inside the wheel.
+    *_source_members("prompts/*.md"),
+    *_source_members("tools/plan/*.md"),
+    *_source_members("agents/*/*.yaml"),
+    *_source_members("agents/*/*.md"),
 )
 
 

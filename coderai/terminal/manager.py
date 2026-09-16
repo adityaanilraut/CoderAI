@@ -59,7 +59,16 @@ class TerminalSession:
     ) -> None:
         self.session_id = session_id
         self.name = name or f"terminal-{session_id}"
-        self.cwd = cwd or os.getcwd()
+        # Central cwd policy: clamp the spawn directory inside the workspace
+        # root (fail-closed; arbitrary cwd/Popen outside the root is refused).
+        from coderai.sandbox import resolve_exec_cwd
+
+        try:
+            self.cwd = resolve_exec_cwd(
+                cwd or os.getcwd(), workspace_root or cwd or os.getcwd()
+            )
+        except (ValueError, OSError) as exc:
+            raise ValueError(f"Terminal cwd rejected: {exc}")
         self.created_at = time.time()
         self.output_buffer: list[str] = []
         self._unread_buffer: list[str] = []
@@ -294,6 +303,15 @@ class TerminalManager:
         workspace_root: str | None = None,
     ) -> TerminalSession:
         """Create and spawn a new persistent terminal session."""
+        if cwd is not None or workspace_root is not None:
+            from coderai.sandbox import resolve_exec_cwd
+
+            try:
+                cwd = resolve_exec_cwd(
+                    cwd or workspace_root, workspace_root or cwd
+                )
+            except (ValueError, OSError) as exc:
+                raise ValueError(f"Terminal cwd rejected: {exc}")
         if command is None:
             # Default to bash or sh
             shell = os.environ.get("SHELL") or "/bin/bash"

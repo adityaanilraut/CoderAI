@@ -238,7 +238,7 @@ class ACPSession:
                         pass
                     case Notification():
                         await self._send_notification(msg)
-                    case ThinkPart(think=think):
+                    case ThinkPart(text=think):
                         await self._send_thinking(think)
                     case TextPart(text=text):
                         await self._send_text(text)
@@ -265,7 +265,15 @@ class ACPSession:
                         logger.warning(
                             "QuestionRequest is unsupported in ACP session; resolving empty answer."
                         )
-                        msg.resolve({})
+                        try:
+                            questions = getattr(msg, "questions", None) or []
+                            msg.resolve({str(i): "" for i in range(len(questions))})
+                        except Exception:
+                            logger.warning("Failed to auto-resolve QuestionRequest")
+                            try:
+                                msg.resolve({})
+                            except Exception:
+                                pass
                     case _:
                         pass
         except LLMNotSet as e:
@@ -326,7 +334,7 @@ class ACPSession:
                         pass
                     case Notification():
                         await self._send_notification(wire_msg)
-                    case ThinkPart(think=think):
+                    case ThinkPart(text=think):
                         await self._send_thinking(think)
                     case TextPart(text=text):
                         await self._send_text(text)
@@ -466,15 +474,21 @@ class ACPSession:
 
     async def _send_tool_call_part(self, part: ToolCallPart) -> None:
         assert self._turn_state is not None
+        # Wire ToolCallPart carries ``arguments`` while the kosong shape
+        # carries ``arguments_part``; accept either so streamed args are never
+        # dropped (or crash on AttributeError) across the mismatch.
+        arguments_part = getattr(part, "arguments_part", None)
+        if arguments_part is None:
+            arguments_part = getattr(part, "arguments", None)
         if (
             not self._id
             or not self._conn
-            or not part.arguments_part
+            or not arguments_part
             or self._turn_state.last_tool_call is None
         ):
             return
 
-        self._turn_state.last_tool_call.append_args_part(part.arguments_part)
+        self._turn_state.last_tool_call.append_args_part(arguments_part)
 
         update = acp.schema.ToolCallProgress(
             session_update="tool_call_update",

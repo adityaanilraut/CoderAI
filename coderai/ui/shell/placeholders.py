@@ -9,9 +9,15 @@ from difflib import SequenceMatcher
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
-from typing import Literal, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
-from PIL import Image
+try:  # Optional `media` extra: pip install coderai-agent[media]
+    from PIL import Image
+except ImportError:  # pragma: no cover - minimal installs without Pillow
+    Image = None  # type: ignore[assignment]
+
+if TYPE_CHECKING:
+    from PIL import Image as _PILImage
 
 from coderai.share import get_share_dir
 from coderai.utils.envvar import get_env_int
@@ -166,7 +172,7 @@ class AttachmentCache:
         self._payload_map[cache_key] = cached
         return cached
 
-    def store_image(self, image: Image.Image) -> CachedAttachment | None:
+    def store_image(self, image: Any) -> CachedAttachment | None:
         png_bytes = BytesIO()
         image.save(png_bytes, format="PNG")
         return self.store_bytes("image", ".png", png_bytes.getvalue())
@@ -391,7 +397,7 @@ class ImagePlaceholderHandler:
     def __init__(self, attachment_cache: AttachmentCache) -> None:
         self._attachment_cache = attachment_cache
 
-    def create_placeholder(self, image: Image.Image) -> str | None:
+    def create_placeholder(self, image: Any) -> str | None:
         cached = self._attachment_cache.store_image(image)
         if cached is None:
             return None
@@ -449,7 +455,7 @@ class PromptPlaceholderManager:
     def maybe_placeholderize_pasted_text(self, text: str) -> str:
         return self._text_handler.maybe_placeholderize(text)
 
-    def create_image_placeholder(self, image: Image.Image) -> str | None:
+    def create_image_placeholder(self, image: Any) -> str | None:
         return self._image_handler.create_placeholder(image)
 
     def resolve_command(self, command: str) -> ResolvedPromptCommand:

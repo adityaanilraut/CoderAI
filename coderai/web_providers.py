@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from typing import Any
 import requests
 
-from coderai.network.cache import ResponseCache, get_search_cache
 from coderai.utils.aiohttp import get_http_client
 
 logger = logging.getLogger(__name__)
@@ -350,7 +349,11 @@ class DeepSeekSearchProvider(WebSearchProvider):
 
 
 class HttpSearchProvider(WebSearchProvider):
-    """Generic HTTP multi-engine web search provider (Yahoo + Bing + DuckDuckGo) with caching."""
+    """Generic HTTP multi-engine web search provider (Yahoo + Bing + DuckDuckGo).
+
+    Result caching lives in the WebSearch tool layer (single owner), so this
+    provider stays pure: identical inputs always execute the lookup.
+    """
 
     @property
     def id(self) -> str:
@@ -365,11 +368,6 @@ class HttpSearchProvider(WebSearchProvider):
         max_results: int = 8,
         timeout_seconds: float = 10.0,
     ) -> WebSearchResult:
-        cache = get_search_cache()
-        cached = cache.get(f"search:{query}")
-        if cached:
-            return cached
-
         # 1. DuckDuckGo Instant Answer / Mock Client Check
         try:
             client = get_http_client()
@@ -392,19 +390,17 @@ class HttpSearchProvider(WebSearchProvider):
                                     )
                                 )
                     if abstract or ddg_sources:
-                        res = WebSearchResult(
+                        return WebSearchResult(
                             query=query,
                             content=abstract or None,
                             sources=ddg_sources[:max_results],
                         )
-                        cache.set(f"search:{query}", res)
-                        return res
                 except Exception:
                     pass
         except Exception:
             pass
 
-        return self._search_fallback(query, max_results, timeout_seconds, cache)
+        return self._search_fallback(query, max_results, timeout_seconds)
 
     async def search_async(
         self,
@@ -412,11 +408,6 @@ class HttpSearchProvider(WebSearchProvider):
         max_results: int = 8,
         timeout_seconds: float = 10.0,
     ) -> WebSearchResult:
-        cache = get_search_cache()
-        cached = cache.get(f"search:{query}")
-        if cached:
-            return cached
-
         try:
             client = get_http_client()
             ddg_url = f"https://api.duckduckgo.com/?q={urllib.parse.quote(query)}&format=json&no_html=1&skip_disambig=1"
@@ -438,13 +429,11 @@ class HttpSearchProvider(WebSearchProvider):
                                     )
                                 )
                     if abstract or ddg_sources:
-                        res = WebSearchResult(
+                        return WebSearchResult(
                             query=query,
                             content=abstract or None,
                             sources=ddg_sources[:max_results],
                         )
-                        cache.set(f"search:{query}", res)
-                        return res
                 except Exception:
                     pass
         except Exception:
@@ -457,7 +446,6 @@ class HttpSearchProvider(WebSearchProvider):
         query: str,
         max_results: int,
         timeout_seconds: float,
-        cache: ResponseCache,
     ) -> WebSearchResult:
         """Search HTML endpoints when the primary DuckDuckGo request has no results."""
         sources: list[WebSearchSource] = []
@@ -589,20 +577,16 @@ class HttpSearchProvider(WebSearchProvider):
                                     )
                                 )
                     if abstract or sources:
-                        res = WebSearchResult(
+                        return WebSearchResult(
                             query=query,
                             content=abstract or None,
                             sources=sources[:max_results],
                         )
-                        cache.set(f"search:{query}", res)
-                        return res
             except Exception:
                 pass
 
         if sources:
-            res = WebSearchResult(query=query, sources=sources[:max_results])
-            cache.set(f"search:{query}", res)
-            return res
+            return WebSearchResult(query=query, sources=sources[:max_results])
 
         return WebSearchResult(query=query, sources=[], error="No search results found.")
 

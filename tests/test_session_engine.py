@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import pathlib
+import threading
 
 import pytest
 
@@ -13,6 +15,7 @@ from coderai.utils.common.llm_retry import (
     is_empty_llm_response,
     retry_delay_ms,
 )
+from coderai.soul.coderaisoul import AgentLoop
 from coderai.soul.compaction import BasicCompaction, ToolResultPruner
 from coderai.events import (
     SessionEvent,
@@ -23,6 +26,7 @@ from coderai.events import (
     make_turn_start,
     make_user_event,
 )
+from coderai.utils.common.file_history import GitFileHistory
 from coderai.background import get_job_store, reset_job_store
 from coderai.soul.session.manager import SessionManager, SessionMessage, get_project_code
 from coderai.session_state import load_session_state, save_session_state
@@ -413,3 +417,216 @@ async def test_session_loop_retry_recovers_after_rate_limit(tmp_path, monkeypatc
     assert any("recovered" in (c or "") for c in contents)
     assert not any("Request failed" in (c or "") for c in contents)
     assert calls["n"] == 3
+
+
+def test_session_seq_concurrent_mint_unique_and_persistent(tmp_path):
+    """Concurrent _next_seq mints are unique; a fresh counter resumes past the log."""
+    mgr = _manager(tmp_path)
+    sid = "seq_race"
+    minted: list[int] = []
+    guard = threading.Lock()
+    barrier = threading.Barrier(8)
+
+    def _mint() -> None:
+        barrier.wait()
+        local = [mgr._next_seq(sid) for _ in range(50)]
+        with guard:
+            minted.extend(local)
+
+    threads = [threading.Thread(target=_mint) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(minted) == list(range(400))
+    # Simulate a process restart: drop the in-memory counter and mint again.
+    mgr._seq_counters.pop(sid, None)
+    for seq in sorted(minted):
+        mgr._append_event(sid, make_user_event(seq=seq, content=f"m{seq}"))
+    assert mgr._next_seq(sid) == 400
+
+
+def test_session_agentloop_turn_step_resume_and_atomic(tmp_path):
+    """New activations resume turn/step from the log; concurrent claims never duplicate."""
+    mgr = _manager(tmp_path)
+    sid = "turn_resume"
+    first = AgentLoop(mgr, sid)
+    assert (first._turn, first._step) == (0, 0)
+    first.emit_turn_start()
+    first.emit_step_start()
+    first.emit_step_start()
+    assert (first.turn, first.step) == (1, 2)
+    second = AgentLoop(mgr, sid)
+    assert (second._turn, second._step) == (1, 2)
+    second.emit_turn_start()
+    assert second.turn == 2 and second.step == 0
+    # Concurrent turn/step claims across activations stay unique (a new
+    # turn resets the step counter, so claim the phases separately).
+    turns: list[int] = []
+    guard = threading.Lock()
+    turn_barrier = threading.Barrier(4)
+
+    def _claim_turn() -> None:
+        turn_barrier.wait()
+        with guard:
+            turns.append(mgr.next_turn(sid))
+
+    threads = [threading.Thread(target=_claim_turn) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(turns) == [3, 4, 5, 6]
+    steps: list[int] = []
+    step_barrier = threading.Barrier(4)
+
+    def _claim_step() -> None:
+        step_barrier.wait()
+        with guard:
+            steps.append(mgr.next_step(sid))
+
+    threads = [threading.Thread(target=_claim_step) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(steps) == [1, 2, 3, 4]
+
+
+def test_session_controller_claim_release_no_clobber(tmp_path):
+    """Activations share (never overwrite) a live controller and release only their own."""
+    mgr = _manager(tmp_path)
+    sid = "ctrl_race"
+    first = AgentLoop(mgr, sid)
+    owned = first._claim_controller()
+    second = AgentLoop(mgr, sid)
+    assert second._claim_controller() is owned
+    # Interrupt signals the live controller in place instead of replacing it.
+    mgr.interrupt_session(sid)
+    assert mgr.session_controllers[sid] is owned
+    assert owned.is_set() is True
+    assert mgr.is_interrupted(sid) is True
+    # A stale activation releasing must not remove a newer controller.
+    replacement = asyncio.Event()
+    mgr.session_controllers[sid] = replacement
+    first._release_controller()
+    assert mgr.session_controllers[sid] is replacement
+    second._controller = replacement
+    second._release_controller()
+    assert sid not in mgr.session_controllers
+
+
+def _append_user(mgr: SessionManager, sid: str, content: str, **meta: str) -> SessionMessage:
+    return mgr._build_message(sid, "user", content, meta=dict(meta) if meta else None)
+
+
+def test_session_undo_retains_target_prompt(tmp_path):
+    """Undo reverts to the target checkpoint; the target prompt itself survives."""
+    mgr = _manager(tmp_path)
+    sid = "undo_keep"
+    user1 = _append_user(mgr, sid, "first")
+    mgr._append_message(user1)
+    mgr._append_message(mgr._build_message(sid, "assistant", "reply one"))
+    user2 = _append_user(mgr, sid, "second")
+    mgr._append_message(user2)
+    mgr._append_message(mgr._build_message(sid, "assistant", "reply two"))
+    assert mgr.undo(sid, target_message_id=user1.id, mode="restore_conversation_only") is True
+    remaining = mgr.list_session_messages(sid)
+    assert [m.id for m in remaining] == [user1.id]
+
+
+def test_session_undo_partial_code_failure_returns_false(tmp_path):
+    """restore_both with an unrestorable checkpoint fails loudly without truncating."""
+    mgr = _manager(tmp_path)
+    sid = "undo_partial"
+    mgr._append_message(_append_user(mgr, sid, "work", checkpointHash="bogus"))
+    mgr._append_message(mgr._build_message(sid, "assistant", "did things"))
+    before = [m.id for m in mgr.list_session_messages(sid)]
+    assert mgr.undo(sid, mode="restore_both") is False
+    assert [m.id for m in mgr.list_session_messages(sid)] == before
+    with pytest.raises(ValueError):
+        mgr.undo(sid, mode="restore_everything")
+
+
+@pytest.mark.asyncio
+async def test_session_compaction_records_shadowed_seqs(tmp_path):
+    """Compaction summaries carry the persisted seqs they shadow (derive() hides by seq)."""
+    mgr = _manager(tmp_path, create_openai_client=lambda: {"client": object(), "model": "t"})
+    sid = "compact_seqs"
+    mgr._append_event(sid, make_user_event(seq=0, content="q0", message_id="u0"))
+    mgr._append_event(sid, make_assistant_event(seq=1, turn=1, step=1, content="a1", message_id="a1"))
+    mgr._append_event(sid, make_user_event(seq=2, content="q2", message_id="u2"))
+    mgr._append_event(sid, make_assistant_event(seq=3, turn=1, step=2, content="a3", message_id="a3"))
+
+    async def _fake_completion(client, request, **kwargs):
+        return {
+            "choices": [{"message": {"content": "## Primary Request\n- goal"}}],
+            "usage": {"total_tokens": 5},
+        }
+
+    mgr._create_completion = _fake_completion  # type: ignore[assignment]
+    result = await BasicCompaction(manager=mgr).compact_region(sid, start_idx=1, end_idx=3)
+    assert result is not None
+    assert result.shadowed_seqs == [1, 2]
+    assert set(result.shadowed_ids) == {"a1", "u2"}
+    summaries = [
+        e for e in mgr.session_store.list_events(sid) if e.type == "compaction/summary"
+    ]
+    assert len(summaries) == 1
+    assert summaries[0].data["shadowedSeqs"] == [1, 2]
+    assert summaries[0].source_event_seqs == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_session_fork_id_unique_and_seq_seeded(tmp_path):
+    """Fork ids are full-entropy/unique and the forked seq counter continues the clone."""
+    mgr = _manager(tmp_path)
+    sid = await mgr.create_empty_session()
+    mgr._append_event(sid, make_turn_start(seq=mgr._next_seq(sid), turn=1))
+    mgr._append_event(sid, make_user_event(seq=mgr._next_seq(sid), content="hi"))
+    first = mgr.fork_session(sid)
+    second = mgr.fork_session(sid)
+    assert first and second and first != second
+    assert len(first) == 32 and len(second) == 32
+    cloned = [r.get("seq") for r in mgr.session_store.read_rows(first)]
+    assert mgr._next_seq(first) == max(s for s in cloned if isinstance(s, int)) + 1
+    assert mgr.list_session_messages(first)
+
+
+def test_session_store_orphan_tmp_cleanup(tmp_path):
+    """Crash-leftover atomic-write tmps are removed on store init; real logs survive."""
+    store = JsonlSessionStore(str(tmp_path))
+    store.append_row("keep", {"id": "m1", "role": "user", "content": "hi"})
+    orphan = store.project_dir / "keep.jsonl.tmp-deadbeef"
+    orphan.write_text("{}\n", encoding="utf-8")
+    assert store.cleanup_orphan_tmps() == 1
+    assert not orphan.exists()
+    assert store.cleanup_orphan_tmps() == 0
+    assert store.read_rows("keep") == [{"id": "m1", "role": "user", "content": "hi"}]
+
+
+def test_session_file_history_fork_errors(tmp_path):
+    """Forking file history with bad ids or a missing repo raises instead of no-op."""
+    history = GitFileHistory(str(tmp_path), str(tmp_path / "missing" / ".git"))
+    with pytest.raises(ValueError):
+        history.fork_session("not a valid ref!!!", "target-ok")
+    with pytest.raises(ValueError):
+        history.fork_session("source-ok", "also bad!!!")
+    with pytest.raises(RuntimeError):
+        history.fork_session("source-ok", "target-ok")
+
+
+def test_session_messages_cache_bounded_and_invalidated(tmp_path):
+    """The message cache stays bounded and drops entries on writes."""
+    mgr = _manager(tmp_path)
+    mgr._messages_cache_bound = 2
+    sids = []
+    for i in range(3):
+        sid = f"cache_{i}"
+        mgr._append_message(mgr._build_message(sid, "user", f"hello {i}"))
+        mgr.list_session_messages(sid)
+        sids.append(sid)
+    assert len(mgr._messages_cache) <= 2
+    mgr._append_message(mgr._build_message(sids[-1], "user", "again"))
+    assert sids[-1] not in mgr._messages_cache
+    assert mgr.list_session_messages(sids[-1])[-1].content == "again"

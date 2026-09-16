@@ -467,6 +467,28 @@ def test_subagent_env_scrub_protects_secrets():
         os.environ.pop("CODERAI_TEST_SECRET_KEY", None)
 
 
+def _skip_if_pty_unavailable(error: object) -> None:
+    """Skip the PTY test when the host/sandbox has no usable pty devices."""
+    if isinstance(error, BaseException):
+        if "pty" in str(error).lower():
+            pytest.skip(f"No PTY devices available: {error}")
+    elif isinstance(error, str) and "pty" in error.lower():
+        pytest.skip(f"No PTY devices available: {error}")
+
+
+def _close_persistent_bash_session(session_id: str) -> None:
+    """Release the PTY held by the persistent bash session, if any."""
+    try:
+        from coderai.terminal.manager import get_terminal_manager
+
+        mgr = get_terminal_manager()
+        term = mgr.get_session(f"persistent_bash_{session_id}")
+        if term is not None:
+            mgr.close_session(term.session_id)
+    except Exception:
+        pass
+
+
 def test_subagent_persistent_bash_retains_state(mock_tool_context):
     """Persistent bash keeps exported vars visible to later commands in-session."""
     import sys
@@ -475,9 +497,25 @@ def test_subagent_persistent_bash_retains_state(mock_tool_context):
         pytest.skip("Persistent PTY test is POSIX only")
     ctx = mock_tool_context
     ctx.session_id = f"test_pty_{os.getpid()}"
-    res1 = handle_bash_tool(
-        {"command": "export PERSISTENT_VAR='coderai_persistent_success'", "persistent": True}, ctx
-    )
-    assert res1.ok is True and res1.metadata.get("persistent") is True
-    res2 = handle_bash_tool({"command": "echo $PERSISTENT_VAR", "persistent": True}, ctx)
-    assert res2.ok is True and "coderai_persistent_success" in res2.output
+    try:
+        try:
+            res1 = handle_bash_tool(
+                {"command": "export PERSISTENT_VAR='coderai_persistent_success'", "persistent": True},
+                ctx,
+            )
+        except OSError as exc:
+            _skip_if_pty_unavailable(exc)
+            raise
+        if not res1.ok:
+            _skip_if_pty_unavailable(res1.error or "")
+        assert res1.ok is True and res1.metadata.get("persistent") is True
+        try:
+            res2 = handle_bash_tool({"command": "echo $PERSISTENT_VAR", "persistent": True}, ctx)
+        except OSError as exc:
+            _skip_if_pty_unavailable(exc)
+            raise
+        if not res2.ok:
+            _skip_if_pty_unavailable(res2.error or "")
+        assert res2.ok is True and "coderai_persistent_success" in res2.output
+    finally:
+        _close_persistent_bash_session(ctx.session_id)

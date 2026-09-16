@@ -1270,8 +1270,10 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float]] = {
     "gpt-5.6-terra": (1.75, 7.00, 0.875),
     "gpt-5.6-luna": (1.25, 5.00, 0.625),
     "gemini-3.7-flash": (0.10, 0.40, 0.025),
-    "deepseek-v4-pro": (0.55, 2.19, 0.14),
-    "deepseek-v4-flash": (0.14, 0.28, 0.014),
+    # DeepSeek peak pricing per api-docs (flash = V4.1; v4-flash alias billed at flash price)
+    "deepseek-flash": (0.30, 1.20, 0.006),
+    "deepseek-v4-pro": (1.32, 3.96, 0.044),
+    "deepseek-v4-flash": (0.30, 1.20, 0.006),
     "default": (2.00, 8.00, 1.00),
 }
 

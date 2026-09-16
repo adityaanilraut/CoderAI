@@ -68,19 +68,9 @@ def _should_ignore_for_excepthook(exc_type: type[BaseException]) -> bool:
 
     - KeyboardInterrupt: Ctrl+C, already covered by the ``cancel`` event.
     - SystemExit: deliberate exit, not a crash.
-    - click.ClickException (UsageError / BadParameter / ...): user-facing
-      CLI input errors, not program bugs.
+    (CLI is argparse-only; there is no click.ClickException branch.)
     """
-    if issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
-        return True
-    try:
-        import click
-
-        if issubclass(exc_type, click.exceptions.ClickException):
-            return True
-    except ImportError:
-        pass
-    return False
+    return issubclass(exc_type, (KeyboardInterrupt, SystemExit))
 
 
 # ---------------------------------------------------------------------------

@@ -79,6 +79,21 @@ PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
         re.compile(r"(?i)(Authorization\s*:\s*Bearer\s+)[A-Za-z0-9_\-\.\~]{20,}"),
         r"\1[REDACTED_BEARER_TOKEN]",
     ),
+    (
+        "slack_token",
+        re.compile(r"\bxox[bpas]-[A-Za-z0-9-]{10,}\b", re.ASCII),
+        "[REDACTED_SLACK_TOKEN]",
+    ),
+    (
+        "stripe_key",
+        re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b", re.ASCII),
+        "[REDACTED_STRIPE_KEY]",
+    ),
+    (
+        "google_api_key",
+        re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b", re.ASCII),
+        "[REDACTED_GOOGLE_API_KEY]",
+    ),
     # Generic credential assignments (api_key=..., password=..., secret=...)
     (
         "generic_secret",
@@ -109,8 +124,15 @@ def sanitize_text(text: str) -> tuple[str, list[str]]:
     return sanitized, detected_types
 
 
+def _sanitize_key(key: Any) -> Any:
+    if isinstance(key, str):
+        sanitized, _ = sanitize_text(key)
+        return sanitized
+    return key
+
+
 def sanitize_tool_output(output: Any) -> Any:
-    """Recursively sanitize strings, dictionaries, lists, and ToolResult instances."""
+    """Recursively sanitize strings, bytes, dictionaries, lists, and ToolResult instances."""
     if output is None:
         return None
 
@@ -118,11 +140,21 @@ def sanitize_tool_output(output: Any) -> Any:
         sanitized, _ = sanitize_text(output)
         return sanitized
 
+    if isinstance(output, (bytes, bytearray)):
+        sanitized, _ = sanitize_text(bytes(output).decode("utf-8", errors="replace"))
+        return sanitized
+
     if isinstance(output, dict):
-        return {k: sanitize_tool_output(v) for k, v in output.items()}
+        return {_sanitize_key(k): sanitize_tool_output(v) for k, v in output.items()}
 
     if isinstance(output, list):
         return [sanitize_tool_output(item) for item in output]
+
+    if isinstance(output, tuple):
+        return tuple(sanitize_tool_output(item) for item in output)
+
+    if isinstance(output, (set, frozenset)):
+        return type(output)(sanitize_tool_output(item) for item in output)
 
     # ToolResult instance support
     if hasattr(output, "output") or hasattr(output, "error"):

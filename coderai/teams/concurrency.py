@@ -54,7 +54,12 @@ async def cas_retry_async(
     max_delay: float = 1.0,
     factor: float = 2.0,
 ) -> Any:
-    """Execute an async operation with CAS conflict retry and exponential jitter backoff."""
+    """Execute an async operation with CAS conflict retry and exponential jitter backoff.
+
+    Only :class:`ConcurrencyConflictError` is retried; any other ``ValueError``
+    propagates immediately so unrelated validation failures are never masked
+    as transient conflicts.
+    """
     for attempt in range(max_retries):
         try:
             if inspect.iscoroutinefunction(coroutine_fn):
@@ -63,13 +68,7 @@ async def cas_retry_async(
             if inspect.isawaitable(res):
                 return await res
             return res
-        except (ConcurrencyConflictError, ValueError) as exc:
-            msg = str(exc)
-            if "revision mismatch" not in msg.lower() and not isinstance(
-                exc, ConcurrencyConflictError
-            ):
-                raise
-
+        except ConcurrencyConflictError as exc:
             if attempt >= max_retries - 1:
                 logger.error(
                     "CAS retry exceeded max retries (%d) due to persistent conflicts: %s",
@@ -102,17 +101,16 @@ def cas_retry_sync(
     max_delay: float = 1.0,
     factor: float = 2.0,
 ) -> T:
-    """Execute a sync operation with CAS conflict retry and exponential jitter backoff."""
+    """Execute a sync operation with CAS conflict retry and exponential jitter backoff.
+
+    Only :class:`ConcurrencyConflictError` is retried; any other ``ValueError``
+    propagates immediately so unrelated validation failures are never masked
+    as transient conflicts.
+    """
     for attempt in range(max_retries):
         try:
             return fn()
-        except (ConcurrencyConflictError, ValueError) as exc:
-            msg = str(exc)
-            if "revision mismatch" not in msg.lower() and not isinstance(
-                exc, ConcurrencyConflictError
-            ):
-                raise
-
+        except ConcurrencyConflictError as exc:
             if attempt >= max_retries - 1:
                 logger.error(
                     "CAS sync retry exceeded max retries (%d): %s",

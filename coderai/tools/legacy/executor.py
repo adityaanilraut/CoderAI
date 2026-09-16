@@ -345,6 +345,10 @@ class ToolExecutor:
             except Exception:
                 pass
 
+        # 5b. Credential & Secret Sanitization BEFORE disk spill, so spilled
+        # files never store raw secrets (a final pass still runs at step 10).
+        result = sanitize_tool_output(result)
+
         # 6. Apply Result Spill
         end_time_ms = int(time.time() * 1000)
         result = self._apply_result_spill(tool_name, result, context)
@@ -415,6 +419,8 @@ class ToolExecutor:
             dry_run=bool(get_hook("dry_run")),
             list_session_messages=get_hook("list_session_messages"),
             list_session_events=get_hook("list_session_events"),
+            plan_mode=bool(get_hook("plan_mode")),
+            session_manager=get_hook("session_manager"),
         )
 
     def _pre_execute_deny(
@@ -550,16 +556,28 @@ class ToolExecutor:
                     return await res
                 return res
 
-            if target_path and isinstance(target_path, str) and target_path.strip():
-                from coderai.tools.legacy.path_lock import get_path_lock_manager
+            import contextlib as _contextlib
 
-                path_lock_mgr = get_path_lock_manager()
-                async with path_lock_mgr.acquire_write_lock(target_path, self.project_root):
-                    if timeout_ms and int(timeout_ms) > 0:
-                        res = await asyncio.wait_for(_invoke(), timeout=int(timeout_ms) / 1000.0)
-                    else:
-                        res = await _invoke()
-            else:
+            from coderai.tools.legacy.path_lock import (
+                extract_redirect_paths,
+                get_path_lock_manager,
+            )
+
+            lock_paths: list[str] = []
+            if target_path and isinstance(target_path, str) and target_path.strip():
+                lock_paths.append(target_path)
+            if tool_def.name.lower() in ("bash", "shell", "pwsh"):
+                cmd_arg = validated_args.get("command")
+                if isinstance(cmd_arg, str) and cmd_arg.strip():
+                    # Shell `>`/`>>` targets otherwise bypass per-path write locks.
+                    lock_paths.extend(extract_redirect_paths(cmd_arg))
+
+            path_lock_mgr = get_path_lock_manager()
+            async with _contextlib.AsyncExitStack() as _lock_stack:
+                for lock_path in sorted(set(lock_paths)):
+                    await _lock_stack.enter_async_context(
+                        path_lock_mgr.acquire_write_lock(lock_path, self.project_root)
+                    )
                 if timeout_ms and int(timeout_ms) > 0:
                     res = await asyncio.wait_for(_invoke(), timeout=int(timeout_ms) / 1000.0)
                 else:

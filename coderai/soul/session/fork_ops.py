@@ -23,7 +23,15 @@ def fork_session(
     if not src_entry:
         return None
 
-    forked_id = f"ses_{uuid.uuid4().hex[:12]}"
+    # Full-entropy id in the same format as create_session, with a
+    # uniqueness guard so a fork can never collide with a live session.
+    try:
+        live_ids = {e.get("id") for e in manager._load_index().get("entries", [])}
+    except Exception:
+        live_ids = set()
+    forked_id = uuid.uuid4().hex
+    while forked_id in live_ids:
+        forked_id = uuid.uuid4().hex
     now = _now()
 
     raw_lines = manager.session_store.read_raw_lines(target_src_id)
@@ -85,6 +93,28 @@ def fork_session(
             forked_lines.append(line)
 
     manager.session_store.write_raw_lines(forked_id, forked_lines)
+
+    # Seed the forked session's seq counter from the cloned log so the next
+    # minted seq continues past the clone instead of restarting at 0 and
+    # duplicating persisted seqs.
+    try:
+        max_cloned_seq = -1
+        for line in forked_lines:
+            try:
+                seq = json.loads(line).get("seq")
+            except Exception:
+                continue
+            if isinstance(seq, int) and seq > max_cloned_seq:
+                max_cloned_seq = seq
+        lock = getattr(manager, "_seq_lock", None)
+        if lock is not None:
+            with lock:
+                manager._seq_counters[forked_id] = max_cloned_seq + 1
+                manager._turn_step_synced.discard(forked_id)
+        else:
+            manager._seq_counters[forked_id] = max_cloned_seq + 1
+    except Exception:
+        pass
 
     # Fork file history branch
     manager.file_history.ensure_session(forked_id)
@@ -195,6 +225,8 @@ def undo(
       - "restore_conversation_only": Truncates message history without modifying disk files.
       - "restore_code_only": Reverts disk files without truncating message history.
     """
+    if mode not in ("restore_both", "restore_conversation_only", "restore_code_only"):
+        raise ValueError(f"Unknown undo mode: {mode!r}")
     target_id = manager.resolve_session_id(session_id) or session_id
     messages = manager.list_session_messages(target_id)
     user_messages = [m for m in messages if m.role == "user" and not m.compacted and m.visible]
@@ -208,28 +240,41 @@ def undo(
     else:
         target_user = user_messages[-1]
 
+    want_code = mode in ("restore_both", "restore_code_only")
+    want_conversation = mode in ("restore_both", "restore_conversation_only")
+
     checkpoint_hash = (target_user.meta or {}).get("checkpointHash")
     if not checkpoint_hash:
         checkpoint_hash = manager.file_history.get_current_checkpoint_hash(target_id)
 
-    # Restore code if requested
-    if mode in ("restore_both", "restore_code_only"):
-        if not checkpoint_hash or not manager.file_history.can_restore(target_id, checkpoint_hash):
-            if mode == "restore_code_only":
-                return False
-        else:
-            manager.file_history.restore(target_id, checkpoint_hash)
+    # Validate the code leg first so restore_both never half-applies: a
+    # failed code restore must not still truncate the conversation while
+    # reporting success.
+    if want_code and (
+        not checkpoint_hash or not manager.file_history.can_restore(target_id, checkpoint_hash)
+    ):
+        return False
 
-    # Restore conversation if requested
-    if mode in ("restore_both", "restore_conversation_only"):
+    # Restore code if requested
+    if want_code:
+        try:
+            manager.file_history.restore(target_id, checkpoint_hash)
+        except Exception:
+            return False
+
+    # Restore conversation if requested. The target prompt is retained
+    # (messages[:cutoff + 1]): undo reverts to the checkpoint recorded with
+    # that prompt, it must not delete the prompt itself.
+    if want_conversation:
         cutoff_idx = next((i for i, m in enumerate(messages) if m.id == target_user.id), -1)
-        if cutoff_idx >= 0:
-            retained_messages = messages[:cutoff_idx]
-            manager._save_messages(target_id, retained_messages)
-            clear_session_state(target_id)
-            rebuild_session_state_from_history(
-                target_id, [manager._serialize_message(m) for m in retained_messages]
-            )
+        if cutoff_idx < 0:
+            return False
+        retained_messages = messages[: cutoff_idx + 1]
+        manager._save_messages(target_id, retained_messages)
+        clear_session_state(target_id)
+        rebuild_session_state_from_history(
+            target_id, [manager._serialize_message(m) for m in retained_messages]
+        )
 
     manager._update_entry(
         target_id,

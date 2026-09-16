@@ -56,8 +56,39 @@ class AgentLoop:
     def __init__(self, manager: SessionManager, session_id: str) -> None:
         self.manager = manager
         self.session_id = session_id
-        self._turn = 0
-        self._step = 0
+        # Resume from the persisted log so a new activation never restarts
+        # turn/step numbering (and never duplicates numbers concurrently —
+        # increments go through the manager lock via next_turn/next_step).
+        try:
+            self._turn = manager._current_turn(session_id)
+            self._step = manager._current_step(session_id)
+        except Exception:
+            self._turn = 0
+            self._step = 0
+        self._controller: asyncio.Event | None = None
+
+    def _claim_controller(self) -> asyncio.Event:
+        """Return this activation's controller without clobbering a live one."""
+        existing = self.manager.session_controllers.get(self.session_id)
+        if existing is not None:
+            self._controller = existing
+            return existing
+        controller = asyncio.Event()
+        self.manager.session_controllers[self.session_id] = controller
+        self._controller = controller
+        return controller
+
+    def _release_controller(self) -> None:
+        """Remove the controller only if it is still this activation's own."""
+        if self._controller is None:
+            return
+        try:
+            if self.manager.session_controllers.get(self.session_id) is self._controller:
+                self.manager.session_controllers.pop(self.session_id, None)
+        except Exception:
+            pass
+        finally:
+            self._controller = None
 
     def _next_seq(self) -> int:
         return self.manager._next_seq(self.session_id)
@@ -75,7 +106,10 @@ class AgentLoop:
             return None
 
     def emit_turn_start(self) -> None:
-        self._turn += 1
+        try:
+            self._turn = self.manager.next_turn(self.session_id)
+        except Exception:
+            self._turn += 1
         self._step = 0
         self._emit(make_turn_start(self._next_seq(), self._turn))
         try:
@@ -154,7 +188,10 @@ class AgentLoop:
                     pass
 
     def emit_step_start(self) -> None:
-        self._step += 1
+        try:
+            self._step = self.manager.next_step(self.session_id)
+        except Exception:
+            self._step += 1
         self._emit(make_step_start(self._next_seq(), self._turn, self._step))
         try:
             w = self._wire()
@@ -196,7 +233,7 @@ class AgentLoop:
         )
         settings = manager.get_resolved_settings()
 
-        manager.session_controllers[session_id] = asyncio.Event()
+        self._claim_controller()
         if permission_replies is None:
             self.emit_turn_start()
 
@@ -234,7 +271,7 @@ class AgentLoop:
                 ),
                 False,
             )
-            manager.session_controllers.pop(session_id, None)
+            self._release_controller()
             return
 
         try:
@@ -364,21 +401,34 @@ class AgentLoop:
                 )
                 if tools:
                     tools = format_tool_definitions(tools, model=model)
+                    from coderai.utils.common.message_converter import (
+                        apply_tool_cache_control,
+                        is_cache_control_supported,
+                    )
+
+                    if is_cache_control_supported(model):
+                        tools = apply_tool_cache_control(tools, model)
                 converted = manager.message_converter.convert_session_messages(
                     messages, model, thinking_enabled=thinking_enabled
                 )
-                # Phase 2: dynamic injections (collect injections
-                # before each LLM step). Providers own throttling; appended
-                # as a trailing user <system-reminder>, never persisted.
+                # Phase 2: dynamic injections (collect injections before each LLM step).
+                # Persist injections linearly into session history so the KV cache prefix
+                # remains strictly monotonic and does not fork on subsequent turns.
                 try:
                     from coderai.soul.dynamic_injection import wrap_as_reminder
 
                     soul = manager.get_soul(session_id)
                     collected = await soul.collect_injections()
                     for injection in collected:
-                        converted.append(
-                            {"role": "user", "content": wrap_as_reminder(injection.content)}
+                        wrapped = wrap_as_reminder(injection.content)
+                        msg = manager._build_message(
+                            session_id,
+                            "user",
+                            wrapped,
+                            meta={"isDynamicInjection": True, "injectionType": injection.type},
                         )
+                        manager._append_message(msg)
+                        converted.append({"role": "user", "content": wrapped})
                 except Exception:
                     pass
                 request: dict[str, Any] = {
@@ -627,7 +677,7 @@ class AgentLoop:
                 },
             )
         finally:
-            manager.session_controllers.pop(session_id, None)
+            self._release_controller()
             manager.maybe_notify_task_completion(session_id, started_at_ms)
 
     @property

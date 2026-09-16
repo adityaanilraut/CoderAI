@@ -328,6 +328,17 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
         updated_content = _apply_replacement(
             raw, scope, matches, replacement_old, replacement_new, replace_all
         )
+        if file_path.lower().endswith(".py"):
+            import ast as _ast
+
+            try:
+                _ast.parse(updated_content)
+            except SyntaxError as syn_err:
+                return ToolResult(
+                    ok=False,
+                    name="edit",
+                    error=f"Edit would produce invalid Python syntax: {syn_err}",
+                )
         diff_preview = build_diff_preview(file_path, raw, updated_content)
 
         from coderai.tools.file.utils import generate_virtual_patch, is_dry_run

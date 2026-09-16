@@ -16,6 +16,16 @@ from coderai.teams.models import TeamMessage, TeamTask, Teammate
 
 logger = logging.getLogger(__name__)
 
+VALID_TASK_STATUSES = ("pending", "in_progress", "completed", "blocked", "failed")
+VALID_TASK_PRIORITIES = ("low", "medium", "high", "critical")
+
+REVIEWER_ROLE_NAMES = ("reviewer", "code-reviewer", "code_reviewer")
+
+DEFAULT_REVIEWER_SYSTEM_PROMPT = (
+    "You are a code reviewer teammate. Review diffs and code for correctness, "
+    "security, and style. Report concrete findings; do not write code unless asked."
+)
+
 
 class TeamTaskBoard:
     """Shared task board for multi-agent coordination and dependency tracking."""
@@ -38,7 +48,15 @@ class TeamTaskBoard:
         dependencies: list[str] | None = None,
     ) -> TeamTask:
         task_id = f"task_{uuid.uuid4().hex[:8]}"
-        deps = dependencies or []
+        deps = list(dependencies or [])
+
+        # Validate that every dependency names a known task (dangling deps
+        # would block dependents forever) and reject self-dependency.
+        for dep_id in deps:
+            if dep_id == task_id:
+                raise ValueError(f"Task cannot depend on itself ('{task_id}').")
+            if dep_id not in self._tasks:
+                raise KeyError(f"Unknown task dependency '{dep_id}': no such task on the board.")
 
         # Validate DAG acyclicity
         candidate_deps = {t_id: list(t.dependencies or []) for t_id, t in self._tasks.items()}
@@ -50,7 +68,7 @@ class TeamTaskBoard:
             title=title,
             description=description,
             assigned_to=assigned_to,
-            priority=priority if priority in ("low", "medium", "high", "critical") else "medium",
+            priority=priority if priority in VALID_TASK_PRIORITIES else "medium",
             dependencies=deps,
         )
         self._tasks[task_id] = task
@@ -94,12 +112,25 @@ class TeamTaskBoard:
             )
 
         if dependencies is not None:
+            new_deps = list(dependencies)
+            for dep_id in new_deps:
+                if dep_id == task_id:
+                    raise ValueError(f"Task cannot depend on itself ('{task_id}').")
+                if dep_id not in self._tasks:
+                    raise KeyError(
+                        f"Unknown task dependency '{dep_id}': no such task on the board."
+                    )
             candidate_deps = {t_id: list(t.dependencies or []) for t_id, t in self._tasks.items()}
-            candidate_deps[task_id] = list(dependencies)
+            candidate_deps[task_id] = list(new_deps)
             assert_acyclic_dependencies(candidate_deps)
-            task.dependencies = list(dependencies)
+            task.dependencies = list(new_deps)
 
         if status:
+            if status not in VALID_TASK_STATUSES:
+                raise ValueError(
+                    f"Unknown task status '{status}'. "
+                    f"Valid statuses: {', '.join(VALID_TASK_STATUSES)}."
+                )
             task.status = status
             if status == "completed" and self._manager is not None and task.assigned_to:
                 tm = self._manager.get_teammate(task.assigned_to)
@@ -120,7 +151,9 @@ class TeamTaskBoard:
     def can_start_task(self, task_id: str) -> bool:
         """Check if all dependencies for a task are completed."""
         task = self._tasks.get(task_id)
-        if not task or not task.dependencies:
+        if not task:
+            return False
+        if not task.dependencies:
             return True
         for dep_id in task.dependencies:
             dep = self._tasks.get(dep_id)
@@ -149,15 +182,22 @@ class TeamManager:
     ) -> Teammate:
         teammate_id = f"tm_{uuid.uuid4().hex[:8]}"
 
-        # Resolve markdown role specs if custom prompt not provided
+        # Resolve markdown role specs if custom prompt not provided. The scan
+        # root is clamped to a resolved directory (project root override wins)
+        # so a stray process cwd cannot redirect role discovery.
         if not system_prompt:
             try:
+                import os
+
                 from pathlib import Path
                 from coderai.subagents.registry import discover_markdown_agents
 
-                for d in discover_markdown_agents(Path.cwd()):
+                scan_root = Path(
+                    os.environ.get("CODERAI_PROJECT_ROOT") or str(Path.cwd())
+                ).resolve()
+                for d in discover_markdown_agents(scan_root):
                     if d.name.lower() == role.lower():
-                        system_prompt = d.system_prompt
+                        system_prompt = d.system_prompt or None
                         if not allowed_tools and d.tools:
                             allowed_tools = list(d.tools)
                         if mode == "general" and d.mode:
@@ -165,6 +205,9 @@ class TeamManager:
                         break
             except Exception:
                 pass
+
+        if not system_prompt and role.strip().lower() in REVIEWER_ROLE_NAMES:
+            system_prompt = DEFAULT_REVIEWER_SYSTEM_PROMPT
 
         teammate = Teammate(
             teammate_id=teammate_id,
@@ -218,14 +261,30 @@ class TeamManager:
                 tm.inbox.append(msg)
                 mb = self.channel.get_mailbox(tm.teammate_id)
                 if mb:
-                    mb.send_nowait(msg)
+                    if not mb.send_nowait(msg):
+                        logger.warning(
+                            "Teammate mailbox full for '%s'; message %s dropped.",
+                            tm.teammate_id,
+                            msg.message_id,
+                        )
         else:
             target = self.get_teammate(recipient)
             if target:
                 target.inbox.append(msg)
                 mb = self.channel.get_mailbox(target.teammate_id)
                 if mb:
-                    mb.send_nowait(msg)
+                    if not mb.send_nowait(msg):
+                        logger.warning(
+                            "Teammate mailbox full for '%s'; message %s dropped.",
+                            target.teammate_id,
+                            msg.message_id,
+                        )
+            else:
+                logger.warning(
+                    "send_message: unknown recipient '%s'; message %s not delivered.",
+                    recipient,
+                    msg.message_id,
+                )
 
         sender_tm = self.get_teammate(sender)
         if sender_tm:
@@ -244,6 +303,15 @@ class TeamManager:
         wait_for: str = "completion",  # "completion" | "message" | "any_settlement"
     ) -> dict[str, Any]:
         """Await completion or message settlement from spawned teammates or subagents."""
+        if wait_for not in ("completion", "message", "any_settlement"):
+            raise ValueError(
+                f"Unknown wait_for mode '{wait_for}'. "
+                "Expected 'completion', 'message', or 'any_settlement'."
+            )
+        if timeout_seconds < 0:
+            raise ValueError(
+                f"timeout_seconds must be >= 0, got {timeout_seconds}."
+            )
         if isinstance(agent_ids, str):
             target_ids = [agent_ids]
         else:
@@ -465,15 +533,42 @@ class TeamManager:
                 await asyncio.sleep(0.1)
             except asyncio.CancelledError:
                 break
-            except Exception as exc:
-                logger.debug(f"Teammate {teammate_id} loop exception: {exc}")
+            except Exception:
+                logger.warning(
+                    "Teammate %s worker loop error; continuing watch loop.",
+                    teammate_id,
+                    exc_info=True,
+                )
                 await asyncio.sleep(0.5)
 
     def cancel_all_teammates(self) -> None:
         """Cancel and clean up all active teammate worker tasks."""
-        for task in list(self._active_tasks.values()):
-            if not task.done():
-                task.cancel()
+        def _consume_late_failure(done: asyncio.Task[Any]) -> None:
+            # Swallow late worker failures so a cancelled loop never
+            # surfaces "Task exception was never retrieved" warnings.
+            try:
+                if not done.cancelled():
+                    done.exception()
+            except Exception:
+                pass
+
+        for teammate_id, task in list(self._active_tasks.items()):
+            try:
+                if not task.done():
+                    task.cancel()
+                task.add_done_callback(_consume_late_failure)
+            except Exception:
+                logger.warning(
+                    "Failed to cancel teammate worker '%s'.", teammate_id, exc_info=True
+                )
+            try:
+                exc = task.exception() if task.done() else None
+                if exc is not None:
+                    logger.warning(
+                        "Teammate worker '%s' ended with error: %s", teammate_id, exc
+                    )
+            except (asyncio.CancelledError, Exception):
+                pass
         self._active_tasks.clear()
 
 

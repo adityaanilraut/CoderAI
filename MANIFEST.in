@@ -2,6 +2,7 @@ include SECURITY.md
 include scripts/verify_wheel.py
 include coderai/vendor/rg
 recursive-include coderai/prompts *
+recursive-include coderai/tools/plan *
 recursive-include coderai/skills *
 recursive-include coderai/agents *
 recursive-include docs *.md

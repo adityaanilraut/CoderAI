@@ -16,10 +16,12 @@ import subprocess
 import sys
 from typing import Any
 
-from coderai.ui.shell.slash import (
-    SlashAction,
+from coderai.ui.shell.dispatch import (
     ShellContext,
+    SlashAction,
     dispatch_slash_command,
+)
+from coderai.ui.shell.slash import (
     parse_slash_command,
     render_help,
 )
@@ -314,8 +316,9 @@ def _prompt_permissions(
                             else:
                                 replies.append({"toolCallId": tool_call_id, "permission": "deny"})
                             break
-                        replies.append({"toolCallId": tool_call_id, "permission": "allow"})
-                        break
+                        # Fail-closed: unknown input reprompts, never auto-approves.
+                        print("  Invalid choice — type y (allow once), a (always), n (deny), e (edit), d (diff).")
+                        continue
                 continue
             except Exception:
                 # fall through to fallback rendering on panel error
@@ -476,8 +479,9 @@ def _prompt_permissions(
                 replies.append({"toolCallId": tool_call_id, "permission": "allow"})
                 break
             else:
-                replies.append({"toolCallId": tool_call_id, "permission": "allow"})
-                break
+                # Fail-closed: unknown input reprompts, never auto-approves.
+                print("  Invalid choice — type y (allow once), a (always), n (deny), e (edit), d (diff).")
+                continue
 
     return replies, always_allows
 
@@ -1963,6 +1967,19 @@ async def _run_interactive(
                 else:
                     print("\nTurn interrupted by user.")
                 continue
+            except Exception as exc:
+                try:
+                    ensure_tty_sane()
+                except Exception:
+                    pass
+                if console is not None and _RICH:
+                    try:
+                        console.print(f"[bold red]Turn failed: {exc}[/]")
+                    except Exception:
+                        print(f"Turn failed: {exc}")
+                else:
+                    print(f"Turn failed: {exc}")
+                continue
     finally:
         # Phase0: restore TTY sane before exit summary
         try:
@@ -2166,10 +2183,24 @@ def main(argv: list[str] | None = None) -> int:
             import json as _json
 
             os.environ["CODERAI_MCP_CONFIG_JSON"] = _json.dumps({"mcpServers": _cli_servers})
+    if getattr(args, "agent", None) and getattr(args, "agent_file", None):
+        print("Cannot use --agent together with --agent-file. Use one or the other.", file=sys.stderr)
+        return 1
     if getattr(args, "agent", None):
         os.environ["CODERAI_AGENT"] = str(args.agent)
+        os.environ.pop("CODERAI_AGENT_FILE", None)
     if getattr(args, "agent_file", None):
         os.environ["CODERAI_AGENT_FILE"] = str(args.agent_file)
+        os.environ.pop("CODERAI_AGENT", None)
+    _agent_target = getattr(args, "agent_file", None) or getattr(args, "agent", None)
+    if _agent_target:
+        try:
+            from coderai.agentspec import resolve_agent_spec as _resolve_cli_agent
+
+            _resolve_cli_agent(_agent_target, project_root=pathlib.Path(project_root))
+        except Exception as exc:
+            print(f"Invalid agent specification {_agent_target!r}: {exc}", file=sys.stderr)
+            return 1
 
     # Check mutual exclusions & argument validity
     has_positional = bool(args.prompt)
@@ -2275,7 +2306,20 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # Explicit presets take precedence; new prompt runs default to core.
-    preset_mode = args.preset
+    # --permission / --tools-preset / --preset are aliases for the same slot.
+    _preset_flags = [
+        getattr(args, "permission", None),
+        getattr(args, "tools_preset", None),
+        args.preset,
+    ]
+    _preset_set = {p for p in _preset_flags if p}
+    if len(_preset_set) > 1:
+        print(
+            f"Conflicting presets: {sorted(_preset_set)}. Use only one of --preset/--tools-preset/--permission.",
+            file=sys.stderr,
+        )
+        return 1
+    preset_mode = next((p for p in _preset_flags if p), None)
     if prompt_value and not (args.resume or args.fork or args.last) and not preset_mode:
         preset_mode = "core"
 

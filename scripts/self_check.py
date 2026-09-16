@@ -410,16 +410,21 @@ async def main() -> None:
     assert {
         "gpt-5.6-sol",
         "gemini-3.7-flash",
+        "deepseek-flash",
         "deepseek-v4-pro",
     } <= THINKING_CAPABLE_MODELS
     assert defaults_to_thinking_mode("gpt-5.6-sol")
     assert defaults_to_thinking_mode("deepseek-v4-pro")
+    assert defaults_to_thinking_mode("deepseek-flash")
     assert supports_multimodal("gpt-5.6-terra")
+    assert supports_multimodal("deepseek-flash")
     assert not supports_multimodal("deepseek-v4-pro")
 
     # Check endpoint auto-routing
     ds_url, _ = resolve_model_provider_routing("deepseek-v4-pro")
     assert "api.deepseek.com" in ds_url
+    ds_flash_url, _ = resolve_model_provider_routing("deepseek-flash")
+    assert "api.deepseek.com" in ds_flash_url
     gemini_url, _ = resolve_model_provider_routing("gemini-2.5-pro")
     assert "generativelanguage.googleapis.com" in gemini_url
 

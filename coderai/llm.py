@@ -756,7 +756,12 @@ def resolve_model_provider_routing(
 
     # 7. Default OpenAI / Fallback
     base_url = explicit_base_url or os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE_URL
-    api_key = explicit_api_key or os.getenv("OPENAI_API_KEY")
+    api_key = (
+        explicit_api_key
+        or env.get("API_KEY")
+        or os.getenv("CODERAI_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+    )
     return base_url, api_key
 
 

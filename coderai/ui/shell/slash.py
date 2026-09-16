@@ -5,14 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from coderai.ui.shell.dispatch import (
-    SlashAction,
-    ShellContext,
-    dispatch_slash_command,
-    registry,
-    shell_mode_registry,
-)
-
 
 @dataclass(frozen=True)
 class SlashCommand:
@@ -102,10 +94,10 @@ _COMMANDS = (
     ),
     SlashCommand(
         "agents",
-        "Inspect subagent runs",
+        "List discovered subagent roles",
         "Diagnostics",
         ("subagents", "subagent"),
-        ("list", "tree", "report", "send"),
+        ("list", "roles"),
     ),
     SlashCommand("teams", "Inspect active agent teams", "Diagnostics"),
     SlashCommand(
@@ -354,22 +346,17 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
     },
     "agents": {
         "title": "Subagents & Multi-Agent Hierarchy",
-        "syntax": "/agents or /subagents [list|roles|tree|report <id>|send <id> <msg>]",
-        "summary": "Inspect hierarchical subagent runs, discovered roles, and communicate with child agents.",
+        "syntax": "/agents or /subagents [list|roles]",
+        "summary": "List discovered subagent roles. Live run tree/report/send are planned.",
         "description": (
-            "Monitor and interact with delegated subagent tasks and roles.\n"
-            "• /agents                   — List running and completed subagents\n"
+            "Inspect delegated subagent roles.\n"
+            "• /agents                   — List discovered agent roles\n"
             "• /agents roles             — List bundled and discovered agent roles (.coderai/agents/*.md)\n"
-            "• /agents tree              — View hierarchical tree of subagent delegation\n"
-            "• /agents report <id>       — Display final report or findings from subagent\n"
-            "• /agents send <id> <msg>   — Send instruction message into subagent inbox"
+            "Planned (not yet implemented): tree, report <id>, send <id> <msg>."
         ),
         "examples": [
             "/agents",
             "/agents roles",
-            "/agents tree",
-            "/agents report ag_1",
-            "/agents send ag_1 Please check module B",
         ],
     },
     "teams": {
@@ -1069,8 +1056,11 @@ def cmd_feedback(console: Any = None, text: str = "") -> str:
     if feedback:
         url += "?body=" + urllib.parse.quote(feedback[:2000])
     try:
-        webbrowser.open(url)
-        opened = True
+        if sys.stdin.isatty():
+            webbrowser.open(url)
+            opened = True
+        else:
+            opened = False
     except Exception:
         opened = False
     msg = f"Feedback URL: {url}" if not opened else "Opened feedback page in browser."

@@ -131,7 +131,7 @@ def test_extract_dependencies_from_repo_pyproject():
     text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
     deps = mod._extract_dependencies(text)
     names = [mod._parse_requirement(d)[0] for d in deps if mod._parse_requirement(d)]
-    for expected in ("rich", "kosong", "pykaos", "typer", "fastmcp", "aiohttp"):
+    for expected in ("rich", "kosong", "pykaos", "fastmcp", "aiohttp"):
         assert expected in names, f"{expected} missing from parsed dependencies"
 
 

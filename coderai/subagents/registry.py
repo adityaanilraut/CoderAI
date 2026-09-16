@@ -199,14 +199,19 @@ def resolve_tool_policy(
     """Resolve the effective tool policy for a subagent launch.
 
     Returns ``(mode, tools)`` where ``inherit`` means no restriction.
-    An explicit ``requested`` allowlist always wins.
+    An explicit ``requested`` allowlist always wins. Deny-by-default: an
+    explicitly named but unknown subagent type resolves to an empty
+    allowlist (nothing permitted) instead of unrestricted ``inherit``; only
+    an absent type (no restriction requested) inherits.
     """
     if requested:
         return "allowlist", tuple(requested)
     if not subagent_type:
         return "inherit", ()
     definition = get_subagent_definition(subagent_type, project_root)
-    if definition is None or definition.allowed_tools is None:
+    if definition is None:
+        return "allowlist", ()
+    if definition.allowed_tools is None:
         return "inherit", ()
     return "allowlist", definition.allowed_tools
 

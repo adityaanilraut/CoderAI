@@ -9,10 +9,21 @@ import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-import pyperclip
-from PIL import Image, ImageGrab
+try:  # Optional `media` extra: pip install coderai-agent[media]
+    import pyperclip
+except ImportError:  # minimal/server installs without clipboard support
+    pyperclip = None  # type: ignore[assignment]
+
+try:
+    from PIL import Image, ImageGrab
+except ImportError:  # pragma: no cover - optional media extra
+    Image = None  # type: ignore[assignment]
+    ImageGrab = None  # type: ignore[assignment]
+
+if TYPE_CHECKING:
+    from PIL import Image as _PILImage
 
 # Video file extensions recognized for clipboard paste.
 _VIDEO_SUFFIXES: frozenset[str] = frozenset(
@@ -26,14 +37,17 @@ class ClipboardResult:
 
     Both fields may be non-empty when the clipboard contains a mix of
     image files and non-image files (videos, PDFs, etc.).
+    ``images`` holds PIL images when the `media` extra is installed.
     """
 
-    images: tuple[Image.Image, ...]
+    images: tuple[Any, ...]
     file_paths: tuple[Path, ...]
 
 
 def is_clipboard_available() -> bool:
     """Check if the Pyperclip text clipboard is available."""
+    if pyperclip is None:
+        return False
     try:
         pyperclip.paste()
         return True
@@ -84,6 +98,8 @@ def grab_media_from_clipboard() -> ClipboardResult | None:
         return None
 
     # 3. On Windows and other platforms, use Pillow's default implementation.
+    if Image is None or ImageGrab is None:
+        return None
     payload = ImageGrab.grabclipboard()
     if payload is None:
         return None
@@ -110,6 +126,8 @@ def _grab_image_linux() -> Image.Image | None:
     Wayland). On headless systems with no session type, xclip is tried
     first since clipboard bridges (e.g. cc-clip) typically shim xclip.
     """
+    if Image is None:
+        return None
     xclip_args = ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"]
     wlpaste_args = ["wl-paste", "-t", "image"]
 
@@ -176,8 +194,12 @@ def _classify_file_paths(
             continue
         resolved.append(path)
 
-    images: list[Image.Image] = []
+    images: list[Any] = []
     non_image_paths: list[Path] = []
+
+    if Image is None:
+        # Pillow missing (no `media` extra): nothing can be decoded as image.
+        return images, resolved
 
     for path in resolved:
         # Video files are never opened as images.

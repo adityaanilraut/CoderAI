@@ -15,6 +15,7 @@ import asyncio
 import json
 import pathlib
 import shutil
+import threading
 import uuid
 from typing import Any
 from collections.abc import Callable
@@ -222,13 +223,27 @@ class SessionManager:
         self._souls: dict[str, Any] = {}
         _session_managers.append(self)
 
-        # Event-model state: per-session turn/step/seq counters
+        # Event-model state: per-session turn/step/seq counters.
+        # The lock guards all counter and message-cache mutations so
+        # concurrent activations cannot mint duplicate seqs/turns/steps.
+        # It is never held across awaits.
+        self._seq_lock = threading.RLock()
         self._turn_counters: dict[str, int] = {}
         self._step_counters: dict[str, int] = {}
         self._seq_counters: dict[str, int] = {}
+        self._turn_step_synced: set[str] = set()
+        # Bounded stat-keyed cache of deserialized messages: avoids a full
+        # JSONL re-read/parse on every list_session_messages call in a turn.
+        self._messages_cache: dict[str, tuple[int, int, list[Any]]] = {}
+        self._messages_cache_bound = 64
 
     def set_model(self, model_name: str) -> None:
-        self._override_model = model_name.strip() if model_name else None
+        clean = (model_name or "").strip()
+        if not clean:
+            raise ValueError("Model name must be a non-empty string.")
+        if len(clean) > 256:
+            raise ValueError("Model name must be 256 characters or fewer.")
+        self._override_model = clean
 
     def get_active_model(self) -> str:
         if self._override_model:
@@ -458,18 +473,82 @@ class SessionManager:
     def _append_message(self, message: SessionMessage) -> None:
         """Append one legacy-compatible message row to the session log."""
         self.session_store.append_row(message.session_id, self._serialize_message(message))
+        self._invalidate_messages_cache(message.session_id)
+
+    def _ensure_seq_loaded_nolock(self, session_id: str) -> None:
+        """Seed the in-memory seq counter from the persisted log (call with lock held)."""
+        if session_id in self._seq_counters:
+            return
+        max_seq = 0
+        try:
+            for row in self.session_store.read_rows(session_id):
+                seq = row.get("seq")
+                if isinstance(seq, int) and seq >= max_seq:
+                    max_seq = seq + 1
+        except Exception:
+            pass
+        self._seq_counters[session_id] = max_seq
 
     def _next_seq(self, session_id: str) -> int:
-        """Return and increment the monotonic event sequence for a session."""
-        seq = self._seq_counters.get(session_id, 0)
-        self._seq_counters[session_id] = seq + 1
-        return seq
+        """Return and increment the monotonic event sequence for a session.
+
+        Lock-guarded and seeded from the persisted log on first use, so the
+        counter survives process restarts and concurrent activations.
+        """
+        with self._seq_lock:
+            self._ensure_seq_loaded_nolock(session_id)
+            seq = self._seq_counters.get(session_id, 0)
+            self._seq_counters[session_id] = seq + 1
+            return seq
+
+    def _sync_turn_step_from_log_nolock(self, session_id: str) -> None:
+        """Seed turn/step counters from persisted events (call with lock held)."""
+        if session_id in self._turn_step_synced:
+            return
+        self._turn_step_synced.add(session_id)
+        max_turn = self._turn_counters.get(session_id, 0)
+        max_step = self._step_counters.get(session_id, 0)
+        try:
+            for event in self.session_store.list_events(session_id):
+                data = event.data or {}
+                turn = data.get("turn")
+                if isinstance(turn, int) and turn > max_turn:
+                    max_turn = turn
+                    max_step = 0
+                step = data.get("step")
+                if isinstance(step, int) and step > max_step:
+                    max_step = step
+        except Exception:
+            pass
+        self._turn_counters[session_id] = max_turn
+        self._step_counters[session_id] = max_step
 
     def _current_turn(self, session_id: str) -> int:
-        return self._turn_counters.get(session_id, 0)
+        with self._seq_lock:
+            self._sync_turn_step_from_log_nolock(session_id)
+            return self._turn_counters.get(session_id, 0)
 
     def _current_step(self, session_id: str) -> int:
-        return self._step_counters.get(session_id, 0)
+        with self._seq_lock:
+            self._sync_turn_step_from_log_nolock(session_id)
+            return self._step_counters.get(session_id, 0)
+
+    def next_turn(self, session_id: str) -> int:
+        """Atomically claim the next turn number for a session (resets step)."""
+        with self._seq_lock:
+            self._sync_turn_step_from_log_nolock(session_id)
+            turn = self._turn_counters.get(session_id, 0) + 1
+            self._turn_counters[session_id] = turn
+            self._step_counters[session_id] = 0
+            return turn
+
+    def next_step(self, session_id: str) -> int:
+        """Atomically claim the next step number for a session."""
+        with self._seq_lock:
+            self._sync_turn_step_from_log_nolock(session_id)
+            step = self._step_counters.get(session_id, 0) + 1
+            self._step_counters[session_id] = step
+            return step
 
     def _append_event(self, session_id: str, event: SessionEvent) -> None:
         """Append a typed SessionEvent to the JSONL log.
@@ -477,27 +556,59 @@ class SessionManager:
         Events are written in the new format alongside legacy messages.
         The JSONL line includes a ``type`` key that distinguishes it from
         legacy ``SessionMessage`` dicts (which have ``role`` instead).
+        The write and the seq-counter advance happen under one lock so the
+        persisted ``seq`` order always matches the mint order.
         """
-        self.session_store.append_row(session_id, event.to_dict())
+        with self._seq_lock:
+            self.session_store.append_row(session_id, event.to_dict())
+            current = self._seq_counters.get(session_id, 0)
+            if isinstance(event.seq, int) and event.seq + 1 > current:
+                self._seq_counters[session_id] = event.seq + 1
+            self._messages_cache.pop(session_id, None)
+
+    def _invalidate_messages_cache(self, session_id: str) -> None:
+        # No index resolution here: this runs on the append hot path and the
+        # row was written under session_id already.
+        with self._seq_lock:
+            self._messages_cache.pop(session_id, None)
 
     def _save_messages(self, session_id: str, messages: list[SessionMessage]) -> None:
         target_id = self.resolve_session_id(session_id) or session_id
         self.session_store.replace_rows(
             target_id, [self._serialize_message(message) for message in messages]
         )
+        with self._seq_lock:
+            self._messages_cache.pop(target_id, None)
+
+    def _messages_cache_key(self, session_id: str) -> tuple[int, int] | None:
+        try:
+            stat = self.session_store.messages_path(session_id).stat()
+            return (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return None
 
     def list_session_messages(self, session_id: str) -> list[SessionMessage]:
         target_id = self.resolve_session_id(session_id) or session_id
-        messages: list[SessionMessage] = []
-        max_seq = self._seq_counters.get(target_id, 0)
-        for row in self.session_store.read_rows(target_id):
-            if "seq" in row and isinstance(row["seq"], int):
-                max_seq = max(max_seq, row["seq"] + 1)
-            message = self._deserialize_message(row, target_id)
-            if message is not None:
-                messages.append(message)
-        self._seq_counters[target_id] = max_seq
-        return messages
+        with self._seq_lock:
+            key = self._messages_cache_key(target_id)
+            if key is not None:
+                hit = self._messages_cache.get(target_id)
+                if hit is not None and (hit[0], hit[1]) == key:
+                    return list(hit[2])
+            messages: list[SessionMessage] = []
+            max_seq = self._seq_counters.get(target_id, 0)
+            for row in self.session_store.read_rows(target_id):
+                if "seq" in row and isinstance(row["seq"], int):
+                    max_seq = max(max_seq, row["seq"] + 1)
+                message = self._deserialize_message(row, target_id)
+                if message is not None:
+                    messages.append(message)
+            self._seq_counters[target_id] = max_seq
+            if key is not None:
+                if len(self._messages_cache) >= self._messages_cache_bound:
+                    self._messages_cache.pop(next(iter(self._messages_cache)), None)
+                self._messages_cache[target_id] = (key[0], key[1], list(messages))
+            return messages
 
     def list_session_events(self, session_id: str) -> list[SessionEvent]:
         target_id = self.resolve_session_id(session_id) or session_id
@@ -528,15 +639,17 @@ class SessionManager:
             if eid == sid:
                 return eid
 
-        # 2. Case-insensitive prefix match by session ID
+        # 2. Case-insensitive prefix match by session ID (unambiguous only)
         sid_lower = sid.lower()
         prefix_matches = [
             entry.get("id", "")
             for entry in entries
             if entry.get("id", "").lower().startswith(sid_lower)
         ]
-        if prefix_matches:
+        if len(prefix_matches) == 1:
             return prefix_matches[0]
+        if len(prefix_matches) > 1:
+            return None
 
         # 3. Match by checkpoint hash prefix in Git file history
         for entry in entries:
@@ -565,12 +678,17 @@ class SessionManager:
             except Exception:
                 pass
 
-        # 5. Fuzzy match / substring in session ID if len >= 4
+        # 5. Fuzzy match / substring in session ID if len >= 4 (unambiguous only)
         if len(sid) >= 4:
-            for entry in entries:
-                eid = entry.get("id", "")
-                if sid_lower in eid.lower():
-                    return eid
+            fuzzy_matches = [
+                entry.get("id", "")
+                for entry in entries
+                if sid_lower in entry.get("id", "").lower()
+            ]
+            if len(fuzzy_matches) == 1:
+                return fuzzy_matches[0]
+            if len(fuzzy_matches) > 1:
+                return None
 
         return None
 
@@ -662,14 +780,19 @@ class SessionManager:
     # ---- lifecycle ----
 
     def interrupt_session(self, session_id: str) -> None:
-        """Interrupt and cancel a running session."""
+        """Interrupt and cancel a running session.
+
+        Signals the existing controller in place so a running activation
+        observing its own event sees the interrupt; only installs a preset
+        event when no activation owns one.
+        """
         ctrl = self.session_controllers.get(session_id)
-        if ctrl:
+        if ctrl is None:
+            ctrl = asyncio.Event()
             ctrl.set()
+            self.session_controllers[session_id] = ctrl
         else:
-            event = asyncio.Event()
-            event.set()
-            self.session_controllers[session_id] = event
+            ctrl.set()
         self.kill_live_processes(session_id)
         clear_session_state(session_id)
         self._update_entry(
@@ -1587,6 +1710,19 @@ class SessionManager:
                         result._force_stop_turn = True  # type: ignore[attr-defined]
                     return result
 
+                is_plan = False
+                try:
+                    entry = self._get_entry(session_id) or {}
+                    is_plan = bool(entry.get("planMode"))
+                except Exception:
+                    pass
+                if not is_plan:
+                    try:
+                        state = self.get_session_state(session_id)
+                        is_plan = bool(getattr(state, "plan_mode", False))
+                    except Exception:
+                        pass
+
                 hooks = ToolExecutionHooks(
                     on_before_file_mutation=_on_before_file_mutation,
                     on_after_file_mutation=_on_after_file_mutation,
@@ -1606,6 +1742,8 @@ class SessionManager:
                     ),
                     list_session_messages=lambda sid: self.list_session_messages(sid),
                     list_session_events=lambda sid: self.list_session_events(sid),
+                    plan_mode=is_plan,
+                    session_manager=self,
                 )
 
                 is_parallel = chunk_kind == "parallel" and len(chunk_tcs) > 1
@@ -1976,6 +2114,12 @@ class SessionManager:
                 shutil.rmtree(images_dir)
             except Exception:
                 pass
+        with self._seq_lock:
+            self._seq_counters.pop(target_id, None)
+            self._turn_counters.pop(target_id, None)
+            self._step_counters.pop(target_id, None)
+            self._turn_step_synced.discard(target_id)
+            self._messages_cache.pop(target_id, None)
         return True
 
     def rename_session(self, session_id: str, new_title: str) -> bool:

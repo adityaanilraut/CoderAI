@@ -1,6 +1,12 @@
 """CoderAI Network & Web Access Subsystem."""
 
-from coderai.network.cache import ResponseCache, get_fetch_cache, get_search_cache
+from coderai.network.cache import (
+    ResponseCache,
+    build_search_key,
+    get_fetch_cache,
+    get_search_cache,
+    normalize_search_query,
+)
 from coderai.utils.aiohttp import HttpClient, HttpResponse, get_http_client
 from coderai.tools.web.fetch import (
     ExtractedWebPage,
@@ -22,11 +28,13 @@ __all__ = [
     "NetworkPolicy",
     "NetworkSecurityError",
     "ResponseCache",
+    "build_search_key",
     "check_outbound_url",
     "extract_and_sanitize_html",
     "get_fetch_cache",
     "get_http_client",
     "get_search_cache",
+    "normalize_search_query",
     "sanitize_prompt_injection",
     "slice_payload",
     "validate_outbound_url",

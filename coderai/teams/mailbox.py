@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import itertools
 import logging
 import time
 from dataclasses import dataclass, field
@@ -40,8 +41,10 @@ class AsyncMailbox:
         self._queue: asyncio.PriorityQueue[PrioritizedMessage] = asyncio.PriorityQueue(
             maxsize=max_size
         )
-        self._seq = 0
-        self._lock = asyncio.Lock()
+        # Monotonic arrival sequence. itertools.count().next() is atomic under
+        # the GIL, so this stays race-free across the sync (send_nowait) and
+        # async (send_async) paths without needing a lock.
+        self._seq = itertools.count(1)
 
     @property
     def size(self) -> int:
@@ -60,13 +63,12 @@ class AsyncMailbox:
         timeout_seconds: float | None = None,
     ) -> bool:
         """Enqueue message asynchronously with priority and optional timeout."""
-        self._seq += 1
         # Invert priority so higher enum values get popped first
         score = -int(priority)
         item = PrioritizedMessage(
             priority_score=score,
             arrival_time=time.time(),
-            sequence=self._seq,
+            sequence=next(self._seq),
             payload=message,
         )
 
@@ -88,12 +90,11 @@ class AsyncMailbox:
         priority: MessagePriority = MessagePriority.NORMAL,
     ) -> bool:
         """Enqueue message immediately without blocking. Drops/rejects if full."""
-        self._seq += 1
         score = -int(priority)
         item = PrioritizedMessage(
             priority_score=score,
             arrival_time=time.time(),
-            sequence=self._seq,
+            sequence=next(self._seq),
             payload=message,
         )
         try:
@@ -108,12 +109,22 @@ class AsyncMailbox:
             return False
 
     async def recv_async(self, timeout_seconds: float | None = None) -> Any:
-        """Receive the next highest-priority message, waiting up to timeout_seconds."""
-        if timeout_seconds is not None and timeout_seconds >= 0:
-            item = await asyncio.wait_for(self._queue.get(), timeout=timeout_seconds)
-        else:
-            item = await self._queue.get()
+        """Receive the next highest-priority message, waiting up to timeout_seconds.
+
+        Returns ``None`` when the timeout elapses before a message arrives.
+        """
+        try:
+            if timeout_seconds is not None and timeout_seconds >= 0:
+                item = await asyncio.wait_for(self._queue.get(), timeout=timeout_seconds)
+            else:
+                item = await self._queue.get()
+        except (asyncio.TimeoutError, TimeoutError):
+            return None
         return item.payload
+
+    async def receive_async(self, timeout_seconds: float | None = None) -> Any:
+        """Alias of :meth:`recv_async` (unified receive naming)."""
+        return await self.recv_async(timeout_seconds=timeout_seconds)
 
     def poll(self, max_items: int = 100) -> list[Any]:
         """Non-blocking drain of up to max_items pending messages."""
@@ -133,7 +144,6 @@ class ActorChannel:
     def __init__(self) -> None:
         self._topics: dict[str, set[AsyncMailbox]] = {}
         self._mailboxes: dict[str, AsyncMailbox] = {}
-        self._lock = asyncio.Lock()
 
     def register_mailbox(
         self, agent_id: str, max_size: int = DEFAULT_MAILBOX_CAPACITY
@@ -160,12 +170,17 @@ class ActorChannel:
         topic: str,
         message: Any,
         priority: MessagePriority = MessagePriority.NORMAL,
+        timeout_seconds: float | None = None,
     ) -> int:
-        """Publish a message to all subscribers of a specific topic."""
+        """Publish a message to all subscribers of a specific topic.
+
+        ``timeout_seconds`` bounds each per-subscriber enqueue so a single
+        full mailbox cannot stall the whole fan-out.
+        """
         subscribers = list(self._topics.get(topic, []))
         delivered = 0
         for sub in subscribers:
-            ok = await sub.send_async(message, priority=priority)
+            ok = await sub.send_async(message, priority=priority, timeout_seconds=timeout_seconds)
             if ok:
                 delivered += 1
         return delivered
@@ -175,13 +190,18 @@ class ActorChannel:
         message: Any,
         priority: MessagePriority = MessagePriority.NORMAL,
         exclude_agent_id: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> int:
-        """Broadcast a message to all registered agent mailboxes."""
+        """Broadcast a message to all registered agent mailboxes.
+
+        ``timeout_seconds`` bounds each per-mailbox enqueue so a single
+        full mailbox cannot stall the whole broadcast.
+        """
         delivered = 0
         for aid, mb in self._mailboxes.items():
             if exclude_agent_id and aid == exclude_agent_id:
                 continue
-            ok = await mb.send_async(message, priority=priority)
+            ok = await mb.send_async(message, priority=priority, timeout_seconds=timeout_seconds)
             if ok:
                 delivered += 1
         return delivered

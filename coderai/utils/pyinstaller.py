@@ -85,10 +85,6 @@ datas = (
         ],
     )
     + collect_data_files(
-        "dateparser",
-        includes=["**/*.pkl"],
-    )
-    + collect_data_files(
         "fastmcp",
         includes=["../fastmcp-*.dist-info/*"],
     )

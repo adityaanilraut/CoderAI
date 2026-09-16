@@ -15,12 +15,61 @@ import contextlib
 import locale
 import logging
 import os
+import re
 import sys
 import threading
 from collections.abc import Iterator
 from typing import IO, Any
 
 _STD_LOGGER = logging.getLogger("coderai")
+
+# Keywords the stdlib logging API accepts; anything else is loguru-style
+# bound context (e.g. ``logger.info("...", file=path)``).
+_STD_LOG_KWARGS = frozenset({"exc_info", "stack_info", "extra", "stacklevel"})
+
+
+def redact_secrets(text: str) -> str:
+    """Mask bearer tokens and ``key = value`` secrets in log-bound text.
+
+    Canonical redactor shared by all coderai sinks (file log, debug log,
+    error log) so secrets never fan out to disk unmasked.
+    """
+    text = re.sub(r"(Authorization:\s*Bearer\s+)[^\s\r\n]+", r"\1***MASKED***", text, flags=re.I)
+    text = re.sub(
+        r"((?:api[Kk]ey|api_key|secret)\"?\s*[:=]\s*\"?)[^\",}\s]+",
+        r"\1***MASKED***",
+        text,
+        flags=re.I,
+    )
+    return text
+
+
+def _fold_context(
+    msg: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> tuple[str, tuple[Any, ...], dict[str, Any]]:
+    """Split stdlib kwargs from loguru-style context, folding context in.
+
+    The stdlib fallback has no ``bind()``; unknown keywords are rendered as
+    ``key=value`` suffixes so enabling logging without loguru installed
+    records the details instead of raising ``TypeError``.
+    """
+    std = {k: kwargs[k] for k in _STD_LOG_KWARGS if k in kwargs}
+    ctx = {k: v for k, v in kwargs.items() if k not in _STD_LOG_KWARGS}
+    if ctx:
+        suffix = " " + " ".join(f"{k}={v}" for k, v in ctx.items())
+        if args:
+            suffix = suffix.replace("%", "%%")
+        msg += suffix
+    return msg, args, std
+
+
+def _coerce_level(level: Any) -> int:
+    if isinstance(level, int):
+        return level
+    try:
+        return int(str(level))
+    except (TypeError, ValueError):
+        return int(getattr(logging, str(level).upper(), logging.INFO))
 
 
 class _StdLoggerAdapter:
@@ -52,27 +101,30 @@ class _StdLoggerAdapter:
         return None
 
     def debug(self, msg: Any, *args: Any, **kwargs: Any) -> None:
-        self._inner.debug(str(msg), *args, **kwargs)
+        text, args, std = _fold_context(str(msg), args, kwargs)
+        self._inner.debug(text, *args, **std)
 
     def info(self, msg: Any, *args: Any, **kwargs: Any) -> None:
-        self._inner.info(str(msg), *args, **kwargs)
+        text, args, std = _fold_context(str(msg), args, kwargs)
+        self._inner.info(text, *args, **std)
 
     def warning(self, msg: Any, *args: Any, **kwargs: Any) -> None:
-        self._inner.warning(str(msg), *args, **kwargs)
+        text, args, std = _fold_context(str(msg), args, kwargs)
+        self._inner.warning(text, *args, **std)
 
     warn = warning
 
     def error(self, msg: Any, *args: Any, **kwargs: Any) -> None:
-        self._inner.error(str(msg), *args, **kwargs)
+        text, args, std = _fold_context(str(msg), args, kwargs)
+        self._inner.error(text, *args, **std)
 
     def exception(self, msg: Any, *args: Any, **kwargs: Any) -> None:
-        self._inner.exception(str(msg), *args, **kwargs)
+        text, args, std = _fold_context(str(msg), args, kwargs)
+        self._inner.exception(text, *args, **std)
 
     def log(self, level: Any, msg: Any, *args: Any, **kwargs: Any) -> None:
-        try:
-            self._inner.log(int(level), str(msg), *args, **kwargs)
-        except (TypeError, ValueError):
-            self._inner.info(str(msg), *args, **kwargs)
+        text, args, std = _fold_context(str(msg), args, kwargs)
+        self._inner.log(_coerce_level(level), text, *args, **std)
 
 
 class _LazyLogger:
@@ -101,6 +153,7 @@ logger: Any = _LazyLogger()
 __all__ = [
     "logger",
     "enable_logging",
+    "redact_secrets",
     "redirect_stderr_to_logger",
     "restore_stderr",
     "open_original_stderr",

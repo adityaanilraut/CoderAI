@@ -162,9 +162,12 @@ def get_plan_mode_prompt() -> str:
 
 
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    # DeepSeek
-    "deepseek-chat": 128_000,
-    "deepseek-reasoner": 128_000,
+    # DeepSeek (current API: 1M context; deepseek-chat/reasoner retired 2026-07-24)
+    "deepseek-flash": 1_000_000,
+    "deepseek-v4-pro": 1_000_000,
+    "deepseek-v4-flash": 1_000_000,
+    "deepseek-chat": 1_000_000,
+    "deepseek-reasoner": 1_000_000,
     "deepseek-v3": 128_000,
     "deepseek-r1": 128_000,
     # Claude
@@ -204,7 +207,7 @@ def get_model_context_limit(model: str | None = None) -> int:
     if "claude" in m:
         return 200_000
     if "deepseek" in m:
-        return 128_000
+        return 1_000_000
     if "gpt-4" in m or "o1" in m or "o3" in m or "gpt-5" in m:
         return 128_000
     return 128_000

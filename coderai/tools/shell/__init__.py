@@ -17,7 +17,14 @@ from typing import Any
 from coderai.utils.subprocess_env import DEFAULT_BASH_TIMEOUT_MS, clamp_bash_timeout_ms
 from coderai.utils.subprocess_env import kill_process_tree
 from coderai.background import get_job_store
-from coderai.sandbox import wrap_sandbox_command
+from coderai.sandbox import (
+    SandboxUnavailableError,
+    check_sandbox_path_access,
+    resolve_exec_cwd,
+    wrap_sandbox_command,
+)
+from coderai.tools.legacy.path_lock import extract_redirect_paths
+from coderai.tools.legacy.sanitizer import sanitize_text
 from coderai.spill import apply_spill_policy
 from coderai.utils.shell_quoting import (
     build_disable_extglob_command,
@@ -65,6 +72,98 @@ def _update_session_cwd(session_id: str, fallback: str, cwd: str | None) -> None
     next_cwd = cwd or fallback
     if next_cwd and os.path.isdir(next_cwd):
         session_working_dirs[session_id] = next_cwd
+
+
+def _context_value(context: Any, name: str, default: Any = None) -> Any:
+    if isinstance(context, dict):
+        return context.get(name, default)
+    return getattr(context, name, default)
+
+
+def _isolated_root(context: Any) -> str | None:
+    iso = _context_value(context, "isolated_cwd", None)
+    if isinstance(iso, (str, pathlib.Path)) and str(iso).strip():
+        return str(iso)
+    return None
+
+
+_SANDBOX_RANK = {"read-only": 0, "workspace-write": 1, "danger-full-access": 2}
+
+
+def _effective_sandbox_mode(
+    context: Any, args: dict[str, Any]
+) -> tuple[Any, ToolResult | None]:
+    """Wire the `sandbox_permissions` escalation arg (fail-closed).
+
+    Returns (mode_to_enforce, error_result). An unknown mode, or any escalation
+    to a more permissive mode than the session base without a justification, is
+    denied instead of silently running with session permissions.
+    """
+    from coderai.sandbox import parse_sandbox_mode
+
+    base = _context_value(context, "sandbox_mode", None)
+    requested = args.get("sandbox_permissions") if isinstance(args, dict) else None
+    if requested is None or (isinstance(requested, str) and not requested.strip()):
+        return base, None
+    parsed = parse_sandbox_mode(requested) if isinstance(requested, str) else None
+    if parsed is None:
+        return base, ToolResult(
+            ok=False, name="bash", error=f"invalid sandbox_permissions: {requested!r}."
+        )
+    base_parsed = parse_sandbox_mode(base) if isinstance(base, str) else None
+    base_rank = _SANDBOX_RANK.get(base_parsed or "workspace-write", 1)
+    if _SANDBOX_RANK[parsed] > base_rank:
+        justification = args.get("justification") if isinstance(args, dict) else None
+        if not isinstance(justification, str) or not justification.strip():
+            return base, ToolResult(
+                ok=False,
+                name="bash",
+                error=(
+                    f"sandbox_permissions escalation to '{parsed}' requires a "
+                    "non-empty justification."
+                ),
+            )
+    return parsed, None
+
+
+def _reject_escaping_redirects(
+    command: str,
+    start_cwd: str,
+    project_root: str,
+    isolated: str | None,
+    mode: Any,
+    tool_name: str = "bash",
+) -> ToolResult | None:
+    """Deny shell `>`/`>>` targets that escape the execution root or sandbox.
+
+    Redirects otherwise bypass per-path write locks and file sandbox checks.
+    """
+    for target in extract_redirect_paths(command or ""):
+        candidate = target if os.path.isabs(target) else os.path.join(start_cwd, target)
+        try:
+            resolved = resolve_exec_cwd(candidate, project_root, isolated)
+        except (ValueError, OSError):
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=(
+                    f"Shell redirect target '{target}' escapes the execution "
+                    "root; refusing."
+                ),
+            )
+        allowed, err = check_sandbox_path_access(
+            resolved,
+            op="write",
+            mode=mode if isinstance(mode, str) else None,
+            workspace_root=project_root,
+        )
+        if not allowed:
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=err or f"Shell redirect target '{target}' blocked by sandbox policy.",
+            )
+    return None
 
 
 def _build_marker() -> str:
@@ -124,12 +223,20 @@ def _join_output(stdout: str, stderr: str) -> str:
 
 
 def _sandbox_wrap(
-    shell_path: str, shell_args: list[str], context: Any, cwd: str
+    shell_path: str,
+    shell_args: list[str],
+    context: Any,
+    cwd: str,
+    mode_override: Any = None,
 ) -> tuple[list[str], dict[str, Any]]:
-    mode = getattr(context, "sandbox_mode", None)
+    if mode_override is not None:
+        mode = mode_override
+    else:
+        mode = getattr(context, "sandbox_mode", None)
     project_root = getattr(context, "project_root", None) or cwd
     if isinstance(context, dict):
-        mode = context.get("sandbox_mode", mode)
+        if mode_override is None:
+            mode = context.get("sandbox_mode", mode)
         project_root = context.get("project_root", project_root)
     return wrap_sandbox_command(
         [shell_path, *shell_args],
@@ -188,13 +295,18 @@ def _execute_persistent_bash(
     start_cwd: str,
     context: Any,
     args: dict[str, Any],
+    mode_override: Any = None,
 ) -> ToolResult:
     mgr = get_terminal_manager()
     session_name = f"persistent_bash_{session_id}"
-    sandbox_mode = getattr(context, "sandbox_mode", None)
+    if mode_override is not None:
+        sandbox_mode = mode_override
+    else:
+        sandbox_mode = getattr(context, "sandbox_mode", None)
     project_root = getattr(context, "project_root", None) or start_cwd
     if isinstance(context, dict):
-        sandbox_mode = context.get("sandbox_mode", sandbox_mode)
+        if mode_override is None:
+            sandbox_mode = context.get("sandbox_mode", sandbox_mode)
         project_root = context.get("project_root", project_root)
 
     term = mgr.get_session(session_name)
@@ -281,9 +393,15 @@ def _execute_persistent_bash(
         body = clean_accum.split(end_marker, 1)[0].strip()
 
     if next_cwd and os.path.isdir(next_cwd):
-        _update_session_cwd(session_id, start_cwd, next_cwd)
+        try:
+            resolve_exec_cwd(next_cwd, str(project_root), _isolated_root(context))
+        except (ValueError, OSError):
+            next_cwd = None
+        else:
+            _update_session_cwd(session_id, start_cwd, next_cwd)
 
-    cleaned_body = body.strip()
+    # Sanitize BEFORE disk spill so spilled files never store raw secrets.
+    cleaned_body = sanitize_text(body.strip())[0]
     spilled, spill_ref = apply_spill_policy(
         cleaned_body,
         session_id=str(session_id),
@@ -368,19 +486,37 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
         context.get("project_root", os.getcwd()) if isinstance(context, dict) else os.getcwd()
     )
 
-    start_cwd = _get_session_cwd(session_id, project_root)
+    eff_mode, mode_error = _effective_sandbox_mode(context, args)
+    if mode_error is not None:
+        return mode_error
+    isolated = _isolated_root(context)
+    try:
+        start_cwd = resolve_exec_cwd(
+            _get_session_cwd(session_id, project_root), str(project_root), isolated
+        )
+    except (ValueError, OSError) as exc:
+        return ToolResult(ok=False, name="bash", error=f"CWD rejected: {exc}")
+    redirect_error = _reject_escaping_redirects(
+        command, start_cwd, str(project_root), isolated, eff_mode
+    )
+    if redirect_error is not None:
+        return redirect_error
 
     if persistent and sys.platform != "win32":
-        return _execute_persistent_bash(command, str(session_id), start_cwd, context, args)
+        return _execute_persistent_bash(
+            command, str(session_id), start_cwd, context, args, eff_mode
+        )
 
     shell_path, shell_args, marker = _build_shell_command(command)
 
     if run_in_background:
         return _start_background_shell_command(
-            shell_path, shell_args, start_cwd, command, marker, context
+            shell_path, shell_args, start_cwd, command, marker, context, eff_mode
         )
 
-    execution = _execute_shell_command(shell_path, shell_args, start_cwd, command, context)
+    execution = _execute_shell_command(
+        shell_path, shell_args, start_cwd, command, context, eff_mode
+    )
     cleaned_stdout, cwd = _strip_marker(execution["stdout"], marker)
     combined = _join_output(cleaned_stdout, execution["stderr"])
     # Exit/signal/timeout markers appended to body
@@ -396,6 +532,8 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
         mode = execution.get("sandbox_mode") or "unknown"
         body_with_marker += f"\n[sandbox: file access denied under {mode} mode]"
 
+    # Sanitize BEFORE disk spill so spilled files never store raw secrets.
+    body_with_marker = sanitize_text(body_with_marker)[0]
     spilled, spill_ref = apply_spill_policy(
         body_with_marker,
         session_id=str(session_id),
@@ -408,6 +546,11 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
     else:
         truncated_text, is_truncated = _truncate_output(body_with_marker)
 
+    if cwd:
+        try:
+            resolve_exec_cwd(cwd, str(project_root), isolated)
+        except (ValueError, OSError):
+            cwd = None
     _update_session_cwd(session_id, start_cwd, cwd)
 
     ok = (
@@ -461,6 +604,7 @@ def _execute_shell_command(
     cwd: str,
     command: str,
     context: Any,
+    mode_override: Any = None,
 ) -> dict[str, Any]:
     configured_env: dict[str, str] = {}
     if isinstance(context, dict):
@@ -503,7 +647,26 @@ def _execute_shell_command(
     else:
         kwargs["start_new_session"] = True
 
-    argv, sandbox_meta = _sandbox_wrap(shell_path, shell_args, context, cwd)
+    try:
+        argv, sandbox_meta = _sandbox_wrap(
+            shell_path, shell_args, context, cwd, mode_override
+        )
+    except SandboxUnavailableError as sb_err:
+        # Fail-closed: never run the command without the requested OS sandbox.
+        return {
+            "stdout": "",
+            "stderr": "",
+            "exitCode": None,
+            "exit_code": None,
+            "signal": None,
+            "error": str(sb_err),
+            "timed_out": False,
+            "timeout_ms": state["timeout_ms"],
+            "deadline_at_ms": state["deadline_at_ms"],
+            "sandbox": {"sandboxApplied": False, "sandboxDenied": str(sb_err)},
+            "sandbox_denied": True,
+            "sandbox_mode": mode_override if isinstance(mode_override, str) else None,
+        }
     try:
         proc = subprocess.Popen(argv, **kwargs)
     except Exception as spawn_err:
@@ -648,6 +811,7 @@ def _start_background_shell_command(
     command: str,
     marker: str,
     context: Any,
+    mode_override: Any = None,
 ) -> ToolResult:
     BACKGROUND_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     task_id = f"bash-{uuid.uuid4()}"
@@ -677,7 +841,18 @@ def _start_background_shell_command(
     else:
         kwargs["start_new_session"] = True
 
-    argv, sandbox_meta = _sandbox_wrap(shell_path, shell_args, context, cwd)
+    try:
+        argv, sandbox_meta = _sandbox_wrap(
+            shell_path, shell_args, context, cwd, mode_override
+        )
+    except SandboxUnavailableError as sb_err:
+        # Fail-closed: never run the command without the requested OS sandbox.
+        return ToolResult(
+            ok=False,
+            name="bash",
+            error=str(sb_err),
+            metadata={"sandbox": {"sandboxApplied": False, "sandboxDenied": str(sb_err)}},
+        )
     try:
         proc = subprocess.Popen(argv, **kwargs)
     except Exception as e:
@@ -906,13 +1081,33 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
             )
         pwsh_bin = "powershell.exe"
 
-    cmd_argv = [pwsh_bin, "-NoProfile", "-NonInteractive", "-Command", command]
-    wrapped_argv, sandbox_meta = wrap_sandbox_command(
-        cmd_argv,
-        mode=sandbox_mode,
-        workspace_root=str(project_root),
-        cwd=str(project_root),
+    redirect_error = _reject_escaping_redirects(
+        command,
+        str(project_root),
+        str(project_root),
+        _isolated_root(context),
+        sandbox_mode,
+        tool_name="pwsh",
     )
+    if redirect_error is not None:
+        return redirect_error
+
+    cmd_argv = [pwsh_bin, "-NoProfile", "-NonInteractive", "-Command", command]
+    try:
+        wrapped_argv, sandbox_meta = wrap_sandbox_command(
+            cmd_argv,
+            mode=sandbox_mode,
+            workspace_root=str(project_root),
+            cwd=str(project_root),
+        )
+    except SandboxUnavailableError as sb_err:
+        # Fail-closed: never run the command without the requested OS sandbox.
+        return ToolResult(
+            ok=False,
+            name="pwsh",
+            error=str(sb_err),
+            metadata={"sandbox": {"sandboxApplied": False, "sandboxDenied": str(sb_err)}},
+        )
 
     if run_in_background:
         # Background job execution
@@ -976,6 +1171,8 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
 
         duration = max(0.0, time.time() - start_time)
 
+        # Sanitize BEFORE disk spill so spilled files never store raw secrets.
+        combined_output = sanitize_text(combined_output)[0]
         # Apply spill policy if output is large
         output_text, _ = apply_spill_policy(
             combined_output,

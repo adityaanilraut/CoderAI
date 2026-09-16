@@ -82,7 +82,7 @@ def _read_settings_file(path: str) -> dict | None:
             return None
         data = json.loads(p.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else None
-    except Exception:
+    except (OSError, ValueError):
         return None
 
 
@@ -135,7 +135,7 @@ def load_dotenv(project_root: str = ".") -> dict[str, str]:
                         loaded[k] = v
                         if k not in os.environ:
                             os.environ[k] = v
-        except Exception:
+        except (OSError, ValueError):
             pass
     return loaded
 
@@ -148,25 +148,22 @@ def resolve_typed_config_overlay(project_root: str = ".") -> dict[str, Any]:
     ``CODERAI_CONFIG_FILE`` / ``CODERAI_CONFIG_STRING`` redirects are honored
    .
     """
-    try:
-        from coderai.config import (
-            load_typed_config,
-            load_typed_config_from_string,
-        )
-    except Exception:
-        return {}
+    # NOTE: load_typed_config / load_typed_config_from_string live in this
+    # same module (defined below); reference the module globals directly so
+    # tests can monkeypatch coderai.config.load_typed_config as before.
     try:
         override_file = os.environ.get("CODERAI_CONFIG_FILE")
         override_text = os.environ.get("CODERAI_CONFIG_STRING")
         if override_text:
             typed = load_typed_config_from_string(override_text)
         elif override_file:
-            import pathlib as _pl
-
-            typed = load_typed_config(_pl.Path(override_file).expanduser())
+            typed = load_typed_config(pathlib.Path(override_file).expanduser())
         else:
             typed = load_typed_config()
     except Exception:
+        # Best-effort overlay: any load/validation failure (including
+        # unexpected errors from patched loaders in tests) falls back to
+        # legacy settings.json + env resolution.
         return {}
     try:
         if not typed.default_model or typed.default_model not in typed.models:
@@ -193,7 +190,7 @@ def resolve_typed_config_overlay(project_root: str = ".") -> dict[str, Any]:
             },
             "isDefaultLocation": typed.is_from_default_location,
         }
-    except Exception:
+    except (AttributeError, KeyError, TypeError, ValueError):
         return {}
 
 
@@ -206,7 +203,7 @@ def _typed_global_knobs(typed: Any) -> dict[str, Any]:
             "notificationsClaimStaleAfterMs": int(typed.notifications.claim_stale_after_ms),
             "mcpToolCallTimeoutMs": int(typed.mcp.tool_call_timeout_ms),
         }
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return {}
 
 
@@ -230,9 +227,9 @@ def _parse_bool(value: Any) -> bool | None:
         return value
     if isinstance(value, str):
         n = value.strip().lower()
-        if n in ("1", "true", "enabled", "yes", "on"):
+        if n in ("1", "true", "enable", "enabled", "yes", "on"):
             return True
-        if n in ("0", "false", "disabled", "no", "off"):
+        if n in ("0", "false", "disable", "disabled", "no", "off"):
             return False
     return None
 
@@ -451,14 +448,14 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         try:
             iv = int(str(v).strip())
             return iv if iv > 0 else None
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             return None
 
     def _parse_float(v: Any) -> float | None:
         try:
             fv = float(str(v).strip())
             return fv if 0 < fv < 1 else None
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             return None
 
     max_steps_per_turn = (
@@ -513,7 +510,7 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         or "default"
     )
 
-    return {
+    resolved: dict[str, Any] = {
         "env": env,
         "apiKey": api_key,
         "baseURL": base_url,
@@ -594,7 +591,6 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
             or 60_000
         ),
         "fallbackModels": _resolve_fallback_models(user, project, system_env),
-        "fallback_models": _resolve_fallback_models(user, project, system_env),
         "statusline": _merge_statusline(user, project),
         "maxStepsPerTurn": max_steps_per_turn,
         "reservedContextSize": reserved_context_size,
@@ -607,6 +603,9 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         "typedLoopControl": typed_overlay.get("loopControl") or {},
         "typedConfigDefaultLocation": typed_overlay.get("isDefaultLocation", False),
     }
+    # Back-compat alias: snake_case mirrors camelCase (single computed list).
+    resolved["fallback_models"] = resolved["fallbackModels"]
+    return resolved
 
 
 def _normalize_model_list(value: Any) -> list[str]:
@@ -888,9 +887,9 @@ KNOWN_PROVIDERS = {
         "name": "DeepSeek",
         "env_var": "DEEPSEEK_API_KEY",
         "default_base_url": "https://api.deepseek.com",
-        "default_model": "deepseek-v4-pro",
+        "default_model": "deepseek-flash",
         "doc_url": "https://platform.deepseek.com/api_keys",
-        "models": ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-reasoner", "deepseek-chat"],
+        "models": ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash"],
     },
     "gemini": {
         "name": "Google Gemini",
@@ -921,6 +920,15 @@ KNOWN_PROVIDERS = {
         ],
     },
 }
+
+
+PROVIDER_REGISTRY = KNOWN_PROVIDERS
+"""Canonical cloud provider registry (5 providers).
+
+Single source of truth for provider metadata. The setup wizard's local
+endpoint presets are a separate concern (local/custom OpenAI-compatible
+endpoints) and must not duplicate or shadow these keys.
+"""
 
 
 def mask_api_key(key: str | None) -> str:
@@ -957,7 +965,10 @@ def save_provider_api_key(
     """
     prov_key = provider.strip().lower()
     info = KNOWN_PROVIDERS.get(prov_key)
-    env_var = str(info["env_var"]) if info else f"{provider.upper()}_API_KEY"
+    if info is None:
+        known = ", ".join(sorted(KNOWN_PROVIDERS))
+        raise ValueError(f"Unknown provider {provider!r}. Known providers: {known}.")
+    env_var = str(info["env_var"])
     api_key_clean = api_key.strip()
 
     # Determine target settings
@@ -969,7 +980,7 @@ def save_provider_api_key(
     env_dict = dict(current.get("env") or {})
     env_dict[env_var] = api_key_clean
 
-    if prov_key == "openai" or not info:
+    if prov_key == "openai":
         current["apiKey"] = api_key_clean
 
     current["env"] = env_dict
@@ -998,8 +1009,7 @@ def save_active_model_setting(
     save_setting_key("model", model_clean, scope=scope, project_root=project_root)
     os.environ["CODERAI_MODEL"] = model_clean
     try:
-        from coderai.config import load_typed_config, save_typed_config
-
+        # Same-module globals (defined below); no self-import needed.
         cfg = load_typed_config()
         target_model = model_clean
         if target_model not in cfg.models:
@@ -1009,7 +1019,7 @@ def save_active_model_setting(
                     break
         cfg.default_model = target_model
         save_typed_config(cfg)
-    except Exception:
+    except (OSError, ValueError):
         pass
 
 
@@ -1452,7 +1462,7 @@ def save_typed_config(config: TypedConfig, config_file: Path | None = None) -> N
         resolved = str(target.expanduser().resolve(strict=False))
         for key in [k for k in _typed_config_cache if k[0] == resolved]:
             _typed_config_cache.pop(key, None)
-    except Exception:
+    except OSError:
         pass
     target.parent.mkdir(parents=True, exist_ok=True)
     data = config.model_dump(mode="json", exclude_none=True)

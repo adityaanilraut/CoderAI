@@ -41,6 +41,12 @@ def _plan_mode_from(context: Any, session_id: str | None) -> bool:
                 is_plan_mode = bool((entry or {}).get("planMode"))
             except Exception:
                 pass
+            if not is_plan_mode and hasattr(mgr, "get_session_state"):
+                try:
+                    state = mgr.get_session_state(session_id)
+                    is_plan_mode = bool(getattr(state, "plan_mode", False))
+                except Exception:
+                    pass
     return is_plan_mode
 
 
@@ -57,9 +63,10 @@ def handle_enter_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResul
         )
     if _plan_mode_from(context, session_id):
         return ToolResult(
-            ok=False,
+            ok=True,
             name="enter_plan_mode",
-            error="Already in plan mode. Use exit_plan_mode when your plan is ready.",
+            output="Already in plan mode. Use exit_plan_mode when your plan is ready.",
+            metadata={"enterPlanMode": True},
         )
     output = (
         "Plan mode activated. You MUST NOT edit code files — only read and plan.\n"
