@@ -138,6 +138,54 @@ def _render_markdown(text: str) -> None:
     console.print(Markdown(text))
 
 
+# --- Arrow-key menu helpers (approval / question prompts) -------------------
+# `input()` is line-buffered: real Up/Down presses either get swallowed by
+# readline (history recall) or arrive as ANSI escape sequences ("\x1b[A" /
+# "\x1b[B") which never match "y/a/n/1-4". So on a real TTY we read single
+# keys in raw mode via session_picker._read_single_key (same as /model,
+# /sessions menus). The legacy input() loop is kept as fallback for tests,
+# pipes, and non-TTY — but now also understands ANSI arrow sequences plus
+# typed "up"/"down" words, and Enter confirms the highlighted option.
+
+_ARROW_UP_TOKENS = frozenset({"up", "\x1b[a", "\x1boa", "\x1b[1;2a", "\x1b[1;5a", "k"})
+_ARROW_DOWN_TOKENS = frozenset({"down", "\x1b[b", "\x1bob", "\x1b[1;2b", "\x1b[1;5b", "j"})
+_ARROW_LEFT_TOKENS = frozenset({"left", "\x1b[d", "\x1bod", "h", "prev", "p"})
+_ARROW_RIGHT_TOKENS = frozenset({"right", "\x1b[c", "\x1boc", "next", "tab"})
+_ARROW_ESC_TOKENS = frozenset({"esc", "escape", "\x1b", "q"})
+
+
+def _read_menu_key() -> str:
+    """Single-key read for menus; "" means 'not a real TTY, use input() fallback'."""
+    try:
+        if not sys.stdin.isatty():
+            return ""
+        from coderai.ui.shell.session_picker import _read_single_key
+
+        return _read_single_key() or ""
+    except Exception:
+        return ""
+
+
+def _normalize_arrow_token(raw: str) -> str:
+    """Map ANSI escape sequences / words from input() to UP/DOWN/LEFT/RIGHT/ESCAPE."""
+    low = (raw or "").strip().lower()
+    if low in _ARROW_UP_TOKENS:
+        return "UP"
+    if low in _ARROW_DOWN_TOKENS:
+        return "DOWN"
+    if low in _ARROW_LEFT_TOKENS:
+        return "LEFT"
+    if low in _ARROW_RIGHT_TOKENS:
+        return "RIGHT"
+    if low in _ARROW_ESC_TOKENS:
+        return "ESCAPE"
+    if low in (" ", "space"):
+        return "SPACE"
+    if low in ("", "enter"):
+        return "ENTER"
+    return low
+
+
 from coderai.ui.shell.startup import _build_parser  # noqa: E402
 
 
@@ -162,7 +210,6 @@ def _prompt_permissions(
 
         if yes and not is_forced_plan_scope:
             replies.append({"toolCallId": tool_call_id, "permission": "allow"})
-            always_allows.extend(scopes)
             continue
 
         always_target = next((s for s in scopes if s in ALWAYS_ALLOWED_SCOPES), None)
@@ -172,58 +219,273 @@ def _prompt_permissions(
         use_panel = bool(console is not None and _RICH and sys.stdin.isatty())
         if use_panel:
             try:
-                from coderai.ui.shell.visualize._approval_panel import ApprovalRequestPanel, show_approval_in_pager
+                from coderai.ui.shell.visualize._approval_panel import (
+                    ApprovalRequestPanel,
+                    permission_dict_to_request,
+                    show_approval_in_pager,
+                )
 
-                panel = ApprovalRequestPanel(req)
-                console.print()
-                console.print(panel.render())
-                # Build prompt → [1] Approve once cyan, etc.
+                wire_req = permission_dict_to_request(
+                    req, plan_mode_forced=is_forced_plan_scope
+                )
+                panel = ApprovalRequestPanel(
+                    wire_req, allow_session_approve=has_always
+                )
+                _STREAM_STATE.set_approval_panel(panel)
                 has_always_panel = any(v == "approve_for_session" for _, v in panel.options)
-                # reuse same prompt strings but map to panel indices
                 if has_always_panel:
-                    prompt_str = "  Allow? [y/a/n/e/d] (1/2/3, ctrl-e expand): "
+                    prompt_str = "  Allow? [y/a/n/e/d] (1/2/3/4): "
                 else:
-                    prompt_str = "  Allow? [y/n/e/d] [1/2] (ctrl-e expand): "
-                # ponytail: input() loop with Ctrl-E pager; Live pause/resume delegated to app Live if active
-                # (global lock shim: we just Stop Live if _STREAM_STATE Live exists)
+                    prompt_str = "  Allow? [y/n/e/d] (1/2/3): "
+
+                def _show_panel_pager() -> None:
+                    live = getattr(_STREAM_STATE, "_live_ref", None)
+                    if live is not None:
+                        try:
+                            from coderai.ui.shell.visualize._blocks import _reset_live_shape
+
+                            live.stop()
+                            show_approval_in_pager(panel)
+                            _reset_live_shape(live)
+                            live.start()
+                            live.refresh()
+                            return
+                        except Exception:
+                            pass
+                    show_approval_in_pager(panel)
+
+                def _deny_with_optional_feedback(*, prompt_feedback: bool) -> None:
+                    fb = ""
+                    if prompt_feedback:
+                        try:
+                            fb = input("  Feedback for model (Enter to skip): ").strip()
+                        except (EOFError, KeyboardInterrupt):
+                            _clear_task_cancellation()
+                            fb = ""
+                    if fb:
+                        replies.append(
+                            {
+                                "toolCallId": tool_call_id,
+                                "permission": "deny",
+                                "feedback": fb,
+                            }
+                        )
+                    else:
+                        replies.append({"toolCallId": tool_call_id, "permission": "deny"})
+
+                def _confirm_panel_selection() -> bool:
+                    """Confirm currently highlighted option. Returns True when done."""
+                    if panel.is_feedback_selected:
+                        _deny_with_optional_feedback(prompt_feedback=True)
+                    elif panel.get_selected_response() == "approve_for_session":
+                        replies.append({"toolCallId": tool_call_id, "permission": "allow"})
+                        if always_target:
+                            always_allows.append(always_target)
+                    elif panel.get_selected_response() == "approve":
+                        replies.append({"toolCallId": tool_call_id, "permission": "allow"})
+                    else:
+                        _deny_with_optional_feedback(prompt_feedback=False)
+                    return True
+
+                def _apply_digit_choice(digit: str) -> bool:
+                    idx_sel = int(digit) - 1
+                    panel.selected_index = idx_sel
+                    return _confirm_panel_selection()
+
+                # Raw single-key loop uses Rich Live for in-place updates so
+                # Up/Down navigation re-renders the same panel instead of
+                # appending a new copy to scrollback on every keypress.
+                _use_raw_keys = bool(sys.stdin.isatty())
+                if _use_raw_keys:
+                    from contextlib import contextmanager
+
+                    from rich.live import Live
+
+                    # Mutable holder so the nested edit helper can update the
+                    # command seen by the fallback input() loop below.
+                    _cmd_holder: list[str] = [command]
+
+                    console.print()
+                    try:
+                        with Live(
+                            panel.render(blocking_keys=False),
+                            console=console,
+                            transient=True,
+                            auto_refresh=False,
+                        ) as menu_live:
+
+                            @contextmanager
+                            def _paused_menu_live() -> Any:
+                                try:
+                                    menu_live.stop()
+                                except Exception:
+                                    pass
+                                try:
+                                    yield
+                                finally:
+                                    try:
+                                        menu_live.start()
+                                        menu_live.update(
+                                            panel.render(blocking_keys=False),
+                                            refresh=True,
+                                        )
+                                    except Exception:
+                                        pass
+
+                            def _live_deny(*, prompt_feedback: bool) -> None:
+                                with _paused_menu_live():
+                                    _deny_with_optional_feedback(
+                                        prompt_feedback=prompt_feedback
+                                    )
+
+                            def _live_pager() -> None:
+                                with _paused_menu_live():
+                                    if panel.has_expandable_content or (
+                                        isinstance(diff_preview, str)
+                                        and diff_preview.strip()
+                                    ):
+                                        try:
+                                            _show_panel_pager()
+                                        except Exception:
+                                            if isinstance(diff_preview, str) and diff_preview.strip():
+                                                render_diff_preview(
+                                                    console,
+                                                    diff_preview,
+                                                    title=f"Pre-Approval Diff ({name})",
+                                                )
+
+                            def _live_edit_command() -> bool:
+                                with _paused_menu_live():
+                                    try:
+                                        edited_cmd = input(
+                                            f"  Edit command [{_cmd_holder[0]}]: "
+                                        ).strip()
+                                    except (EOFError, KeyboardInterrupt):
+                                        _clear_task_cancellation()
+                                        return False
+                                    if edited_cmd:
+                                        req["command"] = edited_cmd
+                                        if isinstance(req.get("input"), dict) and "command" in req[
+                                            "input"
+                                        ]:
+                                            req["input"]["command"] = edited_cmd
+                                        if isinstance(req.get("arguments"), dict) and "command" in req[
+                                            "arguments"
+                                        ]:
+                                            req["arguments"]["command"] = edited_cmd
+                                        _cmd_holder[0] = edited_cmd
+                                    replies.append(
+                                        {
+                                            "toolCallId": tool_call_id,
+                                            "permission": "allow",
+                                            "command": _cmd_holder[0],
+                                        }
+                                    )
+                                    return True
+
+                            while True:
+                                menu_live.update(
+                                    panel.render(blocking_keys=False), refresh=True
+                                )
+                                key = _read_menu_key()
+                                if not key:
+                                    break  # not a real TTY after all -> input() fallback
+                                if key in ("UP", "k", "K"):
+                                    panel.move_up()
+                                    continue
+                                if key in ("DOWN", "j", "J"):
+                                    panel.move_down()
+                                    continue
+                                if key == "ENTER":
+                                    # Feedback path prompts via input() -> pause Live.
+                                    with _paused_menu_live():
+                                        _confirm_panel_selection()
+                                    break
+                                if key in ("CTRL_C", "CTRL_D", "ESCAPE"):
+                                    # prompt_feedback=False -> no input(), safe inside Live.
+                                    _deny_with_optional_feedback(prompt_feedback=False)
+                                    break
+                                if key in ("\x05",):
+                                    _live_pager()
+                                    continue
+                                if key in ("y", "Y"):
+                                    replies.append(
+                                        {"toolCallId": tool_call_id, "permission": "allow"}
+                                    )
+                                    break
+                                if key in ("a", "A") and has_always_panel:
+                                    replies.append(
+                                        {"toolCallId": tool_call_id, "permission": "allow"}
+                                    )
+                                    if always_target:
+                                        always_allows.append(always_target)
+                                    break
+                                if key in ("n", "N"):
+                                    # prompt_feedback=False -> no input(), safe inside Live.
+                                    _deny_with_optional_feedback(prompt_feedback=False)
+                                    break
+                                if key in ("e", "E") and _cmd_holder[0]:
+                                    if _live_edit_command():
+                                        break
+                                    continue
+                                if key in ("d", "D"):
+                                    _live_pager()
+                                    continue
+                                if key.isdigit() and 1 <= int(key) <= len(panel.options):
+                                    idx_sel = int(key) - 1
+                                    panel.selected_index = idx_sel
+                                    # Feedback path prompts via input() -> pause Live.
+                                    with _paused_menu_live():
+                                        _confirm_panel_selection()
+                                    break
+                                # Ignore unknown keys (including filter-search chars) and re-render.
+                                continue
+                    except Exception:
+                        pass
+                    # Keep outer `command` in sync for the fallback loop.
+                    try:
+                        command = _cmd_holder[0]
+                    except Exception:
+                        pass
+                    if replies and replies[-1].get("toolCallId") == tool_call_id:
+                        # Leave exactly one settled copy in scrollback.
+                        console.print(panel.render(blocking_keys=True))
+                        continue
+                    # Raw loop exited without a decision (not a real TTY):
+                    # fall through to the input() loop; show one static panel.
+                    console.print(panel.render(blocking_keys=True))
+
                 while True:
                     try:
                         raw_choice = input(prompt_str).strip().lower()
                     except (EOFError, KeyboardInterrupt):
                         _clear_task_cancellation()
                         raw_choice = "n"
-                    # Ctrl-E is \x05 when read via input in raw mode; handle both "ctrl-e" string and byte
-                    if raw_choice in ("\x05", "ctrl-e", "expand") and panel.has_expandable_content:
-                        # Live.stop→pager→start shape reset
-                        live = getattr(_STREAM_STATE, "_live_ref", None)
-                        if live is not None:
-                            try:
-                                from coderai.ui.shell.visualize._blocks import _reset_live_shape
-
-                                live.stop()
-                                show_approval_in_pager(panel)
-                                _reset_live_shape(live)
-                                live.start()
-                                live.refresh()
-                            except Exception:
-                                show_approval_in_pager(panel)
-                        else:
-                            show_approval_in_pager(panel)
-                        console.print(panel.render())
+                    arrow = _normalize_arrow_token(raw_choice)
+                    if arrow == "UP":
+                        panel.move_up()
+                        console.print(panel.render(blocking_keys=True))
                         continue
-                    if (
-                        raw_choice in ("d", "diff")
-                        and diff_preview
-                        and isinstance(diff_preview, str)
+                    if arrow == "DOWN":
+                        panel.move_down()
+                        console.print(panel.render(blocking_keys=True))
+                        continue
+                    if arrow == "ENTER":
+                        # Enter confirms the highlighted option (Up/Down + Enter).
+                        _confirm_panel_selection()
+                        break
+                    if raw_choice in ("\x05", "ctrl-e", "expand", "d", "diff") and (
+                        panel.has_expandable_content
+                        or (isinstance(diff_preview, str) and diff_preview.strip())
                     ):
-                        # d also expands via pager for parity
                         try:
-                            show_approval_in_pager(panel)
+                            _show_panel_pager()
                         except Exception:
-                            render_diff_preview(
-                                console, diff_preview, title=f"Pre-Approval Diff ({name})"
-                            )
-                        console.print(panel.render())
+                            if isinstance(diff_preview, str) and diff_preview.strip():
+                                render_diff_preview(
+                                    console, diff_preview, title=f"Pre-Approval Diff ({name})"
+                                )
+                        console.print(panel.render(blocking_keys=True))
                         continue
                     if raw_choice in ("e", "edit") and command:
                         try:
@@ -249,80 +511,30 @@ def _prompt_permissions(
                         except (EOFError, KeyboardInterrupt):
                             _clear_task_cancellation()
                             continue
-                    if has_always_panel and raw_choice in ("a", "always", "2"):
+                    if has_always_panel and raw_choice in ("a", "always"):
                         replies.append({"toolCallId": tool_call_id, "permission": "allow"})
-                        always_allows.append(always_target)  # type: ignore[arg-type]
+                        if always_target:
+                            always_allows.append(always_target)
                         break
-                    elif raw_choice in ("n", "no", "deny", "3") or (
-                        raw_choice == "2" and not has_always_panel
-                    ):
-                        # also handle numeric mapping via panel indices
-                        if raw_choice == "3" and len(panel.options) >= 4:
-                            # feedback option needs text
-                            try:
-                                fb = input(
-                                    "  Feedback for model (Enter to skip, empty = plain reject): "
-                                ).strip()
-                            except (EOFError, KeyboardInterrupt):
-                                fb = ""
-                            if fb:
-                                replies.append(
-                                    {
-                                        "toolCallId": tool_call_id,
-                                        "permission": "deny",
-                                        "feedback": fb,
-                                    }
-                                )
-                            else:
-                                replies.append({"toolCallId": tool_call_id, "permission": "deny"})
-                        else:
-                            replies.append({"toolCallId": tool_call_id, "permission": "deny"})
+                    if raw_choice in ("n", "no", "deny"):
+                        _deny_with_optional_feedback(prompt_feedback=False)
                         break
-                    elif raw_choice in ("y", "yes", "1", "allow", ""):
+                    if raw_choice in ("y", "yes", "allow"):
                         replies.append({"toolCallId": tool_call_id, "permission": "allow"})
                         break
-                    elif raw_choice in ("4",):
-                        # feedback option
-                        try:
-                            fb = input("  Feedback for model: ").strip()
-                        except (EOFError, KeyboardInterrupt):
-                            fb = ""
-                        replies.append(
-                            {"toolCallId": tool_call_id, "permission": "deny", "feedback": fb}
-                        )
+                    if raw_choice.isdigit() and 1 <= int(raw_choice) <= len(panel.options):
+                        _apply_digit_choice(raw_choice)
                         break
-                    else:
-                        # numeric fallback via panel index
-                        if raw_choice.isdigit() and 1 <= int(raw_choice) <= len(panel.options):
-                            idx_sel = int(raw_choice) - 1
-                            panel.selected_index = idx_sel
-                            if panel.is_feedback_selected:
-                                try:
-                                    fb = input("  Feedback for model: ").strip()
-                                except (EOFError, KeyboardInterrupt):
-                                    fb = ""
-                                replies.append(
-                                    {
-                                        "toolCallId": tool_call_id,
-                                        "permission": "deny",
-                                        "feedback": fb,
-                                    }
-                                )
-                            elif panel.get_selected_response() == "approve_for_session":
-                                replies.append({"toolCallId": tool_call_id, "permission": "allow"})
-                                always_allows.append(always_target)  # type: ignore[arg-type]
-                            elif panel.get_selected_response() == "approve":
-                                replies.append({"toolCallId": tool_call_id, "permission": "allow"})
-                            else:
-                                replies.append({"toolCallId": tool_call_id, "permission": "deny"})
-                            break
-                        # Fail-closed: unknown input reprompts, never auto-approves.
-                        print("  Invalid choice — type y (allow once), a (always), n (deny), e (edit), d (diff).")
-                        continue
+                    print(
+                        "  Invalid choice — ↑/↓ navigate, Enter confirm, or type y (allow once), a (always), n (deny), e (edit), d (diff)."
+                    )
+                    continue
                 continue
             except Exception:
                 # fall through to fallback rendering on panel error
                 pass
+            finally:
+                _STREAM_STATE.set_approval_panel(None)
 
         # Fallback rendering (also used when isatty==False for tests)
         if console is not None and _RICH:
@@ -492,21 +704,167 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
     use_panel = bool(console is not None and _RICH and sys.stdin.isatty())
     if use_panel:
         try:
-            from coderai.ui.shell.visualize._question_panel import QuestionRequestPanel, show_question_body_in_pager
+            from coderai.ui.shell.visualize._question_panel import (
+                QuestionRequestPanel,
+                questions_to_request,
+                show_question_body_in_pager,
+            )
 
-            panel = QuestionRequestPanel(questions)
-            # ponytail: input() loop with tabs + Space toggle + _saved_selections
-            # PTK KeyboardListener path would handle NUM_1..6/UP/DOWN/SPACE directly; here we
-            # emulate via line input so manual validation shows tabs + Space hint.
-            # Ceiling: full PTK key-level Space toggle needs Live+KeyboardListener; add when streaming modal needed.
+            panel = QuestionRequestPanel(questions_to_request(questions))
+            # Raw single-key loop uses Rich Live for in-place updates so
+            # arrow-key navigation re-renders the same panel instead of
+            # appending a new copy to scrollback on every keypress.
+            # Falls through to the input() loop below when not a real TTY
+            # (tests, pipes) — _read_menu_key() returns "" there.
+            if bool(sys.stdin.isatty()):
+                from contextlib import contextmanager
+
+                from rich.live import Live
+
+                _raw_done = False
+                _raw_result: str | None = None
+                console.print()
+                try:
+                    with Live(
+                        panel.render(),
+                        console=console,
+                        transient=True,
+                        auto_refresh=False,
+                    ) as q_live:
+
+                        @contextmanager
+                        def _paused_q_live() -> Any:
+                            try:
+                                q_live.stop()
+                            except Exception:
+                                pass
+                            try:
+                                yield
+                            finally:
+                                try:
+                                    q_live.start()
+                                    q_live.update(panel.render(), refresh=True)
+                                except Exception:
+                                    pass
+
+                        def _q_other_input(prompt: str = "  Other value: ") -> str:
+                            with _paused_q_live():
+                                try:
+                                    return input(prompt).strip()
+                                except (EOFError, KeyboardInterrupt):
+                                    _clear_task_cancellation()
+                                    return ""
+
+                        def _q_pager() -> None:
+                            with _paused_q_live():
+                                if panel.has_expandable_content:
+                                    show_question_body_in_pager(panel)
+
+                        while True:
+                            q_live.update(panel.render(), refresh=True)
+                            q = panel._current_question
+                            multi = bool(q.multi_select)
+                            opts = panel._options
+                            if not q.options:
+                                break  # free-text question needs line input below
+                            key = _read_menu_key()
+                            if not key:
+                                break  # not a real TTY after all -> input() fallback
+                            if key in ("UP", "k", "K"):
+                                panel.move_up()
+                                continue
+                            if key in ("DOWN", "j", "J"):
+                                panel.move_down()
+                                continue
+                            if key in ("LEFT", "h", "H", "p", "P") and len(questions) > 1:
+                                panel.prev_tab()
+                                continue
+                            if key in ("RIGHT", "TAB", "l", "L") and len(questions) > 1:
+                                panel.next_tab()
+                                continue
+                            if key in (" ", "SPACE"):
+                                if multi:
+                                    panel.toggle_select()
+                                else:
+                                    if panel.is_other_selected:
+                                        panel.submit_other(_q_other_input())
+                                    else:
+                                        panel.submit()
+                                    if len(panel.get_answers()) >= len(questions):
+                                        _raw_done = True
+                                        break
+                                continue
+                            if key == "ENTER":
+                                if multi:
+                                    if panel.is_other_selected or panel._multi_selected:
+                                        if panel.is_other_selected and not panel.submit():
+                                            panel.submit_other(_q_other_input())
+                                        else:
+                                            panel.submit()
+                                        if len(panel.get_answers()) >= len(questions):
+                                            _raw_done = True
+                                            break
+                                    # empty multi + Enter: ignore, must toggle something first
+                                else:
+                                    if panel.is_other_selected:
+                                        panel.submit_other(_q_other_input())
+                                    else:
+                                        panel.submit()
+                                    if len(panel.get_answers()) >= len(questions):
+                                        _raw_done = True
+                                        break
+                                continue
+                            if key in ("ESCAPE", "CTRL_C", "CTRL_D", "q", "Q"):
+                                _raw_result = (
+                                    "\n".join(f"{k}: {v}" for k, v in panel.get_answers().items())
+                                    if panel.get_answers()
+                                    else "User responded."
+                                )
+                                _raw_done = True
+                                break
+                            if key in ("\x05",):
+                                _q_pager()
+                                continue
+                            if key in ("o", "O"):
+                                panel.select_index(len(panel._options) - 1)
+                                continue
+                            if key.isdigit() and 1 <= int(key) <= len(opts):
+                                panel.select_index(int(key) - 1)
+                                if multi:
+                                    panel.toggle_select()
+                                    continue
+                                if panel.is_other_selected:
+                                    panel.submit_other(_q_other_input())
+                                else:
+                                    panel.submit()
+                                if len(panel.get_answers()) >= len(questions):
+                                    _raw_done = True
+                                    break
+                                continue
+                            # Ignore anything else and re-render.
+                            continue
+                except Exception:
+                    pass
+                if _raw_done:
+                    # Leave exactly one settled copy in scrollback.
+                    console.print(panel.render())
+                    answers_dict = panel.get_answers()
+                    if _raw_result is not None:
+                        return _raw_result
+                    if not answers_dict:
+                        return "User responded."
+                    return "\n".join(f"{k}: {v}" for k, v in answers_dict.items())
+            # input() loop fallback (tests/pipes) + typed-word navigation.
+            # Real ANSI arrow sequences ("\x1b[A" etc.) are also accepted here
+            # for terminals where readline is disabled.
             while True:
                 console.print()
                 console.print(panel.render())
                 q = panel._current_question
-                multi = bool(q.get("multiSelect"))
+                multi = bool(q.multi_select)
                 opts = panel._options
                 # hint already in panel; prompt for action
-                if not q.get("options"):
+                if not q.options:
                     try:
                         final_ans = input("  Your answer: ").strip()
                     except (EOFError, KeyboardInterrupt):
@@ -533,19 +891,20 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                     _clear_task_cancellation()
                     raw = ""
                 low = raw.lower()
+                arrow = _normalize_arrow_token(raw)
                 if low in ("ctrl-e", "\x05", "expand") and panel.has_expandable_content:
                     show_question_body_in_pager(panel)
                     continue
-                if low in ("left", "prev", "p") and len(questions) > 1:
+                if (arrow == "LEFT" or low in ("prev", "p")) and len(questions) > 1:
                     panel.prev_tab()
                     continue
-                if low in ("right", "next", "n", "tab") and len(questions) > 1:
+                if (arrow == "RIGHT" or low in ("next", "n", "tab")) and len(questions) > 1:
                     panel.next_tab()
                     continue
-                if low in ("up", "k"):
+                if arrow == "UP":
                     panel.move_up()
                     continue
-                if low in ("down", "j"):
+                if arrow == "DOWN":
                     panel.move_down()
                     continue
                 if low.startswith("space "):
@@ -559,7 +918,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                 if low == "space" and multi:
                     panel.toggle_select()
                     continue
-                if low in ("esc", "escape", "q"):
+                if arrow == "ESCAPE" or low == "q":
                     # dismiss
                     return (
                         "\n".join(f"{k}: {v}" for k, v in panel.get_answers().items())
@@ -1183,6 +1542,11 @@ def _on_assistant_message(message: SessionMessage, should_connect: bool) -> None
 
 async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes: bool) -> None:
     """Drain permissions and interactive user questions until session reaches a stable state."""
+    auto = bool(yes)
+    try:
+        auto = auto or bool(mgr.is_auto_approve())
+    except Exception:
+        pass
     while True:
         entry = mgr.get_session(session_id)
         if entry is None:
@@ -1192,7 +1556,7 @@ async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes:
             _STREAM_STATE.stop_spinner()
             _STREAM_STATE.ensure_newline()
             replies, always = _prompt_permissions(
-                entry.ask_permissions or [], yes, plan_mode=bool(entry.plan_mode)
+                entry.ask_permissions or [], auto, plan_mode=bool(entry.plan_mode)
             )
             if always:
                 append_project_permission_allows(mgr.project_root, always)
@@ -1583,6 +1947,8 @@ async def _run_interactive(
                         mcp_count=active_mcp_count,
                         plan_mode=active_plan_mode,
                         agent_role=active_role,
+                        yolo=bool(getattr(mgr, "is_yolo", lambda: False)()),
+                        afk=bool(getattr(mgr, "is_afk", lambda: False)()),
                     )
                     from coderai.ui.shell.prompt import read_user_turn_ptk
 
@@ -1724,6 +2090,7 @@ async def _run_interactive(
                 session_id = ctx.session_id
                 active_plan_mode = ctx.active_plan_mode
                 _THINKING_EXPANDED = ctx.thinking_expanded
+                yes = ctx.yes
                 if action == SlashAction.EXIT:
                     break
                 elif action == SlashAction.TURN:
@@ -2370,7 +2737,12 @@ def main(argv: list[str] | None = None) -> int:
                     mgr.additional_dirs.append(str(_p))
         resume_arg = args.resume
         last_arg = bool(args.last or getattr(args, "continue_session", False))
-        if getattr(args, "afk", False):
+        if args.yes:
+            try:
+                mgr.set_yolo(True)
+            except Exception:
+                pass
+        if getattr(args, "afk", False) or getattr(args, "print_mode", False):
             try:
                 mgr.set_afk(True)
             except Exception:
@@ -2392,6 +2764,16 @@ def main(argv: list[str] | None = None) -> int:
                     _p = _plm.Path(_d).expanduser().resolve()
                     if _p.is_dir() and str(_p) not in wire_mgr.additional_dirs:
                         wire_mgr.additional_dirs.append(str(_p))
+            if args.yes:
+                try:
+                    wire_mgr.set_yolo(True)
+                except Exception:
+                    pass
+            if getattr(args, "afk", False):
+                try:
+                    wire_mgr.set_afk(True)
+                except Exception:
+                    pass
             wire_session: str | None = None
             if isinstance(resume_arg, str) and resume_arg.strip():
                 wire_session = wire_mgr.resolve_session_id(resume_arg.strip()) or resume_arg.strip()

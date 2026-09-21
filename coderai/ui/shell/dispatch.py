@@ -744,7 +744,19 @@ def cmd_diff(ctx: ShellContext, args: str) -> SlashAction:
     """Show the current unified diff."""
     from coderai.utils.rich.diff_render import render_diff_preview
 
-    render_diff_preview(ctx.console, ctx.mgr.project_root)
+    diff_output = ""
+    if ctx.session_id and hasattr(ctx.mgr, "get_diff"):
+        try:
+            diff_output = ctx.mgr.get_diff(ctx.session_id) or ""
+        except Exception:
+            diff_output = ""
+    if not str(diff_output).strip():
+        if ctx.console is not None:
+            ctx.console.print("[dim]No file changes detected since session start.[/]")
+        else:
+            print("No file changes detected since session start.")
+        return SlashAction.HANDLED
+    render_diff_preview(ctx.console, diff_output, title="Session File Diffs")
     return SlashAction.HANDLED
 
 
@@ -933,12 +945,27 @@ async def cmd_init(ctx: ShellContext, args: str) -> SlashAction:
     return SlashAction.HANDLED
 
 
+def _sync_auto_approve_context(ctx: ShellContext) -> None:
+    """Keep ShellContext.yes aligned with the manager's live YOLO/AFK flags."""
+    mgr = ctx.mgr
+    if hasattr(mgr, "is_auto_approve"):
+        ctx.yes = bool(mgr.is_auto_approve())
+    else:
+        ctx.yes = bool(getattr(mgr, "yolo", False) or getattr(mgr, "afk", False))
+
+
 @registry.command
 def cmd_yolo(ctx: ShellContext, args: str) -> SlashAction:
     """Toggle YOLO auto-approve all actions."""
-    cur = getattr(ctx.mgr, "yolo", False)
-    ctx.mgr.yolo = not cur
-    if ctx.mgr.yolo:
+    mgr = ctx.mgr
+    if hasattr(mgr, "set_yolo") and hasattr(mgr, "is_yolo"):
+        mgr.set_yolo(not bool(mgr.is_yolo()))
+        enabled = bool(mgr.is_yolo())
+    else:
+        enabled = not bool(getattr(mgr, "yolo", False))
+        mgr.yolo = enabled
+    _sync_auto_approve_context(ctx)
+    if enabled:
         if ctx.console is not None:
             ctx.console.print("[bold red]YOLO mode ON.[/] [dim]All actions auto-approved.[/dim]")
         else:
@@ -954,9 +981,15 @@ def cmd_yolo(ctx: ShellContext, args: str) -> SlashAction:
 @registry.command
 def cmd_afk(ctx: ShellContext, args: str) -> SlashAction:
     """Toggle AFK auto-dismiss questions & approvals."""
-    cur = getattr(ctx.mgr, "afk", False)
-    ctx.mgr.afk = not cur
-    if ctx.mgr.afk:
+    mgr = ctx.mgr
+    if hasattr(mgr, "set_afk") and hasattr(mgr, "is_afk"):
+        mgr.set_afk(not bool(mgr.is_afk()))
+        enabled = bool(mgr.is_afk())
+    else:
+        enabled = not bool(getattr(mgr, "afk", False))
+        mgr.afk = enabled
+    _sync_auto_approve_context(ctx)
+    if enabled:
         if ctx.console is not None:
             ctx.console.print("[bold yellow]AFK mode ON.[/] [dim]Auto-dismiss questions and approvals.[/dim]")
         else:

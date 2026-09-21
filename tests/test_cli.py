@@ -259,7 +259,7 @@ def test_cli_exit_summary_handles_empty_session(tmp_path: pathlib.Path) -> None:
 
 
 def test_cli_permissions_auto_approve_allows() -> None:
-    """yes=True auto-allows requests and records always-allow scopes."""
+    """yes=True auto-allows requests for this turn without persisting always-allow."""
     from coderai.ui.shell.app import _prompt_permissions
 
     requests = [
@@ -274,7 +274,7 @@ def test_cli_permissions_auto_approve_allows() -> None:
     ]
     replies, always = _prompt_permissions(requests, yes=True)
     assert replies[0]["permission"] == "allow"
-    assert "write-in-cwd" in always
+    assert always == []
 
 
 # ---------------------------------------------------------------------------

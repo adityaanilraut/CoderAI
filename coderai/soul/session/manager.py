@@ -102,7 +102,9 @@ from coderai.soul.session.completion import (  # noqa: E402
 from coderai.soul.session.approval import (  # noqa: E402
     _session_managers,
     check_afk_for_session as _check_afk_for_session,  # noqa: F401
+    check_auto_approve_for_session as _check_auto_approve_for_session,  # noqa: F401
     global_afk_check as _global_afk_check,  # noqa: F401
+    global_auto_approve_check as _global_auto_approve_check,  # noqa: F401
     register_session_manager,  # noqa: F401
     sanitize_repetition_loops,  # noqa: F401
     unregister_session_manager,  # noqa: F401
@@ -342,6 +344,24 @@ class SessionManager:
     def is_auto_approve(self) -> bool:
         return self._yolo_mode or self._afk_mode
 
+    @property
+    def yolo(self) -> bool:
+        """Attribute alias for :meth:`is_yolo` so `/yolo` can toggle `mgr.yolo`."""
+        return self._yolo_mode
+
+    @yolo.setter
+    def yolo(self, enabled: bool) -> None:
+        self.set_yolo(enabled)
+
+    @property
+    def afk(self) -> bool:
+        """Attribute alias for :meth:`is_afk` so `/afk` can toggle `mgr.afk`."""
+        return self._afk_mode
+
+    @afk.setter
+    def afk(self, enabled: bool) -> None:
+        self.set_afk(enabled)
+
     # ---- Phase 2: persisted session state + soul views ----
     def _session_dir(self, session_id: str) -> pathlib.Path:
         return self._storage()["project_dir"] / str(session_id)
@@ -355,7 +375,12 @@ class SessionManager:
         if isinstance(cached, SessionState):
             return cached
         state = load_session_state(self._session_dir(target))
-        # Adopt live manager flags on first load so resume restores behavior.
+        # Resume restores persisted YOLO/AFK into the live manager. Live
+        # CLI flags still win and are written back onto the session.
+        if state.approval.yolo and not self._yolo_mode:
+            self.set_yolo(True)
+        if state.approval.afk and not self._afk_mode:
+            self.set_afk(True)
         state.approval.yolo = self._yolo_mode or state.approval.yolo
         state.approval.afk = self._afk_mode or state.approval.afk
         entry = self._get_entry(target) or {}

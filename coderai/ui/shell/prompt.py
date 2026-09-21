@@ -3015,6 +3015,8 @@ def get_bottom_toolbar_tokens(
     turns: int = 0,
     mcp_count: int = 0,
     active_agent: str | None = None,
+    yolo: bool = False,
+    afk: bool = False,
 ) -> list[tuple[str, str]]:
     """Return prompt_toolkit FormattedText for bottom toolbar."""
     global _tip_index, _tip_last_rotate
@@ -3067,6 +3069,13 @@ def get_bottom_toolbar_tokens(
     # Plan / mode
     if plan_mode:
         toolbar_tokens.append(("class:toolbar.plan", " plan: ON "))
+        toolbar_tokens.append(("class:toolbar.sep", " · "))
+
+    if yolo:
+        toolbar_tokens.append(("class:toolbar.yolo", " yolo "))
+        toolbar_tokens.append(("class:toolbar.sep", " · "))
+    if afk:
+        toolbar_tokens.append(("class:toolbar.afk", " afk "))
         toolbar_tokens.append(("class:toolbar.sep", " · "))
 
     # Turns count
@@ -3134,6 +3143,8 @@ if HAS_PTK:
             self._tokens: int = 0
             self._turns: int = 0
             self._mcp_count: int = 0
+            self._yolo: bool = False
+            self._afk: bool = False
 
             # Build completers — pass canonical SlashCommand objects with aliases
             slash_objs: list[Any]
@@ -3253,6 +3264,8 @@ if HAS_PTK:
                     "toolbar.tokens": "bg:#1e1e2e #a6e3a1",
                     "toolbar.git": "bg:#1e1e2e #cba6f7",
                     "toolbar.plan": "bg:#1e1e2e #f9e2af bold",
+                    "toolbar.yolo": "bg:#1e1e2e #f9e2af bold",
+                    "toolbar.afk": "bg:#1e1e2e #fab387 bold",
                     "toolbar.turns": "bg:#1e1e2e #89b4fa",
                     "toolbar.mcp": "bg:#1e1e2e #94e2d5",
                     "toolbar.cwd": "bg:#1e1e2e #9399b2",
@@ -3282,6 +3295,8 @@ if HAS_PTK:
                 t_count = self._turns
                 mcp_cnt = self._mcp_count
                 role = getattr(self, "_agent_role", None)
+                yolo_on = getattr(self, "_yolo", False)
+                afk_on = getattr(self, "_afk", False)
                 if self.get_session_stats and callable(self.get_session_stats):
                     try:
                         st = self.get_session_stats()
@@ -3290,6 +3305,8 @@ if HAS_PTK:
                             t_count = st.get("turns", t_count)
                             mcp_cnt = st.get("mcp_count", mcp_cnt)
                             role = st.get("agent_role", role)
+                            yolo_on = bool(st.get("yolo", yolo_on))
+                            afk_on = bool(st.get("afk", afk_on))
                     except Exception:
                         pass
                 return get_bottom_toolbar_tokens(
@@ -3300,6 +3317,8 @@ if HAS_PTK:
                     turns=t_count,
                     mcp_count=mcp_cnt,
                     active_agent=role,
+                    yolo=yolo_on,
+                    afk=afk_on,
                 )
 
             self._session: PromptSession[Any] = PromptSession(
@@ -3322,6 +3341,8 @@ if HAS_PTK:
             mcp_count: int | None = None,
             plan_mode: bool | None = None,
             agent_role: str | None = None,
+            yolo: bool | None = None,
+            afk: bool | None = None,
         ) -> None:
             """Update dynamic stats rendered in the persistent bottom toolbar."""
             if tokens is not None:
@@ -3334,6 +3355,10 @@ if HAS_PTK:
                 self.plan_mode = plan_mode
             if agent_role is not None:
                 self._agent_role = agent_role
+            if yolo is not None:
+                self._yolo = bool(yolo)
+            if afk is not None:
+                self._afk = bool(afk)
 
         def _get_prompt_message(self) -> list[tuple[str, str]]:
             """Return dynamic formatted prompt tokens (✨/💫 agent, 📋 plan, $ shell)."""

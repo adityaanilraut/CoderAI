@@ -91,7 +91,7 @@ async def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> T
             error=err or "Invalid questions payload.",
         )
 
-    # AFK parity: auto-dismiss AskUserQuestion when AFK/YOLO is enabled
+    # AFK: auto-dismiss AskUserQuestion. YOLO still surfaces questions.
     is_afk = False
     try:
         from coderai.soul.session.manager import _global_afk_check  # type: ignore

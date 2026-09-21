@@ -36,11 +36,28 @@ def sanitize_repetition_loops(text: str) -> str:
     return pattern.sub(_replace, text)
 
 
+def _manager_matches_session(manager: Any, session_id: str) -> bool:
+    return session_id in getattr(manager, "session_controllers", {}) or session_id == getattr(
+        manager, "_active_session_id", None
+    )
+
+
 def global_afk_check() -> bool:
-    """Check if any active session manager has AFK or YOLO enabled."""
+    """Check if any active session manager has AFK enabled (questions auto-dismiss)."""
     for m in _session_managers:
         try:
-            if m.is_afk() or m.is_yolo():
+            if m.is_afk():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def global_auto_approve_check() -> bool:
+    """Check if any active session manager will auto-approve tool actions (YOLO or AFK)."""
+    for m in _session_managers:
+        try:
+            if m.is_auto_approve():
                 return True
         except Exception:
             continue
@@ -48,14 +65,22 @@ def global_afk_check() -> bool:
 
 
 def check_afk_for_session(session_id: str) -> bool:
-    """Check if AFK or YOLO is enabled for a given session ID."""
+    """Check if AFK is enabled for a given session ID."""
     for m in _session_managers:
         try:
-            if session_id in getattr(m, "session_controllers", {}) or session_id == getattr(
-                m, "_active_session_id", None
-            ):
-                if m.is_afk() or m.is_yolo():
-                    return True
+            if _manager_matches_session(m, session_id) and m.is_afk():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def check_auto_approve_for_session(session_id: str) -> bool:
+    """Check if YOLO or AFK is enabled for a given session ID."""
+    for m in _session_managers:
+        try:
+            if _manager_matches_session(m, session_id) and m.is_auto_approve():
+                return True
         except Exception:
             continue
     return False

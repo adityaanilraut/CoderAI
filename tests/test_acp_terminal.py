@@ -149,6 +149,7 @@ def test_clamp_timeout_defaults_and_caps():
 @pytest.mark.asyncio
 async def test_ext_method_terminal_bridge_catalogue():
     server = ACPServer()
+    server._check_auth = lambda: None
     result = await server.ext_method("terminal/bridge", {})
     assert result == {"operations": [f"terminal/{op}" for op in TERMINAL_METHODS]}
 
@@ -156,6 +157,7 @@ async def test_ext_method_terminal_bridge_catalogue():
 @pytest.mark.asyncio
 async def test_ext_method_terminal_list_empty_session():
     server = ACPServer()
+    server._check_auth = lambda: None
     result = await server.ext_method("terminal/list", {"session_id": "acp-new"})
     assert result == {"terminals": []}
 
@@ -163,6 +165,7 @@ async def test_ext_method_terminal_list_empty_session():
 @pytest.mark.asyncio
 async def test_ext_method_terminal_validation_errors():
     server = ACPServer()
+    server._check_auth = lambda: None
     with pytest.raises(acp.RequestError) as exc_bogus:
         await server.ext_method("terminal/bogus", {"session_id": "s"})
     assert exc_bogus.value.code == -32601

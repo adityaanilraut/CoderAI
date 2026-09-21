@@ -30,6 +30,32 @@ def _print_markdown(markdown_text: str) -> None:
     console.print(Markdown(markdown_text))
 
 
+def _permission_replies_for_print(
+    requests: list[dict], *, plan_mode: bool
+) -> list[dict]:
+    """Auto-allow tools in print/exec mode, but fail-closed on Plan Mode mutations."""
+    from coderai.soul.approval import apply_auto_approve_to_permission_plan
+
+    plan = {
+        "permissions": [
+            {"toolCallId": item.get("toolCallId"), "permission": "ask"} for item in requests
+        ],
+        "askPermissions": list(requests),
+    }
+    gated = apply_auto_approve_to_permission_plan(plan, plan_mode=plan_mode) or plan
+    remaining = {
+        item.get("toolCallId") for item in (gated.get("askPermissions") or [])
+    }
+    replies: list[dict] = []
+    for item in gated.get("permissions") or []:
+        tool_call_id = item.get("toolCallId")
+        if tool_call_id in remaining or item.get("permission") == "ask":
+            replies.append({"toolCallId": tool_call_id, "permission": "deny"})
+        else:
+            replies.append({"toolCallId": tool_call_id, "permission": "allow"})
+    return replies
+
+
 async def run_exec_session(
     prompt: str,
     *,
@@ -76,6 +102,11 @@ async def run_exec_session(
         non_interactive=True,
         client_factory=_core_client,
     )
+    if auto_approve:
+        try:
+            manager.set_yolo(True)
+        except Exception:
+            pass
 
     try:
         try:
@@ -105,10 +136,10 @@ async def run_exec_session(
             if entry.status == "ask_permission":
                 requests = entry.ask_permissions or []
                 if auto_approve:
-                    # Grant all requested permissions
-                    replies = [
-                        {"toolCallId": r.get("toolCallId"), "permission": "allow"} for r in requests
-                    ]
+                    replies = _permission_replies_for_print(
+                        requests,
+                        plan_mode=bool(getattr(entry, "plan_mode", False) or plan_mode),
+                    )
                     await manager.respond_permissions(session_id, replies)
                 else:
                     # In non-interactive mode without auto_approve, deny and explain

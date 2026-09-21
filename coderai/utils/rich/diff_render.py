@@ -567,7 +567,3 @@ def render_diff_summary_preview(
     summary = _summary_description(blocks)
     desc.append(f"  File too large for inline diff ({summary})", style="dim italic")
     return [header, desc]
-
-
-# Backward compatibility alias
-render_diff_preview_structured = render_diff_preview

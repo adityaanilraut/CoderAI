@@ -131,8 +131,11 @@ def test_extract_dependencies_from_repo_pyproject():
     text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
     deps = mod._extract_dependencies(text)
     names = [mod._parse_requirement(d)[0] for d in deps if mod._parse_requirement(d)]
-    for expected in ("rich", "kosong", "pykaos", "fastmcp", "aiohttp"):
-        assert expected in names, f"{expected} missing from parsed dependencies"
+    for expected in ("rich", "kosong", "pykaos", ("fastmcp-slim", "fastmcp"), "aiohttp"):
+        if isinstance(expected, tuple):
+            assert any(e in names for e in expected), f"{expected} missing from parsed dependencies"
+        else:
+            assert expected in names, f"{expected} missing from parsed dependencies"
 
 
 def test_check_dependency_versions_cli_smoke():

@@ -82,54 +82,63 @@ async def clear(soul: Any, args: str) -> None:
         wire_send(TextPart(text="Context cleared."))
 
 
+def _toggle_mode_flag(soul: Any, *, yolo: bool) -> bool:
+    """Flip YOLO or AFK on both the manager and any attached Approval controller."""
+    mgr = getattr(soul, "manager", None)
+    approval = getattr(soul, "approval", None) or getattr(
+        getattr(soul, "runtime", None), "approval", None
+    )
+    if yolo:
+        current = False
+        if mgr is not None and hasattr(mgr, "is_yolo"):
+            current = bool(mgr.is_yolo())
+        elif approval is not None and hasattr(approval, "is_yolo"):
+            current = bool(approval.is_yolo())
+        new_val = not current
+        if mgr is not None and hasattr(mgr, "set_yolo"):
+            mgr.set_yolo(new_val)
+        elif mgr is not None:
+            mgr.yolo = new_val
+        if approval is not None and hasattr(approval, "set_yolo"):
+            approval.set_yolo(new_val)
+        return new_val
+    current = False
+    if mgr is not None and hasattr(mgr, "is_afk"):
+        current = bool(mgr.is_afk())
+    elif approval is not None and hasattr(approval, "is_afk"):
+        current = bool(approval.is_afk())
+    new_val = not current
+    if mgr is not None and hasattr(mgr, "set_afk"):
+        mgr.set_afk(new_val)
+    elif mgr is not None:
+        mgr.afk = new_val
+    if approval is not None and hasattr(approval, "set_afk"):
+        approval.set_afk(new_val)
+    return new_val
+
+
 @registry.command
 async def yolo(soul: Any, args: str) -> None:
     """Toggle yolo mode (auto-approve all tool calls)."""
-    approval = getattr(soul, "approval", None) or getattr(getattr(soul, "runtime", None), "approval", None)
-    if approval is None and hasattr(soul, "manager"):
-        mgr = getattr(soul, "manager")
-        current = getattr(mgr, "yolo", False)
-        new_val = not current
-        mgr.yolo = new_val
-        if new_val:
-            wire_send(TextPart(text="You only live once! All actions will be auto-approved."))
-        else:
-            wire_send(TextPart(text="Yolo mode disabled. Tool calls will prompt for approval."))
-        return
-
-    if approval is not None:
-        if hasattr(approval, "is_yolo") and approval.is_yolo():
-            approval.set_yolo(False)
-            wire_send(TextPart(text="Yolo mode disabled. Tool calls will prompt for approval."))
-        else:
-            if hasattr(approval, "set_yolo"):
-                approval.set_yolo(True)
-            wire_send(TextPart(text="You only live once! All actions will be auto-approved."))
+    new_val = _toggle_mode_flag(soul, yolo=True)
+    if new_val:
+        wire_send(TextPart(text="You only live once! All actions will be auto-approved."))
+    else:
+        wire_send(TextPart(text="Yolo mode disabled. Tool calls will prompt for approval."))
 
 
 @registry.command
 async def afk(soul: Any, args: str) -> None:
     """Toggle afk mode (auto-dismiss AskUserQuestion, auto-approve tool calls)."""
-    approval = getattr(soul, "approval", None) or getattr(getattr(soul, "runtime", None), "approval", None)
-    if approval is None and hasattr(soul, "manager"):
-        mgr = getattr(soul, "manager")
-        current = getattr(mgr, "afk", False)
-        new_val = not current
-        mgr.afk = new_val
-        if new_val:
-            wire_send(TextPart(text="afk mode enabled. AskUserQuestion will be auto-dismissed and tool calls auto-approved."))
-        else:
-            wire_send(TextPart(text="afk mode disabled. You are back at the terminal."))
-        return
-
-    if approval is not None:
-        is_afk = approval.is_afk() if hasattr(approval, "is_afk") else False
-        if is_afk:
-            approval.set_afk(False)
-            wire_send(TextPart(text="afk mode disabled. You are back at the terminal."))
-        else:
-            approval.set_afk(True)
-            wire_send(TextPart(text="afk mode enabled. AskUserQuestion will be auto-dismissed and tool calls auto-approved."))
+    new_val = _toggle_mode_flag(soul, yolo=False)
+    if new_val:
+        wire_send(
+            TextPart(
+                text="afk mode enabled. AskUserQuestion will be auto-dismissed and tool calls auto-approved."
+            )
+        )
+    else:
+        wire_send(TextPart(text="afk mode disabled. You are back at the terminal."))
 
 
 @registry.command

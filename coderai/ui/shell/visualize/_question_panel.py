@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application.run_in_terminal import run_in_terminal
@@ -16,9 +17,45 @@ from rich.text import Text
 from coderai.ui.shell.console import console, render_to_ansi
 from coderai.ui.shell.keyboard import KeyEvent
 from coderai.utils.rich.markdown import Markdown
-from coderai.wire.types import QuestionRequest
+from coderai.wire.types import QuestionItem, QuestionOption, QuestionRequest
 
 OTHER_OPTION_LABEL = "Other"
+
+
+def questions_to_request(questions: list[Any]) -> QuestionRequest:
+    """Convert session question dicts (or QuestionItems) into a wire QuestionRequest."""
+    items: list[QuestionItem] = []
+    for raw in questions or []:
+        if isinstance(raw, QuestionItem):
+            items.append(raw)
+            continue
+        if not isinstance(raw, dict):
+            continue
+        options: list[QuestionOption] = []
+        for opt in raw.get("options") or []:
+            if isinstance(opt, QuestionOption):
+                options.append(opt)
+            elif isinstance(opt, dict):
+                options.append(
+                    QuestionOption(
+                        label=str(opt.get("label") or ""),
+                        description=str(opt.get("description") or ""),
+                    )
+                )
+        items.append(
+            QuestionItem(
+                question=str(raw.get("question") or ""),
+                options=options,
+                header=str(raw.get("header") or ""),
+                multi_select=bool(raw.get("multiSelect") or raw.get("multi_select")),
+                body=str(raw.get("body") or ""),
+                other_label=str(raw.get("other_label") or raw.get("otherLabel") or ""),
+                other_description=str(
+                    raw.get("other_description") or raw.get("otherDescription") or ""
+                ),
+            )
+        )
+    return QuestionRequest(questions=items)
 
 
 class QuestionRequestPanel:
@@ -175,8 +212,16 @@ class QuestionRequestPanel:
             lines.append(Text(""))
             lines.append(
                 Text(
-                    "  \u25c4/\u25ba switch question  "
-                    "\u25b2/\u25bc select  \u21b5 submit  esc exit",
+                    "  ◄/► switch question  "
+                    "▲/▼ select  ↵ submit  esc exit",
+                    style="dim",
+                )
+            )
+        else:
+            lines.append(Text(""))
+            lines.append(
+                Text(
+                    "  ▲/▼ select  ↵ submit  esc exit",
                     style="dim",
                 )
             )

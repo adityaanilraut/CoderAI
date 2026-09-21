@@ -839,6 +839,34 @@ def compute_tool_call_permissions(
     return {"permissions": permissions, "askPermissions": ask_permissions}
 
 
+def apply_auto_approve_to_permission_plan(
+    permission_plan: dict[str, Any] | None,
+    *,
+    plan_mode: bool = False,
+) -> dict[str, Any] | None:
+    """Convert pending asks to allow, keeping Plan Mode mutating scopes gated."""
+    if not permission_plan or not permission_plan.get("askPermissions"):
+        return permission_plan
+    ask_by_id = {
+        item.get("toolCallId"): item for item in (permission_plan.get("askPermissions") or [])
+    }
+    new_permissions: list[dict[str, Any]] = []
+    remaining_asks: list[dict[str, Any]] = []
+    for item in permission_plan.get("permissions") or []:
+        tool_call_id = item.get("toolCallId")
+        ask = ask_by_id.get(tool_call_id)
+        scopes = (ask or {}).get("scopes") or []
+        if plan_mode and ask and any(scope in PLAN_MODE_FORCE_ASK_SCOPES for scope in scopes):
+            new_permissions.append(item)
+            remaining_asks.append(ask)
+        else:
+            new_permissions.append({"toolCallId": tool_call_id, "permission": "allow"})
+    return {
+        "permissions": new_permissions,
+        "askPermissions": remaining_asks or None,
+    }
+
+
 def resolve_tool_call_permission(
     tool_call_id: str,
     permission_overrides: list[dict[str, Any]] | None = None,
@@ -1064,6 +1092,13 @@ class Approval:
     ) -> ApprovalResult:
         if self.is_auto_approve() or action in self._state.auto_approve_actions:
             return ApprovalResult(True)
+        try:
+            from coderai.soul.session.approval import global_auto_approve_check
+
+            if global_auto_approve_check():
+                return ApprovalResult(True)
+        except Exception:
+            pass
 
         from coderai.soul import get_wire_or_none
         from coderai.soul.tool_context import get_current_tool_call_or_none

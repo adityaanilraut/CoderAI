@@ -35,6 +35,7 @@ from coderai.events import (
 )
 from coderai.soul.approval import (
     PLAN_MODE_FORCE_ASK_SCOPES,
+    apply_auto_approve_to_permission_plan,
     compute_tool_call_permissions,
     resolve_snippet_file_path,
 )
@@ -538,25 +539,12 @@ class AgentLoop:
                     if tool_calls
                     else None
                 )
-                # YOLO/AFK parity: auto-approve suppresses askPermissions
-                if (
-                    manager.is_auto_approve()
-                    and permission_plan
-                    and permission_plan.get("askPermissions")
-                ):
-                    # Convert ask -> allow for all tool calls
-                    permission_plan = {
-                        "permissions": [
-                            {"toolCallId": p.get("toolCallId"), "permission": "allow"}
-                            for p in permission_plan.get("permissions", [])
-                        ],
-                        "askPermissions": None,
-                    }
-                    assistant_message.meta = {
-                        **(assistant_message.meta or {}),
-                        "permissions": permission_plan["permissions"],
-                        "askPermissions": None,
-                    }
+                # YOLO/AFK: auto-approve pending asks, but Plan Mode still
+                # gates mutating scopes so the user can review the plan.
+                if manager.is_auto_approve() and permission_plan:
+                    permission_plan = apply_auto_approve_to_permission_plan(
+                        permission_plan, plan_mode=is_plan
+                    )
 
                 if permission_plan and permission_plan.get("permissions"):
                     assistant_message.meta = {

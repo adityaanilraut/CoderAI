@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import NamedTuple
+from typing import Any, NamedTuple
+import re
 
 from prompt_toolkit.application.run_in_terminal import run_in_terminal
 from prompt_toolkit.buffer import Buffer
@@ -56,17 +57,69 @@ def _render_feedback_with_cursor(text: str, cursor: int | None) -> Text:
     )
 
 
-class ApprovalRequestPanel:
-    FEEDBACK_OPTION_INDEX = 3
+def permission_dict_to_request(
+    req: dict[str, Any],
+    *,
+    plan_mode_forced: bool = False,
+) -> ApprovalRequest:
+    """Convert a session ``askPermissions`` dict into a wire ApprovalRequest."""
+    name = str(req.get("name") or "Tool")
+    command = str(req.get("command") or "").strip()
+    description = str(req.get("description") or "").strip()
+    scopes = [str(scope) for scope in (req.get("scopes") or []) if scope]
+    risk = str(req.get("risk_level") or "").strip()
+    diff_preview = req.get("diff_preview")
+    tool_call_id = str(req.get("toolCallId") or "")
 
-    def __init__(self, request: ApprovalRequest):
+    display: list[Any] = []
+    if command:
+        language = "bash" if name.lower() in {"bash", "shell", "pwsh", "zsh"} else "python"
+        display.append(ShellDisplayBlock(language=language, command=command))
+    if description and description != command:
+        display.append(BriefDisplayBlock(text=description))
+    meta_bits: list[str] = []
+    if scopes:
+        meta_bits.append("Scopes: " + ", ".join(scopes))
+    if risk:
+        meta_bits.append(risk)
+    if meta_bits:
+        display.append(BriefDisplayBlock(text="  ·  ".join(meta_bits)))
+    if plan_mode_forced:
+        display.append(
+            BriefDisplayBlock(text="Plan Mode: mutating action still requires approval.")
+        )
+    if isinstance(diff_preview, str) and diff_preview.strip():
+        display.append(BriefDisplayBlock(text=diff_preview.strip()))
+
+    action = command or f"use {name}"
+    return ApprovalRequest(
+        id=tool_call_id,
+        tool_call_id=tool_call_id,
+        sender=name,
+        action=action,
+        description=description or action,
+        display=display,
+    )
+
+
+class ApprovalRequestPanel:
+    def __init__(
+        self,
+        request: ApprovalRequest,
+        *,
+        allow_session_approve: bool = True,
+    ):
         self.request = request
-        self.options: list[tuple[str, ApprovalResponse.Kind]] = [
-            ("Approve once", "approve"),
-            ("Approve for this session", "approve_for_session"),
-            ("Reject", "reject"),
-            ("Reject, tell the model what to do instead", "reject"),
-        ]
+        self.options: list[tuple[str, ApprovalResponse.Kind]] = [("Approve once", "approve")]
+        if allow_session_approve:
+            self.options.append(("Approve for this session", "approve_for_session"))
+        self.options.extend(
+            [
+                ("Reject", "reject"),
+                ("Reject, tell the model what to do instead", "reject"),
+            ]
+        )
+        self.FEEDBACK_OPTION_INDEX = len(self.options) - 1
         self.selected_index = 0
 
         # Pre-render content for the preview.
@@ -165,6 +218,7 @@ class ApprovalRequestPanel:
         *,
         feedback_text: str | None = None,
         feedback_cursor: int | None = None,
+        blocking_keys: bool = False,
     ) -> RenderableType:
         """Render the approval menu as a bordered panel."""
         content_lines: list[RenderableType] = [
@@ -217,8 +271,16 @@ class ApprovalRequestPanel:
         lines.append(Text(""))
         if show_inline_feedback:
             hint = "  Type your feedback, then press Enter to submit."
+        elif blocking_keys:
+            hint = "  ↑/↓ navigate  ↵ confirm  y allow once"
+            if any(kind == "approve_for_session" for _, kind in self.options):
+                hint += "  a always"
+            hint += "  n deny  1/2/3 choose"
+            if self.has_expandable_content:
+                hint += "  d expand"
         else:
-            hint = "  \u25b2/\u25bc select  1/2/3/4 choose  \u21b5 confirm"
+            nums = "/".join(str(i) for i in range(1, len(self.options) + 1))
+            hint = f"  \u25b2/\u25bc select  {nums} choose  \u21b5 confirm"
             if self.has_expandable_content:
                 hint += "  ctrl-e expand"
         lines.append(Text(hint, style="dim"))
@@ -504,9 +566,6 @@ class ApprovalPromptDelegate:
         self._panel.request.resolve(response)
         self._on_response(self._panel.request, response, "")
 
-
-import re
-from typing import Any
 
 _OPTION_RE = re.compile(r"^#{2,4}\s*Option\s+([A-Ca-c])\s*[:\-–—]?\s*(.*)$", re.MULTILINE)
 _RECOMMENDED_RE = re.compile(r"\(recommended\)", re.IGNORECASE)
