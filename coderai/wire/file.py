@@ -11,10 +11,11 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from typing import Any, Literal
+from collections.abc import Iterator
 
 from coderai.wire.protocol import WIRE_PROTOCOL_LEGACY_VERSION, WIRE_PROTOCOL_VERSION
-from coderai.wire.types import WireMessageEnvelope, deserialize_wire_message
+from coderai.wire.types import WireMessageEnvelope
 
 
 @dataclass
@@ -68,9 +69,7 @@ class WireFile:
     def __post_init__(self) -> None:
         if self.path.exists():
             version = _load_protocol_version(self.path)
-            self.protocol_version = (
-                version if version is not None else WIRE_PROTOCOL_LEGACY_VERSION
-            )
+            self.protocol_version = version if version is not None else WIRE_PROTOCOL_LEGACY_VERSION
         else:
             self.protocol_version = WIRE_PROTOCOL_VERSION
 

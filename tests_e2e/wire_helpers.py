@@ -160,9 +160,7 @@ def build_ask_user_tool_call(tool_call_id: str, questions: list[dict[str, Any]])
     return f"tool_call: {json.dumps(payload)}"
 
 
-def build_question_response(
-    request_msg: dict[str, Any], answers: dict[str, str]
-) -> dict[str, Any]:
+def build_question_response(request_msg: dict[str, Any], answers: dict[str, str]) -> dict[str, Any]:
     """Build a QuestionResponse JSON-RPC response."""
     request_id = request_msg.get("id")
     payload = request_msg.get("params", {}).get("payload", {})

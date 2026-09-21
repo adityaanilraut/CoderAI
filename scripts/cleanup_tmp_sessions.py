@@ -16,7 +16,6 @@ def cleanup_sessions(
     dry_run: bool = False,
 ) -> int:
     now = time.time()
-    cutoff_seconds = max_age_days * 86400.0
     removed_count = 0
 
     if not root.exists() or not root.is_dir():

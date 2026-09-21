@@ -10,14 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
-from typing import Any
 
 import acp
 from kosong.message import ContentPart, ImageURLPart, TextPart
 from kosong.tooling import DisplayBlock, ToolReturnValue
 
-from coderai.acp.types import AcpMessage, ACPContentBlock, PROTOCOL_VERSION
+from coderai.acp.types import AcpMessage, ACPContentBlock
 from coderai.tools.display import DiffDisplayBlock
 
 logger = logging.getLogger(__name__)

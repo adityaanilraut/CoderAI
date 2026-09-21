@@ -14,15 +14,11 @@ Delivery is dedup-safe: notification ids already present in history
 
 from __future__ import annotations
 
-import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
 
-from coderai.utils.io import atomic_json_write
 from coderai.notifications.models import (
     CLAIM_STALE_AFTER_S,
     DELIVER_LIMIT,
@@ -32,6 +28,8 @@ from coderai.notifications.models import (
     NotificationView,
 )
 from coderai.notifications.store import NotificationStore
+
+
 class NotificationManager:
     """Claim/ack delivery over a :class:`NotificationStore`."""
 

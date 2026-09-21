@@ -134,6 +134,8 @@ def escalated_kill_process_tree(
     # Stage 3: SIGKILL (hard immediate kill)
     kill_process_tree(pid, _SIGKILL)
     return not is_process_alive(pid)
+
+
 # --- from coderai/core/common/bash_timeout.py ---
 """"""
 

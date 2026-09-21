@@ -49,5 +49,3 @@ class AcpMessage:
 
     def encode_ndjson(self) -> bytes:
         return (json.dumps(self.to_dict(), ensure_ascii=False) + "\n").encode("utf-8")
-
-

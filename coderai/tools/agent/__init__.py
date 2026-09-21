@@ -412,14 +412,10 @@ async def handle_report_tool(args: dict[str, Any], context: ToolExecutionContext
         output=f"Report recorded for the parent agent (delivery: {delivery}).",
         metadata={"summary": summary, "delivery": delivery},
     )
+
+
 # --- from coderai/core/tools/subagent.py ---
 """Sub-Agent Task tool handler for CoderAI."""
-
-
-from typing import Any
-
-from coderai.subagents.runner import SubAgentManager, SubAgentSpec
-from coderai.tools.legacy.types import ToolExecutionContext, ToolResult, as_str
 
 
 async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionContext) -> ToolResult:
@@ -594,4 +590,3 @@ class Agent(CallableTool2[AgentParams]):
         return ToolError(
             output=res.error or res.output or "Subagent failed", brief=res.error or "Failed"
         )
-

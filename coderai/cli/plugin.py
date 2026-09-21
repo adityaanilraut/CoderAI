@@ -169,9 +169,7 @@ def cmd_plugin_install(argv: list[str]) -> int:
                 "Warning: no LLM provider configured; plugins needing API key "
                 "injection will fail. Run 'coderai login' or configure a provider first."
             )
-        spec = install_plugin(
-            source=source, plugins_dir=get_plugins_dir(), host_values=host_values
-        )
+        spec = install_plugin(source=source, plugins_dir=get_plugins_dir(), host_values=host_values)
     except PluginError as exc:
         print(f"Error: {exc}")
         return 1

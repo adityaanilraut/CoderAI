@@ -16,7 +16,6 @@ from rich.table import Table
 
 from coderai.ui.shell.session_picker import select_with_arrows
 from coderai.utils.common.model_capabilities import (
-    CURATED_MODELS,
     get_model_badges,
 )
 from coderai.llm import clear_client_pool, probe_provider_connectivity
@@ -419,9 +418,7 @@ def configure_custom_endpoint_interactive(
     return model_name
 
 
-def select_and_save_model_interactive(
-    console: Any | None, project_root: str = "."
-) -> str:
+def select_and_save_model_interactive(console: Any | None, project_root: str = ".") -> str:
     """Prompt user to select a default model and save it to configuration."""
     from coderai.ui.shell.session_picker import get_available_models
 

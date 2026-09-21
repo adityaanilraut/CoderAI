@@ -329,12 +329,16 @@ def test_typed_config_rejects_missing_provider() -> None:
 
     with pytest.raises(ValueError, match="not found in providers"):
         TypedConfig(
-            models={"custom": LLMModel(provider="nonexistent", model="gpt-4", max_context_size=64000)},
+            models={
+                "custom": LLMModel(provider="nonexistent", model="gpt-4", max_context_size=64000)
+            },
             providers={},
         )
 
 
-def test_create_openai_client_resilient_to_typed_config_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_openai_client_resilient_to_typed_config_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """create_openai_client does not raise UnboundLocalError when load_typed_config fails."""
     from coderai.llm import create_openai_client
 
@@ -348,7 +352,9 @@ def test_create_openai_client_resilient_to_typed_config_failure(monkeypatch: pyt
     assert info["model"] == "gpt-5.6-luna" or info.get("displayModel")
 
 
-def test_resolve_model_provider_routing_kimi_prefers_oauth_over_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_model_provider_routing_kimi_prefers_oauth_over_openai_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Routing for Kimi models prioritizes OAuth token over generic sk-proj OpenAI keys."""
     from coderai.llm import resolve_model_provider_routing
     from coderai.auth.oauth import OAuthToken
@@ -379,7 +385,9 @@ def test_test_api_connection_handles_403_quota(monkeypatch: pytest.MonkeyPatch) 
         pass
 
     def mock_create(*args, **kwargs):
-        raise MockPermissionDeniedError("Error code: 403 - You've reached your monthly usage limit for this billing cycle.")
+        raise MockPermissionDeniedError(
+            "Error code: 403 - You've reached your monthly usage limit for this billing cycle."
+        )
 
     class MockChat:
         completions = type("Comp", (), {"create": staticmethod(mock_create)})()
@@ -389,7 +397,8 @@ def test_test_api_connection_handles_403_quota(monkeypatch: pytest.MonkeyPatch) 
             self.chat = MockChat()
 
     monkeypatch.setattr("openai.OpenAI", MockOpenAI)
-    success, msg = probe_provider_connectivity(model="kimi-for-coding", api_key="tok", base_url="https://api.kimi.com/coding/v1")
+    success, msg = probe_provider_connectivity(
+        model="kimi-for-coding", api_key="tok", base_url="https://api.kimi.com/coding/v1"
+    )
     assert success is False
     assert "Quota Exceeded (403)" in msg
-

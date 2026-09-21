@@ -55,21 +55,27 @@ def defaults_to_thinking_mode(model: str) -> bool:
         return False
     if m in THINKING_CAPABLE_MODELS:
         return True
-    if any(
-        m.startswith(prefix)
-        for prefix in (
-            "o1",
-            "o3",
-            "o4",
-            "deepseek-reasoner",
-            "deepseek-r1",
-            "deepseek-flash",
-            "deepseek-v4-flash",
-            "claude-3-7",
-            "deepseek-v4-pro",
-            "kimi",
+    if (
+        any(
+            m.startswith(prefix)
+            for prefix in (
+                "o1",
+                "o3",
+                "o4",
+                "deepseek-reasoner",
+                "deepseek-r1",
+                "deepseek-flash",
+                "deepseek-v4-flash",
+                "claude-3-7",
+                "deepseek-v4-pro",
+                "kimi",
+            )
         )
-    ) or "thinking" in m or "reason" in m or "kimi-code" in m or "kimi-for-coding" in m:
+        or "thinking" in m
+        or "reason" in m
+        or "kimi-code" in m
+        or "kimi-for-coding" in m
+    ):
         return True
     return False
 
@@ -77,12 +83,17 @@ def defaults_to_thinking_mode(model: str) -> bool:
 def get_supported_reasoning_efforts(model: str) -> list[str]:
     """Return the list of supported reasoning efforts for a given model."""
     m = model.strip().lower()
-    if defaults_to_thinking_mode(model) or m in (
-        "deepseek-flash",
-        "deepseek-v4-flash",
-        "gemini-3.7-flash",
-        "deepseek-v4-pro",
-    ) or "kimi" in m:
+    if (
+        defaults_to_thinking_mode(model)
+        or m
+        in (
+            "deepseek-flash",
+            "deepseek-v4-flash",
+            "gemini-3.7-flash",
+            "deepseek-v4-pro",
+        )
+        or "kimi" in m
+    ):
         return ["off", "low", "medium", "high", "max"]
     return ["off"]
 

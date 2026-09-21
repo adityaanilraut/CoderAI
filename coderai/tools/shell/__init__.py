@@ -90,9 +90,7 @@ def _isolated_root(context: Any) -> str | None:
 _SANDBOX_RANK = {"read-only": 0, "workspace-write": 1, "danger-full-access": 2}
 
 
-def _effective_sandbox_mode(
-    context: Any, args: dict[str, Any]
-) -> tuple[Any, ToolResult | None]:
+def _effective_sandbox_mode(context: Any, args: dict[str, Any]) -> tuple[Any, ToolResult | None]:
     """Wire the `sandbox_permissions` escalation arg (fail-closed).
 
     Returns (mode_to_enforce, error_result). An unknown mode, or any escalation
@@ -146,10 +144,7 @@ def _reject_escaping_redirects(
             return ToolResult(
                 ok=False,
                 name=tool_name,
-                error=(
-                    f"Shell redirect target '{target}' escapes the execution "
-                    "root; refusing."
-                ),
+                error=(f"Shell redirect target '{target}' escapes the execution root; refusing."),
             )
         allowed, err = check_sandbox_path_access(
             resolved,
@@ -648,9 +643,7 @@ def _execute_shell_command(
         kwargs["start_new_session"] = True
 
     try:
-        argv, sandbox_meta = _sandbox_wrap(
-            shell_path, shell_args, context, cwd, mode_override
-        )
+        argv, sandbox_meta = _sandbox_wrap(shell_path, shell_args, context, cwd, mode_override)
     except SandboxUnavailableError as sb_err:
         # Fail-closed: never run the command without the requested OS sandbox.
         return {
@@ -842,9 +835,7 @@ def _start_background_shell_command(
         kwargs["start_new_session"] = True
 
     try:
-        argv, sandbox_meta = _sandbox_wrap(
-            shell_path, shell_args, context, cwd, mode_override
-        )
+        argv, sandbox_meta = _sandbox_wrap(shell_path, shell_args, context, cwd, mode_override)
     except SandboxUnavailableError as sb_err:
         # Fail-closed: never run the command without the requested OS sandbox.
         return ToolResult(
@@ -1018,6 +1009,8 @@ def _start_background_shell_command(
             "runInBackground": True,
         },
     )
+
+
 # --- from coderai/core/tools/pwsh.py ---
 """PowerShell / pwsh tool — cross-platform PowerShell execution with timeout and background support."""
 
@@ -1025,17 +1018,9 @@ def _start_background_shell_command(
 import asyncio
 import pathlib
 import shutil
-import subprocess
-import sys
 import tempfile
-import time
-import uuid
-from typing import Any
 
-from coderai.background import get_job_store
-from coderai.sandbox import delete_seatbelt_profile, wrap_sandbox_command
-from coderai.spill import apply_spill_policy
-from coderai.tools.legacy.types import ToolResult, as_str
+from coderai.sandbox import delete_seatbelt_profile
 
 MAX_OUTPUT_CHARS = 30000
 DEFAULT_PWSH_TIMEOUT_S = 120.0
@@ -1314,7 +1299,8 @@ class Shell(CallableTool2[Params]):
         )
         if not res.ok:
             builder.write(res.output or "")
-            return builder.error(res.error or "Command failed", brief=f"Failed: {params.command[:40]}")
+            return builder.error(
+                res.error or "Command failed", brief=f"Failed: {params.command[:40]}"
+            )
         builder.write(res.output or "")
         return builder.ok("Command executed successfully.")
-

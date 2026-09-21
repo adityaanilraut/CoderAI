@@ -46,7 +46,9 @@ def test_exit_plan_mode_summary_arg():
         project_root="/tmp",
         plan_mode=True,
     )
-    res = handle_exit_plan_mode_tool({"summary": "Finished exploring and wrote verification test"}, ctx)
+    res = handle_exit_plan_mode_tool(
+        {"summary": "Finished exploring and wrote verification test"}, ctx
+    )
     assert res.ok is True
     assert res.metadata.get("exitPlanMode") is True
     assert res.concludes_turn is True

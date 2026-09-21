@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import re
 import subprocess
 import sys
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any
 
 from rich.panel import Panel
 from rich.text import Text
@@ -79,6 +77,7 @@ async def _fetch_latest_version() -> str | None:
 async def do_update(*, print: bool = True, check_only: bool = False) -> UpdateResult:
     """Check or execute package update."""
     async with _UPDATE_LOCK:
+
         def _print(msg: str) -> None:
             if print:
                 console.print(msg)
@@ -96,7 +95,11 @@ async def do_update(*, print: bool = True, check_only: bool = False) -> UpdateRe
             return UpdateResult.UP_TO_DATE
 
         if check_only:
-            logger.info("Update available: current={cur_v}, latest={latest_version}", cur_v=cur_v, latest_version=latest_version)
+            logger.info(
+                "Update available: current={cur_v}, latest={latest_version}",
+                cur_v=cur_v,
+                latest_version=latest_version,
+            )
             _print(f"[yellow]Update available: v{latest_version} (current: v{cur_v})[/yellow]")
             _print(f"Run [bold cyan]{UPGRADE_COMMAND}[/] to upgrade.")
             return UpdateResult.UPDATE_AVAILABLE

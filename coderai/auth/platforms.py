@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 import requests
 
 KIMI_CODE_PLATFORM_ID = "kimi-code"
+
 
 class Platform(NamedTuple):
     id: str

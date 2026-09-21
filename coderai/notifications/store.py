@@ -14,19 +14,12 @@ Delivery is dedup-safe: notification ids already present in history
 
 from __future__ import annotations
 
-import re
-import time
-import uuid
-from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
 
 from coderai.utils.io import atomic_json_write
 from coderai.notifications.models import (
     NotificationDelivery,
     NotificationEvent,
-    NotificationSinkState,
     NotificationView,
     _delivery_from_dict,
     _delivery_to_dict,
@@ -34,6 +27,8 @@ from coderai.notifications.models import (
     _event_to_dict,
     _validate_notification_id,
 )
+
+
 class NotificationStore:
     """Per-notification ``event.json`` + ``delivery.json`` persistence."""
 
@@ -53,9 +48,7 @@ class NotificationStore:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def create_notification(
-        self, event: NotificationEvent, delivery: NotificationDelivery
-    ) -> None:
+    def create_notification(self, event: NotificationEvent, delivery: NotificationDelivery) -> None:
         directory = self._notification_dir(event.id)
         atomic_json_write(_event_to_dict(event), directory / self.EVENT_FILE)
         atomic_json_write(_delivery_to_dict(delivery), directory / self.DELIVERY_FILE)

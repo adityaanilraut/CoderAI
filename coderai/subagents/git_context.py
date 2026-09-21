@@ -63,7 +63,9 @@ async def collect_git_context(work_dir: str) -> str:
     if log_raw:
         log_lines = [line for line in log_raw.splitlines() if line.strip()]
         if log_lines:
-            sections.append("Recent commits:\n" + "\n".join(f"  {l[:200]}" for l in log_lines))
+            sections.append(
+                "Recent commits:\n" + "\n".join(f"  {line[:200]}" for line in log_lines)
+            )
 
     if len(sections) <= 1:
         return ""

@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 
+
 def open_external_editor(initial_text: str = "") -> str:
     """Open the system default or user configured $EDITOR to compose a prompt.
 

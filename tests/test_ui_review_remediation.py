@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from prompt_toolkit.document import Document
@@ -39,7 +39,9 @@ def test_dead_web_frontend_removed() -> None:
 def test_welcome_screen_renders_cleanly_at_80_columns(tmp_path: Path) -> None:
     """Verify welcome screen renders in 80-column width without uncaught errors."""
     output_buffer = io.StringIO()
-    test_console = Console(file=output_buffer, width=80, force_terminal=True, color_system="standard")
+    test_console = Console(
+        file=output_buffer, width=80, force_terminal=True, color_system="standard"
+    )
 
     render_welcome_screen(
         console=test_console,

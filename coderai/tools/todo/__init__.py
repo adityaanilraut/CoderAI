@@ -54,11 +54,11 @@ def handle_update_plan_tool(args: dict[str, Any], context: Any) -> ToolResult:
         run,
         validator=_validate_update_plan_schema,
     )
+
+
 # --- from coderai/core/tools/todo_write.py ---
 """todo_write wraps UpdatePlan with a structured todo list."""
 
-
-from typing import Any
 
 VALID_TODO_STATUS = ("pending", "in_progress", "completed", "cancelled")
 
@@ -132,9 +132,7 @@ def handle_todo_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 session_id = context.get("session_id")
             else:
                 session_id = getattr(context, "session_id", None)
-                mgr = getattr(context, "manager", None) or getattr(
-                    context, "session_manager", None
-                )
+                mgr = getattr(context, "manager", None) or getattr(context, "session_manager", None)
             if mgr is not None and session_id:
                 from coderai.session_state import TodoItemState
 

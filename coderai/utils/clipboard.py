@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - optional media extra
     ImageGrab = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
-    from PIL import Image as _PILImage
+    pass
 
 # Video file extensions recognized for clipboard paste.
 _VIDEO_SUFFIXES: frozenset[str] = frozenset(

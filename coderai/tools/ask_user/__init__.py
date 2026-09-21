@@ -128,7 +128,11 @@ async def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> T
 
     if is_afk:
         if wire_server is not None:
-            from kosong.tooling import BriefDisplayBlock, ToolResult as WireToolResult, ToolReturnValue
+            from kosong.tooling import (
+                BriefDisplayBlock,
+                ToolResult as WireToolResult,
+                ToolReturnValue,
+            )
             from coderai.wire.emitter import wire_send
 
             rv = ToolReturnValue(
@@ -160,7 +164,12 @@ async def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> T
             QuestionOption,
             QuestionRequest,
         )
-        from kosong.tooling import BriefDisplayBlock, ToolError, ToolResult as WireToolResult, ToolReturnValue
+        from kosong.tooling import (
+            BriefDisplayBlock,
+            ToolError,
+            ToolResult as WireToolResult,
+            ToolReturnValue,
+        )
 
         if not getattr(wire_server, "_client_supports_question", False):
             err = ToolError(

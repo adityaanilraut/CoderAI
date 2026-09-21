@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from coderai.notifications.models import NotificationView
+
+
 def to_wire_notification(view: NotificationView) -> Any:
     """Convert to a wire ``Notification`` event."""
     from coderai.wire.types import Notification

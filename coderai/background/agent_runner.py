@@ -6,7 +6,6 @@ import uuid
 from typing import Any
 
 from coderai.orchestration import (
-    DEFAULT_MAX_CONTINUABLE_AGENTS,
     publish_subagent_end,
     publish_subagent_start,
     resolve_max_continuable_agents,
@@ -21,6 +20,7 @@ from coderai.subagents.core import (
 )
 from coderai.subagents.output import SubAgentResult
 from coderai.subagents.runner import SubAgentManager
+
 
 class TaskSupervisor:
     """Supervises long-running background tasks, subagents, and jobs with liveness monitoring and cleanup."""

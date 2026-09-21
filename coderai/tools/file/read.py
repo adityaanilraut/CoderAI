@@ -27,9 +27,7 @@ DEFAULT_LINE_LIMIT = 2000
 MAX_LINE_LENGTH = 2000
 LINE_NUMBER_WIDTH = 6
 READ_MAX_BYTES = 50 * 1024  # READ_MAX_BYTES cap
-STREAM_MIN_SIZE = (
-    10 * 1024 * 1024
-)  # Streaming threshold; Python reads whole but documents ceiling
+STREAM_MIN_SIZE = 10 * 1024 * 1024  # Streaming threshold; Python reads whole but documents ceiling
 # ponytail: whole-file read; streaming via chunked scan if large files cause OOM
 
 DEFAULT_GITIGNORE = [
@@ -735,14 +733,25 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
 from collections import deque as _deque
 from pathlib import Path as _Path
 from kaos.path import KaosPath as _KaosPath
-from kosong.tooling import CallableTool2 as _CallableTool2, ToolError as _ToolError, ToolOk as _ToolOk, ToolReturnValue as _ToolReturnValue
+from kosong.tooling import (
+    CallableTool2 as _CallableTool2,
+    ToolError as _ToolError,
+    ToolOk as _ToolOk,
+    ToolReturnValue as _ToolReturnValue,
+)
 from pydantic import BaseModel as _BaseModel, Field as _Field, model_validator as _model_validator
 
 from coderai.soul.agent import Runtime as _Runtime
-from coderai.tools.file.utils import MEDIA_SNIFF_BYTES as _MEDIA_SNIFF_BYTES, detect_file_type as _detect_file_type
+from coderai.tools.file.utils import (
+    MEDIA_SNIFF_BYTES as _MEDIA_SNIFF_BYTES,
+    detect_file_type as _detect_file_type,
+)
 from coderai.tools.utils import load_desc as _load_desc, truncate_line as _truncate_line
 from coderai.utils.logging import logger as _logger
-from coderai.utils.path import is_within_workspace as _is_within_workspace, kaos_path_from_user_input as _kaos_path_from_user_input
+from coderai.utils.path import (
+    is_within_workspace as _is_within_workspace,
+    kaos_path_from_user_input as _kaos_path_from_user_input,
+)
 from coderai.utils.sensitive import is_sensitive_file as _is_sensitive_file
 
 MAX_READ_LINES = 1000

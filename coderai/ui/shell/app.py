@@ -225,12 +225,8 @@ def _prompt_permissions(
                     show_approval_in_pager,
                 )
 
-                wire_req = permission_dict_to_request(
-                    req, plan_mode_forced=is_forced_plan_scope
-                )
-                panel = ApprovalRequestPanel(
-                    wire_req, allow_session_approve=has_always
-                )
+                wire_req = permission_dict_to_request(req, plan_mode_forced=is_forced_plan_scope)
+                panel = ApprovalRequestPanel(wire_req, allow_session_approve=has_always)
                 _STREAM_STATE.set_approval_panel(panel)
                 has_always_panel = any(v == "approve_for_session" for _, v in panel.options)
                 if has_always_panel:
@@ -334,20 +330,20 @@ def _prompt_permissions(
 
                             def _live_deny(*, prompt_feedback: bool) -> None:
                                 with _paused_menu_live():
-                                    _deny_with_optional_feedback(
-                                        prompt_feedback=prompt_feedback
-                                    )
+                                    _deny_with_optional_feedback(prompt_feedback=prompt_feedback)
 
                             def _live_pager() -> None:
                                 with _paused_menu_live():
                                     if panel.has_expandable_content or (
-                                        isinstance(diff_preview, str)
-                                        and diff_preview.strip()
+                                        isinstance(diff_preview, str) and diff_preview.strip()
                                     ):
                                         try:
                                             _show_panel_pager()
                                         except Exception:
-                                            if isinstance(diff_preview, str) and diff_preview.strip():
+                                            if (
+                                                isinstance(diff_preview, str)
+                                                and diff_preview.strip()
+                                            ):
                                                 render_diff_preview(
                                                     console,
                                                     diff_preview,
@@ -365,13 +361,15 @@ def _prompt_permissions(
                                         return False
                                     if edited_cmd:
                                         req["command"] = edited_cmd
-                                        if isinstance(req.get("input"), dict) and "command" in req[
-                                            "input"
-                                        ]:
+                                        if (
+                                            isinstance(req.get("input"), dict)
+                                            and "command" in req["input"]
+                                        ):
                                             req["input"]["command"] = edited_cmd
-                                        if isinstance(req.get("arguments"), dict) and "command" in req[
-                                            "arguments"
-                                        ]:
+                                        if (
+                                            isinstance(req.get("arguments"), dict)
+                                            and "command" in req["arguments"]
+                                        ):
                                             req["arguments"]["command"] = edited_cmd
                                         _cmd_holder[0] = edited_cmd
                                     replies.append(
@@ -384,9 +382,7 @@ def _prompt_permissions(
                                     return True
 
                             while True:
-                                menu_live.update(
-                                    panel.render(blocking_keys=False), refresh=True
-                                )
+                                menu_live.update(panel.render(blocking_keys=False), refresh=True)
                                 key = _read_menu_key()
                                 if not key:
                                     break  # not a real TTY after all -> input() fallback
@@ -692,7 +688,9 @@ def _prompt_permissions(
                 break
             else:
                 # Fail-closed: unknown input reprompts, never auto-approves.
-                print("  Invalid choice — type y (allow once), a (always), n (deny), e (edit), d (diff).")
+                print(
+                    "  Invalid choice — type y (allow once), a (always), n (deny), e (edit), d (diff)."
+                )
                 continue
 
     return replies, always_allows
@@ -1852,7 +1850,9 @@ async def _run_interactive(
         mcp_servers_count=mcp_count,
         skills_count=len(discovered_skills),
         reasoning_effort=mgr.get_reasoning_effort(),
-        active_agent=mgr.get_active_agent_role() if hasattr(mgr, "get_active_agent_role") else "default",
+        active_agent=mgr.get_active_agent_role()
+        if hasattr(mgr, "get_active_agent_role")
+        else "default",
     )
 
     # Check if active model has a configured API key
@@ -1924,9 +1924,7 @@ async def _run_interactive(
             turns_count = sum(1 for m in messages_list if m.role == "user")
             active_mcp_count = len(getattr(mgr.mcp_manager, "clients", {}) or {})
             active_role = (
-                mgr.get_active_agent_role()
-                if hasattr(mgr, "get_active_agent_role")
-                else "default"
+                mgr.get_active_agent_role() if hasattr(mgr, "get_active_agent_role") else "default"
             )
             stats = {
                 "tokens": tokens_count,
@@ -1964,7 +1962,11 @@ async def _run_interactive(
                     ).strip()
                     active_plan_mode = _ptk_session.plan_mode
                     # Shell mode executes directly.
-                    if getattr(_ptk_session, "shell_mode", False) and raw and not raw.startswith("/"):
+                    if (
+                        getattr(_ptk_session, "shell_mode", False)
+                        and raw
+                        and not raw.startswith("/")
+                    ):
                         import subprocess as _sp
 
                         try:
@@ -1978,7 +1980,9 @@ async def _run_interactive(
                             )
                             out = (res.stdout or "") + (res.stderr or "")
                             if console is not None and _RICH:
-                                console.print(f"[dim]{out.strip()[:4000] or '(exit ' + str(res.returncode) + ')'}[/]")
+                                console.print(
+                                    f"[dim]{out.strip()[:4000] or '(exit ' + str(res.returncode) + ')'}[/]"
+                                )
                             else:
                                 print(out.strip() or f"(exit {res.returncode})")
                         except Exception as e:
@@ -2551,7 +2555,9 @@ def main(argv: list[str] | None = None) -> int:
 
             os.environ["CODERAI_MCP_CONFIG_JSON"] = _json.dumps({"mcpServers": _cli_servers})
     if getattr(args, "agent", None) and getattr(args, "agent_file", None):
-        print("Cannot use --agent together with --agent-file. Use one or the other.", file=sys.stderr)
+        print(
+            "Cannot use --agent together with --agent-file. Use one or the other.", file=sys.stderr
+        )
         return 1
     if getattr(args, "agent", None):
         os.environ["CODERAI_AGENT"] = str(args.agent)
@@ -2828,9 +2834,7 @@ def main(argv: list[str] | None = None) -> int:
                         except Exception:
                             _resume_target = None
                     if _resume_target is not None:
-                        await mgr.reply_session(
-                            _resume_target, full_prompt, plan_mode=args.plan
-                        )
+                        await mgr.reply_session(_resume_target, full_prompt, plan_mode=args.plan)
                         await _drain_pending_interactions(mgr, _resume_target, effective_yes)
                         if getattr(args, "final_message_only", False):
                             _emit_final_message_only(mgr, _resume_target)

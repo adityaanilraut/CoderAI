@@ -432,8 +432,6 @@ SAMPLE_HTML = """<!DOCTYPE html><html><head><title>CoderAI Test Dashboard</title
 </body></html>"""
 
 
-
-
 def test_telemetry_span_tracks_duration_and_exports_otel():
     """Execution spans record duration, events, attributes, and OTel export shape."""
     span = ExecutionSpan(

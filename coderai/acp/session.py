@@ -107,7 +107,9 @@ def load_engine_session_id(session_dir: Path | str | None) -> str | None:
         with open(engine_session_id_path(session_dir), encoding="utf-8") as handle:
             data = json.load(handle)
         engine_session_id = data.get(_ENGINE_SESSION_ID_KEY) if isinstance(data, dict) else None
-        return engine_session_id if isinstance(engine_session_id, str) and engine_session_id else None
+        return (
+            engine_session_id if isinstance(engine_session_id, str) and engine_session_id else None
+        )
     except (OSError, ValueError):
         return None
 
@@ -124,9 +126,7 @@ def save_engine_session_id(session_dir: Path | str | None, engine_session_id: st
             engine_session_id_path(session_dir),
         )
     except OSError:
-        logger.warning(
-            "Failed to persist engine session binding in %s", str(session_dir)
-        )
+        logger.warning("Failed to persist engine session binding in %s", str(session_dir))
 
 
 class _ToolCallState:
@@ -358,7 +358,9 @@ class ACPSession:
                     case _:
                         pass
         except Exception:
-            logger.exception("Failed to replay ACP session history from %s", getattr(wire_file, "path", ""))
+            logger.exception(
+                "Failed to replay ACP session history from %s", getattr(wire_file, "path", "")
+            )
         finally:
             self._turn_state = None
             _terminal_tool_call_ids.reset(terminal_tool_calls_token)

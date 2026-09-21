@@ -674,18 +674,24 @@ def grep_tool_definition() -> ToolDefinition:
 # --- CallableTool2 Implementation ---
 
 from pathlib import Path as _Path
-from kosong.tooling import CallableTool2 as _CallableTool2, ToolError as _ToolError, ToolOk as _ToolOk, ToolReturnValue as _ToolReturnValue
+from kosong.tooling import (
+    CallableTool2 as _CallableTool2,
+    ToolError as _ToolError,
+    ToolOk as _ToolOk,
+    ToolReturnValue as _ToolReturnValue,
+)
 from pydantic import BaseModel as _BaseModel, Field as _Field
 
 from coderai.soul.agent import Runtime as _Runtime
 from coderai.tools.utils import load_desc as _load_desc
-from coderai.utils.logging import logger as _logger
 
 _BASE_GREP_DESCRIPTION = _load_desc(_Path(__file__).parent / "grep.md")
 
 
 class GrepParams(_BaseModel):
-    pattern: str = _Field(description="The regular expression pattern to search for in file contents")
+    pattern: str = _Field(
+        description="The regular expression pattern to search for in file contents"
+    )
     path: str = _Field(
         description="File or directory to search in. Defaults to current working directory.",
         default=".",
@@ -727,5 +733,6 @@ class Grep(_CallableTool2[GrepParams]):
         res = handle_grep_tool(args, None)
         if not res.ok:
             return _ToolError(message=res.error or "Grep failed", brief="Grep error")
-        return _ToolOk(output=res.output or "", message=f"Grep found matches for `{params.pattern}`.")
-
+        return _ToolOk(
+            output=res.output or "", message=f"Grep found matches for `{params.pattern}`."
+        )

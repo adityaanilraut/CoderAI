@@ -32,7 +32,7 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal
 
 import requests
 
@@ -41,14 +41,13 @@ from coderai.share import get_share_dir
 
 from coderai.auth.platforms import (
     KIMI_CODE_PLATFORM_ID,
-    PLATFORMS,
-    Platform,
     RemoteModelInfo,
     get_platform_by_id,
     list_remote_models,
     managed_model_key,
     managed_provider_key,
 )
+
 CODERAI_CODE_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
 CODERAI_CODE_OAUTH_KEY = "oauth/coderai-code"
 # Provider identifiers (preserved for compatibility, do not rename values).
@@ -318,7 +317,6 @@ def save_tokens(ref: Any, token: OAuthToken) -> Any:
     return ref
 
 
-
 # -- device flow HTTP --------------------------------------------------------
 
 
@@ -382,9 +380,7 @@ def request_device_authorization() -> DeviceAuthorization:
         raise OAuthError(f"Unexpected device authorization response: {data}") from exc
 
 
-def wait_for_device_token(
-    auth: DeviceAuthorization, on_waiting: Any = None
-) -> OAuthToken:
+def wait_for_device_token(auth: DeviceAuthorization, on_waiting: Any = None) -> OAuthToken:
     """Poll until the user authorizes (sync; async callers use ``to_thread``)."""
     interval = max(auth.interval, 1)
     printed_wait = False
@@ -450,7 +446,9 @@ def refresh_access_token(refresh_token: str, *, max_retries: int = 3) -> OAuthTo
                     data.get("error_description") or "Token refresh unauthorized."
                 )
             if resp.status_code != 200:
-                desc = data.get("error_description") or f"Token refresh failed ({resp.status_code})."
+                desc = (
+                    data.get("error_description") or f"Token refresh failed ({resp.status_code})."
+                )
                 if resp.status_code in _RETRYABLE_REFRESH_STATUSES:
                     raise _RetryableRefreshError(desc)
                 raise OAuthError(desc)
@@ -562,10 +560,7 @@ class OAuthManager:
                 try:
                     if acquired:
                         locked = load_token(key)
-                        if (
-                            locked is not None
-                            and locked.refresh_token != current.refresh_token
-                        ):
+                        if locked is not None and locked.refresh_token != current.refresh_token:
                             _REJECTED_REFRESH_TOKENS.pop(key, None)
                             self._access_tokens[key] = locked.access_token
                             continue
@@ -574,9 +569,7 @@ class OAuthManager:
                     if not self._can_retry_rejected(key, current.refresh_token):
                         self._access_tokens.pop(key, None)
                         if force:
-                            raise OAuthUnauthorized(
-                                "Refresh token was recently rejected."
-                            )
+                            raise OAuthUnauthorized("Refresh token was recently rejected.")
                         return
                     try:
                         refreshed = await asyncio.to_thread(
@@ -606,9 +599,7 @@ class OAuthManager:
 # -- login / logout flows -------------------------------------------------------
 
 
-async def login_device_flow(
-    *, open_browser: bool = True
-) -> AsyncIterator[OAuthEvent]:
+async def login_device_flow(*, open_browser: bool = True) -> AsyncIterator[OAuthEvent]:
     """Run the RFC 8628 device flow, yielding progress events."""
     platform = get_platform_by_id(KIMI_CODE_PLATFORM_ID)
     if platform is None:

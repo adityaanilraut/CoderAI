@@ -48,8 +48,8 @@ coderai --agent-file .coderai/agents/code-reviewer.md
 ## 3. Development Guidelines & Constraints
 
 ### Python Version Support
-- **Minimum Python Version**: Python 3.10+
-- **Typing Rule**: Do **not** use PEP 695 syntax (`type Alias = ...` or `def func[T](...)`). Use standard `typing.TypeVar`, `Union`, and `typing_extensions` where applicable to preserve Python 3.10 and 3.11 compatibility.
+- **Minimum Python Version**: Python 3.12+
+- **Typing Rule**: Do **not** use PEP 695 syntax (`type Alias = ...` or `def func[T](...)`). Use standard `typing.TypeVar`, `Union`, and `typing_extensions` where applicable to preserve broad compatibility.
 
 ### Terminal Purity
 - CoderAI is strictly a terminal CLI and daemon application. Do not reintroduce web frontends, browser viewers, or HTTP HTML renderers.

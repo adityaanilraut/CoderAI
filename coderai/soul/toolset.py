@@ -6,8 +6,6 @@ import importlib
 import inspect
 import json
 import time
-from collections.abc import Callable, Coroutine
-from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -30,7 +28,6 @@ from kosong.tooling import (
     Tool,
     ToolError,
     ToolOk,
-    Toolset,
 )
 from kosong.tooling.error import (
     ToolNotFoundError,
@@ -59,18 +56,14 @@ from coderai.wire.types import (
 )
 from coderai.soul.tool_context import (
     current_tool_call,
-    get_current_step_no,
     get_current_tool_call_or_none,
     get_session_id,
     set_current_step_no,
-    set_current_tool_call,
-    set_session_id,
 )
 
 if TYPE_CHECKING:
     import fastmcp
     import mcp
-    from fastmcp.client.client import CallToolResult
     from fastmcp.client.transports import ClientTransport
     from fastmcp.mcp_config import MCPConfig
 
@@ -728,9 +721,8 @@ class CoderAIToolset:
     ) -> None:
         """Load MCP tools from specified MCP configs."""
         import fastmcp
-        from fastmcp.mcp_config import MCPConfig, RemoteMCPServer
+        from fastmcp.mcp_config import MCPConfig
 
-        from coderai.auth.oauth import has_oauth_token
         from coderai.ui.shell.prompt import toast
 
         async def _check_oauth_tokens(server_url: str) -> bool:
@@ -903,7 +895,9 @@ class MCPTool(CallableTool, Generic[T_transport]):
                     )
                 return convert_mcp_tool_result(call_res)
         except Exception as e:
-            logger.exception("MCP tool execution failed: {tool_name}:", tool_name=self._mcp_tool.name)
+            logger.exception(
+                "MCP tool execution failed: {tool_name}:", tool_name=self._mcp_tool.name
+            )
             return ToolError(
                 message=f"MCP tool execution failed: {e}",
                 brief="MCP tool error",

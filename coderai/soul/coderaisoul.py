@@ -675,4 +675,3 @@ class AgentLoop:
     @property
     def step(self) -> int:
         return self._step
-

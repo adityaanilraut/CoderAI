@@ -30,9 +30,7 @@ def _session_id_from(context: Any) -> str | None:
 def _plan_mode_from(context: Any, session_id: str | None) -> bool:
     if isinstance(context, dict):
         return bool(context.get("plan_mode") or context.get("planMode"))
-    is_plan_mode = bool(
-        getattr(context, "plan_mode", None) or getattr(context, "planMode", None)
-    )
+    is_plan_mode = bool(getattr(context, "plan_mode", None) or getattr(context, "planMode", None))
     if not is_plan_mode:
         mgr = getattr(context, "manager", None) or getattr(context, "session_manager", None)
         if mgr is not None and session_id:

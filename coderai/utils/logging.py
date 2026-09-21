@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import pathlib
 from coderai.log import (
-    logger,
-    enable_logging,
+    StderrRedirector as StderrRedirector,
+    enable_logging as enable_logging,
+    logger as logger,
+    open_original_stderr as open_original_stderr,
     redact_secrets,
-    redirect_stderr_to_logger,
-    restore_stderr,
-    open_original_stderr,
-    StderrRedirector,
+    redirect_stderr_to_logger as redirect_stderr_to_logger,
+    restore_stderr as restore_stderr,
 )
 
 DEBUG_LOG_FILE = "debug.log"
@@ -30,11 +30,11 @@ def log_openai_chat_completion_debug(entry: dict) -> None:
             f.write(line + "\n")
     except (OSError, TypeError, ValueError):
         pass
+
+
 # --- from coderai/core/common/error_logger.py ---
 """"""
 
-
-import pathlib
 
 LOG_DIR = pathlib.Path.home() / ".coderai" / "logs"
 ERROR_LOG_PATH = LOG_DIR / "error.log"

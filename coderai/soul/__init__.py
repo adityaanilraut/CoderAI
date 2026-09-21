@@ -1,4 +1,3 @@
-
 from coderai.soul.agent import (
     SessionSoul,
 )
@@ -149,7 +148,7 @@ from coderai.cli.elapsed import format_context_status
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
-from coderai.wire.types import MCPStatusSnapshot, WireMessage
+from coderai.wire.types import MCPStatusSnapshot
 from coderai.wire import Wire
 
 
@@ -220,8 +219,10 @@ class RunCancelled(Exception):
 try:
     from asyncio import QueueShutDown  # Python 3.13+
 except ImportError:
+
     class QueueShutDown(Exception):  # type: ignore[no-redef]
         pass
+
 
 import asyncio
 import contextlib
@@ -329,12 +330,13 @@ async def _deliver_notifications_to_wire_once(runtime: Any | None, wire: Wire) -
         )
 
 
-__all__.extend([
-    "run_soul",
-    "UILoopFn",
-    "LLMNotSet",
-    "LLMNotSupported",
-    "MaxStepsReached",
-    "RunCancelled",
-])
-
+__all__.extend(
+    [
+        "run_soul",
+        "UILoopFn",
+        "LLMNotSet",
+        "LLMNotSupported",
+        "MaxStepsReached",
+        "RunCancelled",
+    ]
+)

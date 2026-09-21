@@ -120,7 +120,9 @@ class TerminalBridge:
             return {"error": f"Terminal session `{session_id}` not found."}
         try:
             term.send(text, submit=bool(submit))
-            output = term.read_available(timeout_s=_clamp_timeout_ms(timeout_ms, _DEFAULT_SEND_TIMEOUT_MS))
+            output = term.read_available(
+                timeout_s=_clamp_timeout_ms(timeout_ms, _DEFAULT_SEND_TIMEOUT_MS)
+            )
         except Exception as exc:
             return {"error": f"Failed to send to terminal `{session_id}`: {exc}"}
         return {

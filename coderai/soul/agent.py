@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pathlib
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from coderai.soul.dynamic_injection import InjectionRegistry, SoulView, default_registry
 
@@ -229,4 +229,3 @@ class SessionSoul(SoulView):
             return await self.injections.collect(self.history_for_injections(), self)
         except Exception:
             return []
-

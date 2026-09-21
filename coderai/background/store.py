@@ -3,8 +3,9 @@ from __future__ import annotations
 import threading
 import time
 
-from coderai.background.models import Job, JobStatus, _MAX_JOBS_PER_SESSION
+from coderai.background.models import Job, _MAX_JOBS_PER_SESSION
 from coderai.utils.subprocess_env import kill_process_tree
+
 
 # NOTE: coderai.orchestration is imported inside JobStore.start (not at
 # module top): importing it here can create an import cycle through

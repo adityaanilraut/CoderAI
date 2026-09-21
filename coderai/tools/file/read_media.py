@@ -131,16 +131,28 @@ import base64 as _base64
 from io import BytesIO as _BytesIO
 from pathlib import Path as _Path
 from kaos.path import KaosPath as _KaosPath
-from kosong.tooling import CallableTool2 as _CallableTool2, ToolError as _ToolError, ToolOk as _ToolOk, ToolReturnValue as _ToolReturnValue
+from kosong.tooling import (
+    CallableTool2 as _CallableTool2,
+    ToolError as _ToolError,
+    ToolOk as _ToolOk,
+    ToolReturnValue as _ToolReturnValue,
+)
 from pydantic import BaseModel as _BaseModel, Field as _Field
 
 from coderai.soul.agent import Runtime as _Runtime
 from coderai.tools import SkipThisTool as _SkipThisTool
-from coderai.tools.file.utils import MEDIA_SNIFF_BYTES as _MEDIA_SNIFF_BYTES, FileType as _FileType, detect_file_type as _detect_file_type
+from coderai.tools.file.utils import (
+    MEDIA_SNIFF_BYTES as _MEDIA_SNIFF_BYTES,
+    FileType as _FileType,
+    detect_file_type as _detect_file_type,
+)
 from coderai.tools.utils import load_desc as _load_desc
 from coderai.utils.logging import logger as _logger
 from coderai.utils.media_tags import wrap_media_part as _wrap_media_part
-from coderai.utils.path import is_within_workspace as _is_within_workspace, kaos_path_from_user_input as _kaos_path_from_user_input
+from coderai.utils.path import (
+    is_within_workspace as _is_within_workspace,
+    kaos_path_from_user_input as _kaos_path_from_user_input,
+)
 from coderai.wire.types import ImageURLPart as _ImageURLPart, VideoURLPart as _VideoURLPart
 
 MAX_MEDIA_MEGABYTES = 100
@@ -154,6 +166,7 @@ def _to_data_url(mime_type: str, data: bytes) -> str:
 def _extract_image_size(data: bytes) -> tuple[int, int] | None:
     try:
         from PIL import Image
+
         with Image.open(_BytesIO(data)) as image:
             image.load()
             return image.size
@@ -308,4 +321,3 @@ class ReadMediaFile(_CallableTool2[ReadMediaParams]):
                 message=f"Failed to read {params.path}. Error: {e}",
                 brief="Failed to read file",
             )
-

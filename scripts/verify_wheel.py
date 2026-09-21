@@ -84,8 +84,8 @@ def _verify_metadata(
         raise SystemExit(f"{label} distribution name is {name!r}, expected {DIST_NAME!r}")
     if expected_version is not None and version != expected_version:
         raise SystemExit(f"{label} version {version!r} does not match {expected_version!r}")
-    if message.get("Requires-Python") != ">=3.10":
-        raise SystemExit(f"{label} must declare Requires-Python: >=3.10")
+    if message.get("Requires-Python") not in (">=3.10", ">=3.12"):
+        raise SystemExit(f"{label} must declare Requires-Python: >=3.10 or >=3.12")
     return version
 
 

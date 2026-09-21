@@ -836,28 +836,18 @@ def _infer_old_string_not_found_reason_with_llm(
         return reason.strip() if reason else None
     except Exception:
         return None
+
+
 # --- from coderai/core/tools/str_replace_editor.py ---
 """str_replace_editor tool — Anthropic-style custom file editor (view, create, str_replace, insert, undo_edit)."""
 
 
 import os
-import pathlib
 import time
-from typing import Any
 
 from coderai.utils.path import (
-    build_diff_preview,
     ensure_parent_directory,
-    read_text_file_with_metadata,
 )
-from coderai.utils.common.string_matcher import match_multistage
-from coderai.state import (
-    FileState,
-    normalize_file_path,
-    record_file_state,
-)
-from coderai.tools.legacy.types import ToolResult, as_str
-from coderai.tools.file.utils import check_file_write_access, write_file_with_callbacks
 
 DEFAULT_MAX_OUTPUT_CHARS = 32_000
 TRUNCATED_MESSAGE = "\n<response clipped>"
@@ -1389,17 +1379,23 @@ def _handle_undo(target_path: str, context: Any) -> ToolResult:
 from collections.abc import Callable as _Callable
 from pathlib import Path as _Path
 from kaos.path import KaosPath as _KaosPath
-from kosong.tooling import CallableTool2 as _CallableTool2, ToolError as _ToolError, ToolReturnValue as _ToolReturnValue
+from kosong.tooling import (
+    CallableTool2 as _CallableTool2,
+    ToolError as _ToolError,
+    ToolReturnValue as _ToolReturnValue,
+)
 from pydantic import BaseModel as _BaseModel, Field as _Field
 
 from coderai.soul.agent import Runtime as _Runtime
 from coderai.soul.approval import Approval as _Approval
-from coderai.tools.display import DisplayBlock as _DisplayBlock
 from coderai.tools.file.plan_mode import inspect_plan_edit_target as _inspect_plan_edit_target
 from coderai.tools.utils import load_desc as _load_desc
 from coderai.utils.diff import build_diff_blocks as _build_diff_blocks
 from coderai.utils.logging import logger as _logger
-from coderai.utils.path import is_within_workspace as _is_within_workspace, kaos_path_from_user_input as _kaos_path_from_user_input
+from coderai.utils.path import (
+    is_within_workspace as _is_within_workspace,
+    kaos_path_from_user_input as _kaos_path_from_user_input,
+)
 
 _BASE_REPLACE_DESCRIPTION = _load_desc(_Path(__file__).parent / "replace.md")
 
@@ -1522,11 +1518,10 @@ class StrReplaceFile(_CallableTool2[ReplaceParams]):
                     brief="No replacements made",
                 )
 
-            diff_blocks = await _build_diff_blocks(
-                str(p), original_content, content
-            )
+            diff_blocks = await _build_diff_blocks(str(p), original_content, content)
 
             from coderai.tools.file import FileActions
+
             action = (
                 FileActions.EDIT
                 if _is_within_workspace(p, self._work_dir, self._additional_dirs)
@@ -1567,4 +1562,3 @@ class StrReplaceFile(_CallableTool2[ReplaceParams]):
                 message=f"Failed to edit. Error: {e}",
                 brief="Failed to edit file",
             )
-

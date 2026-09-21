@@ -36,9 +36,7 @@ def _coerce_checkpoint_id(raw: Any) -> int:
 def handle_send_dmail_tool(args: dict[str, Any], context: Any) -> ToolResult:
     message = args.get("message") or args.get("content") or args.get("text")
     if not isinstance(message, str) or not message.strip():
-        return ToolResult(
-            ok=False, name="SendDMail", error="message must be a non-empty string."
-        )
+        return ToolResult(ok=False, name="SendDMail", error="message must be a non-empty string.")
     checkpoint_id = _coerce_checkpoint_id(args.get("checkpoint_id", 0))
     directive = format_dmail(message)
     try:

@@ -64,9 +64,7 @@ class TerminalSession:
         from coderai.sandbox import resolve_exec_cwd
 
         try:
-            self.cwd = resolve_exec_cwd(
-                cwd or os.getcwd(), workspace_root or cwd or os.getcwd()
-            )
+            self.cwd = resolve_exec_cwd(cwd or os.getcwd(), workspace_root or cwd or os.getcwd())
         except (ValueError, OSError) as exc:
             raise ValueError(f"Terminal cwd rejected: {exc}")
         self.created_at = time.time()
@@ -307,9 +305,7 @@ class TerminalManager:
             from coderai.sandbox import resolve_exec_cwd
 
             try:
-                cwd = resolve_exec_cwd(
-                    cwd or workspace_root, workspace_root or cwd
-                )
+                cwd = resolve_exec_cwd(cwd or workspace_root, workspace_root or cwd)
             except (ValueError, OSError) as exc:
                 raise ValueError(f"Terminal cwd rejected: {exc}")
         if command is None:

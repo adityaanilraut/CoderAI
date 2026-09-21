@@ -47,7 +47,7 @@ def _find_session_files(project_root: str, session_id: str) -> list[Path]:
 
     store = JsonlSessionStore(project_root)
     resolved = session_id
-    for entry in (store.load_index().get("entries") or []):
+    for entry in store.load_index().get("entries") or []:
         if isinstance(entry, dict) and str(entry.get("id", "")).startswith(session_id):
             resolved = str(entry["id"])
             break
@@ -100,9 +100,7 @@ def _session_time_range(paths: list[Path]) -> tuple[float | None, float | None]:
                         value = float(ts / 1000.0) if ts > 1e12 else float(ts)
                     elif isinstance(row.get("createTime"), str):
                         try:
-                            value = datetime.datetime.fromisoformat(
-                                row["createTime"]
-                            ).timestamp()
+                            value = datetime.datetime.fromisoformat(row["createTime"]).timestamp()
                         except ValueError:
                             continue
                     else:
@@ -114,9 +112,7 @@ def _session_time_range(paths: list[Path]) -> tuple[float | None, float | None]:
     return first, last
 
 
-def _collect_recent_log_files(
-    first_ts: float | None, last_ts: float | None
-) -> list[Path]:
+def _collect_recent_log_files(first_ts: float | None, last_ts: float | None) -> list[Path]:
     """Recent ``coderai.log*`` files near session activity or export time."""
     from coderai.share import get_share_dir
 
@@ -158,7 +154,9 @@ def _collect_recent_log_files(
     return [path for _, path in collected]
 
 
-def _build_manifest(session_id: str, first_ts: float | None, last_ts: float | None) -> dict[str, Any]:
+def _build_manifest(
+    session_id: str, first_ts: float | None, last_ts: float | None
+) -> dict[str, Any]:
     manifest: dict[str, Any] = {
         "session_id": session_id,
         "exported_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -221,9 +219,7 @@ def run_export(argv: list[str], *, project_root: str) -> int:
             print("Error: no previous session found for the working directory.")
             return 1
         if not yes:
-            answer = input(
-                f"Export previous session {previous[:16]}…? [y/N] "
-            ).strip().lower()
+            answer = input(f"Export previous session {previous[:16]}…? [y/N] ").strip().lower()
             if answer not in ("y", "yes"):
                 print("Export cancelled.")
                 return 0

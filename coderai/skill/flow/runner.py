@@ -102,9 +102,7 @@ class FlowRunner:
     async def run(self, mgr: Any, session_id: str, args: str = "") -> FlowOutcome:
         if (args or "").strip():
             command = f"/{FLOW_COMMAND_PREFIX}{self._name}" if self._name else "/flow"
-            return FlowOutcome(
-                status="error", detail=f"Agent flow {command} ignores args."
-            )
+            return FlowOutcome(status="error", detail=f"Agent flow {command} ignores args.")
         _FLOW_ACTIVE.add(session_id)
         try:
             current_id = self._flow.begin_id
@@ -121,9 +119,7 @@ class FlowRunner:
                     current_id = edges[0].dst
                     continue
                 if moves >= self._max_moves:
-                    raise FlowBudgetExceeded(
-                        f"Agent flow exceeded {self._max_moves} moves."
-                    )
+                    raise FlowBudgetExceeded(f"Agent flow exceeded {self._max_moves} moves.")
                 next_id, turn = await self._execute_flow_node(mgr, session_id, node, edges)
                 if turn.stop_reason == "tool_rejected":
                     return FlowOutcome(
@@ -216,8 +212,7 @@ class FlowRunner:
             # First-turn parity with create_session: prepend the dynamic
             # workspace runtime context to the session's first user message.
             has_user = any(
-                getattr(m, "role", "") == "user"
-                for m in mgr.list_session_messages(session_id)
+                getattr(m, "role", "") == "user" for m in mgr.list_session_messages(session_id)
             )
         except Exception:
             has_user = True
@@ -225,9 +220,7 @@ class FlowRunner:
             try:
                 from coderai.prompt import get_runtime_context
 
-                runtime_context = get_runtime_context(
-                    mgr.project_root, mgr.get_active_model()
-                )
+                runtime_context = get_runtime_context(mgr.project_root, mgr.get_active_model())
                 if runtime_context:
                     prompt_text = f"{runtime_context}\n\n---\n\n{prompt}"
             except Exception:
@@ -283,14 +276,13 @@ class FlowRunner:
         try:
             messages = mgr.list_session_messages(session_id)[before:]
             for message in reversed(messages):
-                if getattr(message, "role", "") == "assistant" and (
-                    getattr(message, "content", "") or ""
-                ).strip():
+                if (
+                    getattr(message, "role", "") == "assistant"
+                    and (getattr(message, "content", "") or "").strip()
+                ):
                     final = str(message.content).strip()
                     break
-            steps_used = sum(
-                1 for m in messages if getattr(m, "role", "") == "assistant"
-            )
+            steps_used = sum(1 for m in messages if getattr(m, "role", "") == "assistant")
         except Exception:
             pass
         return FlowTurnResult(stop_reason="natural", final_message=final, steps_used=steps_used)
@@ -372,9 +364,11 @@ async def run_flow_skill(mgr: Any, session_id: str, name: str) -> FlowOutcome:
     try:
         from coderai.skill import extract_skill_frontmatter
 
-        meta_type = str(
-            (extract_skill_frontmatter(skill.get("content", "")) or {}).get("type", "")
-        ).strip().lower()
+        meta_type = (
+            str((extract_skill_frontmatter(skill.get("content", "")) or {}).get("type", ""))
+            .strip()
+            .lower()
+        )
     except Exception:
         meta_type = ""
     if meta_type != "flow":

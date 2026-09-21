@@ -5,6 +5,7 @@ from typing import Any
 
 from coderai.orchestration import status_to_stop_reason
 
+
 @dataclass
 class SubAgentResult:
     """Aggregated output from a sub-agent execution."""

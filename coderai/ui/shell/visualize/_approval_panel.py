@@ -603,9 +603,7 @@ def prompt_plan_review(
     if options:
         for o in options:
             rec = " (Recommended)" if is_recommended(o["title"]) else ""
-            items.append(
-                (f"option-{o['key']}", f"Approve Option {o['key']}{rec}", o["title"])
-            )
+            items.append((f"option-{o['key']}", f"Approve Option {o['key']}{rec}", o["title"]))
     else:
         items.append(("approve", "Approve plan", "Exit plan mode and begin implementation"))
     items += [
@@ -620,7 +618,9 @@ def prompt_plan_review(
 
                 plan_slice = (plan_text or "(empty plan)").strip()
                 if len(plan_slice) > 4000:
-                    plan_slice = plan_slice[:4000] + "\n\n*(Truncated in preview — see full plan file)*"
+                    plan_slice = (
+                        plan_slice[:4000] + "\n\n*(Truncated in preview — see full plan file)*"
+                    )
                 console_obj.print(
                     Panel(
                         Markdown(plan_slice),
@@ -660,4 +660,3 @@ def expand_plan_in_pager(plan_text: str) -> None:
         pydoc.pager(plan_text)
     except Exception:
         print(plan_text)
-

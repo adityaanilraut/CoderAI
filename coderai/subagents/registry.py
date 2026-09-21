@@ -78,7 +78,15 @@ def parse_markdown_agent_spec(file_path: Path) -> SubagentTypeDefinition | None:
     allowed_tools: tuple[str, ...] | None = None
     if isinstance(tools_meta, list):
         allowed_tools = tuple(str(t) for t in tools_meta if t)
-    mode = str(meta.get("mode") or ("read_only" if allowed_tools and all(t.lower() in ("read", "readfile", "grep", "glob") for t in allowed_tools) else "general"))
+    mode = str(
+        meta.get("mode")
+        or (
+            "read_only"
+            if allowed_tools
+            and all(t.lower() in ("read", "readfile", "grep", "glob") for t in allowed_tools)
+            else "general"
+        )
+    )
 
     return SubagentTypeDefinition(
         name=name,
@@ -101,16 +109,20 @@ def discover_custom_agents(project_root: str | None = None) -> dict[str, Subagen
 
     root_str = project_root or os.environ.get("CODERAI_PROJECT_ROOT") or "."
     root = Path(root_str).resolve()
-    candidate_dirs.extend([
-        root / ".coderai" / "agents",
-        root / ".agents" / "agents",
-    ])
+    candidate_dirs.extend(
+        [
+            root / ".coderai" / "agents",
+            root / ".agents" / "agents",
+        ]
+    )
 
     home = Path.home()
-    candidate_dirs.extend([
-        home / ".coderai" / "agents",
-        home / ".agents" / "agents",
-    ])
+    candidate_dirs.extend(
+        [
+            home / ".coderai" / "agents",
+            home / ".agents" / "agents",
+        ]
+    )
 
     for cdir in candidate_dirs:
         if not cdir.is_dir():
@@ -123,13 +135,14 @@ def discover_custom_agents(project_root: str | None = None) -> dict[str, Subagen
     return discovered
 
 
-def discover_markdown_agents(project_root: str | Path | None = None) -> list[SubagentTypeDefinition]:
+def discover_markdown_agents(
+    project_root: str | Path | None = None,
+) -> list[SubagentTypeDefinition]:
     """Return a list of all discovered markdown agent definitions."""
     return list(discover_custom_agents(str(project_root) if project_root else None).values())
 
 
 _parse_markdown_agent_file = parse_markdown_agent_spec
-
 
 
 def _load_definitions(project_root: str | None = None) -> dict[str, SubagentTypeDefinition]:
@@ -181,7 +194,9 @@ def list_subagent_types(project_root: str | None = None) -> list[SubagentTypeDef
     return res
 
 
-def get_subagent_definition(name: str, project_root: str | None = None) -> SubagentTypeDefinition | None:
+def get_subagent_definition(
+    name: str, project_root: str | None = None
+) -> SubagentTypeDefinition | None:
     """Look up a subagent definition by name (case-insensitive)."""
     if not name:
         return None
@@ -239,4 +254,3 @@ async def build_explore_extra_context(project_root: str) -> str:
         return await collect_git_context(project_root)
     except Exception:
         return ""
-

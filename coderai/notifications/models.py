@@ -16,13 +16,9 @@ from __future__ import annotations
 
 import re
 import time
-import uuid
-from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any
 
-from coderai.utils.io import atomic_json_write
 
 NotificationCategory = str  # "task" | "agent" | "system"
 NotificationSeverity = str  # "info" | "success" | "warning" | "error"

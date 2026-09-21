@@ -309,9 +309,7 @@ class TeamManager:
                 "Expected 'completion', 'message', or 'any_settlement'."
             )
         if timeout_seconds < 0:
-            raise ValueError(
-                f"timeout_seconds must be >= 0, got {timeout_seconds}."
-            )
+            raise ValueError(f"timeout_seconds must be >= 0, got {timeout_seconds}.")
         if isinstance(agent_ids, str):
             target_ids = [agent_ids]
         else:
@@ -543,6 +541,7 @@ class TeamManager:
 
     def cancel_all_teammates(self) -> None:
         """Cancel and clean up all active teammate worker tasks."""
+
         def _consume_late_failure(done: asyncio.Task[Any]) -> None:
             # Swallow late worker failures so a cancelled loop never
             # surfaces "Task exception was never retrieved" warnings.
@@ -558,15 +557,11 @@ class TeamManager:
                     task.cancel()
                 task.add_done_callback(_consume_late_failure)
             except Exception:
-                logger.warning(
-                    "Failed to cancel teammate worker '%s'.", teammate_id, exc_info=True
-                )
+                logger.warning("Failed to cancel teammate worker '%s'.", teammate_id, exc_info=True)
             try:
                 exc = task.exception() if task.done() else None
                 if exc is not None:
-                    logger.warning(
-                        "Teammate worker '%s' ended with error: %s", teammate_id, exc
-                    )
+                    logger.warning("Teammate worker '%s' ended with error: %s", teammate_id, exc)
             except (asyncio.CancelledError, Exception):
                 pass
         self._active_tasks.clear()

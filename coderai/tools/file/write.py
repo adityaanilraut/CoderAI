@@ -241,17 +241,23 @@ from collections.abc import Callable as _Callable
 from pathlib import Path as _Path
 from typing import Literal as _Literal
 from kaos.path import KaosPath as _KaosPath
-from kosong.tooling import CallableTool2 as _CallableTool2, ToolError as _ToolError, ToolReturnValue as _ToolReturnValue
+from kosong.tooling import (
+    CallableTool2 as _CallableTool2,
+    ToolError as _ToolError,
+    ToolReturnValue as _ToolReturnValue,
+)
 from pydantic import BaseModel as _BaseModel, Field as _Field
 
 from coderai.soul.agent import Runtime as _Runtime
 from coderai.soul.approval import Approval as _Approval
-from coderai.tools.display import DisplayBlock as _DisplayBlock
 from coderai.tools.file.plan_mode import inspect_plan_edit_target as _inspect_plan_edit_target
 from coderai.tools.utils import load_desc as _load_desc
 from coderai.utils.diff import build_diff_blocks as _build_diff_blocks
 from coderai.utils.logging import logger as _logger
-from coderai.utils.path import is_within_workspace as _is_within_workspace, kaos_path_from_user_input as _kaos_path_from_user_input
+from coderai.utils.path import (
+    is_within_workspace as _is_within_workspace,
+    kaos_path_from_user_input as _kaos_path_from_user_input,
+)
 
 _BASE_WRITE_DESCRIPTION = _load_desc(_Path(__file__).parent / "write.md")
 
@@ -366,6 +372,7 @@ class WriteFile(_CallableTool2[WriteParams]):
 
             if not is_plan_file_write:
                 from coderai.tools.file import FileActions
+
                 action = (
                     FileActions.EDIT
                     if _is_within_workspace(p, self._work_dir, self._additional_dirs)
@@ -400,4 +407,3 @@ class WriteFile(_CallableTool2[WriteParams]):
                 message=f"Failed to write to {params.path}. Error: {e}",
                 brief="Failed to write file",
             )
-

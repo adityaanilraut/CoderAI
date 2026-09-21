@@ -212,8 +212,7 @@ class QuestionRequestPanel:
             lines.append(Text(""))
             lines.append(
                 Text(
-                    "  ◄/► switch question  "
-                    "▲/▼ select  ↵ submit  esc exit",
+                    "  ◄/► switch question  ▲/▼ select  ↵ submit  esc exit",
                     style="dim",
                 )
             )

@@ -120,6 +120,7 @@ def evaluate_compaction_trigger(
         return "pressure"
     return None
 
+
 def estimate_text_tokens(messages: Any) -> int:
     """Estimate tokens from message text content using a character-based heuristic."""
     total_chars = 0

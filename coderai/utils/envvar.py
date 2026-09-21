@@ -9,6 +9,7 @@ import os
 
 _TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y"})
 
+
 def get_env_bool(name: str, default: bool = False) -> bool:
     """Return env var as bool; ``default`` when unset or unparsable."""
     value = os.getenv(name)
@@ -26,4 +27,3 @@ def get_env_int(name: str, default: int) -> int:
         return int(value.strip())
     except ValueError:
         return default
-

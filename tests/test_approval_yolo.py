@@ -166,9 +166,7 @@ def test_prompt_permissions_plan_mode_still_prompts_with_yes() -> None:
         patch.object(appmod.sys.stdin, "isatty", return_value=False),
         patch("builtins.input", return_value="n"),
     ):
-        replies, _ = appmod._prompt_permissions(
-            _write_request(), yes=True, plan_mode=True
-        )
+        replies, _ = appmod._prompt_permissions(_write_request(), yes=True, plan_mode=True)
     assert replies[0]["permission"] == "deny"
 
 

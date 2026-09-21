@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover - minimal installs without Pillow
     Image = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
-    from PIL import Image as _PILImage
+    pass
 
 from coderai.share import get_share_dir
 from coderai.utils.envvar import get_env_int

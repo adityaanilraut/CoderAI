@@ -10,20 +10,9 @@ Provides full event-driven lifecycle interception:
 
 from __future__ import annotations
 
-import asyncio
 import enum
-import fnmatch
-import json
 import logging
-import os
-import pathlib
-import re
-import subprocess
-import time
-from dataclasses import dataclass, field
-from typing import Any
 
-from coderai.tools.legacy.types import ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -118,4 +107,3 @@ def normalize_hook_point(point: HookPoint | str) -> str:
     raw = point.value if isinstance(point, HookPoint) else str(point)
     cleaned = raw.strip().lower()
     return HOOK_POINT_ALIASES.get(cleaned, raw)
-

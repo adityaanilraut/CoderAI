@@ -1,4 +1,3 @@
-
 from coderai.approval_runtime.models import (
     ApprovalResponseKind,
     ApprovalSourceKind,

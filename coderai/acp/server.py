@@ -230,9 +230,7 @@ class ACPServer:
         if self.conn is None:
             raise acp.RequestError.invalid_request({"connection": "ACP client not connected"})
         if self.client_capabilities is None:
-            raise acp.RequestError.invalid_request(
-                {"connection": "ACP connection not initialized"}
-            )
+            raise acp.RequestError.invalid_request({"connection": "ACP connection not initialized"})
 
         self._check_auth()
 
@@ -303,9 +301,7 @@ class ACPServer:
         if self.conn is None:
             raise acp.RequestError.invalid_request({"connection": "ACP client not connected"})
         if self.client_capabilities is None:
-            raise acp.RequestError.invalid_request(
-                {"connection": "ACP connection not initialized"}
-            )
+            raise acp.RequestError.invalid_request({"connection": "ACP connection not initialized"})
 
         work_dir = KaosPath.unsafe_from_local_path(Path(cwd))
         session = await Session.find(work_dir, session_id)
@@ -388,9 +384,7 @@ class ACPServer:
         if self.conn is None:
             raise acp.RequestError.invalid_request({"connection": "ACP client not connected"})
         if self.client_capabilities is None:
-            raise acp.RequestError.invalid_request(
-                {"connection": "ACP connection not initialized"}
-            )
+            raise acp.RequestError.invalid_request({"connection": "ACP connection not initialized"})
 
         work_dir = KaosPath.unsafe_from_local_path(Path(cwd))
         # Validate the parent before creating anything: forking an unknown
@@ -514,9 +508,7 @@ class ACPServer:
 
     async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> None:
         if mode_id != "default":
-            raise acp.RequestError.invalid_params(
-                {"mode_id": "Only default mode is supported"}
-            )
+            raise acp.RequestError.invalid_params({"mode_id": "Only default mode is supported"})
 
     async def set_session_model(self, model_id: str, session_id: str, **kwargs: Any) -> None:
         logger.info("Setting session model to %s for session: %s", model_id, session_id)

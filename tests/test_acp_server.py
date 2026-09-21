@@ -138,8 +138,10 @@ def test_model_id_conv_and_expansion():
 @pytest.mark.asyncio
 async def test_acp_session_prompt_and_cancel():
     mock_cli = MagicMock()
+
     async def mock_run(user_input, cancel_event):
         from coderai.wire.types import TextPart, TurnBegin, TurnEnd
+
         yield TurnBegin(user_input=user_input)
         yield TextPart(text="Hello from CoderAI")
         yield TurnEnd()
@@ -238,7 +240,9 @@ async def test_acp_session_prompt_persists_engine_binding(tmp_path: Path):
         yield TextPart(text="hi")
         yield TurnEnd()
 
-    mock_cli = SimpleNamespace(run=mock_run, session_id="engine-abc123", session=SimpleNamespace(dir=tmp_path))
+    mock_cli = SimpleNamespace(
+        run=mock_run, session_id="engine-abc123", session=SimpleNamespace(dir=tmp_path)
+    )
     mock_conn = MagicMock()
     mock_conn.session_update = AsyncMock()
 
@@ -261,7 +265,9 @@ async def test_setup_session_rehydrates_persisted_binding(tmp_path: Path, monkey
         return SimpleNamespace(id="acp-1", dir=tmp_path)
 
     def fake_build_engine(session, mcp_configs=None):
-        manager = SimpleNamespace(get_session=lambda sid: object() if sid == "engine-abc123" else None)
+        manager = SimpleNamespace(
+            get_session=lambda sid: object() if sid == "engine-abc123" else None
+        )
         return SimpleNamespace(
             manager=manager,
             config=SimpleNamespace(default_model="", default_thinking=False),
@@ -496,9 +502,7 @@ def test_token_fallthrough_requires_auth(monkeypatch):
         raise OSError("no token file")
 
     monkeypatch.setattr(server_module, "load_tokens", _boom)
-    monkeypatch.setattr(
-        server_module, "load_config", lambda: SimpleNamespace(providers={})
-    )
+    monkeypatch.setattr(server_module, "load_config", lambda: SimpleNamespace(providers={}))
 
     server = ACPServer()
     reason = server._check_token_usable()
@@ -516,9 +520,7 @@ async def test_new_session_requires_auth_without_credentials(monkeypatch, tmp_pa
         raise OSError("no token file")
 
     monkeypatch.setattr(server_module, "load_tokens", _boom)
-    monkeypatch.setattr(
-        server_module, "load_config", lambda: SimpleNamespace(providers={})
-    )
+    monkeypatch.setattr(server_module, "load_config", lambda: SimpleNamespace(providers={}))
 
     server = ACPServer()
     mock_conn = MagicMock()
@@ -592,12 +594,10 @@ async def test_session_streams_wire_think_and_tool_parts():
     assert resp.stop_reason == "end_turn"
 
     updates = [call.kwargs["update"] for call in mock_conn.session_update.await_args_list]
-    assert any(
-        type(update).__name__ == "AgentThoughtChunk" for update in updates
-    ), "wire ThinkPart was not forwarded as a thought chunk"
-    progress_updates = [
-        update for update in updates if type(update).__name__ == "ToolCallProgress"
-    ]
+    assert any(type(update).__name__ == "AgentThoughtChunk" for update in updates), (
+        "wire ThinkPart was not forwarded as a thought chunk"
+    )
+    progress_updates = [update for update in updates if type(update).__name__ == "ToolCallProgress"]
     assert progress_updates, "wire ToolCallPart produced no tool_call_update"
 
 

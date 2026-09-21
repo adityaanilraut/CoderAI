@@ -10,20 +10,14 @@ Provides full event-driven lifecycle interception:
 
 from __future__ import annotations
 
-import asyncio
-import enum
 import fnmatch
 import json
 import logging
-import os
 import pathlib
 import re
-import subprocess
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from coderai.tools.legacy.types import ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 

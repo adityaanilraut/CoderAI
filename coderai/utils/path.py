@@ -257,6 +257,7 @@ _ROTATION_FILE_MODE = 0o600
 
 async def _reserve_rotation_path(path: Path) -> bool:
     """Atomically create an empty file as a reservation for *path*."""
+
     def _create() -> None:
         fd = os.open(str(path), _ROTATION_OPEN_FLAGS, _ROTATION_FILE_MODE)
         os.close(fd)
@@ -426,4 +427,3 @@ async def find_project_root(work_dir: KaosPath) -> KaosPath:
         if parent == current:
             return work_dir
         current = parent
-

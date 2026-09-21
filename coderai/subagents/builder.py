@@ -207,7 +207,9 @@ class SubAgentSpec:
     seed_events: list[Any] | None = None
     descriptor: SubagentDescriptor | None = None
     continuable: bool = False  # parked worker loop; survives multiple turns via its handle inbox
-    subagent_type: str | None = None  # Builtin or custom role (coder|explore|plan|architect|code-reviewer...)
+    subagent_type: str | None = (
+        None  # Builtin or custom role (coder|explore|plan|architect|code-reviewer...)
+    )
     system_prompt: str | None = None
 
     def __post_init__(self) -> None:
@@ -219,7 +221,9 @@ class SubAgentSpec:
                 from coderai.subagents.registry import get_subagent_definition, resolve_tool_policy
 
                 if not self.allowed_tools:
-                    mode, tools = resolve_tool_policy(self.subagent_type, project_root=self.isolated_cwd)
+                    mode, tools = resolve_tool_policy(
+                        self.subagent_type, project_root=self.isolated_cwd
+                    )
                     if mode == "allowlist":
                         self.allowed_tools = list(tools)
 
@@ -236,4 +240,3 @@ class SubAgentSpec:
                         self.system_prompt = defn.system_prompt
             except Exception:
                 pass
-

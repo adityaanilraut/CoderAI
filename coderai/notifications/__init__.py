@@ -1,4 +1,3 @@
-
 from coderai.notifications.models import (
     NotificationCategory,
     NotificationSeverity,

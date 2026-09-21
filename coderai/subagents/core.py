@@ -1,4 +1,5 @@
 """Continuable sub-agent control plane (list / send / interrupt) over SubAgentManager and TaskSupervisor."""
+
 from __future__ import annotations
 
 import asyncio
@@ -247,10 +248,12 @@ _registry = AgentRegistry()
 def get_agent_registry() -> AgentRegistry:
     return _registry
 
+
 # --- module helpers (from coderai/core/subagent.py) ---
 import uuid
 
 from coderai.utils.common.usage import extract_usage_dict
+
 
 def _normalize_subagent_tool_calls(raw: Any) -> list[dict[str, Any]] | None:
     if not raw:

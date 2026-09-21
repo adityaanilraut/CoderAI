@@ -33,7 +33,12 @@ from coderai.orchestration import (
     resolve_max_running_jobs,
     settlement_summary,
 )
-from coderai.subagents.runner import MAX_SUBAGENT_DEPTH, SubAgentManager, SubAgentResult, SubAgentSpec
+from coderai.subagents.runner import (
+    MAX_SUBAGENT_DEPTH,
+    SubAgentManager,
+    SubAgentResult,
+    SubAgentSpec,
+)
 from coderai.subagents.backends.claude_code import ClaudeCodeConfig, ClaudeCodeDriver
 from coderai.subagents.backends.codex import CodexConfig, CodexDriver
 from coderai.tools.agent import handle_list_agents_tool
@@ -500,7 +505,10 @@ def test_subagent_persistent_bash_retains_state(mock_tool_context):
     try:
         try:
             res1 = handle_bash_tool(
-                {"command": "export PERSISTENT_VAR='coderai_persistent_success'", "persistent": True},
+                {
+                    "command": "export PERSISTENT_VAR='coderai_persistent_success'",
+                    "persistent": True,
+                },
                 ctx,
             )
         except OSError as exc:

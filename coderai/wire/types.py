@@ -16,26 +16,27 @@ import pathlib
 from typing import Any, Literal, Union
 
 from kosong.message import (
-    AudioURLPart,
-    ContentPart,
-    ImageURLPart,
-    ToolCall,
-    VideoURLPart,
+    AudioURLPart as AudioURLPart,
+    ContentPart as ContentPart,
+    ImageURLPart as ImageURLPart,
+    ToolCall as ToolCall,
+    VideoURLPart as VideoURLPart,
 )
 from kosong.tooling import (
-    BriefDisplayBlock,
-    DisplayBlock,
-    ToolResult,
-    ToolReturnValue,
-    UnknownDisplayBlock,
+    BriefDisplayBlock as BriefDisplayBlock,
+    DisplayBlock as DisplayBlock,
+    ToolResult as ToolResult,
+    ToolReturnValue as ToolReturnValue,
+    UnknownDisplayBlock as UnknownDisplayBlock,
 )
 from coderai.tools.display import (
-    BackgroundTaskDisplayBlock,
-    DiffDisplayBlock,
-    ShellDisplayBlock,
-    TodoDisplayBlock,
-    TodoDisplayItem,
+    BackgroundTaskDisplayBlock as BackgroundTaskDisplayBlock,
+    DiffDisplayBlock as DiffDisplayBlock,
+    ShellDisplayBlock as ShellDisplayBlock,
+    TodoDisplayBlock as TodoDisplayBlock,
+    TodoDisplayItem as TodoDisplayItem,
 )
+
 
 @dataclass
 class TextPart:
@@ -68,6 +69,7 @@ class ToolResultPart:
 # ---------------------------------------------------------------------------
 # Turn / step lifecycle events
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class TurnBegin:
@@ -576,5 +578,7 @@ def serialize_wire_message(msg: Any) -> dict[str, Any]:
 def deserialize_wire_message(data: Any) -> Any:
     if not isinstance(data, dict):
         raise ValueError("wire message must be a dict")
-    envelope = WireMessageEnvelope(type=str(data.get("type", "")), payload=dict(data.get("payload", {})))
+    envelope = WireMessageEnvelope(
+        type=str(data.get("type", "")), payload=dict(data.get("payload", {}))
+    )
     return envelope.to_wire_message()

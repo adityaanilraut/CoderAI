@@ -71,9 +71,7 @@ async def run_side_question(
         if session_id:
             for m in mgr.list_session_messages(session_id)[-20:]:
                 if getattr(m, "role", "") in ("user", "assistant", "system"):
-                    history.append(
-                        {"role": m.role, "content": str(getattr(m, "content", ""))}
-                    )
+                    history.append({"role": m.role, "content": str(getattr(m, "content", ""))})
     except Exception:
         pass
     messages = build_side_messages(history, question)
@@ -90,7 +88,11 @@ async def run_side_question(
     def _call() -> str:
         from coderai.llm import create_openai_client
 
-        info = mgr.create_openai_client() if hasattr(mgr, "create_openai_client") else create_openai_client(mgr.project_root if hasattr(mgr, "project_root") else ".")
+        info = (
+            mgr.create_openai_client()
+            if hasattr(mgr, "create_openai_client")
+            else create_openai_client(mgr.project_root if hasattr(mgr, "project_root") else ".")
+        )
         client = info.get("client")
         model = info.get("model")
         if client is None:

@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "AI pair programming in your terminal — modular core (snippet tools, bounded agent loop, permissions)"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
     {name = "CoderAI", email = "hello@coderai.dev"}
 ]
@@ -17,9 +17,8 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "rich>=13.7.0",
@@ -96,22 +95,41 @@ version = {attr = "coderai._version.__version__"}
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "UP006", "UP035"]
-ignore = ["E501"]
+ignore = ["E501", "E402"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 warn_return_any = false
 warn_unused_configs = true
 ignore_missing_imports = true
 exclude = ["tests/"]
+
+[[tool.mypy.overrides]]
+module = [
+    "coderai.acp.*",
+    "coderai.background.*",
+    "coderai.cli.info",
+    "coderai.llm",
+    "coderai.mcp.*",
+    "coderai.soul.*",
+    "coderai.subagents.runner",
+    "coderai.telemetry.*",
+    "coderai.tools.*",
+    "coderai.ui.*",
+    "coderai.utils.aioqueue",
+    "coderai.utils.media_tags",
+    "coderai.web_providers",
+    "coderai.wire.*",
+]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

@@ -11,12 +11,9 @@ Provides full event-driven lifecycle interception:
 from __future__ import annotations
 
 import asyncio
-import enum
-import fnmatch
 import json
 import logging
 import os
-import pathlib
 import re
 import subprocess
 import time
@@ -24,7 +21,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from coderai.tools.legacy.types import ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +33,8 @@ from coderai.hooks.config import (
     merge_hook_outputs,
 )
 from coderai.hooks.events import HOOK_POINT_ALIASES, HookPoint, normalize_hook_point
+
+
 def _scrubbed_env(base: dict[str, str] | None = None) -> dict[str, str]:
     import re as _re
 

@@ -55,4 +55,3 @@ class BroadcastQueue(Generic[T]):
         for queue in list(self._queues):
             queue.shutdown(immediate=immediate)
         self._queues.clear()
-

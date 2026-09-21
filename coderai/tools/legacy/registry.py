@@ -802,7 +802,6 @@ class ToolRegistry:
             )
         )
 
-
         # 7. Subagents & Delegation
 
         self.register(
@@ -1061,8 +1060,6 @@ class ToolRegistry:
                 is_concurrency_safe=True,
             )
         )
-
-
 
         # 10. Skills
         self.register(

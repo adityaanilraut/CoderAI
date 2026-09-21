@@ -13,7 +13,21 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from coderai.soul.dynamic_injections.afk_mode import (
+        AFK_DISABLED_REMINDER,
+        AFK_INJECTION_TYPE,
+        AFK_PROMPT_ROOT,
+        AfkModeInjectionProvider,
+    )
+    from coderai.soul.dynamic_injections.plan_mode import (
+        PlanModeInjectionProvider,
+        plan_full_reminder,
+        plan_reentry_reminder,
+        plan_sparse_reminder,
+    )
 
 
 @dataclass(frozen=True, slots=True)

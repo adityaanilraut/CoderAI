@@ -85,9 +85,7 @@ def add_background_process_completion_message(
         f"{status} with {exit_text} after {duration_text}."
     )
     log_tail = (
-        None
-        if completion.ok
-        else build_background_failure_log_tail_slice(completion.output_path)
+        None if completion.ok else build_background_failure_log_tail_slice(completion.output_path)
     )
     content = f"{base_content}\n{log_tail}" if log_tail else base_content
 
@@ -191,9 +189,9 @@ def maybe_notify_task_completion(manager: Any, session_id: str, started_at_ms: i
         (m for m in reversed(messages) if m.role == "assistant" and m.content), None
     )
     fallback_summary = entry.get("summary") if entry else "Task finished"
-    body = (
-        (last_assistant.content if last_assistant else fallback_summary) or "Task finished"
-    )[:200]
+    body = ((last_assistant.content if last_assistant else fallback_summary) or "Task finished")[
+        :200
+    ]
 
     launch_notify_script(
         notify_command,
@@ -204,9 +202,7 @@ def maybe_notify_task_completion(manager: Any, session_id: str, started_at_ms: i
             "failReason": fail_reason or "",
             "body": body,
             "title": (
-                f"CoderAI: {(entry.get('summary') or 'Task')[:50]}"
-                if entry
-                else "CoderAI: Task"
+                f"CoderAI: {(entry.get('summary') or 'Task')[:50]}" if entry else "CoderAI: Task"
             ),
         },
     )

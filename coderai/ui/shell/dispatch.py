@@ -21,14 +21,16 @@ from coderai.utils.slashcmd import SlashCommandRegistry
 
 class SlashAction(Enum):
     """Action to take after dispatching a slash command."""
-    HANDLED = auto()   # Command handled, continue interactive REPL loop
-    EXIT = auto()      # Exit application
-    TURN = auto()      # Execute prompt from ctx.turn_prompt as an agent turn
+
+    HANDLED = auto()  # Command handled, continue interactive REPL loop
+    EXIT = auto()  # Exit application
+    TURN = auto()  # Execute prompt from ctx.turn_prompt as an agent turn
 
 
 @dataclass
 class ShellContext:
     """Encapsulates interactive shell state during slash command execution."""
+
     mgr: Any
     session_id: str | None
     active_plan_mode: bool
@@ -77,6 +79,7 @@ def _queue_skill(
 
 
 # --- Command Registrations ---
+
 
 @registry.command(aliases=["quit"])
 @shell_mode_registry.command(aliases=["quit"])
@@ -151,9 +154,7 @@ def cmd_jobs(ctx: ShellContext, args: str) -> SlashAction:
         jobs = [
             j
             for j in getattr(job_store, "_jobs", {}).values()
-            if not ctx.session_id
-            or j.session_id == ctx.session_id
-            or j.session_id == "default"
+            if not ctx.session_id or j.session_id == ctx.session_id or j.session_id == "default"
         ]
         if not jobs:
             print("No background jobs recorded in active session.")
@@ -216,12 +217,24 @@ def cmd_schedule(ctx: ShellContext, args: str) -> SlashAction:
                 st.add_column("Scheduled At", style="dim", width=22)
                 st.add_column("Prompt / Instruction", style="white")
                 for r in records:
-                    state_color = "green" if r.state == "dispatched" else ("yellow" if r.state == "scheduled" else "dim")
-                    st.add_row(r.id, f"[{state_color}]{r.state}[/]", r.kind, r.scheduled_at[:19], r.prompt[:50])
+                    state_color = (
+                        "green"
+                        if r.state == "dispatched"
+                        else ("yellow" if r.state == "scheduled" else "dim")
+                    )
+                    st.add_row(
+                        r.id,
+                        f"[{state_color}]{r.state}[/]",
+                        r.kind,
+                        r.scheduled_at[:19],
+                        r.prompt[:50],
+                    )
                 ctx.console.print(st)
             else:
                 for r in records:
-                    print(f"[{r.state:10}] ID:{r.id:4} Kind:{r.kind:6} At:{r.scheduled_at[:19]} -> {r.prompt[:50]}")
+                    print(
+                        f"[{r.state:10}] ID:{r.id:4} Kind:{r.kind:6} At:{r.scheduled_at[:19]} -> {r.prompt[:50]}"
+                    )
     elif sched_action == "after" and len(tokens_sub) >= 3 and tokens_sub[1].isdigit():
         sec = int(tokens_sub[1])
         sched_prompt = tokens_sub[2]
@@ -246,7 +259,9 @@ def cmd_schedule(ctx: ShellContext, args: str) -> SlashAction:
         res = sched_mgr.delete(cid)
         print(f"✓ Cancelled schedule #{cid}" if res else f"Schedule #{cid} not found.")
     else:
-        print("Usage: /schedule [list|after <sec> <prompt>|at <ISO-time> <prompt>|every <sec> <prompt>|cancel <id>]")
+        print(
+            "Usage: /schedule [list|after <sec> <prompt>|at <ISO-time> <prompt>|every <sec> <prompt>|cancel <id>]"
+        )
     return SlashAction.HANDLED
 
 
@@ -257,12 +272,18 @@ def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
     if not arg_clean:
         from coderai.ui.shell.session_picker import select_agent_role_interactive
 
-        current_role = ctx.mgr.get_active_agent_role() if hasattr(ctx.mgr, "get_active_agent_role") else "default"
+        current_role = (
+            ctx.mgr.get_active_agent_role()
+            if hasattr(ctx.mgr, "get_active_agent_role")
+            else "default"
+        )
         chosen_role = select_agent_role_interactive(ctx.console, current_role, ctx.mgr.project_root)
         if chosen_role and chosen_role != current_role:
             if hasattr(ctx.mgr, "switch_agent_role") and ctx.mgr.switch_agent_role(chosen_role):
                 if ctx.console is not None:
-                    ctx.console.print(f"[bold green]✓ Switched active agent role to '[bold white]{chosen_role}[/bold white]'.[/]")
+                    ctx.console.print(
+                        f"[bold green]✓ Switched active agent role to '[bold white]{chosen_role}[/bold white]'.[/]"
+                    )
                 else:
                     print(f"✓ Switched active agent role to '{chosen_role}'.")
             else:
@@ -275,7 +296,11 @@ def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
         project_root = Path(getattr(ctx.mgr, "project_root", "."))
         discovered = discover_markdown_agents(project_root)
         bundled = ["default", "okabe"]
-        cur_role = ctx.mgr.get_active_agent_role() if hasattr(ctx.mgr, "get_active_agent_role") else "default"
+        cur_role = (
+            ctx.mgr.get_active_agent_role()
+            if hasattr(ctx.mgr, "get_active_agent_role")
+            else "default"
+        )
         if ctx.console is not None:
             rt = Table(title="Available Agent Roles & Specifications", border_style="cyan")
             rt.add_column("Role / Spec", style="bold cyan", width=22)
@@ -297,17 +322,23 @@ def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
                 print(f"  • {b} {'(active)' if b == cur_role else ''}")
             print("\nDiscovered role specifications (.coderai/agents/*.md):")
             for d in discovered:
-                print(f"  • {d.name} [{d.mode}] - {d.description} {'(active)' if d.name == cur_role else ''}")
+                print(
+                    f"  • {d.name} [{d.mode}] - {d.description} {'(active)' if d.name == cur_role else ''}"
+                )
         return SlashAction.HANDLED
     else:
         target_role = arg_clean.lower()
         if hasattr(ctx.mgr, "switch_agent_role") and ctx.mgr.switch_agent_role(target_role):
             if ctx.console is not None:
-                ctx.console.print(f"[bold green]✓ Switched active agent role to '[bold white]{target_role}[/bold white]'.[/]")
+                ctx.console.print(
+                    f"[bold green]✓ Switched active agent role to '[bold white]{target_role}[/bold white]'.[/]"
+                )
             else:
                 print(f"✓ Switched active agent role to '{target_role}'.")
         else:
-            print(f"Failed to switch to agent role '{target_role}'. Use '/agent roles' to see available specs.")
+            print(
+                f"Failed to switch to agent role '{target_role}'. Use '/agent roles' to see available specs."
+            )
         return SlashAction.HANDLED
 
 
@@ -443,13 +474,15 @@ def cmd_permission(ctx: ShellContext, args: str) -> SlashAction:
     settings = read_project_settings(ctx.mgr.project_root) or {}
     permissions = dict(settings.get("permissions") or {})
     mapped = preset_permissions(parsed)
-    permissions.update({
-        "preset": parsed,
-        "allow": mapped["allow"],
-        "deny": mapped["deny"],
-        "ask": mapped["ask"],
-        "defaultMode": mapped["defaultMode"],
-    })
+    permissions.update(
+        {
+            "preset": parsed,
+            "allow": mapped["allow"],
+            "deny": mapped["deny"],
+            "ask": mapped["ask"],
+            "defaultMode": mapped["defaultMode"],
+        }
+    )
     settings["permissions"] = permissions
     write_project_settings(settings, ctx.mgr.project_root)
     print(f"Permission preset set to {parsed}. New sessions will use this preset.")
@@ -507,14 +540,20 @@ async def cmd_mcp(ctx: ShellContext, args: str) -> SlashAction:
         ctx.mgr._refresh_mcp_tool_definitions()
         if reconnected:
             if ctx.console is not None:
-                ctx.console.print(f"[bold green]✓ Reconnected MCP server '[cyan]{server_name}[/]'.[/]")
+                ctx.console.print(
+                    f"[bold green]✓ Reconnected MCP server '[cyan]{server_name}[/]'.[/]"
+                )
             else:
                 print(f"✓ Reconnected MCP server '{server_name}'.")
         else:
-            status = next((s for s in ctx.mgr.mcp_manager.server_statuses if s.name == server_name), None)
+            status = next(
+                (s for s in ctx.mgr.mcp_manager.server_statuses if s.name == server_name), None
+            )
             err_msg = f": {status.error}" if status and status.error else ""
             if ctx.console is not None:
-                ctx.console.print(f"[bold red]Failed to reconnect MCP server '{server_name}'{err_msg}[/]")
+                ctx.console.print(
+                    f"[bold red]Failed to reconnect MCP server '{server_name}'{err_msg}[/]"
+                )
             else:
                 print(f"Failed to reconnect MCP server '{server_name}'{err_msg}")
     elif args.startswith("prompts"):
@@ -592,12 +631,16 @@ def cmd_export_action(ctx: ShellContext, args: str) -> SlashAction:
         if clean_arg.endswith(".json"):
             exported_file = export_session_to_json(ctx.mgr, ctx.session_id, clean_arg)
         else:
-            exported_file = export_session_to_markdown(ctx.mgr, ctx.session_id, clean_arg if clean_arg else None)
+            exported_file = export_session_to_markdown(
+                ctx.mgr, ctx.session_id, clean_arg if clean_arg else None
+            )
     except Exception as exc:
         print(f"Export failed: {exc}")
         return SlashAction.HANDLED
     if ctx.console is not None:
-        ctx.console.print(f"[bold green]✓ Session successfully exported to:[/] [cyan]{exported_file}[/]")
+        ctx.console.print(
+            f"[bold green]✓ Session successfully exported to:[/] [cyan]{exported_file}[/]"
+        )
     else:
         print(f"✓ Session successfully exported to: {exported_file}")
     return SlashAction.HANDLED
@@ -991,12 +1034,16 @@ def cmd_afk(ctx: ShellContext, args: str) -> SlashAction:
     _sync_auto_approve_context(ctx)
     if enabled:
         if ctx.console is not None:
-            ctx.console.print("[bold yellow]AFK mode ON.[/] [dim]Auto-dismiss questions and approvals.[/dim]")
+            ctx.console.print(
+                "[bold yellow]AFK mode ON.[/] [dim]Auto-dismiss questions and approvals.[/dim]"
+            )
         else:
             print("AFK mode ON. Auto-dismiss questions and approvals.")
     else:
         if ctx.console is not None:
-            ctx.console.print("[bold green]AFK mode OFF.[/] [dim]Interactive terminal restored.[/dim]")
+            ctx.console.print(
+                "[bold green]AFK mode OFF.[/] [dim]Interactive terminal restored.[/dim]"
+            )
         else:
             print("AFK mode OFF. Interactive terminal restored.")
     return SlashAction.HANDLED
@@ -1044,7 +1091,9 @@ def cmd_import(ctx: ShellContext, args: str) -> SlashAction:
             print(f"Failed to read import source {target}: {exc}")
             return SlashAction.HANDLED
         if len(content) > _MAX_IMPORT_CHARS:
-            content = content[:_MAX_IMPORT_CHARS] + "\n...[truncated: import capped at 100,000 chars]"
+            content = (
+                content[:_MAX_IMPORT_CHARS] + "\n...[truncated: import capped at 100,000 chars]"
+            )
             print(f"Import truncated to {_MAX_IMPORT_CHARS} chars.")
         if not ctx.session_id:
             print(
@@ -1053,7 +1102,9 @@ def cmd_import(ctx: ShellContext, args: str) -> SlashAction:
             )
             return SlashAction.HANDLED
         try:
-            msg = ctx.mgr._build_message(ctx.session_id, "user", f"<system>Imported from {p.name}:\n{content}</system>")
+            msg = ctx.mgr._build_message(
+                ctx.session_id, "user", f"<system>Imported from {p.name}:\n{content}</system>"
+            )
             ctx.mgr._append_message(msg)
         except Exception as exc:
             print(f"Import failed: {exc}")
@@ -1127,7 +1178,9 @@ def cmd_debug(ctx: ShellContext, args: str) -> SlashAction:
         t.add_row("Model", ctx.mgr.get_active_model())
         ctx.console.print(t)
     else:
-        print(f"Session: {ctx.session_id} | Msgs: {len(msgs)} | Active tokens: {entry.active_tokens:,}")
+        print(
+            f"Session: {ctx.session_id} | Msgs: {len(msgs)} | Active tokens: {entry.active_tokens:,}"
+        )
     return SlashAction.HANDLED
 
 
@@ -1216,7 +1269,9 @@ def cmd_teams(ctx: ShellContext, args: str) -> SlashAction:
             tt.add_row("(none active)", "-", "-", "-", "No autonomous teammates currently spawned.")
         else:
             for tm in teammates:
-                tt.add_row(tm.agent_id, tm.role, tm.status, str(tm.turn_count), tm.description or "-")
+                tt.add_row(
+                    tm.agent_id, tm.role, tm.status, str(tm.turn_count), tm.description or "-"
+                )
         ctx.console.print(tt)
 
         tb = Table(title="Autonomous Swarm — Task Board", border_style="blue")
@@ -1229,7 +1284,9 @@ def cmd_teams(ctx: ShellContext, args: str) -> SlashAction:
             tb.add_row("(no tasks)", "No swarm tasks on board.", "-", "-", "-")
         else:
             for t in tasks:
-                tb.add_row(t.task_id, t.title, t.assigned_to or "(unassigned)", t.priority, t.status)
+                tb.add_row(
+                    t.task_id, t.title, t.assigned_to or "(unassigned)", t.priority, t.status
+                )
         ctx.console.print(tb)
     else:
         print(f"Autonomous Swarm: {len(teammates)} teammates, {len(tasks)} tasks.")
@@ -1254,7 +1311,9 @@ async def cmd_btw(ctx: ShellContext, args: str) -> SlashAction:
     try:
         answer = await run_side_question(ctx.mgr, ctx.session_id, q)
         if ctx.console is not None:
-            ctx.console.print(Panel(answer, title="[bold cyan]BTW / Side Note[/]", border_style="cyan"))
+            ctx.console.print(
+                Panel(answer, title="[bold cyan]BTW / Side Note[/]", border_style="cyan")
+            )
         else:
             print(f"\n--- BTW ---\n{answer}\n-----------")
     except Exception as err:
@@ -1289,7 +1348,9 @@ async def cmd_image(ctx: ShellContext, args: str, drain_fn: Any = None) -> Slash
             f"({content_param['width']}x{content_param['height']} • {content_param['bytes'] / 1024:.1f} KB)"
         )
     else:
-        print(f"✓ Attached image: {content_param['name']} ({content_param['width']}x{content_param['height']})")
+        print(
+            f"✓ Attached image: {content_param['name']} ({content_param['width']}x{content_param['height']})"
+        )
 
     if ctx.session_id is None:
         s_id = await ctx.mgr.create_session(img_prompt, plan_mode=ctx.active_plan_mode)
@@ -1312,6 +1373,7 @@ async def cmd_image(ctx: ShellContext, args: str, drain_fn: Any = None) -> Slash
 
 
 # --- Main Dispatcher ---
+
 
 async def dispatch_slash_command(
     cmd: str,

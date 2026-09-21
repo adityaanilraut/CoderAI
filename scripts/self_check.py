@@ -195,7 +195,10 @@ async def main() -> None:
     # 5. Background bash tool execution
     with tempfile.TemporaryDirectory() as tmp:
         ctx = {"session_id": "bg-sess", "project_root": tmp}
-        res = bash_handle({"command": "echo bg_check", "run_in_background": True, "description": "test bg_check"}, ctx)
+        res = bash_handle(
+            {"command": "echo bg_check", "run_in_background": True, "description": "test bg_check"},
+            ctx,
+        )
         assert res.ok, res.error
         assert res.metadata and res.metadata.get("runInBackground") is True
         time.sleep(0.2)

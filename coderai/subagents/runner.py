@@ -11,24 +11,17 @@ import json
 import logging
 import pathlib
 import uuid
-from dataclasses import dataclass, field
 from typing import Any
 from collections.abc import Callable
 
 from coderai.utils.common.message_converter import OpenAIMessageConverter
 from coderai.utils.common.openai_thinking import build_thinking_request_options
-from coderai.utils.common.usage import extract_usage_dict
 from coderai.orchestration import (
     publish_subagent_end,
     publish_subagent_start,
-    status_to_stop_reason,
 )
 from coderai.prompt import get_runtime_context, get_subagent_system_prompt, get_tools
 from coderai.subagents.builder import (
-    DEFAULT_MAX_SUBAGENT_DEPTH,
-    DEFAULT_SUBAGENT_MAX_ITERATIONS,
-    DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
-    SubagentDescriptor,
     check_subagent_depth_quota,
     setup_subagent_scratchpad,
 )
@@ -37,9 +30,7 @@ from coderai.tools.legacy.types import ToolExecutionHooks
 
 logger = logging.getLogger(__name__)
 from coderai.subagents.builder import (
-    DEFAULT_SUBAGENT_TIMEOUT,
     MAX_SUBAGENT_DEPTH,
-    MAX_SUBAGENT_ITERATIONS,
     SubAgentSpec,
 )
 from coderai.subagents.core import _call_llm_sync, _normalize_subagent_tool_calls

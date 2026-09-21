@@ -1,4 +1,3 @@
-
 from coderai.auth.oauth import (
     CODERAI_CODE_CLIENT_ID,
     CODERAI_CODE_OAUTH_KEY,

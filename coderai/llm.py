@@ -14,7 +14,7 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, Self, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, cast, get_args
 
 from kosong.chat_provider import ChatProvider, StreamedMessage, ThinkingEffort
 from kosong.message import (
@@ -35,8 +35,6 @@ from coderai.utils.logging import logger
 if TYPE_CHECKING:
     from kosong.chat_provider.kimi import Kimi
 
-    from coderai.auth.oauth import OAuthManager
-    from coderai.config import Config, LLMModel, LLMProvider
 
 ProviderType = Literal[
     "kimi",
@@ -280,7 +278,9 @@ def derive_model_capabilities(
     if hasattr(model, "model"):
         model_name = getattr(model, "model", "")
         model_caps = getattr(model, "capabilities", None)
-        declared_set = set(model_caps or ()) if declared is None else (declared | set(model_caps or ()))
+        declared_set = (
+            set(model_caps or ()) if declared is None else (declared | set(model_caps or ()))
+        )
     else:
         model_name = str(model)
         declared_set = declared or set()
@@ -321,9 +321,17 @@ def augment_provider_with_env_vars(provider: Any) -> Any:
         return os.getenv(prefix + key)
 
     updates: dict[str, Any] = {}
-    if base_url := (_env("BASE_URL") or os.getenv("CODERAI_BASE_URL") or (os.getenv("KIMI_BASE_URL") if provider.type == "kimi" else None)):
+    if base_url := (
+        _env("BASE_URL")
+        or os.getenv("CODERAI_BASE_URL")
+        or (os.getenv("KIMI_BASE_URL") if provider.type == "kimi" else None)
+    ):
         updates["base_url"] = base_url
-    if api_key := (_env("API_KEY") or os.getenv("CODERAI_API_KEY") or (os.getenv("KIMI_API_KEY") if provider.type == "kimi" else None)):
+    if api_key := (
+        _env("API_KEY")
+        or os.getenv("CODERAI_API_KEY")
+        or (os.getenv("KIMI_API_KEY") if provider.type == "kimi" else None)
+    ):
         updates["api_key"] = SecretStr(api_key)
     if not updates:
         return provider
@@ -662,7 +670,9 @@ def resolve_model_provider_routing(
         base_url = (
             env.get("GEMINI_BASE_URL")
             or os.getenv("GEMINI_BASE_URL")
-            or PROVIDER_BASE_URLS.get("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/")
+            or PROVIDER_BASE_URLS.get(
+                "gemini", "https://generativelanguage.googleapis.com/v1beta/openai/"
+            )
         )
         api_key = (
             env.get("GEMINI_API_KEY")
@@ -861,9 +871,7 @@ class _EchoCompletions:
             from kosong.chat_provider import ChatProviderError
 
             turn = getattr(self.chat_provider, "_turn", 0) + 1
-            raise ChatProviderError(
-                f"ScriptedEchoChatProvider exhausted at turn {turn}."
-            )
+            raise ChatProviderError(f"ScriptedEchoChatProvider exhausted at turn {turn}.")
 
         script_text = self.chat_provider._scripts.popleft()
         if getattr(self.chat_provider, "_trace", False):
@@ -891,16 +899,8 @@ class _EchoCompletions:
                     )
                 )
             elif hasattr(p, "function") or p_type in ("tool_call", "function"):
-                fn_name = (
-                    getattr(p.function, "name", "")
-                    if hasattr(p, "function")
-                    else ""
-                )
-                fn_args = (
-                    getattr(p.function, "arguments", "")
-                    if hasattr(p, "function")
-                    else ""
-                )
+                fn_name = getattr(p.function, "name", "") if hasattr(p, "function") else ""
+                fn_args = getattr(p.function, "arguments", "") if hasattr(p, "function") else ""
                 tc_delta = _EchoToolCallDelta(
                     index=getattr(p, "index", 0),
                     id=getattr(p, "id", None) or f"call_{len(chunks)}",
@@ -1082,9 +1082,16 @@ def create_openai_client(
         try:
             from coderai.config import LLMProvider as _LLMP, LLMModel as _LLMM
             from pydantic import SecretStr as _Sec
+
             _sec_key = _Sec(api_key or "none")
-            _prov = tprovider or _LLMP(type=provider_type, base_url=base_url or "", api_key=_sec_key)
-            _mod = tmodel or _LLMM(provider=_prov.type if hasattr(_prov, "type") else "scripted_provider", model=active_model, max_context_size=context_window)
+            _prov = tprovider or _LLMP(
+                type=provider_type, base_url=base_url or "", api_key=_sec_key
+            )
+            _mod = tmodel or _LLMM(
+                provider=_prov.type if hasattr(_prov, "type") else "scripted_provider",
+                model=active_model,
+                max_context_size=context_window,
+            )
             _llm_inst = create_llm(_prov, _mod)
             client_adapter = _EchoClientAdapter(_llm_inst.chat_provider)
             _client_pool[cache_key] = client_adapter
@@ -1206,7 +1213,9 @@ def probe_provider_connectivity(
             )
         except Exception as e_comp:
             probe_errors.append(str(e_comp))
-            if any(k in str(e_comp) for k in ("max_completion_tokens", "Unsupported parameter", "400")):
+            if any(
+                k in str(e_comp) for k in ("max_completion_tokens", "Unsupported parameter", "400")
+            ):
                 try:
                     resp = client.chat.completions.create(
                         model=wire_model,
@@ -1233,10 +1242,16 @@ def probe_provider_connectivity(
             return False, "Authentication Failed: Invalid API key (401 Unauthorized)."
         if "PermissionDeniedError" in type(e).__name__ or "403" in err_str:
             if "limit" in err_str.lower() or "quota" in err_str.lower():
-                return False, "Quota Exceeded (403): You've reached your monthly usage limit for this account or model."
+                return (
+                    False,
+                    "Quota Exceeded (403): You've reached your monthly usage limit for this account or model.",
+                )
             return False, f"Permission Denied (403): Access denied to model '{wire_model}'."
         if "NotFoundError" in type(e).__name__ or "404" in err_str:
-            return False, f"Model Not Found (404): Endpoint '{resolved_url}' does not recognize '{wire_model}'."
+            return (
+                False,
+                f"Model Not Found (404): Endpoint '{resolved_url}' does not recognize '{wire_model}'.",
+            )
         if "RateLimitError" in type(e).__name__ or "429" in err_str:
             return False, "Rate Limit Exceeded (429): Quota or rate limit reached on provider."
         if "APIConnectionError" in type(e).__name__ or "ConnectError" in err_str:

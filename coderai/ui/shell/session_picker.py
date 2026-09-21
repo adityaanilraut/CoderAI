@@ -677,7 +677,9 @@ def select_agent_role_interactive(
     # Discovered roles from .coderai/agents/*.md
     for d in discovered:
         mode_label = f"[{d.mode}]" if d.mode else ""
-        roles.append((d.name, f"{d.name} {mode_label}", d.description or f"Specialized {d.name} role"))
+        roles.append(
+            (d.name, f"{d.name} {mode_label}", d.description or f"Specialized {d.name} role")
+        )
 
     items: list[tuple[str, str, str]] = []
     default_idx = 0

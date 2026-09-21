@@ -483,8 +483,6 @@ def test_skill_scan_discovers_skill_manifests(tmp_path: Path):
     assert {s["name"] for s in filtered} == {"alpha-skill"}
 
 
-
-
 def test_plan_review_extracts_option_list():
     """Single plans yield no options while multi-option plans letter each choice."""
     assert extract_plan_options("# Plan\n\nSteps...") == []

@@ -13,16 +13,16 @@ import asyncio
 import contextvars
 import time
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Callable, Literal
+from typing import Any
+from collections.abc import Callable
 from coderai.approval_runtime.models import (
     ApprovalEvent,
     ApprovalRequestRecord,
     ApprovalResponseKind,
     ApprovalSource,
     ApprovalSourceKind,
-    ApprovalStatus,
 )
+
 _current_source: contextvars.ContextVar[ApprovalSource | None] = contextvars.ContextVar(
     "coderai_approval_source", default=None
 )

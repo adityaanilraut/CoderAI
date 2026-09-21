@@ -18,11 +18,7 @@ def _collect_jobs(mgr: Any, session_id: str | None, active_only: bool = False) -
         return []
     jobs = list(getattr(store, "_jobs", {}).values())
     if session_id:
-        jobs = [
-            j
-            for j in jobs
-            if getattr(j, "session_id", None) in (session_id, "default", None)
-        ]
+        jobs = [j for j in jobs if getattr(j, "session_id", None) in (session_id, "default", None)]
     if active_only:
         jobs = [j for j in jobs if getattr(j, "status", "") == "running"]
     return jobs
@@ -66,7 +62,9 @@ def run_task_browser(console: Any, mgr: Any, session_id: str | None) -> None:
             print("No background tasks.")
             return
         for j in jobs:
-            print(f"[{getattr(j, 'status', '?')}] {getattr(j, 'id', '?')} {getattr(j, 'label', '')[:60]}")
+            print(
+                f"[{getattr(j, 'status', '?')}] {getattr(j, 'id', '?')} {getattr(j, 'label', '')[:60]}"
+            )
         return
 
     import sys
@@ -105,14 +103,15 @@ def run_task_browser(console: Any, mgr: Any, session_id: str | None) -> None:
         else:
             detail = Panel("(no tasks)", title="Detail")
             preview = Panel("", title="Output preview")
-        filt = "active" if active_only else "all"
         footer = "[Enter/O] output  [S] stop  [Tab] filter(all/active)  [R] refresh  [Q] exit"
         return Columns([left, detail, preview]), footer, jobs
 
     if not sys.stdin.isatty():
         jobs = _collect_jobs(mgr, session_id)
         for j in jobs:
-            console.print(f"[{getattr(j, 'status', '?')}] {getattr(j, 'id', '?')}") if console else print(j)
+            console.print(
+                f"[{getattr(j, 'status', '?')}] {getattr(j, 'id', '?')}"
+            ) if console else print(j)
         return
 
     import termios
@@ -148,7 +147,11 @@ def run_task_browser(console: Any, mgr: Any, session_id: str | None) -> None:
                 elif ch in ("s", "S"):
                     if jobs and 0 <= idx < len(jobs) and store:
                         live.stop()
-                        ans = input(f"Stop task {getattr(jobs[idx], 'id', '?')}? [y/N]: ").strip().lower()
+                        ans = (
+                            input(f"Stop task {getattr(jobs[idx], 'id', '?')}? [y/N]: ")
+                            .strip()
+                            .lower()
+                        )
                         if ans in ("y", "yes"):
                             store.cancel(getattr(jobs[idx], "id", ""))
                         return run_task_browser(console, mgr, session_id)
@@ -170,7 +173,9 @@ def run_task_browser(console: Any, mgr: Any, session_id: str | None) -> None:
         except Exception:
             pass
         try:
-            print("[Task browser closed]  [Enter/O] output [S] stop [Tab] filter [R] refresh [Q] exit")
+            print(
+                "[Task browser closed]  [Enter/O] output [S] stop [Tab] filter [R] refresh [Q] exit"
+            )
         except Exception:
             pass
     # Simple arrow navigation via re-read of escape sequences is handled by

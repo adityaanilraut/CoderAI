@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 # --- from coderai/core/network/sanitizer.py (trafilatura-side; placed first: network/__init__ imports these names eagerly, so they must exist before any import below can trigger it) ---
 """Content Sanitization, HTML-to-Markdown Parsing, Metadata Extraction & Prompt Injection Defense."""
 
@@ -375,13 +376,14 @@ def extract_and_sanitize_html(
         truncated=truncated,
         metadata=meta,
     )
+
+
 # --- from coderai/core/tools/web_fetch.py ---
 """WebFetch tool — fetch and sanitize online web pages, documentation, and APIs."""
 
 
 import json
 import uuid
-from typing import Any
 
 from coderai.utils.aiohttp import get_http_client
 from coderai.network.security import NetworkSecurityError

@@ -177,7 +177,9 @@ def cmd_mcp_list(argv: list[str]) -> int:
     for name in sorted(servers):
         server = servers[name]
         if "command" in server:
-            line = f"{name} (stdio): {server['command']} {' '.join(server.get('args') or [])}".rstrip()
+            line = (
+                f"{name} (stdio): {server['command']} {' '.join(server.get('args') or [])}".rstrip()
+            )
         elif "url" in server:
             line = f"{name} ({server.get('transport') or 'http'}): {server['url']}"
             if server.get("auth") == "oauth":
@@ -383,8 +385,8 @@ def cmd_mcp_logout(argv: list[str]) -> int:
     token_file = server.get("tokenFile", "")
     if token_file:
         try:
-            managed = Path(token_file).expanduser().resolve().is_relative_to(
-                oauth_token_dir().resolve()
+            managed = (
+                Path(token_file).expanduser().resolve().is_relative_to(oauth_token_dir().resolve())
             )
         except OSError:
             managed = False

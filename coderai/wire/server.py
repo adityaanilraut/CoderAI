@@ -138,9 +138,7 @@ class WireServer:
                 continue
             if not isinstance(data, dict) or data.get("jsonrpc") != "2.0":
                 msg_id = data.get("id") if isinstance(data, dict) else None
-                await self._send(
-                    _error(msg_id, ErrorCodes.INVALID_REQUEST, "Invalid request")
-                )
+                await self._send(_error(msg_id, ErrorCodes.INVALID_REQUEST, "Invalid request"))
                 continue
             task = asyncio.create_task(self._dispatch(data))
             task.add_done_callback(self._dispatch_tasks.discard)
@@ -193,7 +191,9 @@ class WireServer:
         if method not in IN_METHODS:
             if msg_id is not None:
                 await self._send(
-                    _error(msg_id, ErrorCodes.METHOD_NOT_FOUND, f"Unexpected method received: {method}")
+                    _error(
+                        msg_id, ErrorCodes.METHOD_NOT_FOUND, f"Unexpected method received: {method}"
+                    )
                 )
             return
         params = data.get("params")
@@ -323,27 +323,17 @@ class WireServer:
                     elif t == "audio_url":
                         _parts.append(AudioURLPart.model_validate(item))
                     elif t == "think":
-                        _parts.append(
-                            ThinkPart(think=item.get("think") or item.get("text", ""))
-                        )
+                        _parts.append(ThinkPart(think=item.get("think") or item.get("text", "")))
             _msg = _KMsg(role="user", content=_parts)
-            active_settings = (
-                getattr(self._mgr, "get_resolved_settings", lambda: {})() or {}
-            )
-            client_info = (
-                getattr(self._mgr, "create_openai_client", lambda: {})() or {}
-            )
+            active_settings = getattr(self._mgr, "get_resolved_settings", lambda: {})() or {}
+            client_info = getattr(self._mgr, "create_openai_client", lambda: {})() or {}
             model_caps = set(
-                client_info.get("capabilities")
-                or active_settings.get("capabilities")
-                or []
+                client_info.get("capabilities") or active_settings.get("capabilities") or []
             )
             missing = check_message(_msg, model_caps)
             if missing:
                 model_name = (
-                    client_info.get("model")
-                    or active_settings.get("model")
-                    or "scripted_echo"
+                    client_info.get("model") or active_settings.get("model") or "scripted_echo"
                 )
                 missing_str = ", ".join(sorted(missing))
                 cap_word = "capability" if len(missing) == 1 else "capabilities"
@@ -363,10 +353,7 @@ class WireServer:
             exc_str = str(exc)
             if "LLMNotSet" in exc_name or "LLM is not set" in exc_str or "API key" in exc_str:
                 return _error(msg_id, ErrorCodes.LLM_NOT_SET, "LLM is not set")
-            if (
-                "LLMNotSupported" in exc_name
-                or "does not support required capabilit" in exc_str
-            ):
+            if "LLMNotSupported" in exc_name or "does not support required capabilit" in exc_str:
                 return _error(msg_id, ErrorCodes.LLM_NOT_SUPPORTED, exc_str)
             if (
                 "ChatProviderError" in exc_name
@@ -427,9 +414,7 @@ class WireServer:
             entry = self._mgr.get_session(self._session_id)
             if entry is None:
                 return _error(msg_id, ErrorCodes.INVALID_STATE, "Session not found")
-            self._mgr._update_entry(
-                self._session_id, lambda e: {**e, "planMode": enabled}
-            )
+            self._mgr._update_entry(self._session_id, lambda e: {**e, "planMode": enabled})
             try:
                 state = self._mgr.get_session_state(self._session_id)
                 state.plan_mode = enabled
@@ -508,9 +493,7 @@ class WireServer:
                 entry = mgr.get_session(self._session_id)
                 entry_status = (entry.status if entry else "") or ""
                 fail_reason = (
-                    str(getattr(entry, "fail_reason", "") or "")
-                    if entry is not None
-                    else ""
+                    str(getattr(entry, "fail_reason", "") or "") if entry is not None else ""
                 ) or ((entry.get("failReason") or "") if isinstance(entry, dict) else "")
             except Exception:
                 entry_status, fail_reason = "", ""
@@ -712,9 +695,7 @@ class WireServer:
         return []
 
     @staticmethod
-    def _format_answers(
-        questions: list[dict[str, Any]], answers: dict[str, str]
-    ) -> str:
+    def _format_answers(questions: list[dict[str, Any]], answers: dict[str, str]) -> str:
         lines = ["<answers>"]
         for index, question in enumerate(questions):
             text = str(question.get("question", "")) if isinstance(question, dict) else ""
@@ -742,9 +723,7 @@ class WireServer:
         self._pending.clear()
 
 
-async def run_wire_stdio(
-    mgr: Any, session_id: str | None = None, *, init_mcp: bool = True
-) -> int:
+async def run_wire_stdio(mgr: Any, session_id: str | None = None, *, init_mcp: bool = True) -> int:
     """Serve the wire protocol on stdio (``coderai --wire`` entry point)."""
     if init_mcp:
         try:

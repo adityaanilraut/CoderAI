@@ -40,11 +40,7 @@ def _extract_request_payloads(messages: list[dict[str, Any]]) -> list[dict[str, 
 
 
 def _approval_requests(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        msg
-        for msg in summarize_messages(messages)
-        if msg.get("type") == "ApprovalRequest"
-    ]
+    return [msg for msg in summarize_messages(messages) if msg.get("type") == "ApprovalRequest"]
 
 
 def _tool_call_line(tool_call_id: str, name: str, args: Mapping[str, Any]) -> str:

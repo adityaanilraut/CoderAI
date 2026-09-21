@@ -21,7 +21,9 @@ from coderai.share import get_share_dir
 
 logger = logging.getLogger(__name__)
 
-TELEMETRY_ENDPOINT = os.getenv("CODERAI_TELEMETRY_ENDPOINT") or "https://telemetry.coderai.dev/v1/event"
+TELEMETRY_ENDPOINT = (
+    os.getenv("CODERAI_TELEMETRY_ENDPOINT") or "https://telemetry.coderai.dev/v1/event"
+)
 
 SEND_TIMEOUT = aiohttp.ClientTimeout(total=10, sock_connect=5)
 DISK_EVENT_MAX_AGE_S = 7 * 24 * 3600  # 7 days

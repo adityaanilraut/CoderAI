@@ -254,9 +254,19 @@ def test_prompt_cache_multi_step_tool_loop_breakpoint(tmp_path: pathlib.Path):
     msgs = [
         _msg("s1", "system", get_system_prompt({"workspaceRoot": str(tmp_path)})),
         _msg("u1", "user", "Perform multi-step task"),
-        _msg("a1", "assistant", "", tool_calls=[{"id": "tc1", "function": {"name": "bash", "arguments": "{}"}}]),
+        _msg(
+            "a1",
+            "assistant",
+            "",
+            tool_calls=[{"id": "tc1", "function": {"name": "bash", "arguments": "{}"}}],
+        ),
         _msg("t1", "tool", "output of step 1", tool_call_id="tc1"),
-        _msg("a2", "assistant", "", tool_calls=[{"id": "tc2", "function": {"name": "read", "arguments": "{}"}}]),
+        _msg(
+            "a2",
+            "assistant",
+            "",
+            tool_calls=[{"id": "tc2", "function": {"name": "read", "arguments": "{}"}}],
+        ),
         _msg("t2", "tool", "output of step 2", tool_call_id="tc2"),
     ]
     converted = conv.convert_session_messages(msgs, "claude-3-7-sonnet")

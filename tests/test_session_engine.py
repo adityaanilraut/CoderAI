@@ -359,8 +359,6 @@ def test_session_jobs_kill_all_terminates_running():
     reset_job_store()
 
 
-
-
 @pytest.mark.asyncio
 async def test_session_loop_retry_recovers_after_rate_limit(tmp_path, monkeypatch):
     """Retryable LLM failures retry as new turns without persisting error text."""
@@ -554,9 +552,13 @@ async def test_session_compaction_records_shadowed_seqs(tmp_path):
     mgr = _manager(tmp_path, create_openai_client=lambda: {"client": object(), "model": "t"})
     sid = "compact_seqs"
     mgr._append_event(sid, make_user_event(seq=0, content="q0", message_id="u0"))
-    mgr._append_event(sid, make_assistant_event(seq=1, turn=1, step=1, content="a1", message_id="a1"))
+    mgr._append_event(
+        sid, make_assistant_event(seq=1, turn=1, step=1, content="a1", message_id="a1")
+    )
     mgr._append_event(sid, make_user_event(seq=2, content="q2", message_id="u2"))
-    mgr._append_event(sid, make_assistant_event(seq=3, turn=1, step=2, content="a3", message_id="a3"))
+    mgr._append_event(
+        sid, make_assistant_event(seq=3, turn=1, step=2, content="a3", message_id="a3")
+    )
 
     async def _fake_completion(client, request, **kwargs):
         return {
@@ -569,9 +571,7 @@ async def test_session_compaction_records_shadowed_seqs(tmp_path):
     assert result is not None
     assert result.shadowed_seqs == [1, 2]
     assert set(result.shadowed_ids) == {"a1", "u2"}
-    summaries = [
-        e for e in mgr.session_store.list_events(sid) if e.type == "compaction/summary"
-    ]
+    summaries = [e for e in mgr.session_store.list_events(sid) if e.type == "compaction/summary"]
     assert len(summaries) == 1
     assert summaries[0].data["shadowedSeqs"] == [1, 2]
     assert summaries[0].source_event_seqs == [1, 2]

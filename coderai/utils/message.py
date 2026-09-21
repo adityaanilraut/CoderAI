@@ -23,4 +23,3 @@ def message_stringify(message: Message) -> str:
         else:
             parts.append(f"[{getattr(part, 'type', 'part')}]")
     return "".join(parts)
-

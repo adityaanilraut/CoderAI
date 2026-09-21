@@ -60,9 +60,7 @@ def _token_from_file(path: Path) -> str | None:
     return text.split()[0]
 
 
-def resolve_server_bearer_token(
-    config: dict[str, Any], server_name: str
-) -> str | None:
+def resolve_server_bearer_token(config: dict[str, Any], server_name: str) -> str | None:
     """Resolve the bearer token for an ``auth: oauth`` server config."""
     inline = config.get("token")
     if isinstance(inline, str) and inline.strip():
@@ -108,9 +106,7 @@ def has_server_token(server_name: str, config: dict[str, Any] | None = None) -> 
     return _token_from_file(server_token_path(server_name)) is not None
 
 
-def apply_bearer_auth(
-    config: dict[str, Any], server_name: str
-) -> dict[str, Any]:
+def apply_bearer_auth(config: dict[str, Any], server_name: str) -> dict[str, Any]:
     """Return a copy of an MCP server config with the bearer header applied."""
     if config.get("auth") != "oauth":
         return config
@@ -127,6 +123,7 @@ def create_mcp_oauth(server_url: str) -> Any:
     """Create fastmcp OAuth adapter for server URL if available."""
     try:
         from fastmcp.client.auth.oauth import OAuth
+
         return OAuth(mcp_url=server_url)
     except Exception:
         return None

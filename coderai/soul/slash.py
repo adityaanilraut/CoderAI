@@ -1,23 +1,19 @@
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kosong.message import Message
 
-import coderai.prompts as prompts
-from coderai.log import logger
 from coderai.soul import wire_send
-from coderai.soul.context import Context
-from coderai.soul.message import system, system_reminder
-from coderai.utils.path import sanitize_cli_path, shorten_home
+from coderai.soul.message import system
+from coderai.utils.path import sanitize_cli_path
 from coderai.utils.slashcmd import SlashCommandRegistry
 from coderai.wire.types import StatusUpdate, TextPart
 
 if TYPE_CHECKING:
-    from coderai.soul.coderaisoul import CoderAISoul
+    pass
 
 SoulSlashCmdFunc = Callable[..., None | Awaitable[None]]
 """
@@ -187,7 +183,11 @@ async def plan(soul: Any, args: str) -> None:
         elif hasattr(soul, "plan_mode"):
             soul.plan_mode = new_state
         if new_state:
-            wire_send(TextPart(text="Plan mode ON. Write your plan or outline steps.\nUse /plan off to exit manually."))
+            wire_send(
+                TextPart(
+                    text="Plan mode ON. Write your plan or outline steps.\nUse /plan off to exit manually."
+                )
+            )
         else:
             wire_send(TextPart(text="Plan mode OFF. All tools are now available."))
         wire_send(StatusUpdate(plan_mode=new_state))
@@ -196,9 +196,12 @@ async def plan(soul: Any, args: str) -> None:
 @registry.command(name="add-dir", aliases=["add_dir"])
 async def add_dir(soul: Any, args: str) -> None:
     """Add a directory to the workspace. Usage: /add-dir <path>."""
-    from coderai.utils.path import list_directory
 
-    clean_arg = sanitize_cli_path(args) if callable(globals().get("sanitize_cli_path")) else args.strip().strip("'\"")
+    clean_arg = (
+        sanitize_cli_path(args)
+        if callable(globals().get("sanitize_cli_path"))
+        else args.strip().strip("'\"")
+    )
     additional_dirs: list[Path] = []
     if hasattr(soul, "runtime") and hasattr(soul.runtime, "additional_dirs"):
         additional_dirs = soul.runtime.additional_dirs
@@ -260,8 +263,12 @@ async def import_context(soul: Any, args: str) -> None:
         content = target_path.read_text(encoding="utf-8", errors="replace")
         if hasattr(soul, "context") and hasattr(soul.context, "append_message"):
             await soul.context.append_message(
-                Message(role="user", content=[system(f"Imported from {target_path.name}:\n{content}")])
+                Message(
+                    role="user", content=[system(f"Imported from {target_path.name}:\n{content}")]
+                )
             )
-        wire_send(TextPart(text=f"Imported file context from {clean_target} ({len(content)} chars)."))
+        wire_send(
+            TextPart(text=f"Imported file context from {clean_target} ({len(content)} chars).")
+        )
     else:
         wire_send(TextPart(text=f"Import source not found: {clean_target}"))

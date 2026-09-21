@@ -126,9 +126,7 @@ async def run_background_task_worker(
                 "env": env,
             }
             if os.name == "nt":
-                spawn_kwargs["creationflags"] = getattr(
-                    subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-                )
+                spawn_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             else:
                 spawn_kwargs["start_new_session"] = True
 

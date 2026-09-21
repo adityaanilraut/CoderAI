@@ -7,7 +7,7 @@ import uuid
 from collections import deque
 from contextlib import suppress
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from coderai.telemetry.sink import (
     ExecutionSpan,
@@ -16,8 +16,6 @@ from coderai.telemetry.sink import (
     get_telemetry_collector,
 )
 
-if TYPE_CHECKING:
-    from coderai.telemetry.sink import EventSink
 
 # ---------------------------------------------------------------------------
 # Module-level state (zero dependencies)

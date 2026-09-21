@@ -11,16 +11,9 @@ Provides full event-driven lifecycle interception:
 from __future__ import annotations
 
 import asyncio
-import enum
-import fnmatch
 import json
 import logging
-import os
-import pathlib
-import re
-import subprocess
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from coderai.tools.legacy.types import ToolExecutionContext
@@ -31,6 +24,8 @@ DEFAULT_HOOK_TIMEOUT_SECONDS = 10.0
 from coderai.hooks.config import MergedHookOutcome
 from coderai.hooks.engine import run_hook_point, run_hook_point_async
 from coderai.hooks.events import HookPoint
+
+
 def run_pre_tool_use(
     tool_name: str,
     args: dict[str, Any],
@@ -159,6 +154,7 @@ def run_on_subagent_spawn(
 # Event payload builders
 # ---------------------------------------------------------------------------
 
+
 def _event_base(event: str, session_id: str, cwd: str) -> dict[str, Any]:
     return {"hook_event_name": event, "session_id": session_id, "cwd": cwd}
 
@@ -215,9 +211,7 @@ def build_post_tool_use_failure_payload(
     }
 
 
-def build_user_prompt_submit_payload(
-    *, session_id: str, cwd: str, prompt: str
-) -> dict[str, Any]:
+def build_user_prompt_submit_payload(*, session_id: str, cwd: str, prompt: str) -> dict[str, Any]:
     return {**_event_base("UserPromptSubmit", session_id, cwd), "prompt": prompt}
 
 
@@ -240,15 +234,11 @@ def build_stop_failure_payload(
     }
 
 
-def build_session_start_payload(
-    *, session_id: str, cwd: str, source: str
-) -> dict[str, Any]:
+def build_session_start_payload(*, session_id: str, cwd: str, source: str) -> dict[str, Any]:
     return {**_event_base("SessionStart", session_id, cwd), "source": source}
 
 
-def build_session_end_payload(
-    *, session_id: str, cwd: str, reason: str
-) -> dict[str, Any]:
+def build_session_end_payload(*, session_id: str, cwd: str, reason: str) -> dict[str, Any]:
     return {**_event_base("SessionEnd", session_id, cwd), "reason": reason}
 
 
@@ -315,6 +305,7 @@ def build_notification_payload(
 # ---------------------------------------------------------------------------
 # Hook fire helpers (sync; async variants delegate to run_hook_point_async)
 # ---------------------------------------------------------------------------
+
 
 def run_user_prompt_submit(
     prompt: str,
@@ -404,9 +395,7 @@ def run_session_start(
     """Execute SessionStart hook point."""
     return run_hook_point(
         HookPoint.SESSION_START,
-        payload=build_session_start_payload(
-            session_id=session_id, cwd=project_root, source=source
-        ),
+        payload=build_session_start_payload(session_id=session_id, cwd=project_root, source=source),
         project_root=project_root,
         settings=settings,
     )
@@ -421,9 +410,7 @@ def run_session_end(
     """Execute SessionEnd hook point."""
     return run_hook_point(
         HookPoint.SESSION_END,
-        payload=build_session_end_payload(
-            session_id=session_id, cwd=project_root, reason=reason
-        ),
+        payload=build_session_end_payload(session_id=session_id, cwd=project_root, reason=reason),
         project_root=project_root,
         settings=settings,
     )
@@ -619,9 +606,7 @@ async def run_session_start_async(
     """Async SessionStart."""
     return await run_hook_point_async(
         HookPoint.SESSION_START,
-        payload=build_session_start_payload(
-            session_id=session_id, cwd=project_root, source=source
-        ),
+        payload=build_session_start_payload(session_id=session_id, cwd=project_root, source=source),
         project_root=project_root,
         settings=settings,
     )
@@ -636,9 +621,7 @@ async def run_session_end_async(
     """Async SessionEnd."""
     return await run_hook_point_async(
         HookPoint.SESSION_END,
-        payload=build_session_end_payload(
-            session_id=session_id, cwd=project_root, reason=reason
-        ),
+        payload=build_session_end_payload(session_id=session_id, cwd=project_root, reason=reason),
         project_root=project_root,
         settings=settings,
     )
@@ -708,7 +691,10 @@ async def run_hook(
             raw = json.loads(stdout)
             if isinstance(raw, dict):
                 hook_output = raw.get("hookSpecificOutput", {})
-                if isinstance(hook_output, dict) and hook_output.get("permissionDecision") == "deny":
+                if (
+                    isinstance(hook_output, dict)
+                    and hook_output.get("permissionDecision") == "deny"
+                ):
                     return HookResult(
                         action="block",
                         reason=str(hook_output.get("permissionDecisionReason", "")),

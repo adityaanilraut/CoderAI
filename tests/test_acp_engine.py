@@ -39,7 +39,9 @@ class _FakeManager:
         if not self._pause_served:
             if self._pause == "permission":
                 self._pause_served = True
-                return SimpleNamespace(status="ask_permission", ask_permissions=self.ask_permissions)
+                return SimpleNamespace(
+                    status="ask_permission", ask_permissions=self.ask_permissions
+                )
             if self._pause == "question":
                 self._pause_served = True
                 return SimpleNamespace(status="ask_user_question", ask_permissions=[])
@@ -83,7 +85,9 @@ class _FakeManager:
         self.interrupted.append(session_id)
 
 
-async def _collect(engine: SessionManagerEngine, text: str = "hi", cancel: asyncio.Event | None = None):
+async def _collect(
+    engine: SessionManagerEngine, text: str = "hi", cancel: asyncio.Event | None = None
+):
     async def _drain():
         return [msg async for msg in engine.run([KTextPart(text=text)], cancel or asyncio.Event())]
 

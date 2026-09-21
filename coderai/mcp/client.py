@@ -64,9 +64,7 @@ class McpClient:
             policy = config.get("policy")
             if policy is None and config.get("allowPrivateIps"):
                 policy = NetworkPolicy(allow_private_ips=True)
-            transport = str(
-                config.get("transport") or config.get("type") or "sse"
-            ).lower()
+            transport = str(config.get("transport") or config.get("type") or "sse").lower()
             if transport in ("http", "streamable-http", "streamable_http"):
                 return StreamableHttpMcpTransport(
                     server_name=self.server_name,

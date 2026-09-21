@@ -18,7 +18,11 @@ from rich.text import Text
 
 from coderai.tools import extract_key_argument
 from coderai.tools.display import BackgroundTaskDisplayBlock, DiffDisplayBlock, TodoDisplayBlock
-from coderai.utils.rich.diff_render import collect_diff_hunks, render_diff_panel, render_diff_summary_panel
+from coderai.utils.rich.diff_render import (
+    collect_diff_hunks,
+    render_diff_panel,
+    render_diff_summary_panel,
+)
 from coderai.wire.types import ToolCall, ToolCallPart, ToolResult
 
 # reuse CoderAI console (MANPAGER-safe, neutral theme)
@@ -660,8 +664,6 @@ def _format_step_retry(retry: Any) -> Text:
     )
 
 
-
-
 # --- from coderai/cli/thinking.py ---
 """Thinking mode visual hierarchy and reasoning styling.
 
@@ -677,13 +679,11 @@ use stream_blocks.
 import re
 import shutil
 import sys
-import time
-from typing import Any
 
 from rich.console import Console
 from rich.markup import escape
 
-from coderai.cli.elapsed import bullet_frame_for, format_elapsed
+from coderai.cli.elapsed import bullet_frame_for
 
 
 def summarize_thinking(thinking_text: str, max_chars: int = 140) -> str:
@@ -760,7 +760,6 @@ class LiveThinkingStreamer:
         self._last_line_len: int = 0
         # optional canonical block for tok/s parity check
         try:
-
             self._block = _ContentBlock(is_think=True)
         except Exception:
             self._block = None  # type: ignore
@@ -881,7 +880,6 @@ class LiveThinkingStreamer:
         self._last_line_len = 0
         if self._block is not None:
             try:
-
                 self._block = _ContentBlock(is_think=True)
             except Exception:
                 pass
@@ -890,12 +888,6 @@ class LiveThinkingStreamer:
 # --- from coderai/cli/tool_card.py ---
 """Formatted tool-result cards for CLI tool executions."""
 
-
-import json
-from typing import Any
-
-
-from rich.markup import escape
 
 from coderai.utils.rich.diff_render import render_diff_preview
 from coderai.soul.session.manager import SessionMessage
@@ -1168,8 +1160,6 @@ def _render_search_grep_card(
         print(f"    ↳ Search '{query}': {matches_count} matches")
 
 
-
-
 def _render_subagent_card(
     console: Any, output_text: str | None, metadata: dict[str, Any], ok: bool
 ) -> None:
@@ -1214,8 +1204,6 @@ def _render_session_card(
                 console.print(f"      [dim]│[/] {escape(line)}")
     elif output_text:
         print(f"    ↳ Session Query: {results_count} events")
-
-
 
 
 def render_tool_card(console: Any | None, message: SessionMessage) -> None:
@@ -1279,7 +1267,6 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
             elif name in ("grep", "glob", "file_search", "find_files"):
                 _render_search_grep_card(console, raw_output, metadata, ok)
 
-
             # Subagent task card
             elif name in ("subagent", "delegate", "agent_task", "invoke_agent"):
                 _render_subagent_card(console, raw_output, metadata, ok)
@@ -1293,7 +1280,6 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
                 "session_event_read",
             ):
                 _render_session_card(console, raw_output, metadata, ok)
-
 
             # Read tool snippet info
             elif name in ("read", "Read", "view_file"):
@@ -1326,22 +1312,14 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
 
 
 from dataclasses import dataclass
-from typing import Any
 
-from rich.console import Console, Group, RenderableType
-from rich.text import Text
+from rich.console import Console
 
 
 @dataclass
 class TodoItem:
     title: str
     status: str = "pending"  # "pending", "in_progress", "completed", "cancelled"
-
-
-@dataclass
-class TodoDisplayBlock:
-    items: list[TodoItem]
-    title: str = "Todo"
 
 
 def parse_plan_stats(plan_text: str) -> tuple[int, int]:
@@ -1503,17 +1481,12 @@ Pure CLI.
 """
 
 
-import time
-from typing import Any
-
 import signal
 
 from rich.console import Console
 from rich.live import Live
-from rich.spinner import Spinner
-from rich.text import Text
 
-from coderai.cli.elapsed import bullet_frame_for, format_elapsed, format_progress_bar
+from coderai.cli.elapsed import bullet_frame_for, format_progress_bar
 
 
 def _install_sigwinch(handler) -> None:  # type: ignore[no-untyped-def]
@@ -1706,17 +1679,11 @@ for progressive markdown rendering and formatting.
 
 
 import os
-import signal
-import time
-from typing import Any
 
 from rich.console import Console
-from rich.live import Live
 from rich.markdown import Markdown as _RichMarkdown
-from rich.style import Style
-from rich.text import Text
 
-from coderai.cli.elapsed import bullet_frame_for, format_elapsed
+from coderai.cli.elapsed import bullet_frame_for
 
 try:
     from coderai.utils.rich.syntax import CODERAI_ANSI_THEME  # noqa: F401
@@ -1849,7 +1816,6 @@ class MarkdownStreamRenderer:
         # internal canonical block for commitment logic (kept in sync)
         self._block: Any | None = None
         try:
-
             self._block = _ContentBlock(is_think=False)
         except Exception:
             self._block = None

@@ -67,27 +67,24 @@ hiddenimports.extend(
     ]
 )
 
-datas = (
-    collect_data_files(
-        "coderai",
-        includes=[
-            "agents/**/*.yaml",
-            "agents/**/*.md",
-            "agents/**/*.py",
-            "prompts/**/*.md",
-            "skills/**",
-            "tools/**/*.md",
-            # NOTE: the changelog lives at the repo root, so there is no
-            # in-package changelog to collect.
-        ],
-        excludes=[
-            "tools/*.md",
-        ],
-    )
-    + collect_data_files(
-        "fastmcp",
-        includes=["../fastmcp-*.dist-info/*"],
-    )
+datas = collect_data_files(
+    "coderai",
+    includes=[
+        "agents/**/*.yaml",
+        "agents/**/*.md",
+        "agents/**/*.py",
+        "prompts/**/*.md",
+        "skills/**",
+        "tools/**/*.md",
+        # NOTE: the changelog lives at the repo root, so there is no
+        # in-package changelog to collect.
+    ],
+    excludes=[
+        "tools/*.md",
+    ],
+) + collect_data_files(
+    "fastmcp",
+    includes=["../fastmcp-*.dist-info/*"],
 )
 
 

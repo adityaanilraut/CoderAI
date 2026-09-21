@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 
 @dataclass(frozen=True)
@@ -947,9 +946,6 @@ def _render_plain_overview() -> None:
 # --- from coderai/cli/info_cmds.py (slash half) ---
 
 
-import datetime as _dt
-
-
 import os
 
 
@@ -960,9 +956,6 @@ import sys
 
 
 import webbrowser
-
-
-from typing import Any
 
 
 try:
@@ -1113,9 +1106,7 @@ def cmd_reload(mgr: Any, console: Any = None) -> bool:
         return False
 
 
-def cmd_title(
-    mgr: Any, session_id: str | None, arg: str = "", console: Any = None
-) -> str | None:
+def cmd_title(mgr: Any, session_id: str | None, arg: str = "", console: Any = None) -> str | None:
     """View or set the session title (max 200 chars)."""
     entry = mgr.get_session(session_id) if session_id else None
     if entry is None:
@@ -1192,7 +1183,13 @@ def cmd_hooks(console: Any = None, project_root: str = ".") -> dict[str, Any]:
                 t = Table(title="Configured Hooks", border_style="cyan")
                 t.add_column("Event", style="bold cyan")
                 t.add_column("Handlers", style="white")
-                for ev in sorted(events, key=lambda e: (_CODERAI_HOOK_EVENTS.index(e) if e in _CODERAI_HOOK_EVENTS else 99, e)):
+                for ev in sorted(
+                    events,
+                    key=lambda e: (
+                        _CODERAI_HOOK_EVENTS.index(e) if e in _CODERAI_HOOK_EVENTS else 99,
+                        e,
+                    ),
+                ):
                     t.add_row(ev, str(events[ev]))
                 console.print(t)
                 missing = [e for e in _CODERAI_HOOK_EVENTS if e not in events]
@@ -1200,9 +1197,7 @@ def cmd_hooks(console: Any = None, project_root: str = ".") -> dict[str, Any]:
                     console.print(f"[dim]No handlers for: {', '.join(missing)}[/]")
             else:
                 console.print(
-                    "[dim]No hooks configured. Events: "
-                    + ", ".join(_CODERAI_HOOK_EVENTS)
-                    + "[/]"
+                    "[dim]No hooks configured. Events: " + ", ".join(_CODERAI_HOOK_EVENTS) + "[/]"
                 )
         except Exception:
             print(events or "No hooks configured.")
@@ -1219,7 +1214,7 @@ def cmd_upgrade(console: Any = None) -> str:
         import asyncio
 
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
             import concurrent.futures
 
             with concurrent.futures.ThreadPoolExecutor() as pool:
@@ -1265,14 +1260,6 @@ def cmd_logout(console: Any = None, project_root: str = ".", mgr: Any = None) ->
 
         settings = resolve_current_settings(project_root) or {}
         providers = get_configured_provider_keys(project_root)
-        # Strip API keys from user settings providers block.
-        usersettings_path = None
-        try:
-            from coderai.config import get_user_settings_path
-
-            usersettings_path = get_user_settings_path()
-        except Exception:
-            usersettings_path = None
         cleared = 0
         if isinstance(settings.get("providers"), dict):
             for key in list(settings["providers"].keys()):

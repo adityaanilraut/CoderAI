@@ -77,8 +77,10 @@ def merge_server_cfg(base: dict[str, Any], over: dict[str, Any]) -> dict[str, An
     """Merge one server config; overlay wins except ``env``/``headers`` merge."""
     merged = dict(base)
     for key, value in over.items():
-        if key in ("env", "headers") and isinstance(value, dict) and isinstance(
-            merged.get(key), dict
+        if (
+            key in ("env", "headers")
+            and isinstance(value, dict)
+            and isinstance(merged.get(key), dict)
         ):
             merged[key] = {**merged[key], **value}
         else:

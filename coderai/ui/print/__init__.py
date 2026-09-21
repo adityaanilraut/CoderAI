@@ -30,9 +30,7 @@ def _print_markdown(markdown_text: str) -> None:
     console.print(Markdown(markdown_text))
 
 
-def _permission_replies_for_print(
-    requests: list[dict], *, plan_mode: bool
-) -> list[dict]:
+def _permission_replies_for_print(requests: list[dict], *, plan_mode: bool) -> list[dict]:
     """Auto-allow tools in print/exec mode, but fail-closed on Plan Mode mutations."""
     from coderai.soul.approval import apply_auto_approve_to_permission_plan
 
@@ -43,9 +41,7 @@ def _permission_replies_for_print(
         "askPermissions": list(requests),
     }
     gated = apply_auto_approve_to_permission_plan(plan, plan_mode=plan_mode) or plan
-    remaining = {
-        item.get("toolCallId") for item in (gated.get("askPermissions") or [])
-    }
+    remaining = {item.get("toolCallId") for item in (gated.get("askPermissions") or [])}
     replies: list[dict] = []
     for item in gated.get("permissions") or []:
         tool_call_id = item.get("toolCallId")

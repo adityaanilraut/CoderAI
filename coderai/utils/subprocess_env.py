@@ -207,15 +207,15 @@ def build_shell_env(
         env["PATH"] = f"{py_dir}{os.pathsep}{current_path}"
 
     return env
+
+
 # --- from coderai/core/common/process_tree.py ---
 """Process tree management, escalated killing, and secure environment scrubbing."""
 
 
-import os
 import re
 import signal
 import subprocess
-import sys
 import time
 
 _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
@@ -343,6 +343,8 @@ def escalated_kill_process_tree(
     # Stage 3: SIGKILL (hard immediate kill)
     kill_process_tree(pid, _SIGKILL)
     return not is_process_alive(pid)
+
+
 # --- from coderai/core/common/bash_timeout.py ---
 """"""
 

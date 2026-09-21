@@ -208,9 +208,7 @@ class ToolExecutor:
                     res_list.append(
                         {
                             "toolCallId": tc.get("id", ""),
-                            "content": json.dumps(
-                                {"ok": False, "name": fn_name, "error": str(ex)}
-                            ),
+                            "content": json.dumps({"ok": False, "name": fn_name, "error": str(ex)}),
                             "result": {"ok": False, "name": fn_name, "error": str(ex)},
                         }
                     )
@@ -684,7 +682,11 @@ class ToolExecutor:
                 res = await asyncio.wait_for(_invoke_plugin(), timeout=int(timeout_ms) / 1000.0)
             else:
                 res = await _invoke_plugin()
-            return res if isinstance(res, ToolResult) else ToolResult(ok=True, name=tool_name, output=str(res))
+            return (
+                res
+                if isinstance(res, ToolResult)
+                else ToolResult(ok=True, name=tool_name, output=str(res))
+            )
         except (TimeoutError, asyncio.TimeoutError):
             return ToolResult(
                 ok=False,

@@ -7,6 +7,7 @@ from pathlib import Path
 
 ToolPolicyMode = Literal["inherit", "allowlist"]
 
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SubagentTypeDefinition:
     name: str
@@ -25,8 +26,8 @@ class SubagentTypeDefinition:
         return self.allowed_tools
 
 
-
 BUILTIN_SUBAGENT_TYPES: tuple[str, ...] = ("coder", "explore", "plan")
+
 
 @dataclass(slots=True)
 class SubagentRunRecord:

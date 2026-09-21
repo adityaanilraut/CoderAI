@@ -75,9 +75,7 @@ def perform_login_sync(*, open_browser: bool = True, as_json: bool = False) -> i
             token = wait_for_device_token(
                 auth,
                 on_waiting=lambda _code: _emit(
-                    OAuthEvent(
-                        "waiting", f"Waiting for authorization... {auth.user_code}"
-                    ),
+                    OAuthEvent("waiting", f"Waiting for authorization... {auth.user_code}"),
                     as_json,
                 ),
             )
@@ -144,7 +142,8 @@ def cmd_logout(argv: list[str]) -> int:
     else:
         print(
             f"Logged out ({len(removed)} token file(s) removed"
-            + (", managed provider cleared" if cleared else "") + ")."
+            + (", managed provider cleared" if cleared else "")
+            + ")."
         )
     return 0
 

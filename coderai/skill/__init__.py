@@ -61,11 +61,12 @@ def get_skill_read_exempt_paths(
 def _skill_markdown_path(skill_dir: pathlib.Path) -> pathlib.Path | None:
     candidate = skill_dir / "SKILL.md"
     return candidate if candidate.is_file() else None
+
+
 # --- from coderai/core/skill/loader.py ---
 """"""
 
 
-import pathlib
 import re
 from typing import Any
 
@@ -205,13 +206,11 @@ def build_skill_documents_prompt(skills: list[dict[str, Any]]) -> str:
     if not blocks:
         return ""
     return "Use the skill documents below to assist the user:\n" + "\n\n".join(blocks)
+
+
 # --- from coderai/core/skill/registry.py ---
 """"""
 
-
-import pathlib
-import re
-from typing import Any
 
 STOP_WORDS = {
     "this",

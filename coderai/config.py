@@ -143,10 +143,10 @@ def load_dotenv(project_root: str = ".") -> dict[str, str]:
 def resolve_typed_config_overlay(project_root: str = ".") -> dict[str, Any]:
     """Best-effort typed-config (``config.toml``) overlay for legacy resolution.
 
-    Returns ``{}`` when no typed config exists or it fails validation — the
-    legacy ``settings.json`` + env path remains authoritative. Explicit
-    ``CODERAI_CONFIG_FILE`` / ``CODERAI_CONFIG_STRING`` redirects are honored
-   .
+     Returns ``{}`` when no typed config exists or it fails validation — the
+     legacy ``settings.json`` + env path remains authoritative. Explicit
+     ``CODERAI_CONFIG_FILE`` / ``CODERAI_CONFIG_STRING`` redirects are honored
+    .
     """
     # NOTE: load_typed_config / load_typed_config_from_string live in this
     # same module (defined below); reference the module globals directly so

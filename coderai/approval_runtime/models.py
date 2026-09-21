@@ -9,12 +9,9 @@ dependency; wire/ACP adapters live in later phases.
 
 from __future__ import annotations
 
-import asyncio
-import contextvars
 import time
-import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 ApprovalResponseKind = Literal["approve", "approve_for_session", "reject"]
 ApprovalSourceKind = Literal["foreground_turn", "background_agent"]

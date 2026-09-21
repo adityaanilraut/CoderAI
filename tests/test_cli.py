@@ -150,7 +150,11 @@ def test_cli_diff_preview_renders_without_crash() -> None:
 
 def test_cli_plan_preview_renders_checklist() -> None:
     """Plan stats count checkboxes and the preview prints to a console."""
-    from coderai.ui.shell.visualize._blocks import format_plan_content, parse_plan_stats, render_plan_preview
+    from coderai.ui.shell.visualize._blocks import (
+        format_plan_content,
+        parse_plan_stats,
+        render_plan_preview,
+    )
 
     plan_text = "# Plan\n- [x] Step 1\n- [ ] Step 2\n- [x] Step 3\n"
     total, completed = parse_plan_stats(plan_text)

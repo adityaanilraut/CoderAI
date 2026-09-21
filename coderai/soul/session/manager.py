@@ -98,7 +98,6 @@ from coderai.soul.session.completion import (  # noqa: E402
 )
 
 
-
 from coderai.soul.session.approval import (  # noqa: E402
     _session_managers,
     check_afk_for_session as _check_afk_for_session,  # noqa: F401
@@ -205,8 +204,7 @@ class SessionManager:
 
         try:
             _stale_ms = int(
-                self.get_resolved_settings().get("notificationsClaimStaleAfterMs")
-                or 15_000
+                self.get_resolved_settings().get("notificationsClaimStaleAfterMs") or 15_000
             )
         except (TypeError, ValueError):
             _stale_ms = 15_000
@@ -645,7 +643,6 @@ class SessionManager:
     def _deserialize_message(self, d: dict[str, Any], session_id: str) -> SessionMessage | None:
         return _deserialize_message_fn(d, session_id)
 
-
     def resolve_session_id(self, session_id: str | None) -> str | None:
         """Resolve a session ID, short prefix, or checkpoint hash to canonical full session ID."""
         if not session_id or not isinstance(session_id, str):
@@ -706,9 +703,7 @@ class SessionManager:
         # 5. Fuzzy match / substring in session ID if len >= 4 (unambiguous only)
         if len(sid) >= 4:
             fuzzy_matches = [
-                entry.get("id", "")
-                for entry in entries
-                if sid_lower in entry.get("id", "").lower()
+                entry.get("id", "") for entry in entries if sid_lower in entry.get("id", "").lower()
             ]
             if len(fuzzy_matches) == 1:
                 return fuzzy_matches[0]
@@ -859,7 +854,6 @@ class SessionManager:
 
     def maybe_notify_task_completion(self, session_id: str, started_at_ms: int) -> None:
         _maybe_notify_task_completion_fn(self, session_id, started_at_ms)
-
 
     def _create_empty_session(self, plan_mode: bool = False) -> str:
         session_id = uuid.uuid4().hex
@@ -2206,7 +2200,6 @@ class SessionManager:
           - "restore_code_only": Reverts disk files without truncating message history.
         """
         return _undo_fn(self, session_id, target_message_id, mode)
-
 
     def list_sessions(self) -> list[SessionEntry]:
         return [_entry_from_dict(e) for e in self._load_index()["entries"]]

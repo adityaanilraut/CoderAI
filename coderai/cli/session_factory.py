@@ -51,11 +51,7 @@ def build_session_manager(
         if merged:
             resolved["mcpServers"] = merged
 
-    agent_target = (
-        agent
-        or os.environ.get("CODERAI_AGENT_FILE")
-        or os.environ.get("CODERAI_AGENT")
-    )
+    agent_target = agent or os.environ.get("CODERAI_AGENT_FILE") or os.environ.get("CODERAI_AGENT")
     if agent_target:
         try:
             from pathlib import Path
@@ -94,7 +90,11 @@ def build_session_manager(
     if model:
         manager.set_model(model)
     if agent_target:
-        manager.active_agent_role = getattr(spec, "name", str(agent_target)) if "spec" in locals() and spec else str(agent_target)
+        manager.active_agent_role = (
+            getattr(spec, "name", str(agent_target))
+            if "spec" in locals() and spec
+            else str(agent_target)
+        )
     return manager
 
 

@@ -17,6 +17,7 @@ from typing import Any
 
 from coderai.utils.logging import logger
 
+
 class SandboxUnavailableError(RuntimeError):
     """Raised when an OS sandbox was requested but no backend exists.
 

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -69,8 +68,7 @@ def test_mcp_stdio_management(tmp_path: Path, monkeypatch) -> None:
     code, out = _run_mcp(["list"])
     assert code == 0
     assert _normalize(out, home_dir) == (
-        f"MCP config file: <home_dir>/.coderai/mcp.json\n"
-        f"  test (stdio): <python> {server_path}\n"
+        f"MCP config file: <home_dir>/.coderai/mcp.json\n  test (stdio): <python> {server_path}\n"
     ).replace(str(server_path), str(server_path))
 
     code, out = _run_mcp(["test", "test"])
@@ -96,8 +94,7 @@ def test_mcp_http_management_and_auth_errors(tmp_path: Path, monkeypatch) -> Non
     home_dir = _isolate_home(tmp_path, monkeypatch)
 
     code, out = _run_mcp(
-        ["add", "--transport", "http", "remote", "https://example.com/mcp",
-         "--header", "X-Test: 1"]
+        ["add", "--transport", "http", "remote", "https://example.com/mcp", "--header", "X-Test: 1"]
     )
     assert code == 0
     assert _normalize(out, home_dir) == (
@@ -113,8 +110,7 @@ def test_mcp_http_management_and_auth_errors(tmp_path: Path, monkeypatch) -> Non
     code, out = _run_mcp(["list"])
     assert code == 0
     assert _normalize(out, home_dir) == (
-        "MCP config file: <home_dir>/.coderai/mcp.json\n"
-        "  remote (http): https://example.com/mcp\n"
+        "MCP config file: <home_dir>/.coderai/mcp.json\n  remote (http): https://example.com/mcp\n"
     )
 
     # ``auth`` / ``reset-auth`` were renamed to ``login`` / ``logout``.

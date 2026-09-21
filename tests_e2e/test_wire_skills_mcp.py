@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import sys
 import textwrap
-from pathlib import Path
 from typing import Any
 
 from tests_e2e.wire_helpers import (

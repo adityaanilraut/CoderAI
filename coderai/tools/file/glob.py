@@ -316,7 +316,12 @@ def glob_tool_definition() -> ToolDefinition:
 
 from pathlib import Path as _Path
 from kaos.path import KaosPath as _KaosPath
-from kosong.tooling import CallableTool2 as _CallableTool2, ToolError as _ToolError, ToolOk as _ToolOk, ToolReturnValue as _ToolReturnValue
+from kosong.tooling import (
+    CallableTool2 as _CallableTool2,
+    ToolError as _ToolError,
+    ToolOk as _ToolOk,
+    ToolReturnValue as _ToolReturnValue,
+)
 from pydantic import BaseModel as _BaseModel, Field as _Field
 
 from coderai.soul.agent import Runtime as _Runtime
@@ -452,9 +457,10 @@ class Glob(_CallableTool2[GlobParams]):
                 message=message,
             )
         except Exception as e:
-            _logger.warning("Glob failed: pattern={pattern}: {error}", pattern=params.pattern, error=e)
+            _logger.warning(
+                "Glob failed: pattern={pattern}: {error}", pattern=params.pattern, error=e
+            )
             return _ToolError(
                 message=f"Failed to search for pattern {params.pattern}. Error: {e}",
                 brief="Glob failed",
             )
-

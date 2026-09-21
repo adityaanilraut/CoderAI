@@ -213,9 +213,7 @@ class SlashCommandCompleter(Completer):
                     normalized.append(_Tmp(c[0], c[1]))
                 else:
                     normalized.append(c)
-            self._available_commands = sorted(
-                normalized, key=lambda c: getattr(c, "name", str(c))
-            )
+            self._available_commands = sorted(normalized, key=lambda c: getattr(c, "name", str(c)))
             for cmd in self._available_commands:
                 name = getattr(cmd, "name", None)
                 if not name:
@@ -240,9 +238,7 @@ class SlashCommandCompleter(Completer):
         self._word_pattern = re.compile(r"[^\s]+")
         self._fuzzy_pattern = r"^[^\s]*"
         self._word_completer = WordCompleter(words, WORD=False, pattern=self._word_pattern)
-        self._fuzzy = FuzzyCompleter(
-            self._word_completer, WORD=False, pattern=self._fuzzy_pattern
-        )
+        self._fuzzy = FuzzyCompleter(self._word_completer, WORD=False, pattern=self._fuzzy_pattern)
 
     @staticmethod
     def should_complete(document: Document) -> bool:
@@ -410,9 +406,7 @@ class SlashCommandCompleter(Completer):
 
                 skills = list_skills(self.project_root)
                 names = [
-                    str(sk.get("name"))
-                    for sk in skills
-                    if isinstance(sk, dict) and sk.get("name")
+                    str(sk.get("name")) for sk in skills if isinstance(sk, dict) and sk.get("name")
                 ]
             except Exception:
                 names = []
@@ -2519,8 +2513,6 @@ class CustomPromptSession:
         return current_toast.message
 
 
-
-
 # --- COMPATIBILITY LAYER ---
 
 
@@ -2743,7 +2735,6 @@ def setup_readline(project_root: str, get_active_model: Any = None) -> bool:
 """Workspace file mention parser and context expansion (@file)."""
 
 
-import os
 import pathlib
 import re
 
@@ -2923,7 +2914,6 @@ def suggest_workspace_files(query: str, project_root: str, limit: int = 15) -> l
     # Prioritize shallow files
     all_files.sort(key=lambda p: (p.count(os.sep), len(p)))
 
-
     # Initial fuzzy filter
     candidates = (
         fuzzy_filter(query_clean, all_files, limit=limit * 2)
@@ -3035,7 +3025,6 @@ def get_bottom_toolbar_tokens(
     # Token Usage / Context Window %
     if active_model and tokens > 0:
         try:
-
             _, _, pct = compute_token_gauge(tokens, active_model)
             pct_str = f"{pct:.0f}%" if pct >= 1 or tokens == 0 else f"{pct:.1f}%"
             if tokens >= 1000:
@@ -3050,7 +3039,6 @@ def get_bottom_toolbar_tokens(
 
     # Git badge (delegates to centralized statusline caching)
     try:
-
         branch, dirty, ahead, behind = get_git_detailed_status(project_root)
         if branch:
             badge = _format_git_badge(branch, dirty, ahead, behind)
@@ -3110,7 +3098,6 @@ def get_bottom_toolbar_tokens(
 def _get_history_file(project_root: str) -> Path:
     """Per-workspace history via md5 (CoderAI completer canonical path)."""
     try:
-
         return get_history_file_path(project_root)
     except Exception:
         h = hashlib.md5(str(project_root).encode()).hexdigest()[:12]
@@ -3470,8 +3457,6 @@ def is_ptk_available() -> bool:
 """Dynamic status line and prompt bar for interactive REPL."""
 
 
-from typing import Any
-
 from rich.text import Text
 
 
@@ -3534,15 +3519,11 @@ Supports:
 
 
 import importlib
-import os
 import re
-import subprocess
 import time
 from dataclasses import dataclass
-from typing import Any
 
 from rich.console import Console
-from rich.text import Text
 
 from coderai.config import get_default_context_window
 

@@ -242,4 +242,3 @@ def resolve_agent_spec(
             )
 
     raise AgentSpecError(f"Agent spec not found for name or path: {name_or_path}")
-
