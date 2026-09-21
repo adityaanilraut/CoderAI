@@ -12,6 +12,9 @@ concurrency:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     # Windows is best-effort / non-blocking (matrix.experimental). Primary
     # support is POSIX (Linux + macOS). See SECURITY.md "Supported platforms".
     # Promote to blocking (drop experimental) once the Windows runner is green.
@@ -54,35 +57,38 @@ jobs:
 
       # RAM rule (AGENTS.md): one pytest process per file, never the whole
       # suite in a single process. Coverage accumulates via --cov-append and
-      # the 63% gate is enforced once at the end with `coverage report`.
+      # the coverage gate is enforced once at the end with `coverage report`.
       - name: Pytest
         run: |
-          rm -f .coverage .coverage.*
+          python -c "import glob, os; [os.remove(f) for f in glob.glob('.coverage*') + glob.glob('pytest_one.log')]"
           fail=0
           for t in tests/test_*.py; do
             printf "%-45s " "$t"
-            if python -m pytest "$t" -p no:cacheprovider --benchmark-disable -q --cov=coderai --cov-append > /tmp/pytest_one.log 2>&1; then
-              tail -1 /tmp/pytest_one.log
+            if python -m pytest "$t" -p no:cacheprovider -q --cov=coderai --cov-append > pytest_one.log 2>&1; then
+              tail -1 pytest_one.log
             else
               fail=1
-              tail -5 /tmp/pytest_one.log
+              tail -5 pytest_one.log
             fi
           done
+          python -c "import os; os.remove('pytest_one.log') if os.path.exists('pytest_one.log') else None"
           python -m coverage report --fail-under=28
           test "$fail" = 0
 
       - name: Wire E2E suite
         run: |
+          python -c "import os; os.remove('pytest_one.log') if os.path.exists('pytest_one.log') else None"
           fail=0
           for t in tests_e2e/test_*.py; do
             printf "%-45s " "$t"
-            if python -m pytest "$t" -q -p no:cacheprovider --benchmark-disable > /tmp/pytest_one.log 2>&1; then
-              tail -1 /tmp/pytest_one.log
+            if python -m pytest "$t" -q -p no:cacheprovider > pytest_one.log 2>&1; then
+              tail -1 pytest_one.log
             else
               fail=1
-              tail -5 /tmp/pytest_one.log
+              tail -5 pytest_one.log
             fi
           done
+          python -c "import os; os.remove('pytest_one.log') if os.path.exists('pytest_one.log') else None"
           test "$fail" = 0
 
       - name: CLI smoke test
@@ -113,7 +119,7 @@ jobs:
       # no full-collection runs); test_security.py is the only file carrying
       # the `security` marker.
       - name: Security tests
-        run: pytest tests/test_security.py -m security -q -p no:cacheprovider --benchmark-disable
+        run: pytest tests/test_security.py -m security -q -p no:cacheprovider
 
       - name: Dependency audit (pip-audit)
         continue-on-error: true
