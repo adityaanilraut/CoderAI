@@ -8,6 +8,8 @@ THINKING_CAPABLE_MODELS = {
     "deepseek-v4-pro",
     "gemini-3.7-flash",
     "gpt-5.6-sol",
+    "gpt-6-sol",
+    "gpt-6-astra",
     "kimi-for-coding",
     "kimi-code",
     "kimi-k2.5",
@@ -27,6 +29,9 @@ MULTIMODAL_MODELS = {
     "gpt-5.6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
     "kimi-for-coding",
     "kimi-code",
     "kimi-k2.5",
@@ -42,16 +47,29 @@ FAST_MODELS = {
     "deepseek-v4-flash",
     "gemini-3.7-flash",
     "gpt-5.6-luna",
+    "gpt-6-luna",
     "kimi-k1.5",
+    "jev-system-one",
 }
 
-ALL_REASONING_EFFORTS = ["off", "low", "medium", "high", "max"]
+#: Non-autoregressive System-One models (single-shot triage/gating, no tools/streaming).
+JEV_MODELS = frozenset({"jev-system-one"})
+
+ALL_REASONING_EFFORTS = ["off", "low", "medium", "high", "xhigh", "max"]
+
+
+def is_jev_model(model: str) -> bool:
+    """Return True if the model id routes to the Jev System-One NAR backend."""
+    m = (model or "").strip().lower()
+    return m in JEV_MODELS or m.startswith("jev-") or m.startswith("typesafe")
 
 
 def defaults_to_thinking_mode(model: str) -> bool:
     """Return True if the model defaults to deep thinking/reasoning mode."""
     m = model.strip().lower()
-    if m in ("gpt-5.6-luna", "kimi-k1.5"):
+    if is_jev_model(m):
+        return False
+    if m in ("gpt-5.6-luna", "gpt-6-luna", "kimi-k1.5"):
         return False
     if m in THINKING_CAPABLE_MODELS:
         return True
@@ -83,6 +101,12 @@ def defaults_to_thinking_mode(model: str) -> bool:
 def get_supported_reasoning_efforts(model: str) -> list[str]:
     """Return the list of supported reasoning efforts for a given model."""
     m = model.strip().lower()
+    # GPT-6 Astra has no "off"/"none" — low is the minimum effort.
+    if "astra" in m or m == "gpt-6-astra":
+        return ["low", "medium", "high", "xhigh", "max"]
+    # GPT-6 Sol/Luna support none(off) + xhigh; GPT-5.6 family kept for compat.
+    if "gpt-6" in m or "gpt-5.6" in m:
+        return ["off", "low", "medium", "high", "xhigh", "max"]
     if (
         defaults_to_thinking_mode(model)
         or m
@@ -94,7 +118,7 @@ def get_supported_reasoning_efforts(model: str) -> list[str]:
         )
         or "kimi" in m
     ):
-        return ["off", "low", "medium", "high", "max"]
+        return ["off", "low", "medium", "high", "xhigh", "max"]
     return ["off"]
 
 
@@ -103,7 +127,7 @@ def get_default_reasoning_effort(model: str) -> str:
     m = model.strip().lower()
     if not defaults_to_thinking_mode(m):
         return "off"
-    if "sol" in m or "pro" in m or "r1" in m or "o3" in m or "o1" in m:
+    if "astra" in m or "sol" in m or "pro" in m or "r1" in m or "o3" in m or "o1" in m:
         return "max"
     if "terra" in m or "medium" in m:
         return "medium"
@@ -121,7 +145,7 @@ def resolve_adaptive_reasoning_effort(
     """Dynamically resolve reasoning effort to minimize latency on iterative steps.
 
     If explicit_effort is provided and not in ('adaptive', 'auto', None, ''), respect it.
-    For fast/flash thinking models (e.g. deepseek-flash, gemini-3.7-flash, gpt-5.6-luna):
+    For fast/flash thinking models (e.g. deepseek-flash, gemini-3.7-flash, gpt-6-luna):
     - Turn 1 / Step 1: use 'high' or 'max' for initial planning & root-cause reasoning.
     - Iterative tool execution steps (Turn > 1 or Step > 1): use 'low' (or 'medium')
       to avoid 500+ token reasoning stalls during routine inspection and file updates.
@@ -163,12 +187,18 @@ def supports_multimodal(model: str, mode: str = "default") -> bool:
 def is_fast_model(model: str) -> bool:
     """Return True if the model is designed for ultra-low latency / lightweight execution."""
     m = model.strip().lower()
+    if is_jev_model(m):
+        return True
     return m in FAST_MODELS or any(sub in m for sub in ("mini", "flash", "lite", "luna"))
 
 
 def get_model_badges(model: str) -> list[str]:
     """Return list of capability badges for a given model identifier."""
     badges: list[str] = []
+    if is_jev_model(model):
+        badges.append("System-One")
+        badges.append("Fast")
+        return badges
     if defaults_to_thinking_mode(model):
         badges.append("Thinking")
     if is_fast_model(model):
@@ -196,20 +226,36 @@ def format_model_effort_tags(model: str) -> str:
 
 
 CURATED_MODELS: list[tuple[str, str, str]] = [
-    # OpenAI GPT-5.6
+    # OpenAI GPT-6 (current generation, Sept 2026)
+    (
+        "gpt-6-astra",
+        "Flagship Tier: Most intelligent & aligned, hardest end-to-end work (Effort: max)",
+        "OpenAI GPT-6",
+    ),
+    (
+        "gpt-6-sol",
+        "Balanced Tier: Complex coding & agentic workflows, $2/$10 per 1M (Effort: max)",
+        "OpenAI GPT-6",
+    ),
+    (
+        "gpt-6-luna",
+        "Fast Tier: Ultra-low latency high-volume tasks, $0.10/$0.50 per 1M (Default)",
+        "OpenAI GPT-6",
+    ),
+    # OpenAI GPT-5.6 (legacy, kept for compat — no GPT-6 Terra exists)
     (
         "gpt-5.6-sol",
-        "Flagship Tier: Deep reasoning, complex agentic coding (Effort: max)",
+        "Legacy Flagship: Deep reasoning, complex agentic coding (Effort: max)",
         "OpenAI GPT-5.6",
     ),
     (
         "gpt-5.6-terra",
-        "Balanced Tier: Everyday coding, cost/speed balanced (Effort: medium)",
+        "Legacy Balanced: Everyday coding, cost/speed balanced (Effort: medium)",
         "OpenAI GPT-5.6",
     ),
     (
         "gpt-5.6-luna",
-        "Fast Tier: Ultra-low latency, inline edits & suggestions (Default)",
+        "Legacy Fast: Ultra-low latency, inline edits & suggestions",
         "OpenAI GPT-5.6",
     ),
     # Kimi Code / Moonshot
@@ -257,4 +303,6 @@ CURATED_MODELS: list[tuple[str, str, str]] = [
     ),
     # Anthropic Claude
     ("claude-3-7-sonnet", "Hybrid reasoning & deep frontier tool calling", "Anthropic"),
+    # Jev System-One is deliberately absent: this list feeds chat-model pickers, and a
+    # non-autoregressive triage model cannot drive the tool loop.
 ]

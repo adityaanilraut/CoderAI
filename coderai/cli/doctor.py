@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import platform
 import shutil
@@ -59,7 +60,7 @@ def run_doctor_diagnostics(project_root: str, mgr: Any) -> DoctorReport:
     in_venv = hasattr(sys, "real_prefix") or (
         hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix
     )
-    if sys.version_info >= (3, 10):
+    if sys.version_info >= (3, 12):
         report.items.append(
             DiagnosticItem(
                 category="Runtime",
@@ -73,9 +74,9 @@ def run_doctor_diagnostics(project_root: str, mgr: Any) -> DoctorReport:
             DiagnosticItem(
                 category="Runtime",
                 name="Python Version",
-                status="warn",
-                message=f"Python {py_ver} (Python 3.10+ recommended)",
-                remediation="Upgrade to Python 3.10 or newer.",
+                status="error",
+                message=f"Python {py_ver} (Python 3.12+ required)",
+                remediation="Upgrade to Python 3.12 or newer. The package requires-python is >=3.12.",
             )
         )
 
@@ -126,7 +127,7 @@ def run_doctor_diagnostics(project_root: str, mgr: Any) -> DoctorReport:
         )
 
     # 3. Model & LLM Provider Routing
-    active_model = mgr.get_active_model() if hasattr(mgr, "get_active_model") else "gpt-5.6-luna"
+    active_model = mgr.get_active_model() if hasattr(mgr, "get_active_model") else "gpt-6-luna"
     resolved_settings = mgr.get_resolved_settings() if hasattr(mgr, "get_resolved_settings") else {}
     base_url, api_key = resolve_model_provider_routing(
         active_model,
@@ -170,7 +171,7 @@ def run_doctor_diagnostics(project_root: str, mgr: Any) -> DoctorReport:
                 )
             )
         else:
-            failed = [s for s in statuses if s.status == "error"]
+            failed = [s for s in statuses if s.status in ("error", "failed", "unauthorized")]
             if failed:
                 err_names = ", ".join(s.name for s in failed)
                 report.items.append(
@@ -218,11 +219,13 @@ def run_doctor_diagnostics(project_root: str, mgr: Any) -> DoctorReport:
     home_coderai = pathlib.Path.home() / ".coderai"
     can_write_project = False
     try:
-        dot_coderai.mkdir(parents=True, exist_ok=True)
-        test_file = dot_coderai / ".doctor_probe"
-        test_file.write_text("ok")
-        test_file.unlink()
-        can_write_project = True
+        if dot_coderai.is_dir():
+            test_file = dot_coderai / ".doctor_probe"
+            test_file.write_text("ok")
+            test_file.unlink()
+            can_write_project = True
+        else:
+            can_write_project = os.access(project_root, os.W_OK)
     except Exception:
         can_write_project = False
 

@@ -43,7 +43,7 @@ CoderAI implements the following core security principles:
 
 ## Security Controls
 
-### 1. Granular Side-Effect Permissions (`coderai/core/permissions.py`)
+### 1. Granular Side-Effect Permissions (`coderai/sandbox.py`)
 
 CoderAI classifies all operations into granular side-effect scopes:
 
@@ -97,17 +97,18 @@ Permissions can also be customized in `~/.coderai/settings.json` (user-level) or
 
 ---
 
-### 2. OS-Level Sandboxing (`coderai/core/sandbox.py`)
+### 2. OS-Level Sandboxing (`coderai/sandbox.py`)
 
 For `read-only` and `workspace-write` presets, shell commands are wrapped in native OS sandboxes:
 
 - **macOS Seatbelt**: Uses `sandbox-exec` with a compiled profile allowing read operations and restricting file writes strictly to the workspace root and temporary directories.
 - **Linux Bubblewrap (`bwrap`)**: Isolates the process in private mount namespaces with a read-only root and writeable workspace binds.
-- **Fallback**: If OS sandbox tools are not available on the host platform, commands fall back to interactive user confirmation (`ask`).
+- **Windows**: There is no OS sandbox backend. When a sandboxed preset is active, the spawn is refused instead of running unsandboxed.
+- **Fallback**: If `sandbox-exec` or `bwrap` is missing, the spawn is refused. It does not fall back to an unsandboxed run.
 
 ---
 
-### 3. PreToolUse Hooks (`coderai/core/hooks.py`)
+### 3. PreToolUse Hooks (`coderai/hooks/`)
 
 Organizations can define custom PreToolUse hook scripts in `.coderai/hooks.json` to enforce compliance and security checks:
 
@@ -124,7 +125,7 @@ Organizations can define custom PreToolUse hook scripts in `.coderai/hooks.json`
 
 ---
 
-### 4. Snippet-Scoped Editing & Version Guarding (`coderai/core/state.py`, `coderai/core/tools/edit.py`)
+### 4. Snippet-Scoped Editing & Version Guarding (`coderai/state.py`, `coderai/tools/file/replace.py`)
 
 To prevent hallucinated edits or accidental full-file corruption:
 
@@ -135,7 +136,7 @@ To prevent hallucinated edits or accidental full-file corruption:
 
 ---
 
-### 5. Plan Mode Capability Fence (`coderai/core/prompt.py`, `coderai/core/permissions.py`)
+### 5. Plan Mode Capability Fence (`coderai/prompt/`, `coderai/sandbox.py`)
 
 When Plan Mode is enabled (`/plan` in REPL or `--plan` on CLI):
 
@@ -145,7 +146,7 @@ When Plan Mode is enabled (`/plan` in REPL or `--plan` on CLI):
 
 ---
 
-### 6. Git-Backed Checkpointing & Recovery (`coderai/core/common/file_history.py`)
+### 6. Git-Backed Checkpointing & Recovery (`coderai/utils/common/file_history.py`)
 
 Every tool-driven filesystem modification is tracked in a local Git-backed history store (`.git_history`):
 
@@ -155,7 +156,7 @@ Every tool-driven filesystem modification is tracked in a local Git-backed histo
 
 ---
 
-### 7. Process Lifecycle & Shell Hygiene (`coderai/core/tools/bash.py`, `coderai/core/common/`)
+### 7. Process Lifecycle & Shell Hygiene (`coderai/tools/shell/`)
 
 Shell execution is guarded by multiple defense layers:
 
@@ -166,7 +167,7 @@ Shell execution is guarded by multiple defense layers:
 
 ---
 
-### 8. Network Security & SSRF Protection (`coderai/core/network/`)
+### 8. Network Security & SSRF Protection (`coderai/network/`)
 
 - **SSRF Validation**: Blocks requests targeting `127.0.0.1`, private RFC 1918 subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local metadata addresses (`169.254.169.254`), and loopback addresses.
 - **Same-Origin Redirects**: Redirects are only followed if the destination URL shares the identical protocol, host, and port of the initial validated URL.
@@ -174,7 +175,7 @@ Shell execution is guarded by multiple defense layers:
 
 ---
 
-### 9. Model Context Protocol (MCP) Security (`coderai/core/mcp/`)
+### 9. Model Context Protocol (MCP) Security (`coderai/mcp/`)
 
 - MCP servers communicate over `stdio`, `sse`, or `streamable-http`.
 - Server executables and argument lists are explicitly specified in configuration.

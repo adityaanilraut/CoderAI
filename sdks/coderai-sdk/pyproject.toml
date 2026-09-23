@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "coderai-sdk"
 version = "0.1.0"
 description = "Headless Python SDK for driving CoderAI sessions programmatically (no terminal)."
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]
@@ -20,7 +20,7 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "UP006", "UP035"]

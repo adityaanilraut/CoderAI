@@ -27,6 +27,12 @@ from coderai.tools import todo as _plan
 from coderai.tools.web import fetch as _fetch
 from coderai.tools.web import search as _search
 from coderai.tools.file import write as _write
+from coderai.tools.session import (
+    handle_session_event_read as _session_event_read,
+    handle_session_event_search as _session_event_search,
+    handle_session_search as _session_search,
+    handle_session_trace as _session_trace,
+)
 
 from coderai.goals.core import handle_goal_tool as _goal_handle
 from coderai.tools import shell as _pwsh
@@ -437,6 +443,22 @@ class ToolRegistry:
                 t for t in tools_list if (t.get("function") or {}).get("name") in preset_tools
             ]
 
+        allowed_tools_opt = options.get("allowedTools")
+        if allowed_tools_opt is None:
+            allowed_tools_opt = options.get("allowed_tools")
+        if allowed_tools_opt is not None:
+            from coderai.subagents.registry import is_tool_allowed
+
+            tools_list = [
+                t
+                for t in tools_list
+                if is_tool_allowed(
+                    (t.get("function") or {}).get("name", ""),
+                    "allowlist",
+                    tuple(allowed_tools_opt),
+                )
+            ]
+
         ordered = order_tools(tools_list)
         return [canonicalize_tool_schema(t) for t in ordered]
 
@@ -821,6 +843,11 @@ class ToolRegistry:
                         "type": "string",
                         "description": "Builtin agent flavor: coder (general engineering), explore (read-only research), plan (implementation planning).",
                     },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["read_only", "general"],
+                        "description": "Subagent execution mode ('read_only' or 'general'). Read-only mode disallows mutating tools.",
+                    },
                     "run_in_background": {
                         "type": "boolean",
                         "description": "Whether to run as a background job and return its job id (collect with job_output, stop with job_kill). Defaults to false.",
@@ -850,6 +877,11 @@ class ToolRegistry:
                         "type": "string",
                         "description": "Builtin agent flavor: coder, explore, or plan.",
                     },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["read_only", "general"],
+                        "description": "Subagent execution mode ('read_only' or 'general'). Read-only mode disallows mutating tools.",
+                    },
                     "run_in_background": {
                         "type": "boolean",
                         "description": "Whether to run in the background and return a durable subagent id immediately. Defaults to true. Set false to wait for the result when your next action depends on it.",
@@ -878,6 +910,11 @@ class ToolRegistry:
                     "subagent_type": {
                         "type": "string",
                         "description": "Builtin agent flavor: coder, explore, or plan.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["read_only", "general"],
+                        "description": "Subagent execution mode ('read_only' or 'general'). Read-only mode disallows mutating tools.",
                     },
                     "run_in_background": {
                         "type": "boolean",
@@ -1146,7 +1183,10 @@ class ToolRegistry:
                             "required": ["content", "status"],
                         },
                     },
-                    "merge": {"type": "boolean"},
+                    "explanation": {
+                        "type": "string",
+                        "description": "Brief explanation of the todo change.",
+                    },
                 },
                 required=["todos"],
                 handler=_todo.handle_todo_write_tool,
@@ -1227,7 +1267,7 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="schedule_create",
-                description="Schedule a reminder or background instruction (one-shot or cron).",
+                description="Schedule a reminder or background instruction (one-shot or recurring).",
                 parameters={
                     "prompt": {
                         "type": "string",
@@ -1235,11 +1275,15 @@ class ToolRegistry:
                     },
                     "after_seconds": {
                         "type": "number",
-                        "description": "Seconds to wait for one-shot timer.",
+                        "description": "Seconds to wait for a one-shot timer.",
                     },
-                    "cron_expression": {
+                    "at": {
                         "type": "string",
-                        "description": "Cron expression for recurring schedule.",
+                        "description": "ISO 8601 / RFC3339 timestamp for a one-shot schedule.",
+                    },
+                    "every_seconds": {
+                        "type": "number",
+                        "description": "Interval in seconds for a recurring schedule (minimum 300).",
                     },
                 },
                 required=["prompt"],
@@ -1402,8 +1446,62 @@ class ToolRegistry:
                 is_concurrency_safe=False,
             )
         )
-
-        # 16. Code Mode & Session Query
+        self.register(
+            define_tool(
+                name="session_search",
+                description="Search past session titles, summaries, and replies by keyword.",
+                parameters={"query": {"type": "string"}},
+                required=["query"],
+                handler=_session_search,
+                aliases=["session_query"],
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+        self.register(
+            define_tool(
+                name="session_trace",
+                description="List recent events for one saved session.",
+                parameters={"session_id": {"type": "string"}},
+                required=["session_id"],
+                handler=_session_trace,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+        self.register(
+            define_tool(
+                name="session_event_search",
+                description="Search event text inside one saved session.",
+                parameters={
+                    "session_id": {"type": "string"},
+                    "query": {"type": "string"},
+                },
+                required=["session_id", "query"],
+                handler=_session_event_search,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+        self.register(
+            define_tool(
+                name="session_event_read",
+                description="Read a slice of one session event log by offset.",
+                parameters={
+                    "session_id": {"type": "string"},
+                    "offset": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                },
+                required=["session_id"],
+                handler=_session_event_read,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
 
 
 # Global default tool registry

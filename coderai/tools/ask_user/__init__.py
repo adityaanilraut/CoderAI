@@ -279,3 +279,8 @@ async def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> T
         metadata=metadata,
         await_user_response=True,
     )
+
+
+__all__ = [
+    "handle_ask_user_question_tool",
+]

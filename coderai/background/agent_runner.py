@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from coderai.orchestration import (
     publish_subagent_end,
@@ -19,7 +19,9 @@ from coderai.subagents.core import (
     notify_parent_session,
 )
 from coderai.subagents.output import SubAgentResult
-from coderai.subagents.runner import SubAgentManager
+
+if TYPE_CHECKING:
+    from coderai.subagents.runner import SubAgentManager
 
 
 class TaskSupervisor:
@@ -139,11 +141,14 @@ class TaskSupervisor:
         from coderai.background.manager import get_job_store
 
         job_store = get_job_store()
+        # Snapshot under the lock, then kill outside it. JobStore.kill takes
+        # the same non-reentrant lock, so calling it here deadlocks.
         with job_store._lock:
             job = job_store._jobs.get(task_id)
-            if job:
-                job_store.kill(task_id, job.session_id, reason=reason or "Supervisor killed task")
-                return True
+            job_session = job.session_id if job is not None else None
+        if job_session is not None:
+            job_store.kill(task_id, job_session, reason=reason or "Supervisor killed task")
+            return True
         return False
 
     def kill_all_tasks(self, session_id: str | None = None) -> list[str]:
@@ -157,13 +162,16 @@ class TaskSupervisor:
         from coderai.background.manager import get_job_store
 
         job_store = get_job_store()
+        to_kill: list[tuple[str, str]] = []
         with job_store._lock:
             for job in list(job_store._jobs.values()):
                 if session_id and job.session_id != session_id:
                     continue
                 if job.status == "running":
-                    job_store.kill(job.id, job.session_id, reason="Supervisor bulk kill")
-                    killed.append(job.id)
+                    to_kill.append((job.id, job.session_id))
+        for job_id, job_session in to_kill:
+            job_store.kill(job_id, job_session, reason="Supervisor bulk kill")
+            killed.append(job_id)
         return killed
 
     def check_liveness(self, idle_timeout_seconds: float = 60.0) -> list[str]:

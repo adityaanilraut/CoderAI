@@ -13,6 +13,7 @@ from rich.table import Table
 from coderai.utils.common.model_capabilities import (
     CURATED_MODELS,
     get_model_badges,
+    is_jev_model,
 )
 from coderai.soul.session.manager import SessionEntry, SessionManager, SessionMessage
 from coderai.skill import list_skills
@@ -358,7 +359,10 @@ def select_with_arrows(
                 live.update(_render_menu_panel(selected_idx, filter_query), refresh=True)
 
                 key = _read_single_key()
-                if key == "UP":
+                if key == "":
+                    res = None if allow_cancel else default_idx
+                    break
+                elif key == "UP":
                     if selectable:
                         if selected_idx in selectable:
                             cur_pos = selectable.index(selected_idx)
@@ -451,6 +455,8 @@ def select_with_arrows(
             print("  ↑/↓ or 1-9: navigate, Type to search, Enter: select, Esc/q: cancel")
 
         key = _read_single_key()
+        if key == "":
+            return None if allow_cancel else default_idx
         if key == "UP":
             if selectable:
                 if selected_idx in selectable:
@@ -543,6 +549,8 @@ def get_available_models(current_model: str = "") -> list[tuple[str, str, str]]:
 
         cfg = load_typed_config()
         for key, m in cfg.models.items():
+            if is_jev_model(key) or is_jev_model(m.model):
+                continue
             if key not in seen:
                 seen.add(key)
                 provider = cfg.providers.get(m.provider)
@@ -607,6 +615,12 @@ REASONING_EFFORT_CHOICES: list[tuple[str, str, str, str]] = [
         "Max Reasoning Depth",
         "Uncapped chain-of-thought tokens (up to 64k), best for complex SWE-bench & architecture",
         "[bold magenta]Max[/]",
+    ),
+    (
+        "xhigh",
+        "Extra-High Reasoning Depth",
+        "Extended reasoning for GPT-6 Sol/Luna/Astra agentic coding & AutomationBench",
+        "[bold magenta]XHigh[/]",
     ),
     (
         "high",
@@ -1268,9 +1282,14 @@ def render_config_interactive(console: Any | None, project_root: str) -> None:
 
 MODEL_PRICING_PER_M: dict[str, tuple[float, float, float]] = {
     # $/million tokens: (prompt, completion, cached)
-    "gpt-5.6-sol": (2.50, 10.00, 1.25),
-    "gpt-5.6-terra": (1.75, 7.00, 0.875),
-    "gpt-5.6-luna": (1.25, 5.00, 0.625),
+    # GPT-6 family (Sept 2026 official pricing, 90% cached-input discount)
+    "gpt-6-astra": (10.00, 50.00, 1.00),
+    "gpt-6-sol": (2.00, 10.00, 0.20),
+    "gpt-6-luna": (0.10, 0.50, 0.01),
+    # GPT-5.6 legacy (promo pricing)
+    "gpt-5.6-sol": (4.00, 20.00, 0.40),
+    "gpt-5.6-terra": (2.50, 15.00, 0.25),
+    "gpt-5.6-luna": (0.20, 1.20, 0.02),
     "gemini-3.7-flash": (0.10, 0.40, 0.025),
     # DeepSeek peak pricing per api-docs (flash = V4.1; v4-flash alias billed at flash price)
     "deepseek-flash": (0.30, 1.20, 0.006),

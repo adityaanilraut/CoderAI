@@ -385,7 +385,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reasoning-effort",
         dest="reasoning_effort",
-        choices=["high", "medium", "low", "off", "max"],
+        choices=["high", "medium", "low", "off", "xhigh", "max"],
         default=None,
         help="Reasoning effort level for thinking-capable models.",
     )

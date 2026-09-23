@@ -99,12 +99,15 @@ class NotificationManager:
         *,
         on_notification: Callable[[NotificationView], Awaitable[None] | None],
         limit: int = DELIVER_LIMIT,
+        before_claim: Callable[[], object] | None = None,
     ) -> list[NotificationView]:
         """Claim + handle + ack pending notifications for one sink.
 
         A failing handler leaves the notification ``claimed`` for later
         recovery; delivery continues with the rest.
         """
+        if before_claim is not None:
+            before_claim()
         delivered: list[NotificationView] = []
         for view in self.claim_for_sink(sink, limit=limit):
             try:

@@ -412,14 +412,22 @@ async def main() -> None:
     # Check frontier models matrix
     assert {
         "gpt-5.6-sol",
+        "gpt-6-sol",
+        "gpt-6-astra",
         "gemini-3.7-flash",
         "deepseek-flash",
         "deepseek-v4-pro",
     } <= THINKING_CAPABLE_MODELS
     assert defaults_to_thinking_mode("gpt-5.6-sol")
+    assert defaults_to_thinking_mode("gpt-6-sol")
+    assert defaults_to_thinking_mode("gpt-6-astra")
+    assert not defaults_to_thinking_mode("gpt-6-luna")
     assert defaults_to_thinking_mode("deepseek-v4-pro")
     assert defaults_to_thinking_mode("deepseek-flash")
     assert supports_multimodal("gpt-5.6-terra")
+    assert supports_multimodal("gpt-6-astra")
+    assert supports_multimodal("gpt-6-sol")
+    assert supports_multimodal("gpt-6-luna")
     assert supports_multimodal("deepseek-flash")
     assert not supports_multimodal("deepseek-v4-pro")
 

@@ -1,0 +1,94 @@
+[1mcoderai/acp/runner.py[0m[36m:[0m162[36m:[0m13[36m:[0m [1m[31mB904[0m Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+[1mcoderai/acp/server.py[0m[36m:[0m485[36m:[0m17[36m:[0m [1m[31mB904[0m Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+[1mcoderai/approval_runtime/runtime.py[0m[36m:[0m110[36m:[0m17[36m:[0m [1m[31mB904[0m Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+[1mcoderai/mcp/transport.py[0m[36m:[0m313[36m:[0m13[36m:[0m [1m[31mB904[0m Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+[1mcoderai/notifications/llm.py[0m[36m:[0m27[36m:[0m93[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `item`
+[1mcoderai/sandbox.py[0m[36m:[0m50[36m:[0m9[36m:[0m [1m[31mB904[0m Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+[1mcoderai/schedule.py[0m[36m:[0m89[36m:[0m17[36m:[0m [1m[31mB904[0m Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+[1mcoderai/schedule.py[0m[36m:[0m112[36m:[0m17[36m:[0m [1m[31mB904[0m Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+[1mcoderai/schedule.py[0m[36m:[0m215[36m:[0m17[36m:[0m [1m[31mB904[0m Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+[1mcoderai/schedule.py[0m[36m:[0m237[36m:[0m17[36m:[0m [1m[31mB904[0m Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m478[36m:[0m46[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `tool_calls`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m510[36m:[0m78[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `now_iso`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m637[36m:[0m43[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `error_text`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m714[36m:[0m45[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `assistant_message`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m715[36m:[0m50[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `assistant_message`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m727[36m:[0m51[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `content`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m728[36m:[0m54[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `thinking`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m729[36m:[0m53[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `refusal`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m730[36m:[0m46[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `tool_calls`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m731[36m:[0m80[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `usage`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m733[36m:[0m72[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `usage`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m735[36m:[0m49[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `total_active`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m738[36m:[0m51[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `permission_plan`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m774[36m:[0m47[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `content`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m775[36m:[0m45[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `total_active`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m795[36m:[0m43[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `content`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m796[36m:[0m46[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `thinking`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m797[36m:[0m45[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `refusal`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m798[36m:[0m38[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `tool_calls`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m799[36m:[0m72[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `usage`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m801[36m:[0m64[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `usage`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m803[36m:[0m41[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `total_active`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m804[36m:[0m35[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `new_status`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m805[36m:[0m39[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `refusal`
+[1mcoderai/soul/coderaisoul.py[0m[36m:[0m805[36m:[0m50[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `refusal`
+[1mcoderai/terminal/manager.py[0m[36m:[0m69[36m:[0m13[36m:[0m [1m[31mB904[0m Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+[1mcoderai/terminal/manager.py[0m[36m:[0m310[36m:[0m17[36m:[0m [1m[31mB904[0m Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+[1mcoderai/ui/shell/app.py[0m[36m:[0m244[36m:[0m52[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `panel`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m251[36m:[0m44[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `panel`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m264[36m:[0m47[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `tool_call_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m270[36m:[0m55[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `tool_call_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m274[36m:[0m24[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `panel`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m276[36m:[0m26[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `panel`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m277[36m:[0m55[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `tool_call_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m278[36m:[0m28[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `always_target`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m279[36m:[0m50[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `always_target`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m280[36m:[0m26[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `panel`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m281[36m:[0m55[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `tool_call_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m288[36m:[0m21[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `panel`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m325[36m:[0m45[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `panel`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m337[36m:[0m40[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `panel`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m338[36m:[0m52[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `diff_preview`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m338[36m:[0m75[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `diff_preview`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m344[36m:[0m60[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `diff_preview`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m345[36m:[0m53[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `diff_preview`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m349[36m:[0m53[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `diff_preview`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m350[36m:[0m81[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `name`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m357[36m:[0m64[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `_cmd_holder`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m363[36m:[0m41[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `req`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m365[36m:[0m56[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `req`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m366[36m:[0m62[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `req`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m368[36m:[0m45[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `req`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m370[36m:[0m56[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `req`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m371[36m:[0m62[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `req`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m373[36m:[0m45[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `req`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m374[36m:[0m41[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `_cmd_holder`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m377[36m:[0m59[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `tool_call_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m379[36m:[0m56[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `_cmd_holder`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2039[36m:[0m37[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `session_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2040[36m:[0m37[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `q`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2172[36m:[0m24[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `session_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2174[36m:[0m29[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `effective_prompt`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2175[36m:[0m39[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `active_plan_mode`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2179[36m:[0m32[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `session_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2181[36m:[0m29[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `session_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2182[36m:[0m29[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `effective_prompt`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2183[36m:[0m39[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `active_plan_mode`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2187[36m:[0m66[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `yes`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2216[36m:[0m36[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `session_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2219[36m:[0m37[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `q_eff`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2219[36m:[0m54[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `active_plan_mode`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2224[36m:[0m37[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `q_eff`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2225[36m:[0m47[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `active_plan_mode`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2229[36m:[0m74[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `yes`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2286[36m:[0m37[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `session_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2287[36m:[0m37[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `follow`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2290[36m:[0m72[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `session_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2290[36m:[0m84[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `yes`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2310[36m:[0m41[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `session_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2311[36m:[0m41[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `refine_input`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2314[36m:[0m76[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `session_id`
+[1mcoderai/ui/shell/app.py[0m[36m:[0m2314[36m:[0m88[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `yes`
+[1mcoderai/ui/shell/oauth.py[0m[36m:[0m78[36m:[0m75[36m:[0m [1m[31mB023[0m Function definition does not bind loop variable `auth`
+Found 93 errors.

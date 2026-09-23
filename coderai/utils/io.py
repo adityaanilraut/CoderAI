@@ -29,3 +29,40 @@ def atomic_json_write(data: Any, path: Path) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
         raise
+
+
+def atomic_write_text(
+    path: Path | str,
+    content: str,
+    encoding: str = "utf-8",
+    errors: str = "strict",
+) -> int:
+    """Write text data to a file atomically using a temporary file and os.replace."""
+    target = Path(path).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        with open(fd, "w", encoding=encoding, errors=errors) as f:
+            chars_written = f.write(content)
+            f.flush()
+            with contextlib.suppress(OSError):
+                os.fsync(f.fileno())
+        os.replace(tmp_path, target)
+        return chars_written
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+
+
+async def async_atomic_write_text(
+    path: Path | str,
+    content: str,
+    encoding: str = "utf-8",
+    errors: str = "strict",
+) -> int:
+    """Async wrapper around atomic_write_text."""
+    import asyncio
+
+    return await asyncio.to_thread(atomic_write_text, path, content, encoding, errors)
+

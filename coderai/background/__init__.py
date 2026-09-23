@@ -13,12 +13,20 @@ from coderai.background.manager import (
     reset_job_store,
     status_line,
 )
+
+from coderai.background.summary import (
+    build_active_task_snapshot,
+    format_task,
+    format_task_list,
+    list_task_views,
+)
 from coderai.background.agent_runner import (
     TaskSupervisor,
     get_task_supervisor,
     new_agent_id,
     spawn_background_agent,
 )
+
 
 __all__ = [
     "JobStatus",
@@ -34,4 +42,9 @@ __all__ = [
     "get_task_supervisor",
     "new_agent_id",
     "spawn_background_agent",
+    "build_active_task_snapshot",
+    "format_task",
+    "format_task_list",
+    "list_task_views",
 ]
+

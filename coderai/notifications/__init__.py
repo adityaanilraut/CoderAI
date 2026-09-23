@@ -21,6 +21,10 @@ from coderai.notifications.manager import (
 from coderai.notifications.llm import (
     build_notification_message,
     extract_notification_ids,
+    is_notification_message,
+)
+from coderai.notifications.notifier import (
+    NotificationWatcher,
 )
 from coderai.notifications.wire import (
     to_wire_notification,
@@ -41,7 +45,10 @@ __all__ = [
     "NotificationView",
     "NotificationStore",
     "NotificationManager",
+    "NotificationWatcher",
     "build_notification_message",
     "extract_notification_ids",
+    "is_notification_message",
     "to_wire_notification",
 ]
+

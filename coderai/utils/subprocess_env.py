@@ -209,6 +209,26 @@ def build_shell_env(
     return env
 
 
+_PYINSTALLER_LD_VARS = ("LD_LIBRARY_PATH", "LIBPATH", "SHLIB_PATH")
+
+
+def get_clean_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Get a clean environment suitable for spawning subprocesses."""
+    env = dict(base_env if base_env is not None else os.environ)
+
+    if not getattr(sys, "frozen", False) or sys.platform != "linux":
+        return env
+
+    for var in _PYINSTALLER_LD_VARS:
+        orig_key = f"{var}_ORIG"
+        if orig_key in env:
+            env[var] = env[orig_key]
+        elif var in env:
+            del env[var]
+
+    return env
+
+
 # --- from coderai/core/common/process_tree.py ---
 """Process tree management, escalated killing, and secure environment scrubbing."""
 

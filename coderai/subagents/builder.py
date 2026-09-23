@@ -184,7 +184,7 @@ class SubAgentSpec:
     description: str
     prompt: str
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
-    mode: str = "read_only"  # "read_only" | "general"
+    mode: str | None = None  # "read_only" | "general" (defaults to read_only in __post_init__)
     provider: str = "in_process"  # "in_process" | "acp" | "claude_code" | "codex"
     timeout_seconds: float = DEFAULT_SUBAGENT_TIMEOUT
     max_iterations: int = MAX_SUBAGENT_ITERATIONS
@@ -211,6 +211,11 @@ class SubAgentSpec:
         None  # Builtin or custom role (coder|explore|plan|architect|code-reviewer...)
     )
     system_prompt: str | None = None
+    sandbox_mode: str | None = None
+    plan_mode: bool = False
+    on_before_file_mutation: Any | None = None
+    on_after_file_mutation: Any | None = None
+    session_manager: Any | None = None
 
     def __post_init__(self) -> None:
         # Resolve type policy and role instructions from registry.
@@ -220,23 +225,35 @@ class SubAgentSpec:
             try:
                 from coderai.subagents.registry import get_subagent_definition, resolve_tool_policy
 
-                if not self.allowed_tools:
-                    mode, tools = resolve_tool_policy(
-                        self.subagent_type, project_root=self.isolated_cwd
-                    )
-                    if mode == "allowlist":
-                        self.allowed_tools = list(tools)
-
                 defn = get_subagent_definition(self.subagent_type, project_root=self.isolated_cwd)
                 if defn is None:
                     logger.warning(
                         "Unknown subagent_type '%s'; denying all tools by default.",
                         self.subagent_type,
                     )
+                    self.allowed_tools = []
+                    self.mode = "read_only"
                 else:
-                    if defn.mode and self.mode == "read_only":
-                        self.mode = defn.mode
+                    if self.allowed_tools is None:
+                        mode, tools = resolve_tool_policy(
+                            self.subagent_type, project_root=self.isolated_cwd
+                        )
+                        if mode == "allowlist":
+                            self.allowed_tools = list(tools)
+
+                    if self.mode is None:
+                        self.mode = defn.mode or "read_only"
+                    elif self.mode == "read_only":
+                        pass  # explicit read_only must never be widened by role
+                    elif self.mode == "general" and defn.mode == "read_only":
+                        self.mode = "read_only"
+
                     if defn.system_prompt and not self.system_prompt:
                         self.system_prompt = defn.system_prompt
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Error resolving subagent policy for '%s': %s", self.subagent_type, exc
+                )
+
+        if self.mode is None:
+            self.mode = "read_only"

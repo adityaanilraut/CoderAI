@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-import time
-
-from prompt_toolkit.formatted_text import FormattedText
 from rich.console import Group, RenderableType
 from rich.spinner import Spinner
 from rich.text import Text
 
-from coderai.ui.theme import get_mcp_prompt_colors
 from coderai.utils.rich.columns import BulletColumns
-from coderai.wire.types import MCPServerSnapshot, MCPStatusSnapshot
-
-_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+from coderai.wire.types import MCPStatusSnapshot
 
 
 def render_mcp_console(snapshot: MCPStatusSnapshot) -> RenderableType:
@@ -43,39 +37,6 @@ def render_mcp_console(snapshot: MCPStatusSnapshot) -> RenderableType:
     return Group(*renderables)
 
 
-def render_mcp_prompt(snapshot: MCPStatusSnapshot, *, now: float | None = None) -> FormattedText:
-    if not snapshot.loading:
-        return FormattedText([])
-
-    fragments: list[tuple[str, str]] = []
-    colors = get_mcp_prompt_colors()
-    prefix = f"{_spinner_frame(now)} " if snapshot.loading else ""
-    fragments.append(
-        (
-            colors.text,
-            (
-                f"{prefix}MCP Servers: "
-                f"{snapshot.connected}/{snapshot.total} connected, {snapshot.tools} tools"
-            ),
-        )
-    )
-    fragments.append(("", "\n"))
-
-    for server in snapshot.servers:
-        fragments.append((_prompt_status_style(server.status), f"• {server.name}"))
-        detail = _prompt_server_detail(server)
-        if detail:
-            fragments.append((colors.detail, detail))
-        fragments.append(("", "\n"))
-
-    return FormattedText(fragments)
-
-
-def _spinner_frame(now: float | None = None) -> str:
-    timestamp = time.monotonic() if now is None else now
-    return _SPINNER_FRAMES[int(timestamp * 8) % len(_SPINNER_FRAMES)]
-
-
 def _status_color(status: str) -> str:
     return {
         "connected": "green",
@@ -84,28 +45,3 @@ def _status_color(status: str) -> str:
         "failed": "red",
         "unauthorized": "red",
     }.get(status, "red")
-
-
-def _prompt_status_style(status: str) -> str:
-    colors = get_mcp_prompt_colors()
-    return {
-        "connected": colors.connected,
-        "connecting": colors.connecting,
-        "pending": colors.pending,
-        "failed": colors.failed,
-        "unauthorized": colors.failed,
-    }.get(status, colors.failed)
-
-
-def _prompt_server_detail(server: MCPServerSnapshot) -> str:
-    if server.status == "unauthorized":
-        return f" (unauthorized - run: coderai mcp auth {server.name})"
-
-    parts: list[str] = []
-    if server.status != "connected":
-        parts.append(server.status)
-    if server.tools:
-        label = "tool" if len(server.tools) == 1 else "tools"
-        parts.append(f"{len(server.tools)} {label}")
-
-    return f" ({', '.join(parts)})" if parts else ""

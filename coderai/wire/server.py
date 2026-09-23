@@ -20,6 +20,7 @@ import sys
 import uuid
 from typing import Any
 
+from coderai.utils.aioqueue import Queue, QueueShutDown
 from coderai.wire.jsonrpc import ErrorCodes, Statuses
 from coderai.wire.protocol import WIRE_PROTOCOL_VERSION
 from coderai.wire.types import (
@@ -75,7 +76,7 @@ class WireServer:
         self._initialized = False
         self._client_supports_question = False
         self._client_supports_plan_mode = False
-        self._write_queue: asyncio.Queue = asyncio.Queue()
+        self._write_queue: Queue[dict[str, Any]] = Queue()
         self._pending: dict[str, Any] = {}
         self._turn_task: asyncio.Task | None = None
         self._steers: list[str] = []
@@ -148,7 +149,7 @@ class WireServer:
         while True:
             try:
                 msg = await self._write_queue.get()
-            except asyncio.QueueShutDown:
+            except QueueShutDown:
                 break
             try:
                 sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
@@ -178,7 +179,7 @@ class WireServer:
     async def _send(self, msg: dict[str, Any]) -> None:
         try:
             await self._write_queue.put(msg)
-        except asyncio.QueueShutDown:
+        except QueueShutDown:
             pass
 
     # -- dispatch ----------------------------------------------------------

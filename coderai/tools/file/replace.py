@@ -331,14 +331,20 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
         if file_path.lower().endswith(".py"):
             import ast as _ast
 
+            original_parsed = True
             try:
-                _ast.parse(updated_content)
-            except SyntaxError as syn_err:
-                return ToolResult(
-                    ok=False,
-                    name="edit",
-                    error=f"Edit would produce invalid Python syntax: {syn_err}",
-                )
+                _ast.parse(raw)
+            except SyntaxError:
+                original_parsed = False
+            if original_parsed:
+                try:
+                    _ast.parse(updated_content)
+                except SyntaxError as syn_err:
+                    return ToolResult(
+                        ok=False,
+                        name="edit",
+                        error=f"Edit would produce invalid Python syntax: {syn_err}",
+                    )
         diff_preview = build_diff_preview(file_path, raw, updated_content)
 
         from coderai.tools.file.utils import generate_virtual_patch, is_dry_run
@@ -668,7 +674,7 @@ def _correct_escaped_strings_with_llm(
         client = info.get("client")
         if not client:
             return None
-        model = info.get("model", "gpt-5.6-luna")
+        model = info.get("model", "gpt-6-luna")
         problem = _describe_correction_problems(old_string, matched_text)
 
         response = _call_completions(
@@ -773,7 +779,7 @@ def _infer_old_string_not_found_reason_with_llm(
         client = info.get("client")
         if not client:
             return None
-        model = info.get("model", "gpt-5.6-luna")
+        model = info.get("model", "gpt-6-luna")
         lines = raw.splitlines()
         before = "\n".join(
             lines[max(0, scope["start_line"] - 1 - 20) : max(0, scope["start_line"] - 1)]
@@ -1372,193 +1378,3 @@ def _handle_undo(target_path: str, context: Any) -> ToolResult:
         name="str_replace_editor",
         output=f"Successfully undid previous edit on {target_path}.",
     )
-
-
-# --- CallableTool2 Implementation ---
-
-from collections.abc import Callable as _Callable
-from pathlib import Path as _Path
-from kaos.path import KaosPath as _KaosPath
-from kosong.tooling import (
-    CallableTool2 as _CallableTool2,
-    ToolError as _ToolError,
-    ToolReturnValue as _ToolReturnValue,
-)
-from pydantic import BaseModel as _BaseModel, Field as _Field
-
-from coderai.soul.agent import Runtime as _Runtime
-from coderai.soul.approval import Approval as _Approval
-from coderai.tools.file.plan_mode import inspect_plan_edit_target as _inspect_plan_edit_target
-from coderai.tools.utils import load_desc as _load_desc
-from coderai.utils.diff import build_diff_blocks as _build_diff_blocks
-from coderai.utils.logging import logger as _logger
-from coderai.utils.path import (
-    is_within_workspace as _is_within_workspace,
-    kaos_path_from_user_input as _kaos_path_from_user_input,
-)
-
-_BASE_REPLACE_DESCRIPTION = _load_desc(_Path(__file__).parent / "replace.md")
-
-
-class ReplaceEdit(_BaseModel):
-    old: str = _Field(description="The old string to replace. Can be multi-line.")
-    new: str = _Field(description="The new string to replace with. Can be multi-line.")
-    replace_all: bool = _Field(description="Whether to replace all occurrences.", default=False)
-
-
-class ReplaceParams(_BaseModel):
-    path: str = _Field(
-        description=(
-            "The path to the file to edit. Absolute paths are required when editing files "
-            "outside the working directory."
-        )
-    )
-    edit: ReplaceEdit | list[ReplaceEdit] = _Field(
-        description=(
-            "The edit(s) to apply to the file. "
-            "You can provide a single edit or a list of edits here."
-        )
-    )
-
-
-class StrReplaceFile(_CallableTool2[ReplaceParams]):
-    name: str = "StrReplaceFile"
-    description: str = _BASE_REPLACE_DESCRIPTION
-    params: type[ReplaceParams] = ReplaceParams
-
-    def __init__(self, runtime: _Runtime, approval: _Approval):
-        super().__init__()
-        builtin = getattr(runtime, "builtin_args", None)
-        self._work_dir = getattr(builtin, "CODERAI_WORK_DIR", _KaosPath.cwd())
-        self._additional_dirs = getattr(runtime, "additional_dirs", [])
-        self._approval = approval
-        self._plan_mode_checker: _Callable[[], bool] | None = None
-        self._plan_file_path_getter: _Callable[[], _Path | None] | None = None
-
-    def bind_plan_mode(
-        self, checker: _Callable[[], bool], path_getter: _Callable[[], _Path | None]
-    ) -> None:
-        self._plan_mode_checker = checker
-        self._plan_file_path_getter = path_getter
-
-    async def _validate_path(self, path: _KaosPath) -> _ToolError | None:
-        resolved_path = path.canonical()
-        if (
-            not _is_within_workspace(resolved_path, self._work_dir, self._additional_dirs)
-            and not path.is_absolute()
-        ):
-            return _ToolError(
-                message=(
-                    f"`{path}` is not an absolute path. "
-                    "You must provide an absolute path to edit a file "
-                    "outside the working directory."
-                ),
-                brief="Invalid path",
-            )
-        return None
-
-    def _apply_edit(self, content: str, edit: ReplaceEdit) -> str:
-        if edit.replace_all:
-            return content.replace(edit.old, edit.new)
-        else:
-            return content.replace(edit.old, edit.new, 1)
-
-    async def __call__(self, params: ReplaceParams) -> _ToolReturnValue:
-        if not params.path:
-            return _ToolError(
-                message="File path cannot be empty.",
-                brief="Empty file path",
-            )
-
-        try:
-            p = _kaos_path_from_user_input(params.path)
-            if err := await self._validate_path(p):
-                return err
-            p = p.canonical()
-
-            plan_target = _inspect_plan_edit_target(
-                p,
-                plan_mode_checker=self._plan_mode_checker,
-                plan_file_path_getter=self._plan_file_path_getter,
-            )
-            if isinstance(plan_target, _ToolError):
-                return plan_target
-
-            is_plan_file_edit = plan_target.is_plan_target
-
-            if not await p.exists():
-                if is_plan_file_edit:
-                    return _ToolError(
-                        message=(
-                            "The current plan file does not exist yet. "
-                            "Use WriteFile to create it before calling StrReplaceFile."
-                        ),
-                        brief="Plan file not created",
-                    )
-                return _ToolError(
-                    message=f"`{params.path}` does not exist.",
-                    brief="File not found",
-                )
-            if not await p.is_file():
-                return _ToolError(
-                    message=f"`{params.path}` is not a file.",
-                    brief="Invalid path",
-                )
-
-            content = await p.read_text(errors="replace")
-            original_content = content
-            edits = [params.edit] if isinstance(params.edit, ReplaceEdit) else params.edit
-
-            for edit in edits:
-                content = self._apply_edit(content, edit)
-
-            if content == original_content:
-                return _ToolError(
-                    message="No replacements were made. The old string was not found in the file.",
-                    brief="No replacements made",
-                )
-
-            diff_blocks = await _build_diff_blocks(str(p), original_content, content)
-
-            from coderai.tools.file import FileActions
-
-            action = (
-                FileActions.EDIT
-                if _is_within_workspace(p, self._work_dir, self._additional_dirs)
-                else FileActions.EDIT_OUTSIDE
-            )
-
-            if not is_plan_file_edit:
-                result = await self._approval.request(
-                    self.name,
-                    action,
-                    f"Edit file `{p}`",
-                    display=diff_blocks,
-                )
-                if not result:
-                    return result.rejection_error()
-
-            await p.write_text(content, errors="replace")
-
-            total_replacements = 0
-            for edit in edits:
-                if edit.replace_all:
-                    total_replacements += original_content.count(edit.old)
-                else:
-                    total_replacements += 1 if edit.old in original_content else 0
-
-            return _ToolReturnValue(
-                is_error=False,
-                output="",
-                message=(
-                    f"File successfully edited. "
-                    f"Applied {len(edits)} edit(s) with {total_replacements} total replacement(s)."
-                ),
-                display=diff_blocks,
-            )
-        except Exception as e:
-            _logger.warning("StrReplaceFile failed: {path}: {error}", path=params.path, error=e)
-            return _ToolError(
-                message=f"Failed to edit. Error: {e}",
-                brief="Failed to edit file",
-            )

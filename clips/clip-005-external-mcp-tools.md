@@ -31,9 +31,9 @@ helpers can run as *sidecars* alongside the turn loop.
 
 `collect_cli_mcp_overlays()` + `load_global_mcp_servers()` seed from CLI
 flags and `~/.coderai/mcp.json`; user → project → CLI layers merge per
-server (`merge_mcp_servers_dicts`, `coderai/core/mcp_files.py`). At session
+server (`merge_mcp_servers_dicts`, `coderai/mcp/files.py`). At session
 setup each server handshakes over its transport (`McpTransport`:
-`stdio` via `command`, `SSE` via `url` — `coderai/core/mcp/transport.py`),
+`stdio` via `command`, `SSE` via `url` — `coderai/mcp/transport.py`),
 and its tool list materializes as internal tool definitions on the board.
 `MCPLoadingBegin/End` + `MCPServerSnapshot`/`MCPStatusSnapshot` wire events
 report progress to all consumers.

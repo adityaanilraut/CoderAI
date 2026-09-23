@@ -37,7 +37,7 @@ from coderai.prompt.sections import (
     is_restricted_tool_preset,
 )
 from coderai.sandbox import sandbox_policy_prompt
-from coderai.utils.shell_quoting import resolve_shell_path
+from coderai.utils.subprocess_env import resolve_shell_path
 from coderai.skill import (
     list_skills,
 )
@@ -190,7 +190,14 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "o1-mini": 128_000,
     "o1-preview": 128_000,
     "o3-mini": 200_000,
-    "gpt-5.6-luna": 128_000,
+    # GPT-6 family (Sept 2026): 1.05M context, 128k max output
+    "gpt-6-astra": 1_050_000,
+    "gpt-6-sol": 1_050_000,
+    "gpt-6-luna": 1_050_000,
+    # GPT-5.6 family (legacy): 1.05M context
+    "gpt-5.6-sol": 1_050_000,
+    "gpt-5.6-terra": 1_050_000,
+    "gpt-5.6-luna": 1_050_000,
 }
 
 
@@ -208,6 +215,8 @@ def get_model_context_limit(model: str | None = None) -> int:
         return 200_000
     if "deepseek" in m:
         return 1_000_000
+    if "gpt-6" in m or "gpt-5.6" in m or "astra" in m:
+        return 1_050_000
     if "gpt-4" in m or "o1" in m or "o3" in m or "gpt-5" in m:
         return 128_000
     return 128_000

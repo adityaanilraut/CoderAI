@@ -1,12 +1,11 @@
 """Tool-execution context variables shared by the permission and ACP layers.
 
-These helpers live in ``coderai.soul.tool_context``.
-``CoderAIToolset`` engine. That engine is gone; the context vars remain because
+These helpers live in ``coderai.soul.tool_context``. Context vars remain because
 the permission layer reads the active tool call to correlate an approval
 request with the tool call that triggered it.
 
-On the ``SessionManager`` engine nothing populates ``current_tool_call``, so it
-reads as ``None`` there and approval requests fall back to a generated id.
+On the ``SessionManager`` engine approval requests fall back to a generated id
+when no tool call is active.
 """
 
 from __future__ import annotations

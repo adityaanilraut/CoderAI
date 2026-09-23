@@ -18,7 +18,7 @@ from coderai.utils.common.model_capabilities import defaults_to_thinking_mode
 from coderai.prompt.sections import normalize_tool_preset
 from coderai.sandbox import apply_preset, parse_sandbox_mode
 
-DEFAULT_MODEL = "gpt-5.6-luna"
+DEFAULT_MODEL = "gpt-6-luna"
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_CONTEXT_WINDOW = 256 * 1024
 
@@ -50,9 +50,9 @@ VALID_PERMISSION_SCOPES = {
     "mcp",
 }
 
-ReasoningEffort = Literal["off", "low", "medium", "high", "max"]
+ReasoningEffort = Literal["off", "low", "medium", "high", "xhigh", "max"]
 DEFAULT_REASONING_EFFORT: ReasoningEffort = "max"
-VALID_REASONING_EFFORTS = {"off", "low", "medium", "high", "max"}
+VALID_REASONING_EFFORTS = {"off", "low", "medium", "high", "xhigh", "max"}
 _REASONING_EFFORT_ALIASES = {
     "none": "off",
     "disabled": "off",
@@ -201,7 +201,7 @@ def _typed_global_knobs(typed: Any) -> dict[str, Any]:
             "mergeAllAvailableSkills": bool(typed.merge_all_available_skills),
             "extraSkillDirs": list(typed.extra_skill_dirs or []),
             "notificationsClaimStaleAfterMs": int(typed.notifications.claim_stale_after_ms),
-            "mcpToolCallTimeoutMs": int(typed.mcp.tool_call_timeout_ms),
+            "mcpToolCallTimeoutMs": int(typed.mcp.client.tool_call_timeout_ms),
         }
     except (AttributeError, TypeError, ValueError):
         return {}
@@ -235,7 +235,7 @@ def _parse_bool(value: Any) -> bool | None:
 
 
 def parse_reasoning_effort(value: Any) -> ReasoningEffort | None:
-    """Normalize a reasoning-effort setting to off|low|medium|high|max."""
+    """Normalize a reasoning-effort setting to off|low|medium|high|xhigh|max."""
     if not isinstance(value, str):
         return None
     raw = value.strip().lower()
@@ -348,6 +348,10 @@ def get_default_context_window(model: str = "") -> int:
     m = (model or "").strip().lower()
     if "deepseek" in m or "v4" in m or "r1" in m or "v3" in m:
         return 1024 * 1024
+    # GPT-6 family: 1.05M context window (922k max input, 128k max output).
+    # GPT-5.6 family shares the same 1.05M window.
+    if "gpt-6" in m or "gpt-5.6" in m or "astra" in m:
+        return 1_050_000
     if any(k in m for k in ("gpt-5", "gpt-4.5", "claude-3-7", "gemini-2.5", "gemini-2.0")):
         return 512 * 1024
     return DEFAULT_CONTEXT_WINDOW
@@ -879,9 +883,19 @@ KNOWN_PROVIDERS = {
         "name": "OpenAI",
         "env_var": "OPENAI_API_KEY",
         "default_base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-5.6-luna",
+        "default_model": "gpt-6-luna",
         "doc_url": "https://platform.openai.com/api-keys",
-        "models": ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "o3-mini", "o1", "gpt-4o"],
+        "models": [
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "o3-mini",
+            "o1",
+            "gpt-4o",
+        ],
     },
     "deepseek": {
         "name": "DeepSeek",
@@ -919,15 +933,26 @@ KNOWN_PROVIDERS = {
             "openrouter/meta-llama/llama-3.3-70b-instruct",
         ],
     },
+    "jev": {
+        "name": "Jev System-One (TypeSafe NAR)",
+        "env_var": "TYPESAFE_API_KEY",
+        "default_base_url": "",
+        "default_model": "jev-system-one",
+        "doc_url": "",
+        "models": ["jev-system-one"],
+    },
 }
 
 
 PROVIDER_REGISTRY = KNOWN_PROVIDERS
-"""Canonical cloud provider registry (5 providers).
+"""Canonical cloud provider registry (6 providers).
 
 Single source of truth for provider metadata. The setup wizard's local
 endpoint presets are a separate concern (local/custom OpenAI-compatible
 endpoints) and must not duplicate or shadow these keys.
+Note: `jev` is a non-autoregressive System-One triage/gating backend
+(TypeSafe SDK, TYPESAFE_API_KEY / JEV_API_KEY), not an OpenAI-compatible
+chat provider — it never handles the main tool-calling turn loop.
 """
 
 
@@ -1096,6 +1121,8 @@ def get_configured_provider_keys(project_root: str = ".") -> dict[str, dict[str,
         )
         if not key_val and prov_key == "gemini":
             key_val = env_map.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not key_val and prov_key == "jev":
+            key_val = env_map.get("JEV_API_KEY") or os.getenv("JEV_API_KEY")
 
         is_configured = bool(key_val and key_val.strip())
         status_map[prov_key] = {
@@ -1309,16 +1336,18 @@ class TypedConfig(BaseModel):
     default_model: str = Field(default="")
     default_thinking: bool = Field(default=False)
     default_yolo: bool = Field(default=False)
+    skip_afk_prompt_injection: bool = Field(default=False)
     default_plan_mode: bool = Field(default=False)
     default_editor: str = Field(default="")
     theme: Literal["dark", "light"] = Field(default="dark")
+    show_thinking_stream: bool = Field(default=True)
     models: dict[str, LLMModel] = Field(default_factory=dict)
     providers: dict[str, LLMProvider] = Field(default_factory=dict)
     loop_control: LoopControl = Field(default_factory=LoopControl)
     background: BackgroundConfig = Field(default_factory=BackgroundConfig)
     services: Services = Field(default_factory=Services)
     hooks: list[HookDef] = Field(default_factory=list)
-    telemetry: bool = Field(default=True)
+    telemetry: bool = Field(default=False)
     merge_all_available_skills: bool = Field(default=True)
     extra_skill_dirs: list[str] = Field(default_factory=list)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
@@ -1387,17 +1416,54 @@ def clear_typed_config_cache() -> None:
     _typed_config_cache.clear()
 
 
-def load_typed_config(config_file: Path | None = None) -> TypedConfig:
-    """Load + validate config from file (creating a default when missing)."""
+def resolve_hierarchical_config_path(
+    config_file: Path | None = None,
+    *,
+    project_root: str | Path | None = None,
+) -> tuple[Path, bool]:
+    """Resolve configuration file path following the strict cascade:
+    1. Explicit path (CLI Flag)
+    2. CODERAI_CONFIG_FILE environment variable
+    3. Workspace local: <project_root>/.coderai/config.toml
+    4. XDG global: ~/.config/coderai/config.toml
+    5. Share global: ~/.coderai/config.toml (default)
+
+    Returns (resolved_path, is_default_location).
+    """
     default_path = get_config_file().expanduser().resolve(strict=False)
-    if config_file is None:
-        override_file = os.environ.get("CODERAI_CONFIG_FILE")
-        if override_file:
-            config_file = Path(override_file).expanduser()
-        else:
-            config_file = default_path
-    config_file = config_file.expanduser().resolve(strict=False)
-    is_default = config_file == default_path
+    if config_file is not None:
+        p = config_file.expanduser().resolve(strict=False)
+        return p, p == default_path
+
+    env_override = os.environ.get("CODERAI_CONFIG_FILE")
+    if env_override:
+        p = Path(env_override).expanduser().resolve(strict=False)
+        return p, p == default_path
+
+    # Check workspace local .coderai/config.toml
+    root_path = Path(project_root).resolve() if project_root else Path.cwd().resolve()
+    local_cfg = root_path / ".coderai" / "config.toml"
+    if local_cfg.is_file():
+        return local_cfg.resolve(strict=False), False
+
+    # Check XDG global config
+    xdg_cfg = Path.home() / ".config" / "coderai" / "config.toml"
+    if xdg_cfg.is_file():
+        return xdg_cfg.resolve(strict=False), False
+
+    return default_path, True
+
+
+def load_typed_config(
+    config_file: Path | None = None,
+    *,
+    project_root: str | Path | None = None,
+) -> TypedConfig:
+    """Load + validate config following the hierarchical configuration cascade."""
+    default_path = get_config_file().expanduser().resolve(strict=False)
+    config_file, is_default = resolve_hierarchical_config_path(
+        config_file, project_root=project_root
+    )
     logger.debug("Loading typed config from file: {file}", file=str(config_file))
 
     if is_default and not config_file.exists():
@@ -1422,6 +1488,20 @@ def load_typed_config(config_file: Path | None = None) -> TypedConfig:
 
     try:
         data = _parse_text(config_file.read_text(encoding="utf-8"), str(config_file))
+        # If loading workspace local config, merge over global definitions when available
+        if not is_default and config_file != default_path and default_path.is_file():
+            try:
+                global_data = _parse_text(default_path.read_text(encoding="utf-8"), str(default_path))
+                merged_providers = dict(global_data.get("providers") or {})
+                merged_providers.update(data.get("providers") or {})
+                merged_models = dict(global_data.get("models") or {})
+                merged_models.update(data.get("models") or {})
+                data["providers"] = merged_providers
+                data["models"] = merged_models
+                if "default_model" not in data and "default_model" in global_data:
+                    data["default_model"] = global_data["default_model"]
+            except Exception as exc:
+                logger.debug("Global config cascade merge skipped: {error}", error=exc)
         config = TypedConfig.model_validate(data)
     except ConfigError:
         raise

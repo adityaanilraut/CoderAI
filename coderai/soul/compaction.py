@@ -492,3 +492,122 @@ class BasicCompaction(CompactionEngine):
                 preserve_ids=preserve_ids,
             )
         return None
+
+
+COMPACTION_SYSTEM_PROMPT = "You are a helpful assistant that compacts conversation context."
+COMPACTION_OUTPUT_PREFIX = "Previous context has been compacted. Here is the compaction output:"
+
+
+from collections.abc import Sequence
+from typing import NamedTuple, Protocol, runtime_checkable
+
+
+@runtime_checkable
+class Compaction(Protocol):
+    async def compact(
+        self,
+        messages: Sequence[Any],
+        llm: Any,
+        *,
+        custom_instruction: str = "",
+    ) -> Any:
+        ...
+
+
+class SimpleCompaction:
+    """Sliding-window context compaction matching Kimi CLI reference."""
+
+    def __init__(self, max_preserved_messages: int = 2) -> None:
+        self.max_preserved_messages = max_preserved_messages
+
+    class PrepareResult(NamedTuple):
+        compact_message: Any | None
+        to_preserve: Sequence[Any]
+
+    def prepare(
+        self, messages: Sequence[Any], *, custom_instruction: str = ""
+    ) -> PrepareResult:
+        from kosong.message import Message
+        from coderai.wire.types import TextPart
+        from coderai.prompt import prompts_dir
+
+        if not messages or self.max_preserved_messages <= 0:
+            return self.PrepareResult(compact_message=None, to_preserve=messages)
+
+        history = list(messages)
+        preserve_start_index = len(history)
+        n_preserved = 0
+        for index in range(len(history) - 1, -1, -1):
+            role = getattr(history[index], "role", "")
+            if role in {"user", "assistant"}:
+                n_preserved += 1
+                if n_preserved == self.max_preserved_messages:
+                    preserve_start_index = index
+                    break
+
+        if n_preserved < self.max_preserved_messages:
+            return self.PrepareResult(compact_message=None, to_preserve=messages)
+
+        to_compact = history[:preserve_start_index]
+        to_preserve = history[preserve_start_index:]
+
+        if not to_compact:
+            return self.PrepareResult(compact_message=None, to_preserve=to_preserve)
+
+        compact_message = Message(role="user", content=[])
+        for i, msg in enumerate(to_compact):
+            role = getattr(msg, "role", "")
+            compact_message.content.append(
+                TextPart(text=f"## Message {i + 1}\nRole: {role}\nContent:\n")
+            )
+            msg_content = getattr(msg, "content", [])
+            if isinstance(msg_content, str):
+                compact_message.content.append(TextPart(text=msg_content))
+            elif isinstance(msg_content, (list, tuple)):
+                compact_message.content.extend(
+                    part for part in msg_content if getattr(part, "type", "") == "text" or isinstance(part, TextPart)
+                )
+
+        compact_prompt_file = prompts_dir() / "compact.md" if callable(prompts_dir) else None
+        prompt_text = "\nSummarize the conversation so far."
+        if compact_prompt_file and compact_prompt_file.is_file():
+            prompt_text = "\n" + compact_prompt_file.read_text(encoding="utf-8")
+
+        if custom_instruction:
+            prompt_text += (
+                "\n\n**User's Custom Compaction Instruction:**\n"
+                f"{custom_instruction}"
+            )
+        compact_message.content.append(TextPart(text=prompt_text))
+        return self.PrepareResult(compact_message=compact_message, to_preserve=to_preserve)
+
+    async def compact(
+        self,
+        messages: Sequence[Any],
+        llm: Any,
+        *,
+        custom_instruction: str = "",
+    ) -> Any:
+        import kosong
+        from kosong.message import Message
+        from kosong.tooling.empty import EmptyToolset
+        from coderai.wire.types import TextPart, ThinkPart
+
+        compact_message, to_preserve = self.prepare(messages, custom_instruction=custom_instruction)
+        if compact_message is None:
+            return to_preserve
+
+        chat_provider = getattr(llm, "chat_provider", llm)
+        result = await kosong.step(
+            chat_provider=chat_provider,
+            system_prompt=COMPACTION_SYSTEM_PROMPT,
+            toolset=EmptyToolset(),
+            history=[compact_message],
+        )
+
+        content: list[Any] = [TextPart(text=COMPACTION_OUTPUT_PREFIX)]
+        compacted_msg = result.message
+        content.extend(part for part in compacted_msg.content if not isinstance(part, ThinkPart))
+        compacted_messages = [Message(role="user", content=content), *to_preserve]
+        return compacted_messages
+

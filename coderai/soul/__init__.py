@@ -1,9 +1,6 @@
 from coderai.soul.agent import (
     SessionSoul,
 )
-from coderai.soul.coderaisoul import (
-    AgentLoop,
-)
 from coderai.soul.compaction import (
     DEFAULT_MAX_TOOL_RESULT_CHARS,
     CompactionResult,
@@ -149,7 +146,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 from coderai.wire.types import MCPStatusSnapshot
-from coderai.wire import Wire
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,124 +212,13 @@ class RunCancelled(Exception):
     """The run was cancelled by the cancel event."""
 
 
-try:
-    from asyncio import QueueShutDown  # Python 3.13+
-except ImportError:
-
-    class QueueShutDown(Exception):  # type: ignore[no-redef]
-        pass
-
-
-import asyncio
-import contextlib
-from collections.abc import Callable, Coroutine
-from coderai.wire.file import WireFile
-from coderai.wire.types import ContentPart
-from coderai.utils.logging import logger
-
-UILoopFn = Callable[[Wire], Coroutine[Any, Any, None]]
-
-
-async def run_soul(
-    soul: Soul,
-    user_input: str | list[ContentPart],
-    ui_loop_fn: UILoopFn,
-    cancel_event: asyncio.Event,
-    wire_file: WireFile | None = None,
-    runtime: Any | None = None,
-    *,
-    skip_user_prompt_hook: bool = False,
-) -> None:
-    """Run the soul with the given user input, connecting it to the UI loop with a Wire."""
-    wire = Wire(file_backend=wire_file)
-    wire_token = _current_wire.set(wire)
-
-    logger.debug("Starting UI loop with function: {ui_loop_fn}", ui_loop_fn=ui_loop_fn)
-    ui_task = asyncio.create_task(ui_loop_fn(wire))
-
-    logger.debug("Starting soul run")
-    soul_task = asyncio.create_task(
-        soul.run(user_input, skip_user_prompt_hook=skip_user_prompt_hook)
-    )
-    notification_task = asyncio.create_task(_pump_notifications_to_wire(runtime, wire))
-
-    cancel_event_task = asyncio.create_task(cancel_event.wait())
-    await asyncio.wait(
-        [soul_task, cancel_event_task],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-
-    try:
-        if cancel_event.is_set():
-            logger.debug("Cancelling the run task")
-            soul_task.cancel()
-            try:
-                await soul_task
-            except asyncio.CancelledError:
-                raise RunCancelled from None
-        else:
-            assert soul_task.done()
-            cancel_event_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await cancel_event_task
-            soul_task.result()
-    finally:
-        notification_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await notification_task
-        try:
-            await _deliver_notifications_to_wire_once(runtime, wire)
-        except Exception:
-            logger.exception("Failed to flush notifications to wire during shutdown")
-        logger.debug("Shutting down the UI loop")
-        wire.shutdown()
-        await wire.join()
-        try:
-            await asyncio.wait_for(ui_task, timeout=0.5)
-        except QueueShutDown:
-            logger.debug("UI loop shut down")
-            pass
-        except TimeoutError:
-            logger.warning("UI loop timed out")
-        finally:
-            _current_wire.reset(wire_token)
-
-
-async def _pump_notifications_to_wire(runtime: Any | None, wire: Wire) -> None:
-    while True:
-        try:
-            await _deliver_notifications_to_wire_once(runtime, wire)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Notification wire pump failed")
-        await asyncio.sleep(1.0)
-
-
-async def _deliver_notifications_to_wire_once(runtime: Any | None, wire: Wire) -> None:
-    if runtime is None or getattr(runtime, "role", "") != "root":
-        return
-
-    from coderai.notifications import NotificationView, to_wire_notification
-
-    def _send_notification(view: NotificationView) -> None:
-        wire.soul_side.send(to_wire_notification(view))
-
-    notifications = getattr(runtime, "notifications", None)
-    bg_tasks = getattr(runtime, "background_tasks", None)
-    if notifications is not None and hasattr(notifications, "deliver_pending"):
-        await notifications.deliver_pending(
-            "wire",
-            limit=8,
-            before_claim=bg_tasks.reconcile if bg_tasks else None,
-            on_notification=_send_notification,
-        )
+from coderai.soul.coderaisoul import (
+    AgentLoop as AgentLoop,
+)
 
 
 __all__.extend(
     [
-        "run_soul",
-        "UILoopFn",
         "LLMNotSet",
         "LLMNotSupported",
         "MaxStepsReached",

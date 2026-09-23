@@ -279,7 +279,9 @@ def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
         )
         chosen_role = select_agent_role_interactive(ctx.console, current_role, ctx.mgr.project_root)
         if chosen_role and chosen_role != current_role:
-            if hasattr(ctx.mgr, "switch_agent_role") and ctx.mgr.switch_agent_role(chosen_role):
+            if hasattr(ctx.mgr, "switch_agent_role") and ctx.mgr.switch_agent_role(
+                chosen_role, session_id=ctx.session_id
+            ):
                 if ctx.console is not None:
                     ctx.console.print(
                         f"[bold green]✓ Switched active agent role to '[bold white]{chosen_role}[/bold white]'.[/]"
@@ -328,7 +330,9 @@ def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
         return SlashAction.HANDLED
     else:
         target_role = arg_clean.lower()
-        if hasattr(ctx.mgr, "switch_agent_role") and ctx.mgr.switch_agent_role(target_role):
+        if hasattr(ctx.mgr, "switch_agent_role") and ctx.mgr.switch_agent_role(
+            target_role, session_id=ctx.session_id
+        ):
             if ctx.console is not None:
                 ctx.console.print(
                     f"[bold green]✓ Switched active agent role to '[bold white]{target_role}[/bold white]'.[/]"
@@ -342,23 +346,47 @@ def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
         return SlashAction.HANDLED
 
 
+def _emit(ctx: ShellContext, text: str) -> None:
+    if ctx.console is not None:
+        ctx.console.print(text)
+    else:
+        print(text)
+
+
 @registry.command(name="agents", aliases=["subagents", "subagent"])
 def cmd_agents(ctx: ShellContext, args: str) -> SlashAction:
     """Inspect subagent runs and discovered roles."""
-    parts = args.strip().split()
-    sub = parts[0].lower() if parts else "list"
-    if sub in ("roles", "list", "specs"):
-        return cmd_agent(ctx, "roles")
-    if sub in ("tree", "report", "send"):
-        print(
-            f"/agents {sub} is not yet implemented in this CLI. "
-            "Use '/agents roles' to list roles or '/agent roles' to switch."
-        )
-        return SlashAction.HANDLED
-    print(
-        "No live subagent run registry in this session. "
-        "Use '/agents roles' to list available roles."
+    from coderai.ui.shell.agents_cmd import (
+        format_report,
+        format_tree,
+        handles_for_session,
+        registry_for,
+        send_to_agent,
     )
+
+    parts = args.strip().split(maxsplit=2)
+    sub = parts[0].lower() if parts else "list"
+    if sub in ("roles", "specs"):
+        return cmd_agent(ctx, "roles")
+    registry = registry_for(ctx.mgr)
+    if sub in ("list", "tree"):
+        text = format_tree(handles_for_session(registry, ctx.session_id))
+        _emit(ctx, text)
+        return SlashAction.HANDLED
+    if sub == "report":
+        if len(parts) < 2:
+            _emit(ctx, "Usage: /agents report <id>")
+            return SlashAction.HANDLED
+        agent_id = parts[1]
+        _emit(ctx, format_report(registry.get(agent_id), agent_id))
+        return SlashAction.HANDLED
+    if sub == "send":
+        if len(parts) < 3:
+            _emit(ctx, "Usage: /agents send <id> <message>")
+            return SlashAction.HANDLED
+        _emit(ctx, send_to_agent(registry, parts[1], parts[2]))
+        return SlashAction.HANDLED
+    _emit(ctx, "Usage: /agents [list|roles|tree|report <id>|send <id> <message>]")
     return SlashAction.HANDLED
 
 
@@ -804,6 +832,15 @@ def cmd_diff(ctx: ShellContext, args: str) -> SlashAction:
 
 
 @registry.command
+async def cmd_review(ctx: ShellContext, args: str) -> SlashAction:
+    """Review the working-tree diff: Jev triage, main-model review, Jev comment gate."""
+    from coderai.ui.shell.review_cmd import run_review_command
+
+    await run_review_command(ctx.mgr, ctx.console, args)
+    return SlashAction.HANDLED
+
+
+@registry.command
 def cmd_model(ctx: ShellContext, args: str) -> SlashAction:
     """Select or switch the active model."""
     arg_clean = args.strip()
@@ -837,7 +874,8 @@ def cmd_model(ctx: ShellContext, args: str) -> SlashAction:
 @registry.command(aliases=["reasoning"])
 def cmd_effort(ctx: ShellContext, args: str) -> SlashAction:
     """Select reasoning effort."""
-    valid_efforts = ("max", "high", "medium", "low", "off")
+    from coderai.config import VALID_REASONING_EFFORTS
+
     chosen = args.strip().lower()
     if not chosen:
         from coderai.ui.shell.session_picker import select_reasoning_effort_interactive
@@ -849,14 +887,15 @@ def cmd_effort(ctx: ShellContext, args: str) -> SlashAction:
             model = ""
         chosen = select_reasoning_effort_interactive(ctx.console, cur, model or "")
     if chosen:
-        if chosen in valid_efforts:
+        if chosen in VALID_REASONING_EFFORTS:
             ctx.mgr.set_reasoning_effort(chosen)
             if ctx.console is not None:
                 ctx.console.print(f"[bold green]✓ Reasoning effort set to:[/] [cyan]{chosen}[/]")
             else:
                 print(f"✓ Reasoning effort set to: {chosen}")
         else:
-            print(f"Invalid effort level '{chosen}'. Valid: {', '.join(valid_efforts)}")
+            valid = ", ".join(sorted(VALID_REASONING_EFFORTS))
+            print(f"Invalid effort level '{chosen}'. Valid: {valid}")
     return SlashAction.HANDLED
 
 
@@ -976,16 +1015,15 @@ def cmd_new(ctx: ShellContext, args: str) -> SlashAction:
 
 
 @registry.command
-async def cmd_init(ctx: ShellContext, args: str) -> SlashAction:
-    """Initialize or update AGENTS.md guidelines."""
-    from coderai.soul.agent import load_agents_md
+def cmd_init(ctx: ShellContext, args: str) -> SlashAction:
+    """Queue a turn that writes or updates AGENTS.md from the project."""
+    from coderai.prompts import INIT
 
-    await load_agents_md(pathlib.Path(ctx.mgr.project_root))
-    if ctx.console is not None:
-        ctx.console.print("[bold green]✓ Initialized AGENTS.md guidelines.[/]")
-    else:
-        print("✓ Initialized AGENTS.md guidelines.")
-    return SlashAction.HANDLED
+    extra = args.strip()
+    prompt = INIT if not extra else f"{INIT}\n\nAdditional focus from the user:\n{extra}"
+    ctx.turn_prompt = prompt
+    _emit(ctx, "Starting an AGENTS.md initialization turn.")
+    return SlashAction.TURN
 
 
 def _sync_auto_approve_context(ctx: ShellContext) -> None:

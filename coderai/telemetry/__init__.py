@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import os
 import time
 import uuid
 from collections import deque
@@ -156,6 +157,90 @@ def flush_sync() -> None:
         _sink.flush_sync()
 
 
+class TransportSink:
+    """Adapt ``AsyncTransport.send`` to the ``accept`` / ``flush`` sink API."""
+
+    def __init__(self, transport: Any) -> None:
+        self._transport = transport
+        self._pending: list[dict[str, Any]] = []
+
+    def accept(self, event: dict[str, Any]) -> None:
+        self._pending.append(event)
+        if len(self._pending) >= 25:
+            self.flush_sync()
+
+    def clear_buffer(self) -> None:
+        self._pending.clear()
+
+    def _take(self) -> list[dict[str, Any]]:
+        batch = self._pending
+        self._pending = []
+        return batch
+
+    async def flush(self) -> None:
+        batch = self._take()
+        if batch:
+            await self._transport.send(batch)
+
+    def flush_sync(self) -> None:
+        batch = self._take()
+        if not batch:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self._transport.send(batch))
+            return
+        loop.create_task(self._transport.send(batch))
+
+
+def telemetry_requested(settings: dict[str, Any] | None) -> bool:
+    """Opt-in gate. Environment ``CODERAI_TELEMETRY`` overrides settings."""
+    raw = os.getenv("CODERAI_TELEMETRY", "").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if not isinstance(settings, dict):
+        return False
+    flag = settings.get("telemetryEnabled", settings.get("telemetry"))
+    if isinstance(flag, bool):
+        return flag
+    if isinstance(flag, str):
+        return flag.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def apply_telemetry_policy(settings: dict[str, Any] | None) -> None:
+    """Attach the HTTP sink when telemetry is enabled; otherwise drop events."""
+    global _disabled
+    # The test runner must not upload events unless a test opts in.
+    if os.getenv("PYTEST_CURRENT_TEST") and os.getenv(
+        "CODERAI_TELEMETRY", ""
+    ).strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        _disabled = True
+        _event_queue.clear()
+        return
+    if not telemetry_requested(settings):
+        _disabled = True
+        _event_queue.clear()
+        return
+    _disabled = False
+    if get_sink() is not None:
+        return
+    from coderai.auth.oauth import _device_id
+    from coderai.telemetry.transport import AsyncTransport
+
+    device_id = _device_id()
+    set_context(device_id=device_id, session_id=_session_id or "")
+    attach_sink(TransportSink(AsyncTransport(device_id=device_id)))
+
+
 atexit.register(flush_sync)
 
 __all__ = [
@@ -174,4 +259,7 @@ __all__ = [
     "attach_sink",
     "get_sink",
     "flush_sync",
+    "TransportSink",
+    "telemetry_requested",
+    "apply_telemetry_policy",
 ]

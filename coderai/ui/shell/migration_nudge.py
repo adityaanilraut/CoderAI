@@ -1,14 +1,9 @@
 from __future__ import annotations
 
 import contextlib
-import sys
-from datetime import date
 from pathlib import Path
 
-from rich.console import Console
 from rich.text import Text
-
-from coderai.share import get_share_dir
 
 _INSTALL_CMD = "pip install -U coderai-agent"
 
@@ -85,18 +80,3 @@ def exit_nudge_text(platform: str = "darwin") -> Text:
         (install_command(platform), "cyan"),
         ("  (or run /upgrade in session)", "grey50"),
     )
-
-
-def print_migration_goodbye(
-    console: Console,
-    *,
-    home: Path | None = None,
-    today: str | None = None,
-    platform: str | None = None,
-) -> None:
-    """Print the farewell ("Bye!") plus, at most once per day, the upgrade tip."""
-    console.print("Bye!")
-    today = today or date.today().isoformat()
-    platform = platform or sys.platform
-    if should_show_exit_nudge(exit_nudge_marker(get_share_dir()), today):
-        console.print(exit_nudge_text(platform))

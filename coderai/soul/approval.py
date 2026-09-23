@@ -7,6 +7,7 @@ per-tool decisions plus the subset that must be surfaced to the UI as `ask`.
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import json
 import pathlib
@@ -616,7 +617,21 @@ def describe_tool_permission_request(
         return {"toolCallId": tool_call["id"], "name": name, "command": name, "scopes": ["mcp"]}
 
     if name in ("Task", "subagent", "subagent_fork"):
-        mode = args.get("mode") if isinstance(args.get("mode"), str) else "read_only"
+        raw_mode = args.get("mode")
+        subagent_type = args.get("subagent_type")
+        mode = "read_only"
+        if isinstance(raw_mode, str) and raw_mode:
+            mode = raw_mode.lower()
+        elif subagent_type:
+            from coderai.subagents.registry import get_subagent_definition
+
+            defn = get_subagent_definition(str(subagent_type), project_root=project_root)
+            if defn:
+                mode = defn.mode
+            else:
+                mode = "read_only"
+        else:
+            mode = "general"
         description = args.get("description") if isinstance(args.get("description"), str) else name
         scopes = [] if mode == "read_only" else ["write-in-cwd"]
         return {
@@ -819,9 +834,21 @@ def compute_tool_call_permissions(
                 uncovered_scopes.append(sc)
 
             if not uncovered_scopes:
-                permissions.append({"toolCallId": tool_call["id"], "permission": "allow"})
+                permissions.append(
+                    {
+                        "toolCallId": tool_call["id"],
+                        "permission": "allow",
+                        "scopes": request["scopes"],
+                    }
+                )
             else:
-                permissions.append({"toolCallId": tool_call["id"], "permission": "ask"})
+                permissions.append(
+                    {
+                        "toolCallId": tool_call["id"],
+                        "permission": "ask",
+                        "scopes": request["scopes"],
+                    }
+                )
                 ask_permissions.append(
                     {
                         "toolCallId": tool_call["id"],
@@ -834,7 +861,13 @@ def compute_tool_call_permissions(
                     }
                 )
         else:
-            permissions.append({"toolCallId": tool_call["id"], "permission": decision})
+            permissions.append(
+                {
+                    "toolCallId": tool_call["id"],
+                    "permission": decision,
+                    "scopes": request["scopes"],
+                }
+            )
 
     return {"permissions": permissions, "askPermissions": ask_permissions}
 
@@ -1080,8 +1113,14 @@ class Approval:
     def is_yolo(self) -> bool:
         return self._state.yolo
 
+    def is_yolo_flag(self) -> bool:
+        return self.is_yolo()
+
     def is_afk(self) -> bool:
         return self._state.afk or self._state.runtime_afk
+
+    def is_afk_flag(self) -> bool:
+        return self._state.afk
 
     async def request(
         self,
@@ -1092,43 +1131,104 @@ class Approval:
     ) -> ApprovalResult:
         if self.is_auto_approve() or action in self._state.auto_approve_actions:
             return ApprovalResult(True)
-        try:
-            from coderai.soul.session.approval import global_auto_approve_check
 
-            if global_auto_approve_check():
-                return ApprovalResult(True)
-        except Exception:
-            pass
+        from coderai.soul.tool_context import get_current_tool_call_or_none, get_session_id
+
+        session_id = get_session_id()
+        if session_id:
+            try:
+                from coderai.soul.session.approval import check_auto_approve_for_session
+
+                if check_auto_approve_for_session(session_id):
+                    return ApprovalResult(True)
+            except Exception:
+                pass
+        else:
+            try:
+                from coderai.soul.session.approval import _session_managers
+
+                for m in _session_managers:
+                    if m.is_auto_approve():
+                        return ApprovalResult(True)
+            except Exception:
+                pass
 
         from coderai.soul import get_wire_or_none
-        from coderai.soul.tool_context import get_current_tool_call_or_none
         from coderai.wire.types import ApprovalRequest
+        from coderai.approval_runtime.models import ApprovalSource
+        from coderai.approval_runtime.runtime import (
+            ApprovalCancelledError,
+            get_current_approval_source_or_none,
+        )
 
         wire = get_wire_or_none()
         tool_call = get_current_tool_call_or_none()
         tool_call_id = tool_call.id if tool_call else str(uuid.uuid4())
         req_id = str(uuid.uuid4())
 
-        req = ApprovalRequest(
-            id=req_id,
+        source = get_current_approval_source_or_none() or ApprovalSource(
+            kind="turn", id=session_id or "default", agent_id=sender or "default"
+        )
+
+        record = self._runtime.create_request(
+            tool_call_id=tool_call_id,
             action=action,
             description=description,
-            tool_call_id=tool_call_id,
+            source=source,
             sender=sender,
-            display=display or [],
+            display=display,
+            request_id=req_id,
         )
 
         if wire is not None:
-            wire.soul_side.send(req)
-            outcome = await req.wait()
-            approved = outcome in (True, "approve", "approve_for_session", "allow")
-            return ApprovalResult(approved, feedback=getattr(req, "feedback", ""))
+            wire_req = ApprovalRequest(
+                id=record.id,
+                action=action,
+                description=description,
+                tool_call_id=tool_call_id,
+                sender=sender,
+                display=display or [],
+            )
+            wire.soul_side.send(wire_req)
 
-        # Fail closed: with no UI channel there is nobody to approve, so deny.
-        # Non-interactive runs that need auto-approval must opt in explicitly
-        # via --yolo/--afk (which short-circuit in is_auto_approve() above).
-        return ApprovalResult(
-            False,
-            feedback="Denied by default: no approval channel is attached. "
-            "Re-run with --yolo in a trusted workspace to auto-approve.",
-        )
+            async def _wire_wait():
+                outcome = await wire_req.wait()
+                approved = outcome in (True, "approve", "approve_for_session", "allow")
+                feedback = getattr(wire_req, "feedback", "")
+                self._runtime.resolve(
+                    record.id,
+                    "allow" if approved else "reject",
+                    feedback=feedback,
+                )
+                return approved, feedback
+
+            wire_task = asyncio.create_task(_wire_wait())
+            runtime_task = asyncio.create_task(self._runtime.wait_for_response(record.id))
+
+            done, pending = await asyncio.wait(
+                [wire_task, runtime_task], return_when=asyncio.FIRST_COMPLETED
+            )
+            for p in pending:
+                p.cancel()
+
+            if wire_task in done:
+                try:
+                    approved, feedback = wire_task.result()
+                    return ApprovalResult(approved, feedback=feedback)
+                except Exception as e:
+                    return ApprovalResult(False, feedback=str(e))
+            else:
+                try:
+                    response_kind, feedback = runtime_task.result()
+                    approved = response_kind in ("allow", "allow_always")
+                    return ApprovalResult(approved, feedback=feedback)
+                except (ApprovalCancelledError, Exception):
+                    return ApprovalResult(False, feedback=record.feedback)
+
+        # Wire is None: route through ApprovalRuntime waiter
+        try:
+            response_kind, feedback = await self._runtime.wait_for_response(record.id)
+            approved = response_kind in ("allow", "allow_always")
+            return ApprovalResult(approved, feedback=feedback)
+        except (ApprovalCancelledError, Exception):
+            return ApprovalResult(False, feedback=record.feedback)

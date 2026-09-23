@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from coderai.teams.manager import get_team_manager
@@ -85,7 +86,7 @@ async def handle_team_task_create_tool(
             priority=priority,
             dependencies=dependencies,
         )
-    except CycleDetectedError as e:
+    except (CycleDetectedError, KeyError, ValueError) as e:
         return ToolResult(
             ok=False,
             name="team_task_create",
@@ -213,10 +214,12 @@ async def handle_team_task_update_tool(
     result = as_str(args.get("result", "")).strip() if "result" in args else None
     notes = as_str(args.get("notes", "")).strip() if "notes" in args else None
     expected_revision_raw = args.get("expected_revision") or args.get("revision")
-    expected_revision = int(expected_revision_raw) if expected_revision_raw is not None else None
 
     mgr = get_team_manager()
     try:
+        expected_revision = (
+            int(expected_revision_raw) if expected_revision_raw is not None else None
+        )
         task = mgr.task_board.update_task(
             task_id=task_id,
             status=status,
@@ -273,6 +276,9 @@ async def handle_wait_agent_tool(args: dict[str, Any], context: ToolExecutionCon
         timeout_seconds = float(args.get("timeout_seconds", 60.0))
     except (ValueError, TypeError):
         timeout_seconds = 60.0
+    if not math.isfinite(timeout_seconds):
+        timeout_seconds = 60.0
+    timeout_seconds = min(max(timeout_seconds, 0.0), 600.0)
 
     wait_for = str(args.get("wait_for") or "completion").strip().lower()
     if wait_for not in ("completion", "message", "any_settlement"):

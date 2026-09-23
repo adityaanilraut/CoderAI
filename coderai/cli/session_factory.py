@@ -87,6 +87,9 @@ def build_session_manager(
         on_thinking_chunk=on_thinking_chunk,
         non_interactive=non_interactive,
     )
+    from coderai.telemetry import apply_telemetry_policy
+
+    apply_telemetry_policy(resolved)
     if model:
         manager.set_model(model)
     if agent_target:
@@ -130,5 +133,12 @@ async def close_session_manager(manager: SessionManager) -> None:
 
     cleanup_seatbelt_profiles()
     cleanup_all_spills()
+
+    try:
+        from coderai.soul.session.approval import unregister_session_manager
+
+        unregister_session_manager(manager)
+    except Exception:
+        pass
 
     await manager.mcp_manager.disconnect()

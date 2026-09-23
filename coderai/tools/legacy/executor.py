@@ -419,6 +419,11 @@ class ToolExecutor:
             list_session_events=get_hook("list_session_events"),
             plan_mode=bool(get_hook("plan_mode")),
             session_manager=get_hook("session_manager"),
+            allowed_tools=(
+                get_hook("allowed_tools")
+                if get_hook("allowed_tools") is not None
+                else get_hook("allowedTools")
+            ),
         )
 
     def _pre_execute_deny(
@@ -448,6 +453,52 @@ class ToolExecutor:
                     "(fail-closed). Retry only if the permission is still necessary."
                 ),
             )
+
+        # PR-A3: Enforce allowed_tools policy
+        if context.allowed_tools is not None:
+            from coderai.subagents.registry import is_tool_allowed
+
+            if not is_tool_allowed(tool_name, "allowlist", tuple(context.allowed_tools)):
+                return ToolResult(
+                    ok=False,
+                    name=tool_name,
+                    error=f"PermissionDenied: Tool '{tool_name}' is not in allowedTools policy for active agent role.",
+                )
+
+        # TL-B8: Enforce plan mode
+        if getattr(context, "plan_mode", False):
+            tool_def = self.registry.get(tool_name, scope=getattr(context, "session_id", None))
+            plan_allowed = {
+                "todo_write",
+                "UpdatePlan",
+                "update_plan",
+                "plan_mode_response",
+                "bash",
+                "pwsh",
+            }
+            mutating_names = {
+                "write",
+                "edit",
+                "str_replace_editor",
+                "terminal_open",
+                "terminal_send",
+                "terminal_signal",
+                "terminal_close",
+                "schedule_create",
+                "schedule_delete",
+                "spawn_teammate",
+                "team_task_create",
+                "team_task_update",
+            }
+            is_mutating = (tool_name in mutating_names) or (
+                tool_def is not None and getattr(tool_def, "is_mutating", False)
+            )
+            if is_mutating and tool_name not in plan_allowed:
+                return ToolResult(
+                    ok=False,
+                    name=tool_name,
+                    error=f"PermissionDenied: Tool '{tool_name}' cannot mutate workspace while in plan mode.",
+                )
 
         def get_hook(name: str) -> Any:
             if not hooks:
@@ -546,10 +597,8 @@ class ToolExecutor:
             async def _invoke() -> Any:
                 if inspect.iscoroutinefunction(handler):
                     return await handler(validated_args, context)
-                try:
-                    res = await asyncio.to_thread(handler, validated_args, context)
-                except TypeError:
-                    res = handler(validated_args, context)
+                # A TypeError from the handler must not retry it on the loop.
+                res = await asyncio.to_thread(handler, validated_args, context)
                 if inspect.iscoroutine(res):
                     return await res
                 return res
@@ -872,4 +921,6 @@ def _result_as_dict(result: ToolResult) -> dict[str, Any]:
         ]
     if getattr(result, "concludes_turn", False):
         d["concludesTurn"] = True
+    if getattr(result, "_force_stop_turn", False):
+        d["forceStopTurn"] = True
     return d

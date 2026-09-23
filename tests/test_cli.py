@@ -291,7 +291,7 @@ def test_cli_menu_select_model_by_number(monkeypatch: pytest.MonkeyPatch) -> Non
     from coderai.ui.shell.session_picker import select_model_interactive
 
     monkeypatch.setattr("builtins.input", lambda _: "1")
-    assert select_model_interactive(None, "gpt-5.6-luna") == "gpt-5.6-sol"
+    assert select_model_interactive(None, "gpt-6-luna") == "gpt-6-astra"
     monkeypatch.setattr("builtins.input", lambda _: "my-custom-model")
     assert select_model_interactive(None, "gpt-4o") == "my-custom-model"
 

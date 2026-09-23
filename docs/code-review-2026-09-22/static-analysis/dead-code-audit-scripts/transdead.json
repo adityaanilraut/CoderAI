@@ -1,0 +1,3953 @@
+[
+{
+"f": "coderai/config.py",
+"line": 360,
+"end": 361,
+"name": "get_default_auto_compact_window",
+"kind": "function",
+"cls": null,
+"size": 2
+},
+{
+"f": "coderai/config.py",
+"line": 1051,
+"end": 1059,
+"name": "save_base_url_setting",
+"kind": "function",
+"cls": null,
+"size": 9
+},
+{
+"f": "coderai/config.py",
+"line": 1414,
+"end": 1416,
+"name": "clear_typed_config_cache",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/log.py",
+"line": 240,
+"end": 250,
+"name": "uninstall",
+"kind": "method",
+"cls": "StderrRedirector",
+"size": 11
+},
+{
+"f": "coderai/log.py",
+"line": 302,
+"end": 305,
+"name": "restore_stderr",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/mcp_oauth.py",
+"line": 122,
+"end": 129,
+"name": "create_mcp_oauth",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/mcp_oauth.py",
+"line": 132,
+"end": 135,
+"name": "has_mcp_oauth_tokens",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/events.py",
+"line": 117,
+"end": 118,
+"name": "is_surface",
+"kind": "method",
+"cls": "SessionEvent",
+"size": 2
+},
+{
+"f": "coderai/events.py",
+"line": 121,
+"end": 122,
+"name": "is_log_only",
+"kind": "method",
+"cls": "SessionEvent",
+"size": 2
+},
+{
+"f": "coderai/events.py",
+"line": 313,
+"end": 318,
+"name": "make_request_header",
+"kind": "function",
+"cls": null,
+"size": 6
+},
+{
+"f": "coderai/events.py",
+"line": 468,
+"end": 543,
+"name": "derive_messages_from_events",
+"kind": "function",
+"cls": null,
+"size": 76
+},
+{
+"f": "coderai/session.py",
+"line": 72,
+"end": 76,
+"name": "subagents_dir",
+"kind": "method",
+"cls": "Session",
+"size": 5
+},
+{
+"f": "coderai/session.py",
+"line": 269,
+"end": 276,
+"name": "list_all",
+"kind": "method",
+"cls": "Session",
+"size": 8
+},
+{
+"f": "coderai/session.py",
+"line": 279,
+"end": 290,
+"name": "continue_",
+"kind": "method",
+"cls": "Session",
+"size": 12
+},
+{
+"f": "coderai/web_providers.py",
+"line": 603,
+"end": 604,
+"name": "register_web_search_provider",
+"kind": "function",
+"cls": null,
+"size": 2
+},
+{
+"f": "coderai/web_providers.py",
+"line": 607,
+"end": 608,
+"name": "list_web_search_providers",
+"kind": "function",
+"cls": null,
+"size": 2
+},
+{
+"f": "coderai/llm.py",
+"line": 330,
+"end": 332,
+"name": "estimate_message_tokens",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/llm.py",
+"line": 411,
+"end": 413,
+"name": "is_always_thinking",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/llm.py",
+"line": 416,
+"end": 418,
+"name": "supports_media",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/llm.py",
+"line": 421,
+"end": 443,
+"name": "augment_provider_with_env_vars",
+"kind": "function",
+"cls": null,
+"size": 23
+},
+{
+"f": "coderai/llm.py",
+"line": 662,
+"end": 689,
+"name": "clone_llm_with_model_alias",
+"kind": "function",
+"cls": null,
+"size": 28
+},
+{
+"f": "coderai/orchestration.py",
+"line": 59,
+"end": 66,
+"name": "stop_reason_error",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/orchestration.py",
+"line": 149,
+"end": 151,
+"name": "get_orchestration_event_bus",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/orchestration.py",
+"line": 204,
+"end": 215,
+"name": "resolve_child_depth",
+"kind": "function",
+"cls": null,
+"size": 12
+},
+{
+"f": "coderai/orchestration.py",
+"line": 229,
+"end": 232,
+"name": "auto_max_concurrent_agents",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/orchestration.py",
+"line": 235,
+"end": 263,
+"name": "resolve_subagent_defaults",
+"kind": "function",
+"cls": null,
+"size": 29
+},
+{
+"f": "coderai/orchestration.py",
+"line": 266,
+"end": 275,
+"name": "resolve_goal_defaults",
+"kind": "function",
+"cls": null,
+"size": 10
+},
+{
+"f": "coderai/orchestration.py",
+"line": 278,
+"end": 285,
+"name": "resolve_max_parallel_tool_calls",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/sandbox.py",
+"line": 269,
+"end": 277,
+"name": "sandbox_available",
+"kind": "function",
+"cls": null,
+"size": 9
+},
+{
+"f": "coderai/app.py",
+"line": 76,
+"end": 86,
+"name": "_write_original_stderr",
+"kind": "function",
+"cls": null,
+"size": 11
+},
+{
+"f": "coderai/app.py",
+"line": 185,
+"end": 234,
+"name": "run_soul_stream",
+"kind": "method",
+"cls": "CoderAIApp",
+"size": 50
+},
+{
+"f": "coderai/app.py",
+"line": 236,
+"end": 244,
+"name": "run_shell",
+"kind": "method",
+"cls": "CoderAIApp",
+"size": 9
+},
+{
+"f": "coderai/app.py",
+"line": 246,
+"end": 265,
+"name": "run_print",
+"kind": "method",
+"cls": "CoderAIApp",
+"size": 20
+},
+{
+"f": "coderai/app.py",
+"line": 267,
+"end": 273,
+"name": "run_acp",
+"kind": "method",
+"cls": "CoderAIApp",
+"size": 7
+},
+{
+"f": "coderai/constant.py",
+"line": 36,
+"end": 48,
+"name": "_normalize_remote",
+"kind": "function",
+"cls": null,
+"size": 13
+},
+{
+"f": "coderai/constant.py",
+"line": 52,
+"end": 103,
+"name": "get_build_sha",
+"kind": "function",
+"cls": null,
+"size": 52
+},
+{
+"f": "coderai/schedule.py",
+"line": 174,
+"end": 195,
+"name": "check_due",
+"kind": "method",
+"cls": "ScheduleManager",
+"size": 22
+},
+{
+"f": "coderai/state.py",
+"line": 128,
+"end": 129,
+"name": "was_file_read",
+"kind": "method",
+"cls": "SessionStateManager",
+"size": 2
+},
+{
+"f": "coderai/state.py",
+"line": 241,
+"end": 242,
+"name": "_set_file_version",
+"kind": "function",
+"cls": null,
+"size": 2
+},
+{
+"f": "coderai/state.py",
+"line": 257,
+"end": 258,
+"name": "was_file_read",
+"kind": "function",
+"cls": null,
+"size": 2
+},
+{
+"f": "coderai/background/worker.py",
+"line": 41,
+"end": 179,
+"name": "run_background_task_worker",
+"kind": "function",
+"cls": null,
+"size": 139
+},
+{
+"f": "coderai/background/agent_runner.py",
+"line": 34,
+"end": 42,
+"name": "record_heartbeat",
+"kind": "method",
+"cls": "TaskSupervisor",
+"size": 9
+},
+{
+"f": "coderai/background/agent_runner.py",
+"line": 44,
+"end": 82,
+"name": "get_task",
+"kind": "method",
+"cls": "TaskSupervisor",
+"size": 39
+},
+{
+"f": "coderai/background/agent_runner.py",
+"line": 134,
+"end": 149,
+"name": "kill_task",
+"kind": "method",
+"cls": "TaskSupervisor",
+"size": 16
+},
+{
+"f": "coderai/background/agent_runner.py",
+"line": 171,
+"end": 183,
+"name": "check_liveness",
+"kind": "method",
+"cls": "TaskSupervisor",
+"size": 13
+},
+{
+"f": "coderai/background/ids.py",
+"line": 16,
+"end": 19,
+"name": "generate_task_id",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/background/manager.py",
+"line": 15,
+"end": 18,
+"name": "reset_job_store",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/ui/theme.py",
+"line": 51,
+"end": 72,
+"name": "_task_browser_style_dark",
+"kind": "function",
+"cls": null,
+"size": 22
+},
+{
+"f": "coderai/ui/theme.py",
+"line": 75,
+"end": 96,
+"name": "_task_browser_style_light",
+"kind": "function",
+"cls": null,
+"size": 22
+},
+{
+"f": "coderai/ui/theme.py",
+"line": 227,
+"end": 228,
+"name": "get_task_browser_style",
+"kind": "function",
+"cls": null,
+"size": 2
+},
+{
+"f": "coderai/ui/theme.py",
+"line": 245,
+"end": 261,
+"name": "supports_truecolor",
+"kind": "function",
+"cls": null,
+"size": 17
+},
+{
+"f": "coderai/ui/theme.py",
+"line": 264,
+"end": 270,
+"name": "get_color_system",
+"kind": "function",
+"cls": null,
+"size": 7
+},
+{
+"f": "coderai/ui/shell/startup.py",
+"line": 12,
+"end": 36,
+"name": "ShellStartupProgress",
+"kind": "class",
+"cls": null,
+"size": 25
+},
+{
+"f": "coderai/ui/shell/mcp_status.py",
+"line": 17,
+"end": 43,
+"name": "render_mcp_console",
+"kind": "function",
+"cls": null,
+"size": 27
+},
+{
+"f": "coderai/ui/shell/mcp_status.py",
+"line": 79,
+"end": 86,
+"name": "_status_color",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/ui/shell/slash.py",
+"line": 1025,
+"end": 1035,
+"name": "cmd_version",
+"kind": "function",
+"cls": null,
+"size": 11
+},
+{
+"f": "coderai/ui/shell/slash.py",
+"line": 1038,
+"end": 1069,
+"name": "cmd_changelog",
+"kind": "function",
+"cls": null,
+"size": 32
+},
+{
+"f": "coderai/ui/shell/slash.py",
+"line": 1072,
+"end": 1105,
+"name": "cmd_feedback",
+"kind": "function",
+"cls": null,
+"size": 34
+},
+{
+"f": "coderai/ui/shell/slash.py",
+"line": 1187,
+"end": 1244,
+"name": "cmd_hooks",
+"kind": "function",
+"cls": null,
+"size": 58
+},
+{
+"f": "coderai/ui/shell/slash.py",
+"line": 1247,
+"end": 1267,
+"name": "cmd_upgrade",
+"kind": "function",
+"cls": null,
+"size": 21
+},
+{
+"f": "coderai/ui/shell/session_picker.py",
+"line": 516,
+"end": 527,
+"name": "_format_badges_markup",
+"kind": "function",
+"cls": null,
+"size": 12
+},
+{
+"f": "coderai/ui/shell/session_picker.py",
+"line": 921,
+"end": 948,
+"name": "prompt_plan_implementation",
+"kind": "function",
+"cls": null,
+"size": 28
+},
+{
+"f": "coderai/ui/shell/app.py",
+"line": 67,
+"end": 78,
+"name": "error_callout",
+"kind": "function",
+"cls": null,
+"size": 12
+},
+{
+"f": "coderai/ui/shell/app.py",
+"line": 1256,
+"end": 1272,
+"name": "_ensure_unified_block",
+"kind": "method",
+"cls": "_StreamState",
+"size": 17
+},
+{
+"f": "coderai/ui/shell/app.py",
+"line": 1274,
+"end": 1292,
+"name": "on_retry",
+"kind": "method",
+"cls": "_StreamState",
+"size": 19
+},
+{
+"f": "coderai/ui/shell/app.py",
+"line": 1294,
+"end": 1312,
+"name": "on_status_update",
+"kind": "method",
+"cls": "_StreamState",
+"size": 19
+},
+{
+"f": "coderai/ui/shell/app.py",
+"line": 1401,
+"end": 1402,
+"name": "set_question_panel",
+"kind": "method",
+"cls": "_StreamState",
+"size": 2
+},
+{
+"f": "coderai/ui/shell/app.py",
+"line": 1595,
+"end": 1597,
+"name": "_render_help_menu",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/ui/shell/app.py",
+"line": 1600,
+"end": 1628,
+"name": "_show_diff",
+"kind": "function",
+"cls": null,
+"size": 29
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 251,
+"end": 265,
+"name": "_display_name",
+"kind": "method",
+"cls": "SlashCommandCompleter",
+"size": 15
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 267,
+"end": 269,
+"name": "_cmd_description",
+"kind": "method",
+"cls": "SlashCommandCompleter",
+"size": 3
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 271,
+"end": 422,
+"name": "get_completions",
+"kind": "method",
+"cls": "SlashCommandCompleter",
+"size": 152
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 425,
+"end": 455,
+"name": "_truncate_to_width",
+"kind": "function",
+"cls": null,
+"size": 31
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 458,
+"end": 514,
+"name": "_wrap_to_width",
+"kind": "function",
+"cls": null,
+"size": 57
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 610,
+"end": 611,
+"name": "preferred_width",
+"kind": "method",
+"cls": "SlashCommandMenuControl",
+"size": 2
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 613,
+"end": 639,
+"name": "preferred_height",
+"kind": "method",
+"cls": "SlashCommandMenuControl",
+"size": 27
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 641,
+"end": 730,
+"name": "create_content",
+"kind": "method",
+"cls": "SlashCommandMenuControl",
+"size": 90
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 732,
+"end": 738,
+"name": "_selected_meta_lines",
+"kind": "method",
+"cls": "SlashCommandMenuControl",
+"size": 7
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 740,
+"end": 763,
+"name": "_visible_window_bounds",
+"kind": "method",
+"cls": "SlashCommandMenuControl",
+"size": 24
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 765,
+"end": 778,
+"name": "_command_column_width",
+"kind": "method",
+"cls": "SlashCommandMenuControl",
+"size": 14
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 780,
+"end": 824,
+"name": "_render_single_line_item",
+"kind": "method",
+"cls": "SlashCommandMenuControl",
+"size": 45
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 826,
+"end": 873,
+"name": "_render_selected_item_lines",
+"kind": "method",
+"cls": "SlashCommandMenuControl",
+"size": 48
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 991,
+"end": 1008,
+"name": "_extract_fragment",
+"kind": "method",
+"cls": "LocalFileMentionCompleter",
+"size": 18
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 1010,
+"end": 1017,
+"name": "_is_completed_file",
+"kind": "method",
+"cls": "LocalFileMentionCompleter",
+"size": 8
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 1020,
+"end": 1053,
+"name": "get_completions",
+"kind": "method",
+"cls": "LocalFileMentionCompleter",
+"size": 34
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 2100,
+"end": 2102,
+"name": "_render_agent_prompt_label",
+"kind": "method",
+"cls": "CustomPromptSession",
+"size": 3
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 2959,
+"end": 2983,
+"name": "get_completions",
+"kind": "method",
+"cls": "FileMentionCompleter",
+"size": 25
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 3466,
+"end": 3470,
+"name": "_engine",
+"kind": "function",
+"cls": null,
+"size": 5
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 3473,
+"end": 3484,
+"name": "format_status_bar",
+"kind": "function",
+"cls": null,
+"size": 12
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 3487,
+"end": 3507,
+"name": "render_status_bar",
+"kind": "function",
+"cls": null,
+"size": 21
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 3889,
+"end": 3944,
+"name": "format_streamlined_status_bar",
+"kind": "function",
+"cls": null,
+"size": 56
+},
+{
+"f": "coderai/ui/shell/prompt.py",
+"line": 4079,
+"end": 4084,
+"name": "_is_multiline_trigger",
+"kind": "function",
+"cls": null,
+"size": 6
+},
+{
+"f": "coderai/ui/shell/migration_nudge.py",
+"line": 21,
+"end": 23,
+"name": "install_run_command",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/ui/shell/migration_nudge.py",
+"line": 26,
+"end": 28,
+"name": "verify_command",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/ui/shell/migration_nudge.py",
+"line": 31,
+"end": 34,
+"name": "coderai_installed",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/ui/shell/migration_nudge.py",
+"line": 58,
+"end": 65,
+"name": "welcome_card_text",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/ui/shell/migration_nudge.py",
+"line": 68,
+"end": 76,
+"name": "already_installed_text",
+"kind": "function",
+"cls": null,
+"size": 9
+},
+{
+"f": "coderai/ui/shell/keyboard.py",
+"line": 89,
+"end": 96,
+"name": "listen_for_keyboard",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/ui/shell/visualize/_blocks.py",
+"line": 689,
+"end": 696,
+"name": "summarize_thinking",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/ui/shell/visualize/_blocks.py",
+"line": 1325,
+"end": 1336,
+"name": "parse_plan_stats",
+"kind": "function",
+"cls": null,
+"size": 12
+},
+{
+"f": "coderai/ui/shell/visualize/_blocks.py",
+"line": 1339,
+"end": 1346,
+"name": "make_plan_progress_bar",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/ui/shell/visualize/_blocks.py",
+"line": 1462,
+"end": 1470,
+"name": "render_plan_preview",
+"kind": "function",
+"cls": null,
+"size": 9
+},
+{
+"f": "coderai/ui/shell/visualize/_blocks.py",
+"line": 1519,
+"end": 1600,
+"name": "StatusSpinner",
+"kind": "class",
+"cls": null,
+"size": 82
+},
+{
+"f": "coderai/ui/shell/visualize/_blocks.py",
+"line": 1580,
+"end": 1600,
+"name": "pause_for_pager",
+"kind": "method",
+"cls": "StatusSpinner",
+"size": 21
+},
+{
+"f": "coderai/ui/shell/visualize/_blocks.py",
+"line": 1603,
+"end": 1670,
+"name": "MultiStepProgress",
+"kind": "class",
+"cls": null,
+"size": 68
+},
+{
+"f": "coderai/ui/shell/visualize/_blocks.py",
+"line": 1634,
+"end": 1646,
+"name": "advance",
+"kind": "method",
+"cls": "MultiStepProgress",
+"size": 13
+},
+{
+"f": "coderai/ui/shell/visualize/_blocks.py",
+"line": 1779,
+"end": 1782,
+"name": "_find_committed_boundary_parser",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/ui/shell/visualize/_btw_panel.py",
+"line": 155,
+"end": 192,
+"name": "compose_for_live",
+"kind": "method",
+"cls": "BtwPanel",
+"size": 38
+},
+{
+"f": "coderai/ui/shell/visualize/_approval_panel.py",
+"line": 655,
+"end": 662,
+"name": "expand_plan_in_pager",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/tools/test.py",
+"line": 13,
+"end": 20,
+"name": "Plus",
+"kind": "class",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/tools/test.py",
+"line": 47,
+"end": 55,
+"name": "Panic",
+"kind": "class",
+"cls": null,
+"size": 9
+},
+{
+"f": "coderai/tools/utils.py",
+"line": 81,
+"end": 83,
+"name": "n_chars",
+"kind": "method",
+"cls": "ToolResultBuilder",
+"size": 3
+},
+{
+"f": "coderai/tools/file/plan_mode.py",
+"line": 12,
+"end": 15,
+"name": "PlanEditTarget",
+"kind": "class",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/tools/file/plan_mode.py",
+"line": 18,
+"end": 45,
+"name": "inspect_plan_edit_target",
+"kind": "function",
+"cls": null,
+"size": 28
+},
+{
+"f": "coderai/tools/file/__init__.py",
+"line": 6,
+"end": 9,
+"name": "FileOpsWindow",
+"kind": "class",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/tools/file/grep.py",
+"line": 598,
+"end": 671,
+"name": "grep_tool_definition",
+"kind": "function",
+"cls": null,
+"size": 74
+},
+{
+"f": "coderai/tools/file/glob.py",
+"line": 289,
+"end": 312,
+"name": "glob_tool_definition",
+"kind": "function",
+"cls": null,
+"size": 24
+},
+{
+"f": "coderai/tools/file/utils.py",
+"line": 138,
+"end": 157,
+"name": "async_write_file_with_locks",
+"kind": "function",
+"cls": null,
+"size": 20
+},
+{
+"f": "coderai/tools/file/utils.py",
+"line": 325,
+"end": 327,
+"name": "FileType",
+"kind": "class",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/tools/file/utils.py",
+"line": 330,
+"end": 334,
+"name": "_sniff_ftyp_brand",
+"kind": "function",
+"cls": null,
+"size": 5
+},
+{
+"f": "coderai/tools/file/utils.py",
+"line": 337,
+"end": 373,
+"name": "sniff_media_from_magic",
+"kind": "function",
+"cls": null,
+"size": 37
+},
+{
+"f": "coderai/tools/file/utils.py",
+"line": 376,
+"end": 409,
+"name": "detect_file_type",
+"kind": "function",
+"cls": null,
+"size": 34
+},
+{
+"f": "coderai/tools/file/replace.py",
+"line": 917,
+"end": 933,
+"name": "_find_line_numbers",
+"kind": "function",
+"cls": null,
+"size": 17
+},
+{
+"f": "coderai/tools/shell/__init__.py",
+"line": 54,
+"end": 56,
+"name": "clear_session_working_dir",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/tools/web/fetch.py",
+"line": 114,
+"end": 209,
+"name": "handle_starttag",
+"kind": "method",
+"cls": "_HTMLToMarkdownParser",
+"size": 96
+},
+{
+"f": "coderai/tools/web/fetch.py",
+"line": 211,
+"end": 253,
+"name": "handle_endtag",
+"kind": "method",
+"cls": "_HTMLToMarkdownParser",
+"size": 43
+},
+{
+"f": "coderai/tools/web/fetch.py",
+"line": 255,
+"end": 267,
+"name": "handle_data",
+"kind": "method",
+"cls": "_HTMLToMarkdownParser",
+"size": 13
+},
+{
+"f": "coderai/tools/web/fetch.py",
+"line": 269,
+"end": 271,
+"name": "handle_comment",
+"kind": "method",
+"cls": "_HTMLToMarkdownParser",
+"size": 3
+},
+{
+"f": "coderai/tools/web/fetch.py",
+"line": 273,
+"end": 280,
+"name": "_ensure_newline",
+"kind": "method",
+"cls": "_HTMLToMarkdownParser",
+"size": 8
+},
+{
+"f": "coderai/tools/legacy/registry.py",
+"line": 178,
+"end": 187,
+"name": "suppress_tool",
+"kind": "method",
+"cls": "ToolRegistry",
+"size": 10
+},
+{
+"f": "coderai/tools/legacy/registry.py",
+"line": 189,
+"end": 195,
+"name": "restore_tool",
+"kind": "method",
+"cls": "ToolRegistry",
+"size": 7
+},
+{
+"f": "coderai/tools/legacy/registry.py",
+"line": 197,
+"end": 202,
+"name": "is_tool_suppressed",
+"kind": "method",
+"cls": "ToolRegistry",
+"size": 6
+},
+{
+"f": "coderai/tools/legacy/registry.py",
+"line": 204,
+"end": 225,
+"name": "restrict",
+"kind": "method",
+"cls": "ToolRegistry",
+"size": 22
+},
+{
+"f": "coderai/tools/legacy/registry.py",
+"line": 227,
+"end": 239,
+"name": "set_session_mask",
+"kind": "method",
+"cls": "ToolRegistry",
+"size": 13
+},
+{
+"f": "coderai/tools/legacy/registry.py",
+"line": 241,
+"end": 247,
+"name": "clear_session_mask",
+"kind": "method",
+"cls": "ToolRegistry",
+"size": 7
+},
+{
+"f": "coderai/tools/legacy/registry.py",
+"line": 292,
+"end": 294,
+"name": "get_tool",
+"kind": "method",
+"cls": "ToolRegistry",
+"size": 3
+},
+{
+"f": "coderai/tools/legacy/types.py",
+"line": 139,
+"end": 141,
+"name": "defer_context",
+"kind": "method",
+"cls": "ToolExecutionContext",
+"size": 3
+},
+{
+"f": "coderai/tools/legacy/types.py",
+"line": 143,
+"end": 145,
+"name": "conclude_turn",
+"kind": "method",
+"cls": "ToolExecutionContext",
+"size": 3
+},
+{
+"f": "coderai/tools/legacy/path_lock.py",
+"line": 44,
+"end": 58,
+"name": "acquire_read",
+"kind": "method",
+"cls": "PathLockEntry",
+"size": 15
+},
+{
+"f": "coderai/tools/legacy/path_lock.py",
+"line": 93,
+"end": 100,
+"name": "acquire_read_lock",
+"kind": "method",
+"cls": "PathLockManager",
+"size": 8
+},
+{
+"f": "coderai/tools/legacy/schema.py",
+"line": 15,
+"end": 35,
+"name": "assert_supported_json_schema",
+"kind": "function",
+"cls": null,
+"size": 21
+},
+{
+"f": "coderai/tools/legacy/schema.py",
+"line": 38,
+"end": 172,
+"name": "validate_json_schema_value",
+"kind": "function",
+"cls": null,
+"size": 135
+},
+{
+"f": "coderai/tools/session/query.py",
+"line": 18,
+"end": 36,
+"name": "handle_session_search",
+"kind": "function",
+"cls": null,
+"size": 19
+},
+{
+"f": "coderai/tools/session/query.py",
+"line": 39,
+"end": 57,
+"name": "handle_session_trace",
+"kind": "function",
+"cls": null,
+"size": 19
+},
+{
+"f": "coderai/tools/session/query.py",
+"line": 60,
+"end": 95,
+"name": "handle_session_event_search",
+"kind": "function",
+"cls": null,
+"size": 36
+},
+{
+"f": "coderai/tools/session/query.py",
+"line": 98,
+"end": 125,
+"name": "handle_session_event_read",
+"kind": "function",
+"cls": null,
+"size": 28
+},
+{
+"f": "coderai/tools/session/query.py",
+"line": 128,
+"end": 139,
+"name": "_open",
+"kind": "function",
+"cls": null,
+"size": 12
+},
+{
+"f": "coderai/tools/session/query.py",
+"line": 142,
+"end": 144,
+"name": "_entries_from_store",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/tools/session/query.py",
+"line": 147,
+"end": 154,
+"name": "_resolve_id",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/tools/session/query.py",
+"line": 157,
+"end": 159,
+"name": "_entry_blob",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/tools/session/query.py",
+"line": 162,
+"end": 169,
+"name": "_event_text",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/tools/session/query.py",
+"line": 172,
+"end": 176,
+"name": "_required_text",
+"kind": "function",
+"cls": null,
+"size": 5
+},
+{
+"f": "coderai/tools/session/query.py",
+"line": 179,
+"end": 186,
+"name": "_nonneg_int",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/subagents/store.py",
+"line": 69,
+"end": 223,
+"name": "SubagentStore",
+"kind": "class",
+"cls": null,
+"size": 155
+},
+{
+"f": "coderai/subagents/store.py",
+"line": 89,
+"end": 90,
+"name": "prompt_path",
+"kind": "method",
+"cls": "SubagentStore",
+"size": 2
+},
+{
+"f": "coderai/subagents/store.py",
+"line": 95,
+"end": 96,
+"name": "context_path",
+"kind": "method",
+"cls": "SubagentStore",
+"size": 2
+},
+{
+"f": "coderai/subagents/store.py",
+"line": 99,
+"end": 132,
+"name": "create_instance",
+"kind": "method",
+"cls": "SubagentStore",
+"size": 34
+},
+{
+"f": "coderai/subagents/store.py",
+"line": 134,
+"end": 136,
+"name": "write_instance",
+"kind": "method",
+"cls": "SubagentStore",
+"size": 3
+},
+{
+"f": "coderai/subagents/store.py",
+"line": 138,
+"end": 162,
+"name": "update_instance",
+"kind": "method",
+"cls": "SubagentStore",
+"size": 25
+},
+{
+"f": "coderai/subagents/store.py",
+"line": 164,
+"end": 170,
+"name": "write_prompt",
+"kind": "method",
+"cls": "SubagentStore",
+"size": 7
+},
+{
+"f": "coderai/subagents/store.py",
+"line": 186,
+"end": 190,
+"name": "require_instance",
+"kind": "method",
+"cls": "SubagentStore",
+"size": 5
+},
+{
+"f": "coderai/subagents/store.py",
+"line": 192,
+"end": 201,
+"name": "list_instances",
+"kind": "method",
+"cls": "SubagentStore",
+"size": 10
+},
+{
+"f": "coderai/subagents/store.py",
+"line": 203,
+"end": 208,
+"name": "delete_instance",
+"kind": "method",
+"cls": "SubagentStore",
+"size": 6
+},
+{
+"f": "coderai/subagents/store.py",
+"line": 210,
+"end": 223,
+"name": "mark_stale_foreground_failed",
+"kind": "method",
+"cls": "SubagentStore",
+"size": 14
+},
+{
+"f": "coderai/subagents/runner.py",
+"line": 89,
+"end": 94,
+"name": "cancel_all",
+"kind": "method",
+"cls": "SubAgentManager",
+"size": 6
+},
+{
+"f": "coderai/subagents/runner.py",
+"line": 397,
+"end": 430,
+"name": "run_parallel_subagents",
+"kind": "method",
+"cls": "SubAgentManager",
+"size": 34
+},
+{
+"f": "coderai/subagents/models.py",
+"line": 33,
+"end": 43,
+"name": "SubagentRunRecord",
+"kind": "class",
+"cls": null,
+"size": 11
+},
+{
+"f": "coderai/subagents/registry.py",
+"line": 183,
+"end": 194,
+"name": "list_subagent_types",
+"kind": "function",
+"cls": null,
+"size": 12
+},
+{
+"f": "coderai/subagents/registry.py",
+"line": 234,
+"end": 246,
+"name": "is_tool_allowed",
+"kind": "function",
+"cls": null,
+"size": 13
+},
+{
+"f": "coderai/subagents/core.py",
+"line": 148,
+"end": 153,
+"name": "get_children",
+"kind": "method",
+"cls": "AgentRegistry",
+"size": 6
+},
+{
+"f": "coderai/subagents/core.py",
+"line": 155,
+"end": 165,
+"name": "list_descendants",
+"kind": "method",
+"cls": "AgentRegistry",
+"size": 11
+},
+{
+"f": "coderai/subagents/core.py",
+"line": 167,
+"end": 190,
+"name": "get_tree",
+"kind": "method",
+"cls": "AgentRegistry",
+"size": 24
+},
+{
+"f": "coderai/subagents/core.py",
+"line": 230,
+"end": 242,
+"name": "interrupt_tree",
+"kind": "method",
+"cls": "AgentRegistry",
+"size": 13
+},
+{
+"f": "coderai/subagents/builder.py",
+"line": 78,
+"end": 113,
+"name": "parse_subagent_descriptor",
+"kind": "function",
+"cls": null,
+"size": 36
+},
+{
+"f": "coderai/subagents/builder.py",
+"line": 117,
+"end": 124,
+"name": "SubagentQuotaConfig",
+"kind": "class",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/subagents/builder.py",
+"line": 160,
+"end": 171,
+"name": "cleanup_subagent_scratchpad",
+"kind": "function",
+"cls": null,
+"size": 12
+},
+{
+"f": "coderai/subagents/backends/acp.py",
+"line": 14,
+"end": 48,
+"name": "AcpSubagentDriver",
+"kind": "class",
+"cls": null,
+"size": 35
+},
+{
+"f": "coderai/wire/types.py",
+"line": 280,
+"end": 282,
+"name": "QuestionResponse",
+"kind": "class",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/wire/types.py",
+"line": 361,
+"end": 364,
+"name": "HookResponse",
+"kind": "class",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/wire/types.py",
+"line": 601,
+"end": 607,
+"name": "deserialize_wire_message",
+"kind": "function",
+"cls": null,
+"size": 7
+},
+{
+"f": "coderai/wire/jsonrpc.py",
+"line": 56,
+"end": 57,
+"name": "method_is_inbound",
+"kind": "method",
+"cls": "JSONRPCMessage",
+"size": 2
+},
+{
+"f": "coderai/wire/jsonrpc.py",
+"line": 62,
+"end": 63,
+"name": "is_notification",
+"kind": "method",
+"cls": "JSONRPCMessage",
+"size": 2
+},
+{
+"f": "coderai/wire/jsonrpc.py",
+"line": 65,
+"end": 66,
+"name": "is_response",
+"kind": "method",
+"cls": "JSONRPCMessage",
+"size": 2
+},
+{
+"f": "coderai/wire/jsonrpc.py",
+"line": 103,
+"end": 104,
+"name": "success_response",
+"kind": "function",
+"cls": null,
+"size": 2
+},
+{
+"f": "coderai/wire/jsonrpc.py",
+"line": 107,
+"end": 111,
+"name": "error_response",
+"kind": "function",
+"cls": null,
+"size": 5
+},
+{
+"f": "coderai/wire/jsonrpc.py",
+"line": 114,
+"end": 115,
+"name": "event_notification",
+"kind": "function",
+"cls": null,
+"size": 2
+},
+{
+"f": "coderai/wire/jsonrpc.py",
+"line": 118,
+"end": 119,
+"name": "request_message",
+"kind": "function",
+"cls": null,
+"size": 2
+},
+{
+"f": "coderai/wire/jsonrpc.py",
+"line": 123,
+"end": 125,
+"name": "ClientInfo",
+"kind": "class",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/wire/jsonrpc.py",
+"line": 129,
+"end": 132,
+"name": "ExternalTool",
+"kind": "class",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/wire/file.py",
+"line": 159,
+"end": 162,
+"name": "append_record",
+"kind": "method",
+"cls": "WireFile",
+"size": 4
+},
+{
+"f": "coderai/wire/file.py",
+"line": 164,
+"end": 172,
+"name": "replay_sync",
+"kind": "method",
+"cls": "WireFile",
+"size": 9
+},
+{
+"f": "coderai/wire/file.py",
+"line": 191,
+"end": 201,
+"name": "dump_line",
+"kind": "function",
+"cls": null,
+"size": 11
+},
+{
+"f": "coderai/wire/emitter.py",
+"line": 47,
+"end": 49,
+"name": "attach_session_wire",
+"kind": "method",
+"cls": "WireEmitter",
+"size": 3
+},
+{
+"f": "coderai/wire/emitter.py",
+"line": 51,
+"end": 53,
+"name": "detach_session_wire",
+"kind": "method",
+"cls": "WireEmitter",
+"size": 3
+},
+{
+"f": "coderai/wire/emitter.py",
+"line": 168,
+"end": 173,
+"name": "hook_resolved",
+"kind": "method",
+"cls": "WireEmitter",
+"size": 6
+},
+{
+"f": "coderai/goals/core.py",
+"line": 23,
+"end": 25,
+"name": "GoalRef",
+"kind": "class",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/goals/core.py",
+"line": 108,
+"end": 113,
+"name": "get_active_goal",
+"kind": "method",
+"cls": "GoalStore",
+"size": 6
+},
+{
+"f": "coderai/goals/core.py",
+"line": 172,
+"end": 185,
+"name": "advance_round",
+"kind": "method",
+"cls": "GoalStore",
+"size": 14
+},
+{
+"f": "coderai/goals/core.py",
+"line": 222,
+"end": 298,
+"name": "handle_goal_tool",
+"kind": "function",
+"cls": null,
+"size": 77
+},
+{
+"f": "coderai/auth/oauth.py",
+"line": 314,
+"end": 317,
+"name": "save_tokens",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/auth/oauth.py",
+"line": 490,
+"end": 504,
+"name": "from_typed_config",
+"kind": "method",
+"cls": "OAuthManager",
+"size": 15
+},
+{
+"f": "coderai/auth/oauth.py",
+"line": 506,
+"end": 507,
+"name": "get_cached_access_token",
+"kind": "method",
+"cls": "OAuthManager",
+"size": 2
+},
+{
+"f": "coderai/auth/oauth.py",
+"line": 602,
+"end": 662,
+"name": "login_device_flow",
+"kind": "function",
+"cls": null,
+"size": 61
+},
+{
+"f": "coderai/terminal/manager.py",
+"line": 213,
+"end": 215,
+"name": "get_full_output",
+"kind": "method",
+"cls": "TerminalSession",
+"size": 3
+},
+{
+"f": "coderai/utils/logging.py",
+"line": 43,
+"end": 45,
+"name": "_mask_sensitive",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/utils/slashcmd.py",
+"line": 24,
+"end": 28,
+"name": "slash_name",
+"kind": "method",
+"cls": "SlashCommand",
+"size": 5
+},
+{
+"f": "coderai/utils/slashcmd.py",
+"line": 101,
+"end": 114,
+"name": "iter_command_entries",
+"kind": "method",
+"cls": "SlashCommandRegistry",
+"size": 14
+},
+{
+"f": "coderai/utils/aiohttp.py",
+"line": 266,
+"end": 282,
+"name": "post_async",
+"kind": "method",
+"cls": "HttpClient",
+"size": 17
+},
+{
+"f": "coderai/utils/term.py",
+"line": 183,
+"end": 190,
+"name": "get_cursor_row",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/utils/file_filter.py",
+"line": 215,
+"end": 232,
+"name": "list_directory_filtered",
+"kind": "function",
+"cls": null,
+"size": 18
+},
+{
+"f": "coderai/utils/subprocess_env.py",
+"line": 91,
+"end": 98,
+"name": "windows_path_to_posix_path",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/utils/subprocess_env.py",
+"line": 250,
+"end": 265,
+"name": "scrubbed_parent_env",
+"kind": "function",
+"cls": null,
+"size": 16
+},
+{
+"f": "coderai/utils/shell_quoting.py",
+"line": 91,
+"end": 98,
+"name": "windows_path_to_posix_path",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/utils/environment.py",
+"line": 21,
+"end": 36,
+"name": "scrubbed_parent_env",
+"kind": "function",
+"cls": null,
+"size": 16
+},
+{
+"f": "coderai/utils/diff.py",
+"line": 17,
+"end": 54,
+"name": "format_unified_diff",
+"kind": "function",
+"cls": null,
+"size": 38
+},
+{
+"f": "coderai/utils/diff.py",
+"line": 57,
+"end": 107,
+"name": "_build_diff_blocks_sync",
+"kind": "function",
+"cls": null,
+"size": 51
+},
+{
+"f": "coderai/utils/diff.py",
+"line": 110,
+"end": 118,
+"name": "build_diff_blocks",
+"kind": "function",
+"cls": null,
+"size": 9
+},
+{
+"f": "coderai/utils/path.py",
+"line": 22,
+"end": 25,
+"name": "WriteFileAtomicOptions",
+"kind": "class",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/utils/path.py",
+"line": 142,
+"end": 185,
+"name": "with_file_lock",
+"kind": "function",
+"cls": null,
+"size": 44
+},
+{
+"f": "coderai/utils/path.py",
+"line": 296,
+"end": 308,
+"name": "shorten_home",
+"kind": "function",
+"cls": null,
+"size": 13
+},
+{
+"f": "coderai/utils/path.py",
+"line": 311,
+"end": 324,
+"name": "normalize_user_path",
+"kind": "function",
+"cls": null,
+"size": 14
+},
+{
+"f": "coderai/utils/path.py",
+"line": 327,
+"end": 329,
+"name": "kaos_path_from_user_input",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/utils/path.py",
+"line": 340,
+"end": 348,
+"name": "is_within_directory",
+"kind": "function",
+"cls": null,
+"size": 9
+},
+{
+"f": "coderai/utils/path.py",
+"line": 351,
+"end": 359,
+"name": "is_within_workspace",
+"kind": "function",
+"cls": null,
+"size": 9
+},
+{
+"f": "coderai/utils/path.py",
+"line": 366,
+"end": 380,
+"name": "_collect_entries",
+"kind": "function",
+"cls": null,
+"size": 15
+},
+{
+"f": "coderai/utils/path.py",
+"line": 383,
+"end": 417,
+"name": "list_directory",
+"kind": "function",
+"cls": null,
+"size": 35
+},
+{
+"f": "coderai/utils/path.py",
+"line": 420,
+"end": 429,
+"name": "find_project_root",
+"kind": "function",
+"cls": null,
+"size": 10
+},
+{
+"f": "coderai/utils/common/openai_thinking.py",
+"line": 47,
+"end": 65,
+"name": "get_thinking_token_budget",
+"kind": "function",
+"cls": null,
+"size": 19
+},
+{
+"f": "coderai/utils/common/openai_thinking.py",
+"line": 141,
+"end": 147,
+"name": "resolve_reasoning_key",
+"kind": "function",
+"cls": null,
+"size": 7
+},
+{
+"f": "coderai/utils/common/model_capabilities.py",
+"line": 101,
+"end": 122,
+"name": "get_supported_reasoning_efforts",
+"kind": "function",
+"cls": null,
+"size": 22
+},
+{
+"f": "coderai/utils/common/model_capabilities.py",
+"line": 125,
+"end": 136,
+"name": "get_default_reasoning_effort",
+"kind": "function",
+"cls": null,
+"size": 12
+},
+{
+"f": "coderai/utils/common/model_capabilities.py",
+"line": 211,
+"end": 216,
+"name": "format_capability_badges",
+"kind": "function",
+"cls": null,
+"size": 6
+},
+{
+"f": "coderai/utils/common/model_capabilities.py",
+"line": 219,
+"end": 225,
+"name": "format_model_effort_tags",
+"kind": "function",
+"cls": null,
+"size": 7
+},
+{
+"f": "coderai/utils/common/repeat_tool_reminder.py",
+"line": 131,
+"end": 134,
+"name": "observe",
+"kind": "method",
+"cls": "RepeatToolReminder",
+"size": 4
+},
+{
+"f": "coderai/utils/common/repeat_tool_reminder.py",
+"line": 165,
+"end": 167,
+"name": "observe_legacy",
+"kind": "method",
+"cls": "RepeatToolReminder",
+"size": 3
+},
+{
+"f": "coderai/utils/common/repeat_tool_reminder.py",
+"line": 178,
+"end": 179,
+"name": "should_force_stop",
+"kind": "method",
+"cls": "RepeatToolReminder",
+"size": 2
+},
+{
+"f": "coderai/utils/common/message_converter.py",
+"line": 192,
+"end": 194,
+"name": "build_messages",
+"kind": "method",
+"cls": "OpenAIMessageConverter",
+"size": 3
+},
+{
+"f": "coderai/utils/common/message_converter.py",
+"line": 196,
+"end": 199,
+"name": "get_trailing_pending_tool_calls",
+"kind": "method",
+"cls": "OpenAIMessageConverter",
+"size": 4
+},
+{
+"f": "coderai/utils/common/usage.py",
+"line": 108,
+"end": 140,
+"name": "accumulate_usage_dict",
+"kind": "function",
+"cls": null,
+"size": 33
+},
+{
+"f": "coderai/utils/common/file_history.py",
+"line": 281,
+"end": 297,
+"name": "list_checkpoints",
+"kind": "method",
+"cls": "GitFileHistory",
+"size": 17
+},
+{
+"f": "coderai/utils/common/file_history.py",
+"line": 468,
+"end": 471,
+"name": "_is_same_entry",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/utils/common/invariants.py",
+"line": 8,
+"end": 15,
+"name": "InvariantViolation",
+"kind": "class",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/utils/common/invariants.py",
+"line": 18,
+"end": 43,
+"name": "verify_monotonic_sequence_numbers",
+"kind": "function",
+"cls": null,
+"size": 26
+},
+{
+"f": "coderai/utils/common/invariants.py",
+"line": 46,
+"end": 107,
+"name": "verify_paired_tool_calls",
+"kind": "function",
+"cls": null,
+"size": 62
+},
+{
+"f": "coderai/utils/common/invariants.py",
+"line": 110,
+"end": 151,
+"name": "verify_turn_step_boundaries",
+"kind": "function",
+"cls": null,
+"size": 42
+},
+{
+"f": "coderai/utils/common/invariants.py",
+"line": 154,
+"end": 163,
+"name": "verify_session_invariants",
+"kind": "function",
+"cls": null,
+"size": 10
+},
+{
+"f": "coderai/utils/common/invariants.py",
+"line": 166,
+"end": 170,
+"name": "assert_session_invariants",
+"kind": "function",
+"cls": null,
+"size": 5
+},
+{
+"f": "coderai/utils/rich/diff_render.py",
+"line": 44,
+"end": 61,
+"name": "format_diff_text",
+"kind": "function",
+"cls": null,
+"size": 18
+},
+{
+"f": "coderai/utils/rich/syntax.py",
+"line": 83,
+"end": 90,
+"name": "resolve_color_system",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/triage/engine.py",
+"line": 147,
+"end": 149,
+"name": "is_jev_configured",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/triage/engine.py",
+"line": 336,
+"end": 343,
+"name": "reset_jev_question_cache",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/triage/engine.py",
+"line": 393,
+"end": 398,
+"name": "reset_jev_shared_clients",
+"kind": "function",
+"cls": null,
+"size": 6
+},
+{
+"f": "coderai/triage/engine.py",
+"line": 611,
+"end": 615,
+"name": "reset_triage_engine",
+"kind": "function",
+"cls": null,
+"size": 5
+},
+{
+"f": "coderai/mcp/client.py",
+"line": 100,
+"end": 101,
+"name": "set_notification_handler",
+"kind": "method",
+"cls": "McpClient",
+"size": 2
+},
+{
+"f": "coderai/mcp/client.py",
+"line": 228,
+"end": 234,
+"name": "get_prompt",
+"kind": "method",
+"cls": "McpClient",
+"size": 7
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 125,
+"end": 137,
+"name": "set_session_tool_mask",
+"kind": "method",
+"cls": "McpManager",
+"size": 13
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 139,
+"end": 141,
+"name": "get_session_tool_mask",
+"kind": "method",
+"cls": "McpManager",
+"size": 3
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 143,
+"end": 145,
+"name": "clear_session_tool_mask",
+"kind": "method",
+"cls": "McpManager",
+"size": 3
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 160,
+"end": 193,
+"name": "eject_server",
+"kind": "method",
+"cls": "McpManager",
+"size": 34
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 195,
+"end": 197,
+"name": "reload_server",
+"kind": "method",
+"cls": "McpManager",
+"size": 3
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 199,
+"end": 201,
+"name": "list_active_servers",
+"kind": "method",
+"cls": "McpManager",
+"size": 3
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 206,
+"end": 207,
+"name": "set_on_status_changed",
+"kind": "method",
+"cls": "McpManager",
+"size": 2
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 253,
+"end": 286,
+"name": "sync_servers",
+"kind": "method",
+"cls": "McpManager",
+"size": 34
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 316,
+"end": 329,
+"name": "probe_health",
+"kind": "method",
+"cls": "McpManager",
+"size": 14
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 331,
+"end": 373,
+"name": "auto_heal_servers",
+"kind": "method",
+"cls": "McpManager",
+"size": 43
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 375,
+"end": 421,
+"name": "hot_reload_tools",
+"kind": "method",
+"cls": "McpManager",
+"size": 47
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 704,
+"end": 728,
+"name": "get_mcp_prompt",
+"kind": "method",
+"cls": "McpManager",
+"size": 25
+},
+{
+"f": "coderai/mcp/manager.py",
+"line": 730,
+"end": 746,
+"name": "read_mcp_resource",
+"kind": "method",
+"cls": "McpManager",
+"size": 17
+},
+{
+"f": "coderai/cli/__init__.py",
+"line": 8,
+"end": 11,
+"name": "ExitCode",
+"kind": "class",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/cli/elapsed.py",
+"line": 50,
+"end": 52,
+"name": "estimate_tokens_float",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/cli/image_attachment.py",
+"line": 122,
+"end": 173,
+"name": "paste_clipboard_images",
+"kind": "function",
+"cls": null,
+"size": 52
+},
+{
+"f": "coderai/cli/doctor.py",
+"line": 36,
+"end": 37,
+"name": "has_errors",
+"kind": "method",
+"cls": "DoctorReport",
+"size": 2
+},
+{
+"f": "coderai/cli/doctor.py",
+"line": 40,
+"end": 41,
+"name": "has_warnings",
+"kind": "method",
+"cls": "DoctorReport",
+"size": 2
+},
+{
+"f": "coderai/prompt/__init__.py",
+"line": 256,
+"end": 259,
+"name": "get_compact_prompt_token_threshold",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/prompt/__init__.py",
+"line": 611,
+"end": 646,
+"name": "build_cache_stabilized_messages",
+"kind": "function",
+"cls": null,
+"size": 36
+},
+{
+"f": "coderai/prompt/__init__.py",
+"line": 907,
+"end": 908,
+"name": "_project_guidance",
+"kind": "function",
+"cls": null,
+"size": 2
+},
+{
+"f": "coderai/hooks/runner.py",
+"line": 29,
+"end": 49,
+"name": "run_pre_tool_use",
+"kind": "function",
+"cls": null,
+"size": 21
+},
+{
+"f": "coderai/hooks/runner.py",
+"line": 162,
+"end": 175,
+"name": "build_pre_tool_use_payload",
+"kind": "function",
+"cls": null,
+"size": 14
+},
+{
+"f": "coderai/hooks/runner.py",
+"line": 178,
+"end": 193,
+"name": "build_post_tool_use_payload",
+"kind": "function",
+"cls": null,
+"size": 16
+},
+{
+"f": "coderai/hooks/runner.py",
+"line": 227,
+"end": 234,
+"name": "build_stop_failure_payload",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/hooks/runner.py",
+"line": 344,
+"end": 362,
+"name": "run_stop_failure",
+"kind": "function",
+"cls": null,
+"size": 19
+},
+{
+"f": "coderai/hooks/runner.py",
+"line": 524,
+"end": 538,
+"name": "run_user_prompt_submit_async",
+"kind": "function",
+"cls": null,
+"size": 15
+},
+{
+"f": "coderai/hooks/runner.py",
+"line": 541,
+"end": 555,
+"name": "run_stop_async",
+"kind": "function",
+"cls": null,
+"size": 15
+},
+{
+"f": "coderai/hooks/runner.py",
+"line": 558,
+"end": 576,
+"name": "run_pre_compact_async",
+"kind": "function",
+"cls": null,
+"size": 19
+},
+{
+"f": "coderai/hooks/runner.py",
+"line": 579,
+"end": 597,
+"name": "run_post_compact_async",
+"kind": "function",
+"cls": null,
+"size": 19
+},
+{
+"f": "coderai/hooks/runner.py",
+"line": 600,
+"end": 612,
+"name": "run_session_start_async",
+"kind": "function",
+"cls": null,
+"size": 13
+},
+{
+"f": "coderai/hooks/runner.py",
+"line": 615,
+"end": 627,
+"name": "run_session_end_async",
+"kind": "function",
+"cls": null,
+"size": 13
+},
+{
+"f": "coderai/hooks/config.py",
+"line": 113,
+"end": 114,
+"name": "is_allowed",
+"kind": "method",
+"cls": "MergedHookOutcome",
+"size": 2
+},
+{
+"f": "coderai/hooks/engine.py",
+"line": 205,
+"end": 280,
+"name": "execute_hook_command_async",
+"kind": "function",
+"cls": null,
+"size": 76
+},
+{
+"f": "coderai/hooks/engine.py",
+"line": 383,
+"end": 447,
+"name": "run_hook_point_async",
+"kind": "function",
+"cls": null,
+"size": 65
+},
+{
+"f": "coderai/hooks/engine.py",
+"line": 522,
+"end": 534,
+"name": "fire_and_forget_trigger",
+"kind": "method",
+"cls": "HookEngine",
+"size": 13
+},
+{
+"f": "coderai/hooks/engine.py",
+"line": 544,
+"end": 546,
+"name": "add_hooks",
+"kind": "method",
+"cls": "HookEngine",
+"size": 3
+},
+{
+"f": "coderai/hooks/engine.py",
+"line": 548,
+"end": 550,
+"name": "add_wire_subscriptions",
+"kind": "method",
+"cls": "HookEngine",
+"size": 3
+},
+{
+"f": "coderai/hooks/engine.py",
+"line": 552,
+"end": 560,
+"name": "set_callbacks",
+"kind": "method",
+"cls": "HookEngine",
+"size": 9
+},
+{
+"f": "coderai/hooks/engine.py",
+"line": 563,
+"end": 564,
+"name": "has_hooks",
+"kind": "method",
+"cls": "HookEngine",
+"size": 2
+},
+{
+"f": "coderai/hooks/engine.py",
+"line": 566,
+"end": 567,
+"name": "has_hooks_for",
+"kind": "method",
+"cls": "HookEngine",
+"size": 2
+},
+{
+"f": "coderai/jev/client.py",
+"line": 180,
+"end": 185,
+"name": "_reset_executor_for_tests",
+"kind": "function",
+"cls": null,
+"size": 6
+},
+{
+"f": "coderai/jev/client.py",
+"line": 421,
+"end": 427,
+"name": "jev_cache_clear",
+"kind": "function",
+"cls": null,
+"size": 7
+},
+{
+"f": "coderai/jev/client.py",
+"line": 516,
+"end": 521,
+"name": "jev_status_clear",
+"kind": "function",
+"cls": null,
+"size": 6
+},
+{
+"f": "coderai/teams/deadlock.py",
+"line": 19,
+"end": 24,
+"name": "DeadlockError",
+"kind": "class",
+"cls": null,
+"size": 6
+},
+{
+"f": "coderai/teams/deadlock.py",
+"line": 90,
+"end": 132,
+"name": "InterAgentWaitWatchdog",
+"kind": "class",
+"cls": null,
+"size": 43
+},
+{
+"f": "coderai/teams/deadlock.py",
+"line": 98,
+"end": 107,
+"name": "record_wait",
+"kind": "method",
+"cls": "InterAgentWaitWatchdog",
+"size": 10
+},
+{
+"f": "coderai/teams/deadlock.py",
+"line": 109,
+"end": 115,
+"name": "release_wait",
+"kind": "method",
+"cls": "InterAgentWaitWatchdog",
+"size": 7
+},
+{
+"f": "coderai/teams/deadlock.py",
+"line": 117,
+"end": 121,
+"name": "detect_circular_waits",
+"kind": "method",
+"cls": "InterAgentWaitWatchdog",
+"size": 5
+},
+{
+"f": "coderai/teams/deadlock.py",
+"line": 123,
+"end": 132,
+"name": "assert_no_deadlock",
+"kind": "method",
+"cls": "InterAgentWaitWatchdog",
+"size": 10
+},
+{
+"f": "coderai/teams/tools.py",
+"line": 11,
+"end": 55,
+"name": "handle_spawn_teammate_tool",
+"kind": "function",
+"cls": null,
+"size": 45
+},
+{
+"f": "coderai/teams/tools.py",
+"line": 58,
+"end": 111,
+"name": "handle_team_task_create_tool",
+"kind": "function",
+"cls": null,
+"size": 54
+},
+{
+"f": "coderai/teams/tools.py",
+"line": 114,
+"end": 157,
+"name": "handle_team_task_get_tool",
+"kind": "function",
+"cls": null,
+"size": 44
+},
+{
+"f": "coderai/teams/tools.py",
+"line": 160,
+"end": 195,
+"name": "handle_team_task_list_tool",
+"kind": "function",
+"cls": null,
+"size": 36
+},
+{
+"f": "coderai/teams/tools.py",
+"line": 198,
+"end": 256,
+"name": "handle_team_task_update_tool",
+"kind": "function",
+"cls": null,
+"size": 59
+},
+{
+"f": "coderai/teams/tools.py",
+"line": 259,
+"end": 304,
+"name": "handle_wait_agent_tool",
+"kind": "function",
+"cls": null,
+"size": 46
+},
+{
+"f": "coderai/teams/concurrency.py",
+"line": 34,
+"end": 47,
+"name": "calculate_backoff_delay",
+"kind": "function",
+"cls": null,
+"size": 14
+},
+{
+"f": "coderai/teams/concurrency.py",
+"line": 50,
+"end": 94,
+"name": "cas_retry_async",
+"kind": "function",
+"cls": null,
+"size": 45
+},
+{
+"f": "coderai/teams/concurrency.py",
+"line": 97,
+"end": 130,
+"name": "cas_retry_sync",
+"kind": "function",
+"cls": null,
+"size": 34
+},
+{
+"f": "coderai/teams/mailbox.py",
+"line": 59,
+"end": 85,
+"name": "send_async",
+"kind": "method",
+"cls": "AsyncMailbox",
+"size": 27
+},
+{
+"f": "coderai/teams/mailbox.py",
+"line": 168,
+"end": 186,
+"name": "publish_async",
+"kind": "method",
+"cls": "ActorChannel",
+"size": 19
+},
+{
+"f": "coderai/teams/mailbox.py",
+"line": 188,
+"end": 207,
+"name": "broadcast_async",
+"kind": "method",
+"cls": "ActorChannel",
+"size": 20
+},
+{
+"f": "coderai/teams/manager.py",
+"line": 37,
+"end": 40,
+"name": "_validate_dag",
+"kind": "method",
+"cls": "TeamTaskBoard",
+"size": 4
+},
+{
+"f": "coderai/teams/manager.py",
+"line": 77,
+"end": 78,
+"name": "get_task",
+"kind": "method",
+"cls": "TeamTaskBoard",
+"size": 2
+},
+{
+"f": "coderai/teams/manager.py",
+"line": 295,
+"end": 297,
+"name": "get_messages",
+"kind": "method",
+"cls": "TeamManager",
+"size": 3
+},
+{
+"f": "coderai/teams/manager.py",
+"line": 542,
+"end": 567,
+"name": "cancel_all_teammates",
+"kind": "method",
+"cls": "TeamManager",
+"size": 26
+},
+{
+"f": "coderai/teams/manager.py",
+"line": 578,
+"end": 583,
+"name": "reset_team_manager",
+"kind": "function",
+"cls": null,
+"size": 6
+},
+{
+"f": "coderai/approval_runtime/runtime.py",
+"line": 67,
+"end": 91,
+"name": "create_request",
+"kind": "method",
+"cls": "ApprovalRuntime",
+"size": 25
+},
+{
+"f": "coderai/approval_runtime/runtime.py",
+"line": 93,
+"end": 129,
+"name": "wait_for_response",
+"kind": "method",
+"cls": "ApprovalRuntime",
+"size": 37
+},
+{
+"f": "coderai/approval_runtime/runtime.py",
+"line": 210,
+"end": 231,
+"name": "_publish_wire_request",
+"kind": "method",
+"cls": "ApprovalRuntime",
+"size": 22
+},
+{
+"f": "coderai/telemetry/crash.py",
+"line": 120,
+"end": 136,
+"name": "_asyncio_handler",
+"kind": "function",
+"cls": null,
+"size": 17
+},
+{
+"f": "coderai/telemetry/crash.py",
+"line": 139,
+"end": 152,
+"name": "install_asyncio_handler",
+"kind": "function",
+"cls": null,
+"size": 14
+},
+{
+"f": "coderai/telemetry/sink.py",
+"line": 43,
+"end": 50,
+"name": "add_event",
+"kind": "method",
+"cls": "ExecutionSpan",
+"size": 8
+},
+{
+"f": "coderai/telemetry/sink.py",
+"line": 68,
+"end": 93,
+"name": "to_otel_span",
+"kind": "method",
+"cls": "ExecutionSpan",
+"size": 26
+},
+{
+"f": "coderai/telemetry/sink.py",
+"line": 113,
+"end": 114,
+"name": "set_active_trace_id",
+"kind": "method",
+"cls": "TelemetryCollector",
+"size": 2
+},
+{
+"f": "coderai/telemetry/sink.py",
+"line": 116,
+"end": 117,
+"name": "get_active_trace_id",
+"kind": "method",
+"cls": "TelemetryCollector",
+"size": 2
+},
+{
+"f": "coderai/telemetry/sink.py",
+"line": 176,
+"end": 191,
+"name": "get_metrics_summary",
+"kind": "method",
+"cls": "TelemetryCollector",
+"size": 16
+},
+{
+"f": "coderai/telemetry/sink.py",
+"line": 193,
+"end": 204,
+"name": "export_spans",
+"kind": "method",
+"cls": "TelemetryCollector",
+"size": 12
+},
+{
+"f": "coderai/telemetry/__init__.py",
+"line": 54,
+"end": 59,
+"name": "set_client_info",
+"kind": "function",
+"cls": null,
+"size": 6
+},
+{
+"f": "coderai/telemetry/__init__.py",
+"line": 62,
+"end": 64,
+"name": "get_client_info",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/telemetry/__init__.py",
+"line": 67,
+"end": 100,
+"name": "track_session_started_once",
+"kind": "function",
+"cls": null,
+"size": 34
+},
+{
+"f": "coderai/soul/coderaisoul.py",
+"line": 876,
+"end": 877,
+"name": "type_check",
+"kind": "method",
+"cls": "AgentLoop",
+"size": 2
+},
+{
+"f": "coderai/soul/coderaisoul.py",
+"line": 1092,
+"end": 1094,
+"name": "is_afk_flag",
+"kind": "method",
+"cls": "KimiSoul",
+"size": 3
+},
+{
+"f": "coderai/soul/coderaisoul.py",
+"line": 1127,
+"end": 1130,
+"name": "set_hook_engine",
+"kind": "method",
+"cls": "KimiSoul",
+"size": 4
+},
+{
+"f": "coderai/soul/coderaisoul.py",
+"line": 1132,
+"end": 1134,
+"name": "add_injection_provider",
+"kind": "method",
+"cls": "KimiSoul",
+"size": 3
+},
+{
+"f": "coderai/soul/coderaisoul.py",
+"line": 1303,
+"end": 1309,
+"name": "set_plan_mode_from_manual",
+"kind": "method",
+"cls": "KimiSoul",
+"size": 7
+},
+{
+"f": "coderai/soul/tool_context.py",
+"line": 22,
+"end": 24,
+"name": "set_current_tool_call",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/soul/tool_context.py",
+"line": 37,
+"end": 39,
+"name": "get_current_step_no",
+"kind": "function",
+"cls": null,
+"size": 3
+},
+{
+"f": "coderai/soul/dynamic_injection.py",
+"line": 153,
+"end": 158,
+"name": "notify_compacted",
+"kind": "method",
+"cls": "InjectionRegistry",
+"size": 6
+},
+{
+"f": "coderai/soul/btw.py",
+"line": 140,
+"end": 153,
+"name": "inject_dmail_and_continue",
+"kind": "function",
+"cls": null,
+"size": 14
+},
+{
+"f": "coderai/soul/agent.py",
+"line": 132,
+"end": 134,
+"name": "notify_compacted",
+"kind": "method",
+"cls": "SessionSoul",
+"size": 3
+},
+{
+"f": "coderai/soul/agent.py",
+"line": 214,
+"end": 219,
+"name": "checkpoint_count",
+"kind": "method",
+"cls": "SessionSoul",
+"size": 6
+},
+{
+"f": "coderai/soul/compaction.py",
+"line": 91,
+"end": 94,
+"name": "prune_tool_results_for_compaction",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/soul/approval.py",
+"line": 261,
+"end": 263,
+"name": "grant_ticket",
+"kind": "method",
+"cls": "PermissionTicketRegistry",
+"size": 3
+},
+{
+"f": "coderai/soul/approval.py",
+"line": 265,
+"end": 285,
+"name": "request_escalation",
+"kind": "method",
+"cls": "PermissionTicketRegistry",
+"size": 21
+},
+{
+"f": "coderai/soul/approval.py",
+"line": 304,
+"end": 305,
+"name": "revoke_ticket",
+"kind": "method",
+"cls": "PermissionTicketRegistry",
+"size": 2
+},
+{
+"f": "coderai/soul/approval.py",
+"line": 307,
+"end": 317,
+"name": "list_active_tickets",
+"kind": "method",
+"cls": "PermissionTicketRegistry",
+"size": 11
+},
+{
+"f": "coderai/soul/approval.py",
+"line": 319,
+"end": 322,
+"name": "clear_session_tickets",
+"kind": "method",
+"cls": "PermissionTicketRegistry",
+"size": 4
+},
+{
+"f": "coderai/soul/approval.py",
+"line": 328,
+"end": 329,
+"name": "get_permission_ticket_registry",
+"kind": "function",
+"cls": null,
+"size": 2
+},
+{
+"f": "coderai/soul/approval.py",
+"line": 336,
+"end": 342,
+"name": "permission_coverage_gaps",
+"kind": "function",
+"cls": null,
+"size": 7
+},
+{
+"f": "coderai/soul/approval.py",
+"line": 918,
+"end": 941,
+"name": "normalize_ask_permissions",
+"kind": "function",
+"cls": null,
+"size": 24
+},
+{
+"f": "coderai/soul/approval.py",
+"line": 1057,
+"end": 1058,
+"name": "set_runtime",
+"kind": "method",
+"cls": "Approval",
+"size": 2
+},
+{
+"f": "coderai/soul/approval.py",
+"line": 1074,
+"end": 1075,
+"name": "set_runtime_afk",
+"kind": "method",
+"cls": "Approval",
+"size": 2
+},
+{
+"f": "coderai/soul/approval.py",
+"line": 1089,
+"end": 1090,
+"name": "is_afk_flag",
+"kind": "method",
+"cls": "Approval",
+"size": 2
+},
+{
+"f": "coderai/soul/toolset.py",
+"line": 233,
+"end": 234,
+"name": "set_hook_engine",
+"kind": "method",
+"cls": "CoderAIToolset",
+"size": 2
+},
+{
+"f": "coderai/soul/toolset.py",
+"line": 239,
+"end": 244,
+"name": "hide",
+"kind": "method",
+"cls": "CoderAIToolset",
+"size": 6
+},
+{
+"f": "coderai/soul/toolset.py",
+"line": 246,
+"end": 248,
+"name": "unhide",
+"kind": "method",
+"cls": "CoderAIToolset",
+"size": 3
+},
+{
+"f": "coderai/soul/toolset.py",
+"line": 318,
+"end": 320,
+"name": "dedup_triggered",
+"kind": "method",
+"cls": "CoderAIToolset",
+"size": 3
+},
+{
+"f": "coderai/soul/toolset.py",
+"line": 596,
+"end": 615,
+"name": "register_external_tool",
+"kind": "method",
+"cls": "CoderAIToolset",
+"size": 20
+},
+{
+"f": "coderai/soul/toolset.py",
+"line": 647,
+"end": 649,
+"name": "has_deferred_mcp_tools",
+"kind": "method",
+"cls": "CoderAIToolset",
+"size": 3
+},
+{
+"f": "coderai/soul/toolset.py",
+"line": 908,
+"end": 947,
+"name": "WireExternalTool",
+"kind": "class",
+"cls": null,
+"size": 40
+},
+{
+"f": "coderai/soul/dynamic_injections/plan_mode.py",
+"line": 98,
+"end": 106,
+"name": "_has_plan_reminder",
+"kind": "method",
+"cls": "PlanModeInjectionProvider",
+"size": 9
+},
+{
+"f": "coderai/soul/session/store.py",
+"line": 206,
+"end": 214,
+"name": "delete_log",
+"kind": "method",
+"cls": "JsonlSessionStore",
+"size": 9
+},
+{
+"f": "coderai/soul/session/store.py",
+"line": 216,
+"end": 218,
+"name": "replay_events",
+"kind": "method",
+"cls": "JsonlSessionStore",
+"size": 3
+},
+{
+"f": "coderai/soul/session/store.py",
+"line": 220,
+"end": 294,
+"name": "validate_and_repair_invariants",
+"kind": "method",
+"cls": "JsonlSessionStore",
+"size": 75
+},
+{
+"f": "coderai/soul/session/models.py",
+"line": 101,
+"end": 125,
+"name": "serialize_message",
+"kind": "function",
+"cls": null,
+"size": 25
+},
+{
+"f": "coderai/soul/session/models.py",
+"line": 128,
+"end": 240,
+"name": "deserialize_message",
+"kind": "function",
+"cls": null,
+"size": 113
+},
+{
+"f": "coderai/soul/session/models.py",
+"line": 243,
+"end": 265,
+"name": "entry_from_dict",
+"kind": "function",
+"cls": null,
+"size": 23
+},
+{
+"f": "coderai/soul/session/models.py",
+"line": 268,
+"end": 271,
+"name": "accumulate_usage",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/soul/session/models.py",
+"line": 274,
+"end": 281,
+"name": "accumulate_usage_per_model",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/soul/session/models.py",
+"line": 288,
+"end": 302,
+"name": "copy_message_with",
+"kind": "function",
+"cls": null,
+"size": 15
+},
+{
+"f": "coderai/soul/session/completion.py",
+"line": 20,
+"end": 51,
+"name": "normalize_tool_calls",
+"kind": "function",
+"cls": null,
+"size": 32
+},
+{
+"f": "coderai/soul/session/completion.py",
+"line": 54,
+"end": 72,
+"name": "pydantic_tool_calls",
+"kind": "function",
+"cls": null,
+"size": 19
+},
+{
+"f": "coderai/soul/session/completion.py",
+"line": 75,
+"end": 96,
+"name": "format_completion_response",
+"kind": "function",
+"cls": null,
+"size": 22
+},
+{
+"f": "coderai/soul/session/completion.py",
+"line": 99,
+"end": 104,
+"name": "call_sync",
+"kind": "function",
+"cls": null,
+"size": 6
+},
+{
+"f": "coderai/soul/session/completion.py",
+"line": 107,
+"end": 280,
+"name": "call_stream_or_sync",
+"kind": "function",
+"cls": null,
+"size": 174
+},
+{
+"f": "coderai/soul/session/completion.py",
+"line": 283,
+"end": 305,
+"name": "resolve_target_file_path",
+"kind": "function",
+"cls": null,
+"size": 23
+},
+{
+"f": "coderai/soul/session/completion.py",
+"line": 308,
+"end": 314,
+"name": "is_invisible_execution",
+"kind": "function",
+"cls": null,
+"size": 7
+},
+{
+"f": "coderai/soul/session/completion.py",
+"line": 317,
+"end": 327,
+"name": "build_tool_params_snippet",
+"kind": "function",
+"cls": null,
+"size": 11
+},
+{
+"f": "coderai/soul/session/completion.py",
+"line": 330,
+"end": 340,
+"name": "build_tool_result_snippet",
+"kind": "function",
+"cls": null,
+"size": 11
+},
+{
+"f": "coderai/soul/session/background.py",
+"line": 34,
+"end": 57,
+"name": "dispatch_due_schedules",
+"kind": "function",
+"cls": null,
+"size": 24
+},
+{
+"f": "coderai/soul/session/background.py",
+"line": 124,
+"end": 139,
+"name": "track_process_start",
+"kind": "function",
+"cls": null,
+"size": 16
+},
+{
+"f": "coderai/soul/session/background.py",
+"line": 142,
+"end": 150,
+"name": "track_process_exit",
+"kind": "function",
+"cls": null,
+"size": 9
+},
+{
+"f": "coderai/soul/session/approval.py",
+"line": 12,
+"end": 15,
+"name": "register_session_manager",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/soul/session/approval.py",
+"line": 18,
+"end": 23,
+"name": "unregister_session_manager",
+"kind": "function",
+"cls": null,
+"size": 6
+},
+{
+"f": "coderai/soul/session/approval.py",
+"line": 39,
+"end": 42,
+"name": "_manager_matches_session",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/soul/session/approval.py",
+"line": 45,
+"end": 53,
+"name": "global_afk_check",
+"kind": "function",
+"cls": null,
+"size": 9
+},
+{
+"f": "coderai/soul/session/approval.py",
+"line": 67,
+"end": 75,
+"name": "check_afk_for_session",
+"kind": "function",
+"cls": null,
+"size": 9
+},
+{
+"f": "coderai/soul/session/approval.py",
+"line": 78,
+"end": 86,
+"name": "check_auto_approve_for_session",
+"kind": "function",
+"cls": null,
+"size": 9
+},
+{
+"f": "coderai/soul/session/manager.py",
+"line": 438,
+"end": 448,
+"name": "sync_session_state_from_entry",
+"kind": "method",
+"cls": "SessionManager",
+"size": 11
+},
+{
+"f": "coderai/soul/session/manager.py",
+"line": 457,
+"end": 478,
+"name": "grant_permission_ticket",
+"kind": "method",
+"cls": "SessionManager",
+"size": 22
+},
+{
+"f": "coderai/soul/session/manager.py",
+"line": 480,
+"end": 488,
+"name": "list_active_permission_tickets",
+"kind": "method",
+"cls": "SessionManager",
+"size": 9
+},
+{
+"f": "coderai/soul/session/manager.py",
+"line": 490,
+"end": 494,
+"name": "revoke_permission_ticket",
+"kind": "method",
+"cls": "SessionManager",
+"size": 5
+},
+{
+"f": "coderai/soul/session/manager.py",
+"line": 877,
+"end": 917,
+"name": "_create_empty_session",
+"kind": "method",
+"cls": "SessionManager",
+"size": 41
+},
+{
+"f": "coderai/soul/session/manager.py",
+"line": 2336,
+"end": 2340,
+"name": "sync_mcp_servers",
+"kind": "method",
+"cls": "SessionManager",
+"size": 5
+},
+{
+"f": "coderai/soul/session/manager.py",
+"line": 2479,
+"end": 2514,
+"name": "dispose",
+"kind": "method",
+"cls": "SessionManager",
+"size": 36
+},
+{
+"f": "coderai/acp/server.py",
+"line": 113,
+"end": 115,
+"name": "on_connect",
+"kind": "method",
+"cls": "ACPServer",
+"size": 3
+},
+{
+"f": "coderai/acp/server.py",
+"line": 226,
+"end": 293,
+"name": "new_session",
+"kind": "method",
+"cls": "ACPServer",
+"size": 68
+},
+{
+"f": "coderai/acp/server.py",
+"line": 350,
+"end": 377,
+"name": "resume_session",
+"kind": "method",
+"cls": "ACPServer",
+"size": 28
+},
+{
+"f": "coderai/acp/server.py",
+"line": 509,
+"end": 511,
+"name": "set_session_mode",
+"kind": "method",
+"cls": "ACPServer",
+"size": 3
+},
+{
+"f": "coderai/acp/server.py",
+"line": 513,
+"end": 547,
+"name": "set_session_model",
+"kind": "method",
+"cls": "ACPServer",
+"size": 35
+},
+{
+"f": "coderai/acp/server.py",
+"line": 549,
+"end": 565,
+"name": "authenticate",
+"kind": "method",
+"cls": "ACPServer",
+"size": 17
+},
+{
+"f": "coderai/acp/server.py",
+"line": 585,
+"end": 608,
+"name": "ext_method",
+"kind": "method",
+"cls": "ACPServer",
+"size": 24
+},
+{
+"f": "coderai/acp/server.py",
+"line": 610,
+"end": 623,
+"name": "_terminal_bridge",
+"kind": "method",
+"cls": "ACPServer",
+"size": 14
+},
+{
+"f": "coderai/acp/server.py",
+"line": 625,
+"end": 674,
+"name": "_terminal_ext_method",
+"kind": "method",
+"cls": "ACPServer",
+"size": 50
+},
+{
+"f": "coderai/acp/server.py",
+"line": 676,
+"end": 677,
+"name": "ext_notification",
+"kind": "method",
+"cls": "ACPServer",
+"size": 2
+},
+{
+"f": "coderai/acp/server.py",
+"line": 685,
+"end": 688,
+"name": "from_acp_model_id",
+"kind": "method",
+"cls": "_ModelIDConv",
+"size": 4
+},
+{
+"f": "coderai/acp/terminal.py",
+"line": 25,
+"end": 32,
+"name": "_clamp_timeout_ms",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/acp/terminal.py",
+"line": 35,
+"end": 178,
+"name": "TerminalBridge",
+"kind": "class",
+"cls": null,
+"size": 144
+},
+{
+"f": "coderai/acp/terminal.py",
+"line": 60,
+"end": 61,
+"name": "_prefix",
+"kind": "method",
+"cls": "TerminalBridge",
+"size": 2
+},
+{
+"f": "coderai/acp/terminal.py",
+"line": 63,
+"end": 64,
+"name": "_own",
+"kind": "method",
+"cls": "TerminalBridge",
+"size": 2
+},
+{
+"f": "coderai/acp/terminal.py",
+"line": 66,
+"end": 70,
+"name": "_lookup",
+"kind": "method",
+"cls": "TerminalBridge",
+"size": 5
+},
+{
+"f": "coderai/acp/terminal.py",
+"line": 78,
+"end": 84,
+"name": "list_terminals",
+"kind": "method",
+"cls": "TerminalBridge",
+"size": 7
+},
+{
+"f": "coderai/acp/terminal.py",
+"line": 86,
+"end": 109,
+"name": "open_terminal",
+"kind": "method",
+"cls": "TerminalBridge",
+"size": 24
+},
+{
+"f": "coderai/acp/terminal.py",
+"line": 111,
+"end": 133,
+"name": "send_terminal",
+"kind": "method",
+"cls": "TerminalBridge",
+"size": 23
+},
+{
+"f": "coderai/acp/terminal.py",
+"line": 135,
+"end": 150,
+"name": "read_terminal",
+"kind": "method",
+"cls": "TerminalBridge",
+"size": 16
+},
+{
+"f": "coderai/acp/terminal.py",
+"line": 152,
+"end": 165,
+"name": "signal_terminal",
+"kind": "method",
+"cls": "TerminalBridge",
+"size": 14
+},
+{
+"f": "coderai/acp/terminal.py",
+"line": 167,
+"end": 178,
+"name": "close_terminal",
+"kind": "method",
+"cls": "TerminalBridge",
+"size": 12
+},
+{
+"f": "coderai/acp/session.py",
+"line": 64,
+"end": 74,
+"name": "get_current_acp_tool_call_id_or_none",
+"kind": "function",
+"cls": null,
+"size": 11
+},
+{
+"f": "coderai/acp/session.py",
+"line": 77,
+"end": 80,
+"name": "register_terminal_tool_call_id",
+"kind": "function",
+"cls": null,
+"size": 4
+},
+{
+"f": "coderai/acp/engine.py",
+"line": 89,
+"end": 96,
+"name": "build_prompt",
+"kind": "function",
+"cls": null,
+"size": 8
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 21,
+"end": 22,
+"name": "can_write_eof",
+"kind": "method",
+"cls": "_NullWritable",
+"size": 2
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 27,
+"end": 28,
+"name": "drain",
+"kind": "method",
+"cls": "_NullWritable",
+"size": 2
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 30,
+"end": 31,
+"name": "is_closing",
+"kind": "method",
+"cls": "_NullWritable",
+"size": 2
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 33,
+"end": 34,
+"name": "wait_closed",
+"kind": "method",
+"cls": "_NullWritable",
+"size": 2
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 39,
+"end": 40,
+"name": "writelines",
+"kind": "method",
+"cls": "_NullWritable",
+"size": 2
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 42,
+"end": 43,
+"name": "write_eof",
+"kind": "method",
+"cls": "_NullWritable",
+"size": 2
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 46,
+"end": 164,
+"name": "ACPProcess",
+"kind": "class",
+"cls": null,
+"size": 119
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 192,
+"end": 193,
+"name": "pathclass",
+"kind": "method",
+"cls": "ACPKaos",
+"size": 2
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 198,
+"end": 199,
+"name": "gethome",
+"kind": "method",
+"cls": "ACPKaos",
+"size": 2
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 204,
+"end": 205,
+"name": "chdir",
+"kind": "method",
+"cls": "ACPKaos",
+"size": 2
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 218,
+"end": 219,
+"name": "readbytes",
+"kind": "method",
+"cls": "ACPKaos",
+"size": 2
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 245,
+"end": 246,
+"name": "writebytes",
+"kind": "method",
+"cls": "ACPKaos",
+"size": 2
+},
+{
+"f": "coderai/acp/kaos.py",
+"line": 248,
+"end": 281,
+"name": "writetext",
+"kind": "method",
+"cls": "ACPKaos",
+"size": 34
+}
+]

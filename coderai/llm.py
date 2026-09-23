@@ -222,6 +222,111 @@ def estimate_request_tokens(
     )
 
 
+def estimate_openai_request_tokens(
+    messages: Sequence[Mapping[str, Any]],
+    tools: Sequence[Mapping[str, Any]] | None = None,
+) -> int:
+    """Estimate tokens for an OpenAI-style chat request before it is sent.
+
+    Uses the same character heuristic as ``estimate_request_tokens`` so the
+    session loop can cap completion length before the provider counts tokens.
+    """
+    total = 0
+    for message in messages:
+        total += _estimate_text_tokens(str(message.get("role") or ""))
+        name = message.get("name")
+        if isinstance(name, str):
+            total += _estimate_text_tokens(name)
+        tool_call_id = message.get("tool_call_id")
+        if isinstance(tool_call_id, str):
+            total += _estimate_text_tokens(tool_call_id)
+        total += _estimate_content_blob(message.get("content"))
+        for tool_call in message.get("tool_calls") or ():
+            if not isinstance(tool_call, Mapping):
+                total += _estimate_text_tokens(str(tool_call))
+                continue
+            total += _estimate_text_tokens(str(tool_call.get("id") or ""))
+            function = tool_call.get("function") or {}
+            if isinstance(function, Mapping):
+                total += _estimate_text_tokens(str(function.get("name") or ""))
+                total += _estimate_text_tokens(str(function.get("arguments") or ""))
+    if tools:
+        total += _estimate_text_tokens(
+            json.dumps(list(tools), ensure_ascii=False, separators=(",", ":"), default=str)
+        )
+    return total
+
+
+def apply_request_completion_cap(
+    request: dict[str, Any],
+    *,
+    context_limit: int,
+    active_tokens: int = 0,
+    response_budget: int | None = None,
+    reserved_context_size: int = 50_000,
+    safety_margin: int = DEFAULT_COMPLETION_TOKEN_SAFETY_MARGIN,
+) -> int:
+    """Shrink the completion budget so input plus output stays inside the window.
+
+    ``active_tokens`` is the last provider usage. The payload estimate covers
+    tool results appended after that usage. The larger of the two is the floor.
+    """
+    estimated = estimate_openai_request_tokens(
+        request.get("messages") or [],
+        request.get("tools"),
+    )
+    input_tokens = max(0, int(active_tokens or 0), estimated)
+    if context_limit > 0:
+        input_tokens += safety_margin
+    configured = request.get("max_completion_tokens", request.get("max_tokens"))
+    budget = configured if isinstance(configured, int) and configured > 0 else response_budget
+    cap = compute_max_completion_tokens(
+        max_context_size=context_limit,
+        input_tokens=input_tokens,
+        response_budget=budget if isinstance(budget, int) else None,
+        fallback_budget=reserved_context_size,
+    )
+    model = str(request.get("model") or "").lower()
+    # Newer OpenAI models reject ``max_tokens``; other providers reject the
+    # completion-token field. Send exactly one.
+    uses_completion_tokens = any(
+        token in model for token in ("gpt-6", "gpt-5", "astra", "o1", "o3", "o4")
+    )
+    if uses_completion_tokens:
+        request.pop("max_tokens", None)
+        request["max_completion_tokens"] = cap
+    else:
+        request.pop("max_completion_tokens", None)
+        request["max_tokens"] = cap
+    return cap
+
+
+def _estimate_content_blob(content: Any) -> int:
+    if content is None:
+        return 0
+    if isinstance(content, str):
+        return _estimate_text_tokens(content)
+    if isinstance(content, list):
+        total = 0
+        for part in content:
+            if isinstance(part, str):
+                total += _estimate_text_tokens(part)
+            elif isinstance(part, Mapping):
+                text = part.get("text") if isinstance(part.get("text"), str) else None
+                if text is None and isinstance(part.get("content"), str):
+                    text = part.get("content")
+                if isinstance(text, str):
+                    total += _estimate_text_tokens(text)
+                else:
+                    total += _estimate_text_tokens(
+                        json.dumps(dict(part), ensure_ascii=False, default=str)
+                    )
+            else:
+                total += _estimate_text_tokens(str(part))
+        return total
+    return _estimate_text_tokens(str(content))
+
+
 def estimate_message_tokens(messages: Sequence[Message]) -> int:
     """Estimate token-bearing content for messages added outside the main context."""
     return sum(_estimate_message_tokens(message) for message in messages)
@@ -639,6 +744,18 @@ def resolve_model_provider_routing(
     """Resolve the appropriate baseURL and API key for the selected model."""
     env = env or {}
     m = model.strip().lower()
+
+    # 0. Jev System-One is NAR triage/gating only — never a chat/tool model.
+    # Return its key with a jev:// marker so callers can fail with a clear message.
+    if m in {"jev-system-one"} or m.startswith("jev-") or m.startswith("typesafe"):
+        jev_key = (
+            explicit_api_key
+            or env.get("TYPESAFE_API_KEY")
+            or os.getenv("TYPESAFE_API_KEY")
+            or env.get("JEV_API_KEY")
+            or os.getenv("JEV_API_KEY")
+        )
+        return "jev://system-one", jev_key
 
     # 1. If user explicitly provided a non-default custom baseURL in settings/env, respect it.
     if explicit_base_url and explicit_base_url != DEFAULT_BASE_URL:
@@ -1101,7 +1218,7 @@ def create_openai_client(
         except Exception:
             raise
 
-    if not api_key:
+    if not api_key or base_url == "jev://system-one":
         return base()
 
     cache_key = f"{api_key}::{base_url}"
@@ -1144,6 +1261,42 @@ def probe_provider_connectivity(
     timeout: float = 10.0,
 ) -> tuple[bool, str]:
     """Probe API connection to a provider with given model, endpoint, and key."""
+    # Jev System-One is NAR (TypeSafe SDK), not OpenAI-compatible — probe it directly.
+    try:
+        from coderai.utils.common.model_capabilities import is_jev_model
+
+        if is_jev_model(model or ""):
+            from coderai.jev.client import jev_status
+
+            status = jev_status() if not api_key else None
+            if status is not None and not status.get("configured"):
+                return (
+                    False,
+                    "Jev System-One not configured: set TYPESAFE_API_KEY (or JEV_API_KEY).",
+                )
+            # Lightweight live probe when reachable; never raise.
+            try:
+                from coderai.triage.engine import get_triage_engine
+
+                engine = get_triage_engine(api_key=api_key)
+                if not engine.is_available:
+                    if status is not None:
+                        return (
+                            False,
+                            "Jev client unavailable: install typesafe_sdk and set TYPESAFE_API_KEY.",
+                        )
+                    return (
+                        False,
+                        "No API key provided for Jev System-One (TYPESAFE_API_KEY).",
+                    )
+                probe = engine.screen_diff_hunk("probe.py", "x = 1\n")
+                if probe.reason.startswith("Triage error fallback"):
+                    return False, f"Jev probe failed: {probe.reason[:160]}"
+                return True, "Successfully connected! Jev System-One triage responded."
+            except Exception as exc:
+                return False, f"Jev probe error ({type(exc).__name__}): {str(exc)[:120]}"
+    except Exception:
+        pass
     wire_model = model
     try:
         from coderai.config import load_typed_config

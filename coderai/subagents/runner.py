@@ -104,6 +104,21 @@ class SubAgentManager:
         session_id = (
             f"sub_{spec.parent_session_id[:8] if spec.parent_session_id else 'root'}_{spec.task_id}"
         )
+        from coderai.subagents.core import AgentHandle, get_agent_registry
+
+        handle = AgentHandle(
+            id=spec.task_id,
+            parent_session_id=spec.parent_session_id or "",
+            run_session_id=session_id,
+            description=spec.description,
+            mode=spec.mode or "read_only",
+            depth=spec.depth,
+            parent_agent_id=spec.parent_agent_id,
+            root_agent_id=spec.root_agent_id,
+            spec=spec,
+        )
+        get_agent_registry().register(handle)
+
         effective_max_depth = spec.max_depth if spec.max_depth is not None else MAX_SUBAGENT_DEPTH
         quota_ok, _quota_err = check_subagent_depth_quota(spec.depth, effective_max_depth)
         provider = spec.provider or "in_process"
@@ -118,6 +133,8 @@ class SubAgentManager:
                 parent_session_id=spec.parent_session_id,
             )
         result = await self._spawn_subagent_inner(spec, session_id)
+        handle.result = result
+        handle.status = result.status
         if quota_ok:
             partial_ok = result.status in (
                 "completed",
@@ -560,7 +577,7 @@ class SubAgentManager:
         events = lifecycle_events if lifecycle_events is not None else []
         client_info = self.create_openai_client()
         client = client_info.get("client")
-        model = str(client_info.get("model") or "gpt-5.6-luna")
+        model = str(client_info.get("model") or "gpt-6-luna")
         base_url = client_info.get("baseURL")
         temperature = client_info.get("temperature")
         thinking_enabled = bool(client_info.get("thinkingEnabled"))
@@ -955,7 +972,47 @@ class SubAgentManager:
                     pass
 
                 # Check tool permissions inside sub-agent
-                if spec.mode == "read_only" and fn_name in ("write", "Write", "edit", "Edit"):
+                from coderai.subagents.registry import is_tool_allowed, get_subagent_definition
+                from coderai.tools.legacy.registry import get_tool_registry
+
+                tdef = get_tool_registry().get_tool(fn_name)
+                is_mutating = bool(tdef and tdef.is_mutating)
+
+                if spec.allowed_tools is not None and not is_tool_allowed(
+                    fn_name, "allowlist", tuple(spec.allowed_tools)
+                ):
+                    tool_result_content = json.dumps(
+                        {
+                            "ok": False,
+                            "name": fn_name,
+                            "error": f"PermissionDenied: Tool '{fn_name}' is not permitted by sub-agent allowlist policy.",
+                        }
+                    )
+                elif spec.mode == "read_only" and (
+                    fn_name in ("bash", "pwsh") and spec.sandbox_mode != "read-only"
+                ):
+                    tool_result_content = json.dumps(
+                        {
+                            "ok": False,
+                            "name": fn_name,
+                            "error": f"PermissionDenied: Sub-agent in read_only mode cannot invoke shell tool '{fn_name}' outside read-only sandbox.",
+                        }
+                    )
+                elif spec.mode == "read_only" and (
+                    fn_name
+                    in (
+                        "write",
+                        "Write",
+                        "edit",
+                        "Edit",
+                        "str_replace_editor",
+                        "schedule_create",
+                        "schedule_delete",
+                        "spawn_teammate",
+                    )
+                    or fn_name.startswith("terminal_")
+                    or (is_mutating and fn_name not in ("bash", "pwsh"))
+                ):
                     tool_result_content = json.dumps(
                         {
                             "ok": False,
@@ -963,12 +1020,71 @@ class SubAgentManager:
                             "error": f"PermissionDenied: Sub-agent in read_only mode cannot invoke mutating tool '{fn_name}'.",
                         }
                     )
+                elif spec.mode == "read_only" and fn_name in ("Task", "subagent", "subagent_fork"):
+                    child_mode = parsed_args.get("mode") if isinstance(parsed_args, dict) else None
+                    child_type = (
+                        parsed_args.get("subagent_type") if isinstance(parsed_args, dict) else None
+                    )
+                    child_is_writable = False
+                    if child_mode == "general":
+                        child_is_writable = True
+                    elif not child_mode and child_type:
+                        c_def = get_subagent_definition(child_type)
+                        if c_def and c_def.mode != "read_only":
+                            child_is_writable = True
+                    elif not child_mode and not child_type:
+                        child_is_writable = True
+
+                    if child_is_writable:
+                        tool_result_content = json.dumps(
+                            {
+                                "ok": False,
+                                "name": fn_name,
+                                "error": "PermissionDenied: Sub-agent in read_only mode cannot spawn a writable child sub-agent.",
+                            }
+                        )
+                    else:
+                        hooks = ToolExecutionHooks(
+                            should_stop=lambda: abort_event.is_set(),
+                            isolated_cwd=spec.isolated_cwd or spec.scratchpad_dir,
+                            dry_run=spec.dry_run,
+                            on_before_file_mutation=spec.on_before_file_mutation,
+                            on_after_file_mutation=lambda fp: (
+                                diffs.append({"file_path": str(fp)}),
+                                spec.on_after_file_mutation(fp)
+                                if spec.on_after_file_mutation
+                                else None,
+                            ),
+                            sandbox_mode=spec.sandbox_mode,
+                            plan_mode=spec.plan_mode,
+                            session_manager=spec.session_manager,
+                            allowed_tools=spec.allowed_tools,
+                        )
+                        executions = await tool_executor.execute_tool_calls(
+                            session_id, [tc], hooks=hooks
+                        )
+                        if executions:
+                            tool_result_content = executions[0]["content"]
+                        else:
+                            tool_result_content = json.dumps(
+                                {"ok": False, "error": "Execution aborted."}
+                            )
                 else:
-                    hooks: ToolExecutionHooks = ToolExecutionHooks(
+                    hooks = ToolExecutionHooks(
                         should_stop=lambda: abort_event.is_set(),
                         isolated_cwd=spec.isolated_cwd or spec.scratchpad_dir,
                         dry_run=spec.dry_run,
-                        on_after_file_mutation=lambda fp: diffs.append({"file_path": str(fp)}),
+                        on_before_file_mutation=spec.on_before_file_mutation,
+                        on_after_file_mutation=lambda fp: (
+                            diffs.append({"file_path": str(fp)}),
+                            spec.on_after_file_mutation(fp)
+                            if spec.on_after_file_mutation
+                            else None,
+                        ),
+                        sandbox_mode=spec.sandbox_mode,
+                        plan_mode=spec.plan_mode,
+                        session_manager=spec.session_manager,
+                        allowed_tools=spec.allowed_tools,
                     )
                     executions = await tool_executor.execute_tool_calls(
                         session_id, [tc], hooks=hooks
@@ -1020,11 +1136,15 @@ class SubAgentManager:
 
     def _get_sandboxed_tools(self, spec: SubAgentSpec, model: str) -> list[dict[str, Any]]:
         """Filter tools for subagent execution with deterministic ordering and canonicalization."""
+        import copy
         from coderai.prompt import format_tool_definitions
         from coderai.prompt.sections import order_tools
         from coderai.tools.legacy.types import canonicalize_tool_schema
+        from coderai.subagents.registry import is_tool_allowed
+        from coderai.tools.legacy.registry import get_tool_registry
 
         all_tools = get_tools({"model": model, "nonInteractive": True, "childAgent": True})
+        reg = get_tool_registry()
 
         filtered: list[dict[str, Any]] = []
         for tool in all_tools:
@@ -1038,12 +1158,42 @@ class SubAgentManager:
             if name in ("Task", "subagent", "subagent_fork") and spec.depth >= MAX_SUBAGENT_DEPTH:
                 continue
 
-            # Read-only mode disallows mutating tools
-            if spec.mode == "read_only" and name in ("write", "Write", "edit", "Edit"):
-                continue
+            # Allowlist check (None = inherit, [] = deny all)
+            if spec.allowed_tools is not None:
+                if not is_tool_allowed(name, "allowlist", tuple(spec.allowed_tools)):
+                    continue
 
-            if spec.allowed_tools and name not in spec.allowed_tools:
-                continue
+            # Read-only mode disallows mutating tools and shell unless sandbox is read-only
+            if spec.mode == "read_only":
+                tdef = reg.get_tool(name)
+                is_mutating = bool(tdef and tdef.is_mutating)
+
+                if name in ("bash", "pwsh"):
+                    if spec.sandbox_mode != "read-only":
+                        continue
+                elif (
+                    name
+                    in (
+                        "write",
+                        "Write",
+                        "edit",
+                        "Edit",
+                        "str_replace_editor",
+                        "schedule_create",
+                        "schedule_delete",
+                        "spawn_teammate",
+                    )
+                    or name.startswith("terminal_")
+                    or (is_mutating and name not in ("bash", "pwsh"))
+                ):
+                    continue
+                elif name in ("Task", "subagent", "subagent_fork"):
+                    # Restrict tool schema so it only advertises read_only mode
+                    tool = copy.deepcopy(tool)
+                    params = tool.get("function", {}).get("parameters", {}).get("properties", {})
+                    if "mode" in params:
+                        params["mode"]["enum"] = ["read_only"]
+                        params["mode"]["default"] = "read_only"
 
             if (
                 spec.descriptor

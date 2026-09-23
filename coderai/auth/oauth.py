@@ -570,7 +570,7 @@ class OAuthManager:
                         self._access_tokens.pop(key, None)
                         if force:
                             raise OAuthUnauthorized("Refresh token was recently rejected.")
-                        return
+                        continue
                     try:
                         refreshed = await asyncio.to_thread(
                             refresh_access_token, current.refresh_token

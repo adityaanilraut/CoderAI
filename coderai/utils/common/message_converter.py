@@ -133,7 +133,7 @@ class OpenAIMessageConverter:
         active_messages = derive_messages(messages)
         tool_pairings = self._pair_tool_messages(active_messages)
 
-        target_model = model or "gpt-5.6-luna"
+        target_model = model or "gpt-6-luna"
         openai_messages: list[dict[str, Any]] = []
 
         for index, message in enumerate(active_messages):

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Any
 
 from coderai.subagents.models import BUILTIN_SUBAGENT_TYPES, SubagentTypeDefinition, ToolPolicyMode
+
+logger = logging.getLogger(__name__)
 
 # Map common tool aliases between PascalCase and snake_case (CoderAI Core)
 TOOL_ALIASES: dict[str, set[str]] = {
@@ -33,8 +36,8 @@ TOOL_ALIASES: dict[str, set[str]] = {
 }
 
 
-def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
-    """Parse YAML frontmatter from markdown content."""
+def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str] | None:
+    """Parse YAML frontmatter from markdown content. Fails closed on syntax errors."""
     fm_pattern = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
     match = fm_pattern.match(content)
     if not match:
@@ -46,22 +49,11 @@ def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
         data = yaml.safe_load(fm_text)
         if isinstance(data, dict):
             return data, body
-    except Exception:
-        pass
-
-    # Fallback key-value parsing
-    data = {}
-    for line in fm_text.splitlines():
-        if ":" in line:
-            key, val = line.split(":", 1)
-            key = key.strip()
-            val = val.strip().strip("\"'")
-            if val.startswith("[") and val.endswith("]"):
-                items = [x.strip().strip("\"'") for x in val[1:-1].split(",") if x.strip()]
-                data[key] = items
-            else:
-                data[key] = val
-    return data, body
+        logger.warning("Frontmatter root is not a YAML dictionary; rejecting spec.")
+        return None
+    except Exception as exc:
+        logger.warning("YAML parse error in frontmatter: %s", exc)
+        return None
 
 
 def parse_markdown_agent_spec(file_path: Path) -> SubagentTypeDefinition | None:
@@ -71,30 +63,59 @@ def parse_markdown_agent_spec(file_path: Path) -> SubagentTypeDefinition | None:
     except OSError:
         return None
 
-    meta, body = _parse_frontmatter(content)
+    parsed = _parse_frontmatter(content)
+    if parsed is None:
+        return None
+    meta, body = parsed
+
     name = str(meta.get("name") or file_path.stem).strip().lower()
     description = str(meta.get("description") or f"Specialized {name} agent").strip()
     tools_meta = meta.get("tools")
     allowed_tools: tuple[str, ...] | None = None
-    if isinstance(tools_meta, list):
-        allowed_tools = tuple(str(t) for t in tools_meta if t)
-    mode = str(
-        meta.get("mode")
-        or (
-            "read_only"
-            if allowed_tools
-            and all(t.lower() in ("read", "readfile", "grep", "glob") for t in allowed_tools)
-            else "general"
+    if isinstance(tools_meta, (list, tuple)):
+        allowed_tools = tuple(str(t).strip() for t in tools_meta if t and str(t).strip())
+    elif isinstance(tools_meta, str):
+        allowed_tools = tuple(x.strip() for x in tools_meta.split(",") if x.strip())
+    elif tools_meta is not None:
+        allowed_tools = ()
+
+    raw_mode = meta.get("mode")
+    if raw_mode:
+        mode = str(raw_mode).strip().lower()
+    elif allowed_tools is not None and (
+        len(allowed_tools) == 0
+        or all(
+            t.lower() in ("read", "readfile", "read_file", "grep", "glob", "websearch", "webfetch")
+            for t in allowed_tools
         )
-    )
+    ):
+        mode = "read_only"
+    else:
+        mode = "general"
+
+    raw_exclude = meta.get("exclude_tools")
+    if raw_exclude is None:
+        exclude_tools: tuple[str, ...] = ()
+    elif isinstance(raw_exclude, str):
+        exclude_tools = (raw_exclude.strip(),) if raw_exclude.strip() else ()
+    elif isinstance(raw_exclude, (list, tuple)):
+        exclude_tools = tuple(str(t).strip() for t in raw_exclude if t and str(t).strip())
+    else:
+        exclude_tools = ()
+
+    raw_bg = meta.get("supports_background", True)
+    if isinstance(raw_bg, str):
+        supports_background = raw_bg.strip().lower() not in ("false", "0", "no", "off")
+    else:
+        supports_background = bool(raw_bg)
 
     return SubagentTypeDefinition(
         name=name,
         description=description,
         when_to_use=str(meta.get("when_to_use") or description),
         allowed_tools=allowed_tools,
-        exclude_tools=tuple(str(t) for t in meta.get("exclude_tools", [])),
-        supports_background=bool(meta.get("supports_background", True)),
+        exclude_tools=exclude_tools,
+        supports_background=supports_background,
         system_prompt=body,
         mode=mode,
         source=f"custom:{file_path.name}",
@@ -123,6 +144,15 @@ def discover_custom_agents(project_root: str | None = None) -> dict[str, Subagen
             home / ".agents" / "agents",
         ]
     )
+
+    cwd = Path.cwd().resolve()
+    if cwd != root and cwd != home:
+        candidate_dirs.extend(
+            [
+                cwd / ".coderai" / "agents",
+                cwd / ".agents" / "agents",
+            ]
+        )
 
     for cdir in candidate_dirs:
         if not cdir.is_dir():
@@ -158,18 +188,28 @@ def _load_definitions(project_root: str | None = None) -> dict[str, SubagentType
                 from coderai.agentspec import load_agent_spec as _load
 
                 spec = _load(Path(path)) if path else None
-            except Exception:
+            except Exception as exc:
+                logger.warning("Failed to load subagent spec %s from %s: %s", name, path, exc)
                 spec = None
-            defs[str(name)] = SubagentTypeDefinition(
-                name=str(name),
+
+            role_name = str(name)
+            mode = "read_only" if role_name in ("explore", "plan") else "general"
+            sys_prompt = ""
+            if spec and getattr(spec, "system_prompt_args", None):
+                sys_prompt = spec.system_prompt_args.get("ROLE_ADDITIONAL") or ""
+
+            defs[role_name] = SubagentTypeDefinition(
+                name=role_name,
                 description=str(ref.get("description", "")),
                 when_to_use=spec.when_to_use if spec else "",
                 allowed_tools=tuple(spec.allowed_tools) if spec and spec.allowed_tools else None,
                 exclude_tools=tuple(spec.exclude_tools) if spec else (),
+                system_prompt=sys_prompt or None,
+                mode=mode,
                 source="builtin",
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to load builtin subagent definitions: %s", exc)
 
     # Discover custom Markdown agents
     custom = discover_custom_agents(project_root)
@@ -209,7 +249,9 @@ def get_subagent_definition(
 
 
 def resolve_tool_policy(
-    subagent_type: str | None, requested: list[str] | None = None, project_root: str | None = None
+    subagent_type: str | None,
+    requested: list[str] | tuple[str, ...] | None = None,
+    project_root: str | None = None,
 ) -> tuple[ToolPolicyMode, tuple[str, ...]]:
     """Resolve the effective tool policy for a subagent launch.
 
@@ -219,7 +261,7 @@ def resolve_tool_policy(
     allowlist (nothing permitted) instead of unrestricted ``inherit``; only
     an absent type (no restriction requested) inherits.
     """
-    if requested:
+    if requested is not None:
         return "allowlist", tuple(requested)
     if not subagent_type:
         return "inherit", ()
@@ -228,13 +270,15 @@ def resolve_tool_policy(
         return "allowlist", ()
     if definition.allowed_tools is None:
         return "inherit", ()
-    return "allowlist", definition.allowed_tools
+    return "allowlist", tuple(definition.allowed_tools)
 
 
 def is_tool_allowed(tool_name: str, mode: ToolPolicyMode, tools: tuple[str, ...]) -> bool:
     """Whether ``tool_name`` may run under a resolved policy with alias harmonization."""
     if mode == "inherit":
         return True
+    if not tools:
+        return False
     t_clean = tool_name.strip().lower()
     # Direct match or alias match
     known_aliases = TOOL_ALIASES.get(t_clean, {t_clean})

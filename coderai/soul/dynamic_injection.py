@@ -12,8 +12,12 @@ and are re-exported here.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
+
+from kosong.message import Message
+
 
 if TYPE_CHECKING:
     from coderai.soul.dynamic_injections.afk_mode import (
@@ -121,10 +125,12 @@ __all__ = [
     "InjectionRegistry",
     "default_registry",
     "wrap_as_reminder",
+    "normalize_history",
 ]
 
 
 @dataclass
+
 class InjectionRegistry:
     """Ordered provider set; collects injections before each LLM step."""
 
@@ -173,3 +179,35 @@ def default_registry() -> InjectionRegistry:
 def wrap_as_reminder(content: str) -> str:
     """Wrap injection content in authoritative ``<system-reminder>`` tags."""
     return f"<system-reminder>\n{content}\n</system-reminder>"
+
+
+def normalize_history(history: Sequence[Message]) -> list[Message]:
+    """Merge adjacent user messages to produce a clean API input sequence.
+
+    Dynamic injections are stored as standalone user messages in history;
+    normalization merges them into the adjacent user message.
+
+    Only ``user`` role messages are merged. Assistant and tool messages
+    are never merged because their ``tool_calls`` / ``tool_call_id``
+    fields form linked pairs that must stay intact.
+    """
+    if not history:
+        return []
+
+    from coderai.notifications import is_notification_message
+
+    result: list[Message] = []
+    for msg in history:
+        if (
+            result
+            and result[-1].role == msg.role
+            and msg.role == "user"
+            and not is_notification_message(result[-1])
+            and not is_notification_message(msg)
+        ):
+            merged_content = list(result[-1].content) + list(msg.content)
+            result[-1] = Message(role="user", content=merged_content)
+        else:
+            result.append(msg)
+    return result
+

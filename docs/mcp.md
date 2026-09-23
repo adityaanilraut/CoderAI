@@ -1,8 +1,8 @@
 # MCP — Model Context Protocol
 
 CoderAI connects to external MCP servers over **stdio** (child process) and
-**SSE** (HTTP + event stream) transports (`coderai/core/mcp/transport.py`,
-`coderai/core/mcp/client.py`). A server entry needs either a `command`
+**SSE** (HTTP + event stream) transports (`coderai/mcp/transport.py`,
+`coderai/mcp/client.py`). A server entry needs either a `command`
 (stdio) or a `url` (SSE) — entries with neither are ignored.
 
 ---
@@ -47,7 +47,7 @@ coderai --mcp-config '{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "@
 `load_global_mcp_servers()` seeds from `~/.coderai/mcp.json`; user settings,
 project settings, then CLI overlays (`--mcp-config-file`,
 `--mcp-config`) merge per server name — later layers win per key
-(`merge_mcp_servers_dicts` in `coderai/core/mcp_files.py`).
+(`merge_mcp_servers_dicts` in `coderai/mcp/files.py`).
 
 ## OAuth authentication
 

@@ -22,7 +22,7 @@ usage: coderai [-h] [--version] [-p PROMPT] [-e [PROMPT]] [--agent AGENT]
 | `--agent <name>` | Launch with a specific agent spec or discovered role (`architect`, `tdd-guide`, etc.). |
 | `--agent-file <path>` | Path to a custom YAML or Markdown agent spec file. |
 | `--model <model>` | Override the default model (e.g. `gpt-4o`, `claude-3-7-sonnet`). |
-| `--preset <preset>` | Tool preset: `all`, `safe`, `readonly`, `plan`. |
+| `--preset <preset>` | Tool preset: `full`, `core`, or `shell_edit`. `--permission` and `--tools-preset` are aliases of this flag. Sandbox presets (`read-only`, `workspace-write`, `danger-full-access`) are separate and set with `/permission`. |
 | `--yolo` | Run in YOLO mode (auto-approve all tool actions). |
 | `--afk` | Run in AFK mode (auto-pilot with background notification alerts). |
 | `--plan` | Launch directly into Plan Mode. |
@@ -40,10 +40,11 @@ Inside the interactive REPL shell, the following commands are available:
 | Slash Command | Description |
 |---|---|
 | `/help [cmd]` | Display help and usage examples for all slash commands. |
-| `/agents` | List running and completed subagents in the active session. |
+| `/agents` | List the live subagent tree for the current session. |
 | `/agents roles` | Display all bundled and discovered agent roles (`.coderai/agents/*.md`). |
-| `/agents tree` | Render the hierarchical delegation tree of subagents. |
-| `/agents report <id>` | View the final output and findings report from a subagent. |
+| `/agents tree` | Same live tree as `/agents`. |
+| `/agents report <id>` | View the report from a live subagent. |
+| `/agents send <id> <message>` | Queue a follow-up message for a live subagent. |
 | `/teams` | Inspect active multi-agent team teammates, status, and task board. |
 | `/plan` | Enter or toggle Plan Mode (read-only architectural planning). |
 | `/yolo` | Toggle YOLO mode on/off. |
@@ -51,6 +52,7 @@ Inside the interactive REPL shell, the following commands are available:
 | `/model [name]` | View or switch active LLM model. |
 | `/undo` | Roll back the last turn's file modifications. |
 | `/diff` | View uncommitted changes in the repository. |
+| `/review [base] [--all]` | Review uncommitted changes (or changes since `merge-base(base, HEAD)`): Jev System-One skips low-risk files, the active model reviews the rest, and Jev drops speculative comments. Works without `TYPESAFE_API_KEY` by reviewing every non-doc file. |
 | `/compact` | Trigger manual session history compaction. |
 | `/skills` | List discovered workspace skills and cheat sheets. |
 | `/clear` | Clear the terminal display. |

@@ -114,9 +114,10 @@ def handle_todo_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
             }
         )
     plan = todos_to_plan(normalized)
-    result = handle_update_plan_tool(
-        {"plan": plan, "explanation": args.get("merge") and "todo_write"}, context
-    )
+    explanation = args.get("explanation")
+    if not isinstance(explanation, str) or not explanation.strip():
+        explanation = "todo_write"
+    result = handle_update_plan_tool({"plan": plan, "explanation": explanation}, context)
     result.name = "todo_write"
     meta = dict(result.metadata or {})
     meta["todos"] = normalized

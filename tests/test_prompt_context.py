@@ -349,7 +349,7 @@ def test_prompt_adaptive_effort_scales_down_on_later_turns():
 def test_reasoning_effort_normalizes_legacy_values():
     """Legacy aliases, casing, and unknown values normalize to canonical levels."""
     assert normalize_reasoning_effort("none") == normalize_reasoning_effort("disabled") == "off"
-    assert normalize_reasoning_effort("xhigh") == "max"
+    assert normalize_reasoning_effort("xhigh") == "xhigh"
     assert (
         normalize_reasoning_effort("  HIGH  ") == "high"
         and normalize_reasoning_effort("LoW") == "low"
@@ -372,6 +372,16 @@ def test_reasoning_effort_wire_opts_openai_maps_max_to_high():
     assert build_thinking_request_options(
         True, model="gpt-5.6-sol", reasoning_effort="off", has_tools=True
     ) == {"reasoning_effort": "none"}
+    # GPT-6 family passes xhigh/max through; Astra has no "none" (min is low).
+    assert build_thinking_request_options(True, model="gpt-6-sol", reasoning_effort="xhigh") == {
+        "reasoning_effort": "xhigh"
+    }
+    assert build_thinking_request_options(True, model="gpt-6-sol", reasoning_effort="max") == {
+        "reasoning_effort": "max"
+    }
+    assert build_thinking_request_options(
+        True, model="gpt-6-astra", reasoning_effort="off", has_tools=True
+    ) == {"reasoning_effort": "low"}
 
 
 def test_reasoning_effort_wire_opts_deepseek_gemini_use_extra_body():
@@ -407,7 +417,29 @@ def test_reasoning_effort_thinking_budgets_match_provider_tables():
 
 def test_reasoning_effort_model_capabilities_report_supported_levels():
     """Capability helpers report supported efforts and defaults per model."""
-    assert get_supported_reasoning_efforts("gpt-5.6-sol") == ["off", "low", "medium", "high", "max"]
+    assert get_supported_reasoning_efforts("gpt-5.6-sol") == [
+        "off",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
+    assert get_supported_reasoning_efforts("gpt-6-sol") == [
+        "off",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
+    assert get_supported_reasoning_efforts("gpt-6-astra") == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
     assert get_supported_reasoning_efforts("unknown-text-model") == ["off"]
     assert get_default_reasoning_effort("deepseek-v4-pro") == "max"
     assert get_default_reasoning_effort("gemini-3.7-flash") == "low"
@@ -432,6 +464,7 @@ def test_deepseek_flash_v41_capabilities():
         "low",
         "medium",
         "high",
+        "xhigh",
         "max",
     ]
     # Legacy v4-flash alias is served by the same V4.1 backend.

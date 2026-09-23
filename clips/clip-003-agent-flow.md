@@ -42,7 +42,7 @@ over the built-in YAML specs (`coderai/agents/*/*.yaml` via
 prompt. REPL surface: `/agents roles`, `/agent <name>` hot-switch,
 `coderai --agent <name>` at launch.
 
-## Swarm coordination (`coderai/core/teams/`)
+## Swarm coordination (`coderai/teams/`)
 
 | Component | File | Responsibility |
 |---|---|---|

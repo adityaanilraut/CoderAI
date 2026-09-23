@@ -1,0 +1,390 @@
+== FP categories
+   6 duck-typed StreamWriter protocol
+   9 ACP JSON-RPC protocol method (acp.run_agent dispatch)
+   4 PEP 562 module __getattr__
+   9 pydantic validator/serializer
+   7 system.md template variable
+  52 decorator-registered slash command
+   8 3rd-party/stdlib override (HTMLParser/prompt_toolkit/rich)
+   4 prompt_toolkit keybinding
+   3 PyInstaller spec kwargs (coderai.spec)
+ 143 variables/attributes (reviewed separately)
+== DEAD callables by module
+coderai/app.py:76 function _write_original_stderr
+coderai/app.py:185 method CoderAIApp.run_soul_stream
+coderai/app.py:236 method CoderAIApp.run_shell
+coderai/app.py:246 method CoderAIApp.run_print
+coderai/app.py:267 method CoderAIApp.run_acp
+coderai/approval_runtime/runtime.py:67 method ApprovalRuntime.create_request
+coderai/approval_runtime/runtime.py:93 method ApprovalRuntime.wait_for_response
+coderai/auth/oauth.py:314 function save_tokens
+coderai/auth/oauth.py:489 method OAuthManager.from_typed_config
+coderai/background/agent_runner.py:34 method TaskSupervisor.record_heartbeat
+coderai/background/agent_runner.py:134 method TaskSupervisor.kill_task
+coderai/background/agent_runner.py:171 method TaskSupervisor.check_liveness
+coderai/background/ids.py:16 function generate_task_id
+coderai/cli/doctor.py:35 property DoctorReport.has_errors
+coderai/cli/doctor.py:39 property DoctorReport.has_warnings
+coderai/cli/image_attachment.py:122 function paste_clipboard_images
+coderai/config.py:360 function get_default_auto_compact_window
+coderai/config.py:1051 function save_base_url_setting
+coderai/config.py:1414 function clear_typed_config_cache
+coderai/events.py:313 function make_request_header
+coderai/goals/core.py:22 class GoalRef
+coderai/goals/core.py:172 method GoalStore.advance_round
+coderai/hooks/config.py:113 method MergedHookOutcome.is_allowed
+coderai/hooks/engine.py:522 method HookEngine.fire_and_forget_trigger
+coderai/hooks/engine.py:544 method HookEngine.add_hooks
+coderai/hooks/engine.py:548 method HookEngine.add_wire_subscriptions
+coderai/hooks/engine.py:552 method HookEngine.set_callbacks
+coderai/hooks/engine.py:562 property HookEngine.has_hooks
+coderai/hooks/engine.py:566 method HookEngine.has_hooks_for
+coderai/hooks/events.py:204 function session_start
+coderai/hooks/events.py:213 function session_end
+coderai/hooks/events.py:222 function subagent_start
+coderai/hooks/events.py:236 function subagent_stop
+coderai/llm.py:330 function estimate_message_tokens
+coderai/llm.py:411 function is_always_thinking
+coderai/llm.py:416 function supports_media
+coderai/llm.py:421 function augment_provider_with_env_vars
+coderai/llm.py:662 function clone_llm_with_model_alias
+coderai/mcp/client.py:100 method McpClient.set_notification_handler
+coderai/mcp/manager.py:125 method McpManager.set_session_tool_mask
+coderai/mcp/manager.py:139 method McpManager.get_session_tool_mask
+coderai/mcp/manager.py:143 method McpManager.clear_session_tool_mask
+coderai/mcp/manager.py:160 method McpManager.eject_server
+coderai/mcp/manager.py:195 method McpManager.reload_server
+coderai/mcp/manager.py:199 method McpManager.list_active_servers
+coderai/mcp/manager.py:206 method McpManager.set_on_status_changed
+coderai/mcp/manager.py:331 method McpManager.auto_heal_servers
+coderai/mcp/manager.py:375 method McpManager.hot_reload_tools
+coderai/mcp/manager.py:704 method McpManager.get_mcp_prompt
+coderai/mcp/manager.py:730 method McpManager.read_mcp_resource
+coderai/mcp_oauth.py:122 function create_mcp_oauth
+coderai/mcp_oauth.py:132 function has_mcp_oauth_tokens
+coderai/orchestration.py:59 function stop_reason_error
+coderai/orchestration.py:149 function get_orchestration_event_bus
+coderai/orchestration.py:204 function resolve_child_depth
+coderai/orchestration.py:229 function auto_max_concurrent_agents
+coderai/orchestration.py:235 function resolve_subagent_defaults
+coderai/orchestration.py:266 function resolve_goal_defaults
+coderai/orchestration.py:278 function resolve_max_parallel_tool_calls
+coderai/prompt/__init__.py:907 function _project_guidance
+coderai/sandbox.py:269 function sandbox_available
+coderai/session.py:268 method Session.list_all
+coderai/session.py:278 method Session.continue_
+coderai/soul/approval.py:319 method PermissionTicketRegistry.clear_session_tickets
+coderai/soul/approval.py:1054 method Approval.share
+coderai/soul/approval.py:1057 method Approval.set_runtime
+coderai/soul/approval.py:1074 method Approval.set_runtime_afk
+coderai/soul/coderaisoul.py:876 function AgentLoop.type_check
+coderai/soul/coderaisoul.py:1132 method KimiSoul.add_injection_provider
+coderai/soul/coderaisoul.py:1303 method KimiSoul.set_plan_mode_from_manual
+coderai/soul/dynamic_injections/plan_mode.py:97 method PlanModeInjectionProvider._has_plan_reminder
+coderai/soul/session/approval.py:12 function register_session_manager
+coderai/soul/session/approval.py:18 function unregister_session_manager
+coderai/soul/session/manager.py:438 method SessionManager.sync_session_state_from_entry
+coderai/soul/session/manager.py:457 method SessionManager.grant_permission_ticket
+coderai/soul/session/manager.py:480 method SessionManager.list_active_permission_tickets
+coderai/soul/session/manager.py:490 method SessionManager.revoke_permission_ticket
+coderai/soul/session/manager.py:877 method SessionManager._create_empty_session
+coderai/soul/session/manager.py:2336 method SessionManager.sync_mcp_servers
+coderai/soul/session/manager.py:2479 method SessionManager.dispose
+coderai/soul/session/models.py:288 function copy_message_with
+coderai/soul/session/store.py:206 method JsonlSessionStore.delete_log
+coderai/soul/toolset.py:239 method CoderAIToolset.hide
+coderai/soul/toolset.py:246 method CoderAIToolset.unhide
+coderai/soul/toolset.py:317 property CoderAIToolset.dedup_triggered
+coderai/soul/toolset.py:596 method CoderAIToolset.register_external_tool
+coderai/soul/toolset.py:647 method CoderAIToolset.has_deferred_mcp_tools
+coderai/soul/toolset.py:729 function CoderAIToolset._check_oauth_tokens
+coderai/soul/toolset.py:742 function CoderAIToolset._mark_oauth_unauthorized
+coderai/state.py:241 function _set_file_version
+coderai/subagents/core.py:155 method AgentRegistry.list_descendants
+coderai/subagents/core.py:167 method AgentRegistry.get_tree
+coderai/subagents/core.py:230 method AgentRegistry.interrupt_tree
+coderai/subagents/store.py:95 method SubagentStore.context_path
+coderai/subagents/store.py:99 method SubagentStore.create_instance
+coderai/subagents/store.py:164 method SubagentStore.write_prompt
+coderai/subagents/store.py:186 method SubagentStore.require_instance
+coderai/subagents/store.py:203 method SubagentStore.delete_instance
+coderai/subagents/store.py:210 method SubagentStore.mark_stale_foreground_failed
+coderai/teams/concurrency.py:50 function cas_retry_async
+coderai/teams/concurrency.py:97 function cas_retry_sync
+coderai/teams/deadlock.py:109 method InterAgentWaitWatchdog.release_wait
+coderai/teams/mailbox.py:168 method ActorChannel.publish_async
+coderai/teams/mailbox.py:188 method ActorChannel.broadcast_async
+coderai/teams/manager.py:37 method TeamTaskBoard._validate_dag
+coderai/teams/manager.py:295 method TeamManager.get_messages
+coderai/telemetry/crash.py:139 function install_asyncio_handler
+coderai/telemetry/sink.py:116 method TelemetryCollector.get_active_trace_id
+coderai/terminal/manager.py:213 method TerminalSession.get_full_output
+coderai/tools/file/replace.py:917 function _find_line_numbers
+coderai/tools/file/utils.py:138 function async_write_file_with_locks
+coderai/tools/legacy/registry.py:178 method ToolRegistry.suppress_tool
+coderai/tools/legacy/registry.py:197 method ToolRegistry.is_tool_suppressed
+coderai/tools/legacy/registry.py:227 method ToolRegistry.set_session_mask
+coderai/tools/legacy/registry.py:241 method ToolRegistry.clear_session_mask
+coderai/tools/legacy/registry.py:292 method ToolRegistry.get_tool
+coderai/tools/legacy/types.py:139 method ToolExecutionContext.defer_context
+coderai/tools/legacy/types.py:143 method ToolExecutionContext.conclude_turn
+coderai/tools/test.py:13 class Plus
+coderai/tools/test.py:28 class Compare
+coderai/tools/test.py:47 class Panic
+coderai/tools/utils.py:80 property ToolResultBuilder.n_chars
+coderai/ui/shell/app.py:67 function error_callout
+coderai/ui/shell/app.py:331 function _live_deny
+coderai/ui/shell/app.py:1256 method _StreamState._ensure_unified_block
+coderai/ui/shell/app.py:1274 method _StreamState.on_retry
+coderai/ui/shell/app.py:1294 method _StreamState.on_status_update
+coderai/ui/shell/app.py:1401 method _StreamState.set_question_panel
+coderai/ui/shell/app.py:1595 function _render_help_menu
+coderai/ui/shell/app.py:1600 function _show_diff
+coderai/ui/shell/keyboard.py:89 function listen_for_keyboard
+coderai/ui/shell/migration_nudge.py:21 function install_run_command
+coderai/ui/shell/migration_nudge.py:31 function coderai_installed
+coderai/ui/shell/migration_nudge.py:58 function welcome_card_text
+coderai/ui/shell/migration_nudge.py:68 function already_installed_text
+coderai/ui/shell/prompt.py:2100 method CustomPromptSession._render_agent_prompt_label
+coderai/ui/shell/prompt.py:3358 method CoderAIPromptSession.pop_steer
+coderai/ui/shell/prompt.py:3889 function format_streamlined_status_bar
+coderai/ui/shell/prompt.py:3947 function render_statusline
+coderai/ui/shell/prompt.py:4079 function _is_multiline_trigger
+coderai/ui/shell/session_picker.py:516 function _format_badges_markup
+coderai/ui/shell/session_picker.py:921 function prompt_plan_implementation
+coderai/ui/shell/visualize/_approval_panel.py:655 function expand_plan_in_pager
+coderai/ui/shell/visualize/_blocks.py:1339 function make_plan_progress_bar
+coderai/ui/shell/visualize/_blocks.py:1519 class StatusSpinner
+coderai/ui/shell/visualize/_blocks.py:1580 method StatusSpinner.pause_for_pager
+coderai/ui/shell/visualize/_blocks.py:1603 class MultiStepProgress
+coderai/ui/shell/visualize/_blocks.py:1634 method MultiStepProgress.advance
+coderai/ui/shell/visualize/_blocks.py:1779 function _find_committed_boundary_parser
+coderai/ui/shell/visualize/_btw_panel.py:155 method BtwPanel.compose_for_live
+coderai/ui/theme.py:227 function get_task_browser_style
+coderai/utils/aiohttp.py:266 method HttpClient.post_async
+coderai/utils/common/file_history.py:468 function _is_same_entry
+coderai/utils/common/message_converter.py:192 method OpenAIMessageConverter.build_messages
+coderai/utils/common/message_converter.py:196 method OpenAIMessageConverter.get_trailing_pending_tool_calls
+coderai/utils/common/model_capabilities.py:211 function format_capability_badges
+coderai/utils/common/model_capabilities.py:219 function format_model_effort_tags
+coderai/utils/common/openai_thinking.py:141 function resolve_reasoning_key
+coderai/utils/common/repeat_tool_reminder.py:78 function args_hash
+coderai/utils/common/repeat_tool_reminder.py:165 method RepeatToolReminder.observe_legacy
+coderai/utils/common/repeat_tool_reminder.py:177 property RepeatToolReminder.should_force_stop
+coderai/utils/diff.py:17 function format_unified_diff
+coderai/utils/environment.py:21 function scrubbed_parent_env
+coderai/utils/file_filter.py:215 function list_directory_filtered
+coderai/utils/logging.py:43 function _mask_sensitive
+coderai/utils/path.py:21 class WriteFileAtomicOptions
+coderai/utils/path.py:296 function shorten_home
+coderai/utils/path.py:420 function find_project_root
+coderai/utils/rich/syntax.py:83 function resolve_color_system
+coderai/utils/shell_quoting.py:91 function windows_path_to_posix_path
+coderai/utils/slashcmd.py:24 method SlashCommand.slash_name
+coderai/utils/slashcmd.py:101 method SlashCommandRegistry.iter_command_entries
+coderai/utils/subprocess_env.py:91 function windows_path_to_posix_path
+coderai/utils/subprocess_env.py:250 function scrubbed_parent_env
+coderai/utils/term.py:183 function get_cursor_row
+coderai/wire/emitter.py:47 method WireEmitter.attach_session_wire
+coderai/wire/emitter.py:51 method WireEmitter.detach_session_wire
+coderai/wire/emitter.py:168 method WireEmitter.hook_resolved
+coderai/wire/file.py:159 method WireFile.append_record
+coderai/wire/file.py:164 method WireFile.replay_sync
+coderai/wire/file.py:191 function dump_line
+coderai/wire/jsonrpc.py:56 method JSONRPCMessage.method_is_inbound
+coderai/wire/jsonrpc.py:62 method JSONRPCMessage.is_notification
+coderai/wire/jsonrpc.py:65 method JSONRPCMessage.is_response
+coderai/wire/jsonrpc.py:103 function success_response
+coderai/wire/jsonrpc.py:107 function error_response
+coderai/wire/jsonrpc.py:114 function event_notification
+coderai/wire/jsonrpc.py:118 function request_message
+coderai/wire/jsonrpc.py:122 class ClientInfo
+coderai/wire/jsonrpc.py:128 class ExternalTool
+coderai/wire/types.py:279 class QuestionResponse
+coderai/wire/types.py:360 class HookResponse
+DEAD total 192
+== TEST-ONLY
+coderai/auth/oauth.py:506 method OAuthManager.get_cached_access_token
+coderai/background/worker.py:41 function run_background_task_worker
+coderai/events.py:120 property SessionEvent.is_log_only
+coderai/events.py:304 variable make_user_event
+coderai/events.py:305 variable make_assistant_event
+coderai/events.py:307 variable make_tool_result_event
+coderai/events.py:468 function derive_messages_from_events
+coderai/jev/client.py:180 function _reset_executor_for_tests
+coderai/session.py:71 property Session.subagents_dir
+coderai/soul/agent.py:214 method SessionSoul.checkpoint_count
+coderai/soul/session/store.py:216 method JsonlSessionStore.replay_events
+coderai/soul/session/store.py:220 method JsonlSessionStore.validate_and_repair_invariants
+coderai/subagents/runner.py:89 method SubAgentManager.cancel_all
+coderai/subagents/runner.py:397 method SubAgentManager.run_parallel_subagents
+coderai/teams/deadlock.py:90 class InterAgentWaitWatchdog
+coderai/teams/deadlock.py:98 method InterAgentWaitWatchdog.record_wait
+coderai/telemetry/sink.py:43 method ExecutionSpan.add_event
+coderai/telemetry/sink.py:113 method TelemetryCollector.set_active_trace_id
+coderai/telemetry/sink.py:176 method TelemetryCollector.get_metrics_summary
+coderai/telemetry/sink.py:193 method TelemetryCollector.export_spans
+coderai/tools/file/replace.py:1424 variable Edit
+coderai/tools/legacy/path_lock.py:92 method PathLockManager.acquire_read_lock
+coderai/tools/shell/__init__.py:54 function clear_session_working_dir
+coderai/triage/engine.py:184 variable category_probabilities
+coderai/triage/engine.py:187 variable priority_probabilities
+coderai/ui/shell/mcp_status.py:17 function render_mcp_console
+coderai/ui/shell/prompt.py:3473 function format_status_bar
+coderai/ui/shell/prompt.py:3487 function render_status_bar
+coderai/ui/shell/startup.py:12 class ShellStartupProgress
+coderai/ui/shell/visualize/_blocks.py:689 function summarize_thinking
+coderai/ui/shell/visualize/_blocks.py:1325 function parse_plan_stats
+coderai/ui/shell/visualize/_blocks.py:1462 function render_plan_preview
+coderai/utils/common/file_history.py:281 method GitFileHistory.list_checkpoints
+coderai/utils/common/invariants.py:166 function assert_session_invariants
+coderai/utils/common/model_capabilities.py:125 function get_default_reasoning_effort
+coderai/utils/common/openai_thinking.py:47 function get_thinking_token_budget
+coderai/utils/path.py:142 function with_file_lock
+coderai/utils/rich/diff_render.py:44 function format_diff_text
+coderai/web_providers.py:603 function register_web_search_provider
+coderai/web_providers.py:607 function list_web_search_providers
+== VARS
+coderai/acp/kaos.py:72 attribute _poll_task P=0
+coderai/acp/kaos.py:188 attribute _supports_terminal P=0
+coderai/acp/kaos.py:189 attribute _output_byte_limit P=0
+coderai/acp/types.py:11 variable PROTOCOL_VERSION P=0
+coderai/acp/version.py:11 variable spec_tag P=1
+coderai/acp/version.py:12 variable sdk_version P=1
+coderai/agentspec.py:30 variable OKABE_AGENT_FILE P=0
+coderai/agentspec.py:37 variable inherit P=9
+coderai/app.py:101 attribute _env_overrides P=0
+coderai/auth/oauth.py:351 variable verification_uri P=1
+coderai/auth/platforms.py:16 variable search_url P=1
+coderai/auth/platforms.py:17 variable fetch_url P=3
+coderai/background/agent_runner.py:209 attribute continuable P=20
+coderai/cli/__init__.py:9 variable SUCCESS P=0
+coderai/cli/__init__.py:10 variable FAILURE P=0
+coderai/cli/__init__.py:11 variable RETRYABLE P=0
+coderai/cli/elapsed.py:117 variable NOTIFICATION_SEVERITY_STYLE P=0
+coderai/config.py:25 variable PermissionScope P=2
+coderai/config.py:947 variable PROVIDER_REGISTRY P=0
+coderai/config.py:1202 variable storage P=16
+coderai/config.py:1291 variable max_running_tasks P=0
+coderai/config.py:1292 variable read_max_bytes P=0
+coderai/config.py:1293 variable notification_tail_lines P=0
+coderai/config.py:1294 variable notification_tail_chars P=0
+coderai/config.py:1295 variable wait_poll_interval_ms P=0
+coderai/config.py:1296 variable worker_heartbeat_interval_ms P=0
+coderai/config.py:1297 variable worker_stale_after_ms P=0
+coderai/config.py:1298 variable kill_grace_period_ms P=0
+coderai/config.py:1299 variable keep_alive_on_exit P=0
+coderai/config.py:1303 variable agent_task_timeout_s P=0
+coderai/config.py:1304 variable print_wait_ceiling_s P=0
+coderai/config.py:1313 variable NotificationConfig P=0
+coderai/config.py:1328 variable McpConfig P=0
+coderai/config.py:1335 variable source_file P=3
+coderai/config.py:1338 variable default_yolo P=0
+coderai/config.py:1340 variable default_plan_mode P=0
+coderai/config.py:1350 variable telemetry P=78
+coderai/config.py:1476 attribute source_file P=3
+coderai/config.py:1513 attribute source_file P=3
+coderai/config.py:1532 attribute source_file P=3
+coderai/config.py:1557 variable save_config P=0
+coderai/events.py:306 variable make_tool_call_event P=0
+coderai/hooks/config.py:84 variable raw_stdout P=5
+coderai/hooks/config.py:85 variable raw_stderr P=2
+coderai/hooks/events.py:30 variable PRE_STEP P=0
+coderai/hooks/events.py:31 variable POST_STEP P=0
+coderai/hooks/events.py:32 variable PRE_PROMPT P=0
+coderai/hooks/events.py:33 variable POST_PROMPT P=0
+coderai/hooks/events.py:37 variable STOP_CRITERIA P=0
+coderai/llm.py:1415 variable check_provider_connectivity P=0
+coderai/log.py:115 variable warn P=9
+coderai/mcp/client.py:51 attribute _prompts P=1
+coderai/mcp/client.py:52 attribute _resources P=1
+coderai/mcp/client.py:56 attribute server_capabilities P=1
+coderai/mcp/client.py:165 attribute server_capabilities P=1
+coderai/mcp/client.py:225 attribute _prompts P=1
+coderai/mcp/client.py:244 attribute _resources P=1
+coderai/notifications/manager.py:128 attribute acked_at P=2
+coderai/notifications/models.py:58 variable acked_at P=2
+coderai/orchestration.py:34 variable SUBTASK_STOP_REASONS P=0
+coderai/prompts/__init__.py:6 variable COMPACT P=0
+coderai/sandbox.py:60 variable READ_SCOPES P=0
+coderai/sandbox.py:61 variable WRITE_SCOPES P=0
+coderai/session_state.py:49 variable wire_mtime P=0
+coderai/soul/agent.py:44 variable labor_market P=0
+coderai/subagents/builder.py:122 variable max_turns P=0
+coderai/subagents/builder.py:124 variable allow_nested_spawn P=0
+coderai/subagents/builder.py:207 variable seed_events P=0
+coderai/subagents/builder.py:209 variable continuable P=20
+coderai/subagents/core.py:109 variable conversation P=59
+coderai/subagents/models.py:18 variable supports_background P=1
+coderai/subagents/runner.py:549 variable continuable P=20
+coderai/teams/mailbox.py:19 variable LOW P=1
+coderai/teams/mailbox.py:21 variable HIGH P=2
+coderai/teams/mailbox.py:22 variable CRITICAL P=2
+coderai/teams/mailbox.py:29 variable priority_score P=2
+coderai/teams/mailbox.py:30 variable arrival_time P=2
+coderai/telemetry/sink.py:101 variable timestamp_ms P=2
+coderai/terminal/manager.py:20 variable DEFAULT_MAX_BUFFER_CHARS P=0
+coderai/tools/file/__init__.py:13 variable READ P=1
+coderai/tools/file/read.py:30 variable STREAM_MIN_SIZE P=0
+coderai/tools/file/read_media.py:14 variable ALLOWED_EXTS P=0
+coderai/tools/legacy/types.py:79 variable deadline_at_ms P=9
+coderai/tools/legacy/types.py:85 variable get_info P=1
+coderai/tools/legacy/types.py:120 variable on_before_file_mutation P=4
+coderai/tools/legacy/types.py:121 variable on_after_file_mutation P=5
+coderai/tools/legacy/types.py:168 variable on_before_file_mutation P=4
+coderai/tools/legacy/types.py:169 variable on_after_file_mutation P=5
+coderai/tools/web/fetch.py:57 variable BLOCK_TAGS P=0
+coderai/triage/engine.py:39 variable JEV_MODEL_ID P=0
+coderai/triage/engine.py:186 variable priority_confidence P=1
+coderai/ui/shell/__init__.py:199 attribute _active_view P=3
+coderai/ui/shell/__init__.py:1280 attribute _active_view P=3
+coderai/ui/shell/__init__.py:1298 attribute _active_view P=3
+coderai/ui/shell/__init__.py:1485 variable WARN P=2
+coderai/ui/shell/__init__.py:1486 variable ERROR P=4
+coderai/ui/shell/app.py:1101 attribute _pending_questions P=0
+coderai/ui/shell/app.py:1488 attribute _reset_shape P=0
+coderai/ui/shell/app.py:1502 variable should_connect P=0
+coderai/ui/shell/app.py:1781 variable signum P=0
+coderai/ui/shell/prompt.py:90 variable PROMPT_SYMBOL_THINKING P=0
+coderai/ui/shell/prompt.py:91 variable PROMPT_SYMBOL_PLAN P=0
+coderai/ui/shell/prompt.py:617 variable wrap_lines P=0
+coderai/ui/shell/prompt.py:618 variable get_line_prefix P=0
+coderai/ui/shell/prompt.py:1472 attribute _prompt_buffer_container P=1
+coderai/ui/shell/prompt.py:1778 attribute read_only P=26
+coderai/ui/shell/prompt.py:1855 attribute _prompt_buffer_container P=1
+coderai/ui/shell/prompt.py:1948 attribute erase_when_done P=0
+coderai/ui/shell/prompt.py:3185 attribute _external_editor_cb P=0
+coderai/ui/shell/session_picker.py:290 variable key_name P=1
+coderai/ui/shell/session_picker.py:440 variable key_name P=1
+coderai/ui/shell/update.py:29 variable UNSUPPORTED P=0
+coderai/ui/shell/visualize/_blocks.py:317 variable ContentBlock P=0
+coderai/ui/shell/visualize/_blocks.py:628 variable NotificationBlock P=0
+coderai/ui/shell/visualize/_blocks.py:629 variable StatusBlock P=0
+coderai/ui/shell/visualize/_blocks.py:630 variable TodoBlock P=0
+coderai/ui/shell/visualize/_blocks.py:751 variable BULLET_FRAMES P=0
+coderai/ui/theme.py:144 variable plan_prompt P=2
+coderai/utils/common/llm_retry.py:15 variable RETRYABLE_CODES P=0
+coderai/utils/common/model_capabilities.py:23 variable DEEPSEEK_V4_MODELS P=0
+coderai/utils/common/model_capabilities.py:58 variable ALL_REASONING_EFFORTS P=0
+coderai/utils/common/openai_thinking.py:7 variable ReasoningEffortLevel P=0
+coderai/utils/environment.py:144 variable BASH_TIMEOUT_INCREMENT_MS P=1
+coderai/utils/environment.py:145 variable BASH_TIMEOUT_DECREMENT_MS P=1
+coderai/utils/rich/diff_render.py:82 variable is_inline_paired P=2
+coderai/utils/rich/diff_render.py:251 attribute is_inline_paired P=2
+coderai/utils/rich/diff_render.py:253 attribute is_inline_paired P=2
+coderai/utils/shell_quoting.py:11 variable WINDOWS_GIT_LOCATIONS P=1
+coderai/utils/subprocess_env.py:11 variable WINDOWS_GIT_LOCATIONS P=1
+coderai/utils/subprocess_env.py:373 variable BASH_TIMEOUT_INCREMENT_MS P=1
+coderai/utils/subprocess_env.py:374 variable BASH_TIMEOUT_DECREMENT_MS P=1
+coderai/wire/jsonrpc.py:24 variable AUTH_EXPIRED P=0
+coderai/wire/jsonrpc.py:137 variable supports_question P=2
+coderai/wire/jsonrpc.py:138 variable supports_plan_mode P=1
+coderai/wire/jsonrpc.py:150 variable JSONRPC_OUT_METHODS P=0
+coderai/wire/server.py:77 attribute _client_supports_plan_mode P=1
+coderai/wire/server.py:249 attribute _client_supports_plan_mode P=1
+coderai/wire/types.py:44 variable TYPE P=3
+coderai/wire/types.py:50 variable TYPE P=3
+coderai/wire/types.py:58 variable TYPE P=3
+coderai/wire/types.py:66 variable TYPE P=3
+coderai/wire/types.py:123 variable hook_count P=1
+coderai/wire/types.py:166 variable token_usage P=1

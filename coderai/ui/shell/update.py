@@ -8,8 +8,6 @@ import sys
 from enum import Enum, auto
 from pathlib import Path
 
-from rich.panel import Panel
-from rich.text import Text
 
 from coderai._version import __version__ as current_version
 from coderai.share import get_share_dir
@@ -21,7 +19,6 @@ UPGRADE_COMMAND = "pip install -U coderai-agent"
 PYPI_URL = "https://pypi.org/pypi/coderai-agent/json"
 
 LATEST_VERSION_FILE = get_share_dir() / "latest_version.txt"
-SKIPPED_VERSION_FILE = get_share_dir() / "skipped_version.txt"
 
 
 class UpdateResult(Enum):
@@ -127,33 +124,3 @@ async def do_update(*, print: bool = True, check_only: bool = False) -> UpdateRe
             _print(f"[red]Upgrade execution error: {e}[/red]")
             return UpdateResult.FAILED
 
-
-async def check_update_gate() -> None:
-    """Non-blocking update check during interactive startup."""
-    from coderai.utils.envvar import get_env_bool
-
-    if get_env_bool("CODERAI_NO_AUTO_UPDATE"):
-        return
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        return
-
-    latest_version = _read_text_file(LATEST_VERSION_FILE)
-    if (
-        latest_version
-        and semver_tuple(latest_version) > semver_tuple(current_version)
-        and _read_text_file(SKIPPED_VERSION_FILE) != latest_version
-    ):
-        panel = Panel(
-            Text.assemble(
-                ("A new version of CoderAI is available: ", "default"),
-                (f"v{latest_version}\n", "bold cyan"),
-                ("Run ", "dim"),
-                ("/upgrade", "bold green"),
-                (" or ", "dim"),
-                (UPGRADE_COMMAND, "bold"),
-                (" to update.", "dim"),
-            ),
-            title="[bold yellow]Update Available[/]",
-            border_style="yellow",
-        )
-        console.print(panel)

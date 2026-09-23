@@ -210,6 +210,11 @@ def deserialize_message(d: dict[str, Any], session_id: str) -> SessionMessage | 
             )
         return None
 
+    # Context-control rows (checkpoints, usage markers) are not model messages.
+    role = d.get("role")
+    if isinstance(role, str) and role.startswith("_"):
+        return None
+
     # Legacy SessionMessage dict
     create_time = d.get("createTime") or ""
     if not create_time and d.get("timestamp"):

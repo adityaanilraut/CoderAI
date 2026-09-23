@@ -2,9 +2,6 @@
 
 Drives one prompt to completion headlessly for automated pipelines, CI/CD
 scripts, and command-line one-shot invocations, with structured exit codes.
-
-Companion module: :mod:`coderai.ui.print.visualize` renders the wire event
-stream for ``--output-format json`` / ``final-only`` print modes.
 """
 
 from __future__ import annotations

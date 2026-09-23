@@ -99,14 +99,12 @@ from coderai.soul.session.completion import (  # noqa: E402
 
 
 from coderai.soul.session.approval import (  # noqa: E402
-    _session_managers,
     check_afk_for_session as _check_afk_for_session,  # noqa: F401
     check_auto_approve_for_session as _check_auto_approve_for_session,  # noqa: F401
     global_afk_check as _global_afk_check,  # noqa: F401
-    global_auto_approve_check as _global_auto_approve_check,  # noqa: F401
-    register_session_manager,  # noqa: F401
+    register_session_manager,
     sanitize_repetition_loops,  # noqa: F401
-    unregister_session_manager,  # noqa: F401
+    unregister_session_manager,
 )
 
 
@@ -121,6 +119,24 @@ from coderai.soul.session.models import (  # noqa: E402
     serialize_message as _serialize_message_fn,
     total_tokens as _total_tokens,  # noqa: F401
 )
+
+
+class ToolDispatchResult:
+    """Outcome of one tool-call batch.
+
+    Truth value follows ``waiting`` so existing ``if waiting`` checks keep
+    working. ``stop_reason`` is set when the batch must end the turn
+    (repeated identical tool calls).
+    """
+
+    __slots__ = ("waiting", "stop_reason")
+
+    def __init__(self, waiting: bool = False, stop_reason: str | None = None) -> None:
+        self.waiting = waiting
+        self.stop_reason = stop_reason
+
+    def __bool__(self) -> bool:
+        return self.waiting
 
 
 class SessionManager:
@@ -175,6 +191,7 @@ class SessionManager:
             self.project_root, str(self._storage()["project_dir"] / "file-history" / ".git")
         )
         self._repeat_reminders: dict[str, RepeatToolReminder] = {}
+        self._pending_dmails: dict[str, tuple[str, int]] = {}
         # Subsystems: Jobs, Schedule, Agents
         from coderai.background.manager import JobStore
         from coderai.schedule import ScheduleManager
@@ -221,7 +238,7 @@ class SessionManager:
         self.mcp_manager.default_tool_timeout_s = max(1.0, _mcp_timeout_ms / 1000.0)
         self._session_states: dict[str, Any] = {}
         self._souls: dict[str, Any] = {}
-        _session_managers.append(self)
+        register_session_manager(self)
 
         # Event-model state: per-session turn/step/seq counters.
         # The lock guards all counter and message-cache mutations so
@@ -248,7 +265,7 @@ class SessionManager:
     def get_active_model(self) -> str:
         if self._override_model:
             return self._override_model
-        return str(self.get_resolved_settings().get("model") or "gpt-5.6-luna")
+        return str(self.get_resolved_settings().get("model") or "gpt-6-luna")
 
     def set_thinking_enabled(self, enabled: bool) -> None:
         """Session-scoped thinking-mode override (mirrors :meth:`set_model`)."""
@@ -274,7 +291,7 @@ class SessionManager:
     def get_active_agent_role(self) -> str:
         return getattr(self, "active_agent_role", "default")
 
-    def switch_agent_role(self, role_name: str) -> bool:
+    def switch_agent_role(self, role_name: str, session_id: str | None = None) -> bool:
         """Switch the active agent role specification (e.g. architect, code-reviewer, default)."""
         clean_role = (role_name or "").strip().lower()
         if not clean_role:
@@ -290,9 +307,32 @@ class SessionManager:
                 settings["persona"] = rendered
             if spec.allowed_tools is not None:
                 settings["allowedTools"] = list(spec.allowed_tools)
+            else:
+                settings.pop("allowedTools", None)
             if spec.model:
                 self.set_model(spec.model)
             self.active_agent_role = spec.name or clean_role
+
+            target_sid = session_id or self._active_session_id
+            if target_sid and rendered:
+                rows = list(self.session_store.read_rows(target_sid))
+                if rows:
+                    updated_rows = []
+                    found_system = False
+                    for r in rows:
+                        if not found_system and r.get("role") == "system":
+                            updated_rows.append({**r, "content": rendered})
+                            found_system = True
+                        else:
+                            updated_rows.append(r)
+                    if not found_system:
+                        updated_rows.insert(
+                            0, {"seq": 0, "role": "system", "content": rendered, "meta": {}}
+                        )
+                    self.session_store.replace_rows(target_sid, updated_rows)
+                    if hasattr(self, "_messages_cache") and target_sid in self._messages_cache:
+                        self._messages_cache.pop(target_sid, None)
+
             return True
         except Exception as exc:
             import sys
@@ -906,6 +946,86 @@ class SessionManager:
         if not hasattr(self, "_steer_queues"):
             return []
         return self._steer_queues.pop(session_id, [])
+
+    def context_checkpoint_count(self, session_id: str) -> int:
+        """How many context checkpoints exist (next id, and D-Mail bound)."""
+        target = self.resolve_session_id(session_id) or session_id
+        count = 0
+        try:
+            rows = self.session_store.read_rows(target)
+        except Exception:
+            return 0
+        for row in rows:
+            if row.get("role") != "_checkpoint":
+                continue
+            checkpoint_id = row.get("id")
+            if isinstance(checkpoint_id, int):
+                count = max(count, checkpoint_id + 1)
+        return count
+
+    def checkpoint_context(self, session_id: str) -> int:
+        """Append a context checkpoint marker and return its id.
+
+        The marker is not a model message. Reverting to this id drops the
+        marker and every row written after it.
+        """
+        target = self.resolve_session_id(session_id) or session_id
+        checkpoint_id = self.context_checkpoint_count(target)
+        self.session_store.append_row(target, {"role": "_checkpoint", "id": checkpoint_id})
+        self._invalidate_messages_cache(target)
+        return checkpoint_id
+
+    async def revert_context_to(self, session_id: str, checkpoint_id: int) -> None:
+        """Rotate the session log and keep only rows before ``checkpoint_id``."""
+        from coderai.soul.compaction import estimate_text_tokens
+        from coderai.utils.path import next_available_rotation
+
+        target = self.resolve_session_id(session_id) or session_id
+        path = self.session_store.messages_path(target)
+        rows = self.session_store.read_rows(target)
+        cut: int | None = None
+        for index, row in enumerate(rows):
+            if row.get("role") == "_checkpoint" and row.get("id") == checkpoint_id:
+                cut = index
+                break
+        if cut is None:
+            raise ValueError(f"Checkpoint {checkpoint_id} does not exist")
+        rotated = await next_available_rotation(path)
+        if rotated is None:
+            raise RuntimeError("No available rotation path found")
+        path.replace(rotated)
+        self.session_store.replace_rows(target, rows[:cut])
+        self._invalidate_messages_cache(target)
+        estimated = estimate_text_tokens(self.list_session_messages(target))
+        self._update_entry(
+            target,
+            lambda entry, tokens=estimated: {
+                **entry,
+                "activeTokens": tokens,
+                "updateTime": _now(),
+            },
+        )
+
+    def stage_dmail(self, session_id: str, message: str, checkpoint_id: int) -> None:
+        """Validate and hold one D-Mail until the turn loop rewinds."""
+        from coderai.soul.denwarenji import DenwaRenjiError
+
+        target = self.resolve_session_id(session_id) or session_id
+        if target in self._pending_dmails:
+            raise DenwaRenjiError("Only one D-Mail can be sent at a time")
+        if checkpoint_id < 0:
+            raise DenwaRenjiError("The checkpoint ID can not be negative")
+        if checkpoint_id >= self.context_checkpoint_count(target):
+            raise DenwaRenjiError("There is no checkpoint with the given ID")
+        text = message.strip()
+        if not text:
+            raise DenwaRenjiError("D-Mail message is empty")
+        self._pending_dmails[target] = (text[:4000], checkpoint_id)
+
+    def take_pending_dmail(self, session_id: str) -> tuple[str, int] | None:
+        """Take the staged D-Mail, if any."""
+        target = self.resolve_session_id(session_id) or session_id
+        return self._pending_dmails.pop(target, None)
 
     async def respond_permissions(
         self,
@@ -1549,11 +1669,12 @@ class SessionManager:
         tool_calls: list[Any],
         permission_replies: list[dict[str, Any]] | None = None,
         message_permissions: list[dict[str, Any]] | None = None,
-    ) -> bool:
+    ) -> ToolDispatchResult:
         waiting = False
+        force_stop = False
         ctrl = self.session_controllers.get(session_id)
         if not tool_calls:
-            return waiting
+            return ToolDispatchResult(waiting=False)
 
         read_only_tool_names = {
             "read",
@@ -1763,6 +1884,7 @@ class SessionManager:
                     list_session_events=lambda sid: self.list_session_events(sid),
                     plan_mode=is_plan,
                     session_manager=self,
+                    allowed_tools=self.get_resolved_settings().get("allowedTools"),
                 )
 
                 is_parallel = chunk_kind == "parallel" and len(chunk_tcs) > 1
@@ -1781,6 +1903,9 @@ class SessionManager:
                         result.get("concludesTurn") is True
                         or getattr(result, "concludes_turn", False) is True
                     ):
+                        should_conclude_turn = True
+                    if result.get("forceStopTurn") is True:
+                        force_stop = True
                         should_conclude_turn = True
 
                     result_meta = result.get("metadata") if isinstance(result, dict) else None
@@ -1873,14 +1998,17 @@ class SessionManager:
                     self.on_assistant_message(tool_msg, True)
                     completed_tool_call_ids.add(tc_id)
 
-        return waiting
+        return ToolDispatchResult(
+            waiting=waiting,
+            stop_reason="tool_call_repeat" if force_stop else None,
+        )
 
     async def _create_completion_with_retry(
         self, session_id: str, client: Any, request: dict[str, Any]
     ) -> dict[str, Any]:
         """Retry retryable LLM failures with automated multi-model failover cascade."""
         settings = self.get_resolved_settings()
-        primary_model = str(request.get("model") or settings.get("model") or "gpt-5.6-luna")
+        primary_model = str(request.get("model") or settings.get("model") or "gpt-6-luna")
 
         configured_fallbacks = (
             request.get("fallback_models")
@@ -2372,6 +2500,10 @@ class SessionManager:
 
     def dispose(self) -> None:
         """Best-effort sync dispose. Prefer ``close_session_manager`` from an async context."""
+        try:
+            unregister_session_manager(self)
+        except Exception:
+            pass
         for event in self.session_controllers.values():
             try:
                 event.set()

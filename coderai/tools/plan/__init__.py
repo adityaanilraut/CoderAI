@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,16 +21,6 @@ from coderai.tools.plan.heroes import (
     read_plan_file,
     seed_slug_cache,
 )
-
-__all__ = [
-    "handle_exit_plan_mode_tool",
-    "handle_enter_plan_mode_tool",
-    "ENTER_PLAN_MODE_DESCRIPTION",
-    "get_or_create_slug",
-    "get_plan_file_path",
-    "read_plan_file",
-    "seed_slug_cache",
-]
 
 
 _HEADING_RE = re.compile(r"^#\s+\S", re.MULTILINE)
@@ -58,7 +47,6 @@ def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult
         is_plan_mode = bool(
             getattr(context, "plan_mode", None) or getattr(context, "planMode", None)
         )
-        # also check session manager entry if available
         if not is_plan_mode:
             mgr = getattr(context, "manager", None) or getattr(context, "session_manager", None)
             if mgr is not None and session_id:
@@ -76,7 +64,6 @@ def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult
 
     has_plan_key = "plan" in args and args.get("plan") is not None
     if not session_id:
-        # No session context (e.g. test harness) — lenient: validate only non-empty for summary alias
         if has_plan_key and (not plan or not _HEADING_RE.search(plan)):
             return ToolResult(
                 ok=False,
@@ -102,7 +89,6 @@ def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult
             concludes_turn=True,
         )
 
-    # Header validation applies when `plan` param is used; `summary` alias or omitted remains lenient
     if has_plan_key:
         if not plan or not _HEADING_RE.search(plan):
             return ToolResult(
@@ -121,3 +107,14 @@ def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult
         metadata={"exitPlanMode": True, "summary": summary, "approved": True},
         concludes_turn=True,
     )
+
+
+__all__ = [
+    "handle_exit_plan_mode_tool",
+    "handle_enter_plan_mode_tool",
+    "ENTER_PLAN_MODE_DESCRIPTION",
+    "get_or_create_slug",
+    "get_plan_file_path",
+    "read_plan_file",
+    "seed_slug_cache",
+]

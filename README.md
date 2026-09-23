@@ -5,15 +5,14 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT">
-  <img src="https://img.shields.io/badge/Benchmark-100%25%20SWT--Bench-success" alt="Benchmark">
 </p>
 
 <p align="center">
   <a href="#overview">Overview</a> •
-  <a href="#-benchmark--performance">Benchmark</a> •
+  <a href="#benchmarks">Benchmarks</a> •
   <a href="#quickstart">Quickstart</a> •
   <a href="#interactive-cli--slash-commands">Interactive CLI</a> •
   <a href="#agent-roles--swarms">Agent Roles & Swarms</a> •
@@ -41,28 +40,9 @@
 
 ---
 
-## 📊 Benchmark & Performance: SWT-Bench Verified
+## Benchmarks
 
-CoderAI was evaluated on a comprehensive 10-task benchmark combining **SWT-Bench Real-World Repository Tasks** (targeting large-scale production codebases like `psf/requests`, `pallets/flask`, and `sympy/sympy`) and **Complex Local Engineering Challenges** (concurrency write-ahead logging, dependency graph cycles, TTL LRU caches, markdown table formatters, and spiral matrices) head-to-head against leading coding agent harnesses (**Claude Code** and **OpenCode**), all running on the frontier model **`deepseek-v4-flash`**.
-
----
-
-### 🏆 Head-to-Head Benchmark Summary
-
-| Metric                         | 🤖 CoderAI         | 🟣 Claude Code | 🟢 OpenCode  |                    Winner                    |
-| ------------------------------ | ------------------ | -------------- | ------------ | :------------------------------------------: |
-| **Success Rate (Accuracy)**    | **100.0% (10/10)** | 80.0% (8/10)   | 80.0% (8/10) |                🥇 **CoderAI**                |
-| **Resolved Tasks**             | **10 / 10**        | 8 / 10         | 8 / 10       |                🥇 **CoderAI**                |
-| **Average Execution Time**     | **73.8s**          | 115.3s         | 86.9s        |        🥇 **CoderAI** _(36% faster)_         |
-| **Median Execution Time**      | **54.7s**          | 79.7s          | 80.6s        |        🥇 **CoderAI** _(31% faster)_         |
-| **P90 Execution Time**         | **130.2s**         | 240.3s         | 130.6s       |      🥇 **CoderAI** _(46% faster tail)_      |
-| **Average Total Tokens**       | **467,064**        | 611,771        | 729,681      |     🥇 **CoderAI** _(36% fewer tokens)_      |
-| **KV Cache Hit Rate**          | **95.9%**          | 94.0%          | 94.5%        |                🥇 **CoderAI**                |
-| **Total API Cost**             | **$0.1069**        | $0.1602        | $0.1611      |       🥇 **CoderAI** _(33.5% savings)_       |
-| **Time to First Token (TTFT)** | **3.4s**           | 12.8s          | 58.3s        |        🥇 **CoderAI** _(3.8x faster)_        |
-| **Total Reasoning Tokens**     | **32,338**         | 70,599         | 54,325       |     🥇 **CoderAI** _(54% fewer wasted)_      |
-| **Total Tool Execution Time**  | **73.7s**          | 149.7s         | 900.6s       | 🥇 **CoderAI** _(12.2x faster tool runtime)_ |
-| **Tool Time Ratio**            | **10.0%**          | 13.0%          | 103.7%       |      🥇 **CoderAI** _(Lean execution)_       |
+Published head-to-head numbers are not checked into this repository. There is no task list, runner, or raw result artifact here, so this README does not claim a success rate against other harnesses. Add a reproducible benchmark under `scripts/` before quoting one.
 
 ---
 
@@ -258,6 +238,12 @@ CoderAI supports dynamic discovery of specialized markdown agent specifications 
 - **`TeamTaskBoard`**: DAG-validated task boards preventing circular dependencies and tracking blocked/in-progress statuses.
 - **`wait_agent`**: Synchronization barriers supporting completion, message settlement, or timeout-based join.
 
+### JEV System-One AI Model
+- **Non-Autoregressive Fast Inference**: Single-shot `system_one(state, questions)` execution without streaming or tool overhead for instantaneous code triage.
+- **Diff Screening & Gating**: Rapid automated pre-screening of diffs and code review comments with calibrated confidence thresholds.
+- **Fail-Safe Fallback**: Guaranteed graceful degradation to standard System-Two autoregressive reasoning loops upon timeout or ambiguity.
+- **LRU In-Memory Caching**: Bounded thread-safe caching (`CODERAI_JEV_CACHE_SIZE`) with hit/miss telemetry and hash-keyed lookups.
+
 ---
 
 ## Core Tools
@@ -279,12 +265,11 @@ CoderAI provides a rich, versatile tool surface:
 | **`subagent` / `subagent_fork`**           | Multi-Agent  | Continuable background subagents and one-shot task delegation.                                                                                 |
 | **`send_message` / `interrupt_agent`**     | Multi-Agent  | Inter-agent messaging and subagent control plane.                                                                                              |
 | **`spawn_teammate` / `team_task_*`**       | Swarm        | Agent team collaboration with shared task board and synchronization (`wait_agent`).                                                            |
-| **`lsp`**                                  | Code Intel   | Language Server Protocol integration for definitions, references, and symbol navigation.                                                       |
 | **`goal` / `todo_write`**                  | Planning     | Session goal tracking and structured task breakdowns.                                                                                          |
-| **`workflow`**                             | Automation   | Multi-phase asynchronous Python workflow scripting engine.                                                                                     |
-| **`ralph`**                                | Verification | Automated test-driven feedback and completion verification harness.                                                                            |
-| **`code_mode`**                            | Execution    | Sandboxed in-process Python execution for data manipulation and analysis.                                                                      |
-| **`session_query`**                        | Search       | Full-text query and indexing across past conversation sessions.                                                                                |
+| **`ralph`**                                | Verification | Repeat-until-done loop (`--max-ralph-iterations` and flow skills), not a separate tool name.                                                   |
+| **`session_search`**                       | Search       | Keyword search over saved session titles and summaries. Alias: `session_query`.                                                                |
+| **`session_trace`**                        | Search       | Recent event timeline for one saved session.                                                                                                   |
+| **`session_event_search` / `session_event_read`** | Search | Search or read a slice of one session's event log.                                                                                      |
 | **`WebSearch` / `WebFetch`**               | Web          | Live web search and URL fetching with SSRF protection and Markdown conversion.                                                                 |
 | **`UnderstandImage`**                      | Media        | Image understanding for local visual assets.                                                                                                   |
 | **`AskUserQuestion`**                      | User         | Interactive questionnaires and user decision modals.                                                                                           |
@@ -329,7 +314,7 @@ Settings are resolved in order of precedence: **CLI arguments > Environment vari
 
 ```json
 {
-  "model": "gpt-5.6-luna",
+  "model": "gpt-6-luna",
   "temperature": 0.2,
   "thinkingEnabled": true,
   "reasoningEffort": "max",

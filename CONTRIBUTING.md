@@ -7,7 +7,7 @@ Thank you for your interest in contributing to CoderAI! This document outlines o
 ## 1. Development Setup
 
 ### Requirements
-- Python 3.10, 3.11, 3.12, 3.13, or 3.14
+- Python 3.12, 3.13, or 3.14
 - Git 2.30+
 
 ### Clone & Install
@@ -23,7 +23,7 @@ pip install -e ".[dev]"
 
 ## 2. Code Standards
 
-- **Python Compatibility**: Code must run on Python >= 3.10. Avoid Python 3.12+ only syntax like PEP 695 `type X = ...` or `def func[T](...)`. Use `TypeVar` and `Union`.
+- **Python Compatibility**: Code must run on Python >= 3.12. Avoid PEP 695 syntax (`type X = ...` or `def func[T](...)`). Use `TypeVar` and `Union`.
 - **Pure Terminal Architecture**: CoderAI is a terminal CLI and daemon application. Do not introduce web GUIs or browser servers.
 - **Asynchronous I/O**: Use `asyncio` for network, subagent runners, and long-running subprocesses. Avoid blocking operations in the event loop.
 

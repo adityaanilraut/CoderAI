@@ -1,0 +1,303 @@
+### coderai/acp/engine.py:89 function build_prompt (8L) tests=1
+      coderai/acp/engine.py:432:__all__ = ["SessionManagerEngine", "build_acp_prompt", "build_prompt"]
+### coderai/acp/kaos.py:46 class ACPProcess (119L) tests=0
+      coderai/acp/kaos.py:296:__all__ = ["ACPKaos", "ACPProcess"]
+### coderai/acp/session.py:64 function get_current_acp_tool_call_id_or_none (11L) tests=0
+      coderai/acp/session.py:652:    "get_current_acp_tool_call_id_or_none",
+### coderai/acp/session.py:77 function register_terminal_tool_call_id (4L) tests=0
+      coderai/acp/session.py:654:    "register_terminal_tool_call_id",
+### coderai/approval_runtime/runtime.py:210 method ApprovalRuntime._publish_wire_request (22L) tests=0
+      coderai/approval_runtime/runtime.py:90:        self._publish_wire_request(record)
+### coderai/auth/oauth.py:490 method OAuthManager.from_typed_config (15L) tests=0
+### coderai/auth/oauth.py:602 function login_device_flow (61L) tests=0
+      coderai/auth/oauth.py:640:        async for event in login_device_flow(open_browser=False):
+      coderai/auth/__init__.py:28:    login_device_flow,
+      coderai/auth/__init__.py:72:    "login_device_flow",
+### coderai/background/manager.py:15 function reset_job_store (4L) tests=3
+      coderai/background/__init__.py:13:    reset_job_store,
+      coderai/background/__init__.py:39:    "reset_job_store",
+### coderai/cli/__init__.py:8 class ExitCode (4L) tests=0
+      coderai/cli/__init__.py:17:__all__ = ["main", "UIMode", "ExitCode", "InputFormat", "OutputFormat"]
+### coderai/cli/doctor.py:36 method DoctorReport.has_errors (2L) tests=0
+### coderai/cli/doctor.py:40 method DoctorReport.has_warnings (2L) tests=0
+### coderai/constant.py:36 function _normalize_remote (13L) tests=2
+      coderai/constant.py:97:            remote = _normalize_remote(result.stdout)
+### coderai/constant.py:52 function get_build_sha (52L) tests=0
+      coderai/constant.py:120:    "get_build_sha",
+### coderai/events.py:117 method SessionEvent.is_surface (2L) tests=1
+      coderai/events.py:122:        return not self.is_surface
+      coderai/events.py:486:        if not ev.is_surface or ev.seq in shadowed:
+### coderai/events.py:121 method SessionEvent.is_log_only (2L) tests=1
+### coderai/goals/core.py:23 class GoalRef (3L) tests=0
+### coderai/hooks/engine.py:205 function execute_hook_command_async (76L) tests=0
+      coderai/hooks/__init__.py:20:    execute_hook_command_async,
+      coderai/hooks/__init__.py:76:    "execute_hook_command_async",
+      coderai/hooks/engine.py:439:            out = await execute_hook_command_async(
+### coderai/hooks/engine.py:383 function run_hook_point_async (65L) tests=0
+      coderai/hooks/__init__.py:22:    run_hook_point_async,
+      coderai/hooks/__init__.py:78:    "run_hook_point_async",
+      coderai/hooks/runner.py:25:from coderai.hooks.engine import run_hook_point, run_hook_point_async
+### coderai/hooks/engine.py:563 method HookEngine.has_hooks (2L) tests=0
+### coderai/hooks/runner.py:29 function run_pre_tool_use (21L) tests=1
+      coderai/hooks/__init__.py:27:    run_pre_tool_use,
+      coderai/hooks/__init__.py:79:    "run_pre_tool_use",
+### coderai/hooks/runner.py:162 function build_pre_tool_use_payload (14L) tests=0
+      coderai/hooks/__init__.py:33:    build_pre_tool_use_payload,
+      coderai/hooks/__init__.py:85:    "build_pre_tool_use_payload",
+### coderai/hooks/runner.py:178 function build_post_tool_use_payload (16L) tests=0
+      coderai/hooks/__init__.py:34:    build_post_tool_use_payload,
+      coderai/hooks/__init__.py:86:    "build_post_tool_use_payload",
+### coderai/hooks/runner.py:227 function build_stop_failure_payload (8L) tests=0
+      coderai/hooks/__init__.py:38:    build_stop_failure_payload,
+      coderai/hooks/__init__.py:90:    "build_stop_failure_payload",
+      coderai/hooks/runner.py:354:        payload=build_stop_failure_payload(
+### coderai/hooks/runner.py:344 function run_stop_failure (19L) tests=0
+      coderai/hooks/__init__.py:48:    run_stop_failure,
+      coderai/hooks/__init__.py:100:    "run_stop_failure",
+### coderai/hooks/runner.py:524 function run_user_prompt_submit_async (15L) tests=0
+      coderai/hooks/__init__.py:57:    run_user_prompt_submit_async,
+      coderai/hooks/__init__.py:109:    "run_user_prompt_submit_async",
+### coderai/hooks/runner.py:541 function run_stop_async (15L) tests=0
+      coderai/hooks/__init__.py:58:    run_stop_async,
+      coderai/hooks/__init__.py:110:    "run_stop_async",
+### coderai/hooks/runner.py:558 function run_pre_compact_async (19L) tests=0
+      coderai/hooks/__init__.py:59:    run_pre_compact_async,
+      coderai/hooks/__init__.py:111:    "run_pre_compact_async",
+### coderai/hooks/runner.py:579 function run_post_compact_async (19L) tests=0
+      coderai/hooks/__init__.py:60:    run_post_compact_async,
+      coderai/hooks/__init__.py:112:    "run_post_compact_async",
+### coderai/hooks/runner.py:600 function run_session_start_async (13L) tests=0
+      coderai/hooks/__init__.py:61:    run_session_start_async,
+      coderai/hooks/__init__.py:113:    "run_session_start_async",
+### coderai/hooks/runner.py:615 function run_session_end_async (13L) tests=0
+      coderai/hooks/__init__.py:62:    run_session_end_async,
+      coderai/hooks/__init__.py:114:    "run_session_end_async",
+### coderai/jev/client.py:421 function jev_cache_clear (7L) tests=3
+      coderai/jev/__init__.py:6:    jev_cache_clear,
+      coderai/jev/__init__.py:18:    "jev_cache_clear",
+### coderai/jev/client.py:516 function jev_status_clear (6L) tests=2
+      coderai/jev/__init__.py:13:    jev_status_clear,
+      coderai/jev/__init__.py:25:    "jev_status_clear",
+### coderai/log.py:240 method StderrRedirector.uninstall (11L) tests=0
+      coderai/log.py:305:        _stderr_redirector.uninstall()
+### coderai/log.py:302 function restore_stderr (4L) tests=0
+      coderai/log.py:158:    "restore_stderr",
+      coderai/utils/logging.py:14:    restore_stderr as restore_stderr,
+### coderai/mcp/client.py:228 method McpClient.get_prompt (7L) tests=0
+      coderai/mcp/manager.py:712:            result = await prompt["client"].get_prompt(
+### coderai/mcp/manager.py:253 method McpManager.sync_servers (34L) tests=0
+      coderai/soul/session/manager.py:2339:        await self.mcp_manager.sync_servers(settings.get("mcpServers"))
+### coderai/mcp/manager.py:316 method McpManager.probe_health (14L) tests=0
+      coderai/mcp/manager.py:341:        health = await self.probe_health()
+### coderai/prompt/__init__.py:256 function get_compact_prompt_token_threshold (4L) tests=0
+      coderai/prompt/__init__.py:953:    "get_compact_prompt_token_threshold",
+### coderai/prompt/__init__.py:611 function build_cache_stabilized_messages (36L) tests=1
+      coderai/prompt/__init__.py:958:    "build_cache_stabilized_messages",
+### coderai/session.py:72 method Session.subagents_dir (5L) tests=1
+### coderai/session.py:269 method Session.list_all (8L) tests=0
+      coderai/session.py:5:- Session lifecycle methods: `create`, `find`, `list`, `list_all`, `continue_`, `delete`
+### coderai/session.py:279 method Session.continue_ (12L) tests=0
+      coderai/session.py:5:- Session lifecycle methods: `create`, `find`, `list`, `list_all`, `continue_`, `delete`
+### coderai/soul/agent.py:132 method SessionSoul.notify_compacted (3L) tests=0
+      coderai/soul/dynamic_injection.py:153:    async def notify_compacted(self) -> None:
+      coderai/soul/agent.py:134:        await self.injections.notify_compacted()
+### coderai/soul/approval.py:261 method PermissionTicketRegistry.grant_ticket (3L) tests=0
+      coderai/soul/approval.py:285:        return self.grant_ticket(ticket)
+### coderai/soul/approval.py:265 method PermissionTicketRegistry.request_escalation (21L) tests=0
+      coderai/soul/session/manager.py:471:        return get_permission_ticket_registry().request_escalation(
+### coderai/soul/approval.py:304 method PermissionTicketRegistry.revoke_ticket (2L) tests=0
+      coderai/soul/session/manager.py:494:        return get_permission_ticket_registry().revoke_ticket(ticket_id)
+### coderai/soul/approval.py:307 method PermissionTicketRegistry.list_active_tickets (11L) tests=0
+      coderai/soul/session/manager.py:488:        return get_permission_ticket_registry().list_active_tickets(session_id=target_id)
+### coderai/soul/approval.py:328 function get_permission_ticket_registry (2L) tests=0
+      coderai/soul/session/manager.py:467:        from coderai.soul.approval import get_permission_ticket_registry
+      coderai/soul/session/manager.py:471:        return get_permission_ticket_registry().request_escalation(
+      coderai/soul/session/manager.py:484:        from coderai.soul.approval import get_permission_ticket_registry
+### coderai/soul/approval.py:336 function permission_coverage_gaps (7L) tests=1
+      coderai/soul/__init__.py:40:    permission_coverage_gaps,
+      coderai/soul/__init__.py:106:    "permission_coverage_gaps",
+### coderai/soul/approval.py:918 function normalize_ask_permissions (24L) tests=0
+      coderai/soul/__init__.py:52:    normalize_ask_permissions,
+      coderai/soul/__init__.py:118:    "normalize_ask_permissions",
+### coderai/soul/approval.py:1089 method Approval.is_afk_flag (2L) tests=0
+      coderai/soul/coderaisoul.py:1092:    def is_afk_flag(self) -> bool:
+      coderai/soul/coderaisoul.py:1094:        return self._approval.is_afk_flag()
+### coderai/soul/btw.py:140 function inject_dmail_and_continue (14L) tests=0
+      coderai/soul/btw.py:5:``inject_dmail_and_continue`` appends a D-Mail directive and re-activates the
+      coderai/soul/__init__.py:25:    inject_dmail_and_continue,
+      coderai/soul/__init__.py:93:    "inject_dmail_and_continue",
+### coderai/soul/coderaisoul.py:1092 method KimiSoul.is_afk_flag (3L) tests=0
+      coderai/soul/approval.py:1089:    def is_afk_flag(self) -> bool:
+      coderai/soul/coderaisoul.py:1094:        return self._approval.is_afk_flag()
+### coderai/soul/coderaisoul.py:1127 method KimiSoul.set_hook_engine (4L) tests=0
+      coderai/soul/coderaisoul.py:1130:            self._agent.toolset.set_hook_engine(engine)
+      coderai/soul/toolset.py:233:    def set_hook_engine(self, engine: HookEngine) -> None:
+### coderai/soul/compaction.py:91 function prune_tool_results_for_compaction (4L) tests=0
+      coderai/soul/__init__.py:8:    prune_tool_results_for_compaction,
+      coderai/soul/__init__.py:80:    "prune_tool_results_for_compaction",
+### coderai/soul/dynamic_injection.py:153 method InjectionRegistry.notify_compacted (6L) tests=0
+      coderai/soul/agent.py:132:    async def notify_compacted(self) -> None:
+      coderai/soul/agent.py:134:        await self.injections.notify_compacted()
+### coderai/soul/dynamic_injections/plan_mode.py:98 method PlanModeInjectionProvider._has_plan_reminder (9L) tests=0
+### coderai/soul/session/approval.py:78 function check_auto_approve_for_session (9L) tests=0
+      coderai/soul/session/manager.py:104:    check_auto_approve_for_session as _check_auto_approve_for_session,  # noqa: F401
+### coderai/soul/tool_context.py:22 function set_current_tool_call (3L) tests=0
+      coderai/soul/tool_context.py:56:    "set_current_tool_call",
+### coderai/soul/tool_context.py:37 function get_current_step_no (3L) tests=0
+      coderai/soul/tool_context.py:52:    "get_current_step_no",
+### coderai/soul/toolset.py:233 method CoderAIToolset.set_hook_engine (2L) tests=0
+      coderai/soul/coderaisoul.py:1127:    def set_hook_engine(self, engine: HookEngine) -> None:
+      coderai/soul/coderaisoul.py:1130:            self._agent.toolset.set_hook_engine(engine)
+### coderai/soul/toolset.py:318 method CoderAIToolset.dedup_triggered (3L) tests=0
+### coderai/soul/toolset.py:908 class WireExternalTool (40L) tests=0
+      coderai/soul/toolset.py:604:            if not isinstance(existing, WireExternalTool):
+      coderai/soul/toolset.py:607:            tool = WireExternalTool(
+      coderai/soul/toolset.py:1027:    "WireExternalTool",
+### coderai/state.py:128 method SessionStateManager.was_file_read (2L) tests=0
+      coderai/state.py:257:def was_file_read(session_id: str, file_path: str) -> bool:
+      coderai/state.py:258:    return _default_manager.was_file_read(session_id, file_path)
+### coderai/state.py:257 function was_file_read (2L) tests=0
+      coderai/state.py:128:    def was_file_read(self, session_id: str, file_path: str) -> bool:
+      coderai/state.py:258:    return _default_manager.was_file_read(session_id, file_path)
+### coderai/subagents/backends/acp.py:14 class AcpSubagentDriver (35L) tests=0
+      coderai/subagents/backends/__init__.py:12:from coderai.subagents.backends.acp import AcpSubagentDriver
+      coderai/subagents/backends/__init__.py:25:    "AcpSubagentDriver",
+### coderai/subagents/builder.py:78 function parse_subagent_descriptor (36L) tests=1
+      coderai/subagents/__init__.py:31:    parse_subagent_descriptor,
+      coderai/subagents/__init__.py:83:    "parse_subagent_descriptor",
+### coderai/subagents/builder.py:117 class SubagentQuotaConfig (8L) tests=0
+      coderai/subagents/__init__.py:32:    SubagentQuotaConfig,
+      coderai/subagents/__init__.py:84:    "SubagentQuotaConfig",
+### coderai/subagents/builder.py:160 function cleanup_subagent_scratchpad (12L) tests=1
+      coderai/subagents/__init__.py:35:    cleanup_subagent_scratchpad,
+      coderai/subagents/__init__.py:87:    "cleanup_subagent_scratchpad",
+### coderai/subagents/core.py:148 method AgentRegistry.get_children (6L) tests=0
+      coderai/subagents/core.py:160:            for child in self.get_children(agent_id):
+### coderai/subagents/models.py:33 class SubagentRunRecord (11L) tests=0
+      coderai/subagents/__init__.py:5:    SubagentRunRecord,
+      coderai/subagents/__init__.py:65:    "SubagentRunRecord",
+### coderai/subagents/registry.py:183 function list_subagent_types (12L) tests=0
+      coderai/subagents/__init__.py:42:    list_subagent_types,
+      coderai/subagents/__init__.py:92:    "list_subagent_types",
+### coderai/subagents/registry.py:234 function is_tool_allowed (13L) tests=0
+      coderai/subagents/__init__.py:44:    is_tool_allowed,
+      coderai/subagents/__init__.py:94:    "is_tool_allowed",
+### coderai/subagents/store.py:69 class SubagentStore (155L) tests=0
+      coderai/subagents/__init__.py:22:    SubagentStore,
+      coderai/subagents/__init__.py:76:    "SubagentStore",
+### coderai/subagents/store.py:89 method SubagentStore.prompt_path (2L) tests=0
+      coderai/subagents/store.py:168:            self.prompt_path(agent_id).write_text(prompt, encoding="utf-8")
+### coderai/subagents/store.py:134 method SubagentStore.write_instance (3L) tests=0
+      coderai/subagents/store.py:131:        self.write_instance(record)
+      coderai/subagents/store.py:161:        self.write_instance(updated)
+### coderai/subagents/store.py:138 method SubagentStore.update_instance (25L) tests=0
+      coderai/subagents/store.py:219:                    self.update_instance(record.agent_id, status="failed")
+### coderai/subagents/store.py:192 method SubagentStore.list_instances (10L) tests=0
+      coderai/subagents/store.py:216:        for record in self.list_instances():
+### coderai/teams/concurrency.py:34 function calculate_backoff_delay (14L) tests=0
+      coderai/teams/concurrency.py:80:            delay = calculate_backoff_delay(
+      coderai/teams/concurrency.py:122:            delay = calculate_backoff_delay(
+### coderai/teams/deadlock.py:19 class DeadlockError (6L) tests=1
+      coderai/teams/deadlock.py:101:            raise DeadlockError(
+      coderai/teams/deadlock.py:124:        """Check for deadlocks and raise DeadlockError immediately if detected."""
+      coderai/teams/deadlock.py:128:            raise DeadlockError(
+### coderai/teams/deadlock.py:117 method InterAgentWaitWatchdog.detect_circular_waits (5L) tests=0
+      coderai/teams/deadlock.py:125:        cycles = self.detect_circular_waits()
+### coderai/teams/deadlock.py:123 method InterAgentWaitWatchdog.assert_no_deadlock (10L) tests=0
+      coderai/teams/deadlock.py:107:        self.assert_no_deadlock()
+### coderai/teams/mailbox.py:59 method AsyncMailbox.send_async (27L) tests=0
+      coderai/teams/mailbox.py:46:        # async (send_async) paths without needing a lock.
+      coderai/teams/mailbox.py:183:            ok = await sub.send_async(message, priority=priority, timeout_seconds=timeout_seconds)
+      coderai/teams/mailbox.py:204:            ok = await mb.send_async(message, priority=priority, timeout_seconds=timeout_seconds)
+### coderai/teams/manager.py:542 method TeamManager.cancel_all_teammates (26L) tests=1
+      coderai/teams/manager.py:582:        _global_team_manager.cancel_all_teammates()
+### coderai/teams/manager.py:578 function reset_team_manager (6L) tests=1
+      coderai/teams/__init__.py:7:    reset_team_manager,
+      coderai/teams/__init__.py:32:    "reset_team_manager",
+### coderai/telemetry/__init__.py:54 function set_client_info (6L) tests=0
+      coderai/telemetry/__init__.py:255:    "set_client_info",
+### coderai/telemetry/__init__.py:62 function get_client_info (3L) tests=0
+      coderai/telemetry/__init__.py:83:        client_info = get_client_info()
+      coderai/telemetry/__init__.py:256:    "get_client_info",
+### coderai/telemetry/__init__.py:67 function track_session_started_once (34L) tests=0
+      coderai/telemetry/__init__.py:257:    "track_session_started_once",
+### coderai/telemetry/crash.py:120 function _asyncio_handler (17L) tests=0
+      coderai/telemetry/crash.py:149:    if current is _asyncio_handler:
+      coderai/telemetry/crash.py:152:    loop.set_exception_handler(_asyncio_handler)
+### coderai/telemetry/sink.py:68 method ExecutionSpan.to_otel_span (26L) tests=1
+      coderai/telemetry/sink.py:203:            return [s.to_otel_span() for s in spans]
+### coderai/tools/file/__init__.py:6 class FileOpsWindow (4L) tests=0
+      coderai/tools/file/__init__.py:39:    "FileOpsWindow",
+### coderai/tools/legacy/path_lock.py:44 method PathLockEntry.acquire_read (15L) tests=0
+      coderai/tools/legacy/path_lock.py:99:        async with entry.acquire_read():
+### coderai/tools/legacy/path_lock.py:93 method PathLockManager.acquire_read_lock (8L) tests=1
+### coderai/tools/legacy/registry.py:189 method ToolRegistry.restore_tool (7L) tests=0
+      coderai/tools/legacy/registry.py:185:            self.restore_tool(name, scope=scope)
+### coderai/tools/legacy/registry.py:204 method ToolRegistry.restrict (22L) tests=1
+      coderai/sandbox.py:207:    return "Current file policy: danger-full-access. The file sandbox does not restrict file modifications by availab
+      coderai/tools/legacy/registry.py:239:        return self.restrict(filter_spec, scope=session_id)
+### coderai/tools/legacy/schema.py:15 function assert_supported_json_schema (21L) tests=1
+      coderai/tools/legacy/schema.py:33:            assert_supported_json_schema(prop_schema, f"{path}.properties.{prop_name}")
+      coderai/tools/legacy/schema.py:35:        assert_supported_json_schema(schema["items"], f"{path}.items")
+### coderai/tools/legacy/schema.py:38 function validate_json_schema_value (135L) tests=1
+      coderai/tools/legacy/schema.py:51:            errs = validate_json_schema_value(branch, value, f"{path}.oneOf[{idx}]")
+      coderai/tools/legacy/schema.py:152:                violations.extend(validate_json_schema_value(item_schema, item, f"{path}[{i}]"))
+      coderai/tools/legacy/schema.py:167:                    validate_json_schema_value(props[prop_name], prop_val, f"{path}.{prop_name}")
+### coderai/tools/utils.py:81 method ToolResultBuilder.n_chars (3L) tests=0
+### coderai/triage/engine.py:147 function is_jev_configured (3L) tests=0
+      coderai/triage/__init__.py:19:    is_jev_configured,
+      coderai/triage/__init__.py:51:    "is_jev_configured",
+### coderai/triage/engine.py:336 function reset_jev_question_cache (8L) tests=2
+      coderai/triage/__init__.py:28:    reset_jev_question_cache,
+      coderai/triage/__init__.py:60:    "reset_jev_question_cache",
+### coderai/triage/engine.py:393 function reset_jev_shared_clients (6L) tests=2
+      coderai/triage/__init__.py:29:    reset_jev_shared_clients,
+      coderai/triage/__init__.py:61:    "reset_jev_shared_clients",
+### coderai/triage/engine.py:611 function reset_triage_engine (5L) tests=3
+      coderai/triage/__init__.py:30:    reset_triage_engine,
+      coderai/triage/__init__.py:62:    "reset_triage_engine",
+### coderai/ui/shell/mcp_status.py:79 function _status_color (8L) tests=0
+      coderai/ui/shell/mcp_status.py:26:        color = _status_color(server.status)
+### coderai/ui/shell/migration_nudge.py:26 function verify_command (3L) tests=1
+      coderai/ui/shell/migration_nudge.py:74:        (verify_command(platform), "cyan"),
+### coderai/ui/shell/prompt.py:3466 function _engine (5L) tests=1
+      coderai/ui/shell/prompt.py:3482:    return _engine().format_default_status_bar(
+### coderai/ui/theme.py:51 function _task_browser_style_dark (22L) tests=0
+      coderai/ui/theme.py:228:    return _task_browser_style_light() if _active_theme == "light" else _task_browser_style_dark()
+### coderai/ui/theme.py:75 function _task_browser_style_light (22L) tests=0
+      coderai/ui/theme.py:228:    return _task_browser_style_light() if _active_theme == "light" else _task_browser_style_dark()
+### coderai/ui/theme.py:245 function supports_truecolor (17L) tests=0
+      coderai/ui/theme.py:270:    return "truecolor" if supports_truecolor() else "256"
+### coderai/ui/theme.py:264 function get_color_system (7L) tests=0
+      coderai/utils/rich/syntax.py:86:        from coderai.ui.theme import get_color_system
+      coderai/utils/rich/syntax.py:88:        return get_color_system()
+### coderai/utils/common/invariants.py:8 class InvariantViolation (8L) tests=1
+      coderai/utils/common/invariants.py:167:    """Assert all session invariants hold, raising InvariantViolation if broken."""
+      coderai/utils/common/invariants.py:170:        raise InvariantViolation(violations)
+### coderai/utils/common/invariants.py:18 function verify_monotonic_sequence_numbers (26L) tests=1
+      coderai/utils/common/invariants.py:160:    violations.extend(verify_monotonic_sequence_numbers(events_or_messages))
+### coderai/utils/common/invariants.py:46 function verify_paired_tool_calls (62L) tests=1
+      coderai/soul/session/store.py:223:            verify_paired_tool_calls,
+      coderai/soul/session/store.py:237:        paired_violations = verify_paired_tool_calls(rows)
+      coderai/utils/common/invariants.py:161:    violations.extend(verify_paired_tool_calls(events_or_messages))
+### coderai/utils/common/invariants.py:110 function verify_turn_step_boundaries (42L) tests=1
+      coderai/utils/common/invariants.py:162:    violations.extend(verify_turn_step_boundaries(events_or_messages))
+### coderai/utils/common/invariants.py:154 function verify_session_invariants (10L) tests=2
+      coderai/soul/session/store.py:224:            verify_session_invariants,
+      coderai/soul/session/store.py:232:        violations = verify_session_invariants(rows)
+      coderai/utils/common/invariants.py:168:    violations = verify_session_invariants(events_or_messages)
+### coderai/utils/common/model_capabilities.py:101 function get_supported_reasoning_efforts (22L) tests=1
+      coderai/utils/common/model_capabilities.py:221:    efforts = get_supported_reasoning_efforts(model)
+### coderai/utils/common/repeat_tool_reminder.py:131 method RepeatToolReminder.observe (4L) tests=0
+      coderai/utils/common/repeat_tool_reminder.py:166:        """Legacy observe returning only text (backward compat)."""
+      coderai/utils/common/repeat_tool_reminder.py:167:        return self.observe(tool_name, arguments)
+      coderai/tools/legacy/observation.py:3:Tracks authoritative read observations per session. Ensures an agent must observe
+### coderai/utils/common/repeat_tool_reminder.py:178 method RepeatToolReminder.should_force_stop (2L) tests=0
+### coderai/utils/path.py:22 class WriteFileAtomicOptions (4L) tests=0
+### coderai/wire/jsonrpc.py:123 class ClientInfo (3L) tests=0
+### coderai/wire/jsonrpc.py:129 class ExternalTool (4L) tests=0
+### coderai/wire/types.py:280 class QuestionResponse (3L) tests=1
+### coderai/wire/types.py:361 class HookResponse (4L) tests=0
+### coderai/wire/types.py:601 function deserialize_wire_message (7L) tests=1
+      coderai/wire/serde.py:9:from coderai.wire.types import deserialize_wire_message, serialize_wire_message
+      coderai/wire/serde.py:11:__all__ = ["serialize_wire_message", "deserialize_wire_message"]

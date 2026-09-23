@@ -38,7 +38,7 @@ from coderai.hooks import (
 )
 from coderai.notifications import NotificationEvent, NotificationManager
 from coderai.telemetry.sink import ExecutionSpan, TelemetryCollector
-from coderai.wire.serde import deserialize_wire_message, serialize_wire_message
+from coderai.wire.types import deserialize_wire_message, serialize_wire_message
 from coderai.wire.server import WireServer
 from coderai.wire.types import TurnBegin
 

@@ -23,20 +23,15 @@ def subagent_job_tasks() -> dict[str, tuple[SubAgentManager, str, asyncio.Task[A
     return _SUBAGENT_JOB_TASKS
 
 
-def _derive_depth(context: ToolExecutionContext, args: dict[str, Any]) -> int:
-    """Lineage-derived delegation depth (parent + 1); monotone via the registry.
+def _derive_depth(context: ToolExecutionContext, args: dict[str, Any] | None = None) -> int:
+    """Lineage-derived delegation depth (parent + 1); derived only from the registry.
 
-    The model-supplied ``depth`` argument remains a fallback for callers
-    without a live registry handle (mirrors the harness: the persisted
-    lineage is the authoritative floor, a child can never reset to zero).
+    WF-A3: Persisted lineage is authoritative; never fall back to model args.
     """
     for handle in get_agent_registry().list():
         if getattr(handle, "run_session_id", None) == context.session_id:
             return handle.depth + 1
-    try:
-        return int(args.get("depth", 0))
-    except (ValueError, TypeError):
-        return 0
+    return 0
 
 
 def _parse_opt_int(val: Any, default: int | None = None) -> int | None:
@@ -155,13 +150,14 @@ async def handle_subagent_fork_tool(
             error="SubAgentExecutionError: Client factory not available in execution context.",
         )
 
-    mode = str(args.get("mode") or "read_only").strip().lower()
-    if mode not in ("read_only", "general"):
+    mode_raw = args.get("mode")
+    mode = str(mode_raw).strip().lower() if mode_raw is not None else None
+    if mode is not None and mode not in ("read_only", "general"):
         mode = "read_only"
 
     depth = _derive_depth(context, args)
 
-    max_depth = _parse_opt_int(args.get("max_depth"), MAX_SUBAGENT_DEPTH) or MAX_SUBAGENT_DEPTH
+    max_depth = MAX_SUBAGENT_DEPTH
     token_budget = _parse_opt_int(args.get("token_budget"))
     max_tokens = _parse_opt_int(args.get("max_tokens"))
 
@@ -197,6 +193,11 @@ async def handle_subagent_fork_tool(
         parent_session_id=context.session_id,
         extra_context=as_str(args.get("context", "")).strip() or None,
         seed_messages=seed_messages if seed_messages else None,
+        sandbox_mode=context.sandbox_mode,
+        plan_mode=context.plan_mode,
+        on_before_file_mutation=context.on_before_file_mutation,
+        on_after_file_mutation=context.on_after_file_mutation,
+        session_manager=context.session_manager,
     )
 
     if args.get("run_in_background") is True:
@@ -233,11 +234,12 @@ async def handle_continuable_subagent_tool(
         )
     if not context.create_openai_client:
         return ToolResult(ok=False, name="subagent", error="Client factory not available.")
-    mode = str(args.get("mode") or "read_only").strip().lower()
-    if mode not in ("read_only", "general"):
+    mode_raw = args.get("mode")
+    mode = str(mode_raw).strip().lower() if mode_raw is not None else None
+    if mode is not None and mode not in ("read_only", "general"):
         mode = "read_only"
     depth = _derive_depth(context, args)
-    max_depth = _parse_opt_int(args.get("max_depth"), MAX_SUBAGENT_DEPTH) or MAX_SUBAGENT_DEPTH
+    max_depth = MAX_SUBAGENT_DEPTH
     token_budget = _parse_opt_int(args.get("token_budget"))
     max_tokens = _parse_opt_int(args.get("max_tokens"))
 
@@ -268,6 +270,11 @@ async def handle_continuable_subagent_tool(
         timeout_seconds=timeout_seconds,
         parent_session_id=context.session_id,
         extra_context=as_str(args.get("context", "")).strip() or None,
+        sandbox_mode=context.sandbox_mode,
+        plan_mode=context.plan_mode,
+        on_before_file_mutation=context.on_before_file_mutation,
+        on_after_file_mutation=context.on_after_file_mutation,
+        session_manager=context.session_manager,
     )
 
     # run_in_background: false → one-shot foreground result (harness contract);
@@ -437,8 +444,9 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
             error="Missing required argument 'prompt'. Provide detailed instructions and context for the sub-agent.",
         )
 
-    mode = str(args.get("mode") or "read_only").strip().lower()
-    if mode not in ("read_only", "general"):
+    mode_raw = args.get("mode")
+    mode = str(mode_raw).strip().lower() if mode_raw is not None else None
+    if mode is not None and mode not in ("read_only", "general"):
         mode = "read_only"
 
     timeout_raw = args.get("timeout_seconds")
@@ -463,17 +471,16 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
 
     depth = _derive_depth(context, args)
 
-    def _to_int(val: Any, default: int | None = None) -> int | None:
-        if val is None:
-            return default
-        try:
-            return int(val)
-        except (ValueError, TypeError):
-            return default
+    max_depth = MAX_SUBAGENT_DEPTH
+    token_budget = _parse_opt_int(args.get("token_budget"))
+    max_tokens = _parse_opt_int(args.get("max_tokens"))
 
-    max_depth = _to_int(args.get("max_depth"), 3) or 3
-    token_budget = _to_int(args.get("token_budget"))
-    max_tokens = _to_int(args.get("max_tokens"))
+    if depth >= max_depth:
+        return ToolResult(
+            ok=False,
+            name="Task",
+            error=f"RecursionLimitError: sub-agent depth cannot exceed {max_depth}.",
+        )
 
     seed_messages = None
     if (args.get("fork_parent_history") is True or args.get("fork") is True) and context.session_id:
@@ -502,6 +509,11 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
         parent_session_id=context.session_id,
         extra_context=as_str(args.get("context", "")).strip() or None,
         seed_messages=seed_messages,
+        sandbox_mode=context.sandbox_mode,
+        plan_mode=context.plan_mode,
+        on_before_file_mutation=context.on_before_file_mutation,
+        on_after_file_mutation=context.on_after_file_mutation,
+        session_manager=context.session_manager,
     )
 
     if args.get("run_in_background") is True:
@@ -529,64 +541,3 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
 
 # Alias for handler discovery
 handle = handle_subagent_tool
-
-from pydantic import BaseModel, Field
-from kosong.tooling import CallableTool2, ToolError, ToolOk, ToolReturnValue
-
-
-class AgentParams(BaseModel):
-    description: str = Field(..., description="Short summary or label for the task")
-    prompt: str = Field(..., description="Detailed instructions for the subagent")
-    subagent_type: str | None = Field(
-        None, description="Subagent role (e.g. coder, explore, plan, architect)"
-    )
-    mode: str = Field("general", description="Isolation mode: general or read_only")
-    run_in_background: bool = Field(False, description="Run in background asynchronously")
-    timeout_seconds: float | None = Field(None, description="Execution timeout in seconds")
-    context: str | None = Field(None, description="Additional context to provide")
-
-
-class Agent(CallableTool2[AgentParams]):
-    name: str = "Agent"
-    params: type[AgentParams] = AgentParams
-
-    def __init__(
-        self,
-        runtime: Any = None,
-        manager: Any = None,
-        description: str = "Delegate tasks to specialized subagents.",
-    ) -> None:
-        super().__init__(description=description)
-        self._runtime = runtime
-        self._manager = manager
-
-    async def __call__(self, params: AgentParams) -> ToolReturnValue:
-        args = {
-            "description": params.description,
-            "prompt": params.prompt,
-            "subagent_type": params.subagent_type,
-            "mode": params.mode,
-            "run_in_background": params.run_in_background,
-            "timeout_seconds": params.timeout_seconds,
-            "context": params.context,
-        }
-        root = "."
-        session_id = None
-        if self._runtime is not None:
-            root = getattr(getattr(self._runtime, "builtin_args", None), "CODERAI_WORK_DIR", ".")
-            session_id = getattr(getattr(self._runtime, "session", None), "id", None)
-        elif self._manager is not None:
-            root = getattr(self._manager, "project_root", ".")
-            session_id = getattr(self._manager, "active_session_id", None)
-
-        ctx = ToolExecutionContext(
-            project_root=str(root),
-            session_id=session_id or "root",
-            manager=self._manager,
-        )
-        res = await handle_subagent_tool(args, ctx)
-        if res.ok:
-            return ToolOk(output=res.output, brief=params.description)
-        return ToolError(
-            output=res.error or res.output or "Subagent failed", brief=res.error or "Failed"
-        )

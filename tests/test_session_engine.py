@@ -630,3 +630,41 @@ def test_session_messages_cache_bounded_and_invalidated(tmp_path):
     mgr._append_message(mgr._build_message(sids[-1], "user", "again"))
     assert sids[-1] not in mgr._messages_cache
     assert mgr.list_session_messages(sids[-1])[-1].content == "again"
+
+
+def test_classify_api_error_and_retryability() -> None:
+    """Ported from the retired KimiSoul suite: telemetry error classification."""
+    from kosong.chat_provider import (
+        APIConnectionError,
+        APIEmptyResponseError,
+        APIStatusError,
+        APITimeoutError,
+    )
+    from coderai.soul.coderaisoul import classify_api_error, is_retryable_api_error
+
+    timeout_err = APITimeoutError("Request timed out")
+    err_type, code = classify_api_error(timeout_err)
+    assert err_type == "timeout"
+    assert is_retryable_api_error(timeout_err) is True
+
+    conn_err = APIConnectionError("Connection reset")
+    err_type, code = classify_api_error(conn_err)
+    assert err_type == "network"
+    assert is_retryable_api_error(conn_err) is True
+
+    empty_err = APIEmptyResponseError("Empty body")
+    err_type, code = classify_api_error(empty_err)
+    assert err_type == "empty_response"
+    assert is_retryable_api_error(empty_err) is True
+
+    rate_limit_err = APIStatusError(429, "Rate limited")
+    err_type, code = classify_api_error(rate_limit_err)
+    assert err_type == "rate_limit"
+    assert code == 429
+    assert is_retryable_api_error(rate_limit_err) is True
+
+    server_err = APIStatusError(502, "Bad Gateway")
+    assert is_retryable_api_error(server_err) is True
+
+    client_err = APIStatusError(404, "Not Found")
+    assert is_retryable_api_error(client_err) is False

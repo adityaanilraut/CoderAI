@@ -59,25 +59,35 @@ def handle_enter_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResul
             name="enter_plan_mode",
             error="enter_plan_mode requires an active session",
         )
+
     if _plan_mode_from(context, session_id):
         return ToolResult(
             ok=True,
             name="enter_plan_mode",
             output="Already in plan mode. Use exit_plan_mode when your plan is ready.",
-            metadata={"enterPlanMode": True},
+            metadata={"enterPlanMode": True, "planMode": True},
         )
-    output = (
-        "Plan mode activated. You MUST NOT edit code files — only read and plan.\n"
-        "Workflow: identify key questions about the codebase → "
-        "use subagent explore to investigate if needed → "
-        "design approach → write the session plan file → "
-        "call exit_plan_mode.\n"
-        "Use AskUserQuestion only to clarify missing requirements or choose "
-        "between approaches. Do NOT use AskUserQuestion to ask about plan approval."
-    )
+
+    plan_file_path = None
+    try:
+        from coderai.tools.plan.heroes import get_plan_file_path
+
+        project_root = getattr(context, "project_root", None)
+        plan_file_path = get_plan_file_path(session_id, project_root=project_root)
+    except Exception:
+        pass
+
+    path_hint = f"\nPlan file: {plan_file_path}" if plan_file_path else ""
     return ToolResult(
         ok=True,
         name="enter_plan_mode",
-        output=output,
-        metadata={"enterPlanMode": True},
+        output=(
+            f"Plan mode activated. You MUST NOT edit code files — only read and plan.{path_hint}\n"
+            "Workflow: explore codebase → design approach → write plan to file → exit_plan_mode."
+        ),
+        metadata={
+            "enterPlanMode": True,
+            "planMode": True,
+            "planFilePath": str(plan_file_path or ""),
+        },
     )

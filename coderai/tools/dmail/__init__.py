@@ -1,25 +1,32 @@
 """SendDMail tool.
 
-DenwaRenji steering: ``(message, checkpoint_id)`` is validated against the
-soul's checkpoint count (``core/denwarenji.py``) so the directive re-steers
-from a known-good point, then injected into the live context ("El Psy
-Kongroo"). Without a live manager the directive returns as a follow-up user
-message so the loop still obeys it.
+Stages a validated ``(message, checkpoint_id)`` on the live session. The turn
+loop rewinds the context to that checkpoint and injects the directive.
+Without a live manager the directive is returned as a follow-up message.
 """
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
-from coderai.soul.denwarenji import DenwaRenjiError, DMail
+# Bound before the soul import so ``import coderai.tools.dmail`` never
+# triggers a circular import (NAME must exist before any soul import runs).
+NAME = "SendDMail"
+
+from coderai.soul.denwarenji import DenwaRenjiError
 from coderai.tools.legacy.types import ToolResult
 
 DMAIL_PREFIX = "[D-Mail / time-leap directive — obey immediately] "
 
 # Re-exported so existing ``from coderai.tools.dmail import DenwaRenjiError``
 # imports keep working after the move to ``core/denwarenji.py``.
-__all__ = ["DenwaRenjiError", "DMAIL_PREFIX", "format_dmail", "handle_send_dmail_tool"]
+__all__ = [
+    "NAME",
+    "DenwaRenjiError",
+    "DMAIL_PREFIX",
+    "format_dmail",
+    "handle_send_dmail_tool",
+]
 
 
 def format_dmail(message: str) -> str:
@@ -42,46 +49,21 @@ def handle_send_dmail_tool(args: dict[str, Any], context: Any) -> ToolResult:
     try:
         session_id = getattr(context, "session_id", None) or getattr(context, "sid", None)
         mgr = getattr(context, "manager", None) or getattr(context, "session_manager", None)
-        if mgr is not None and session_id:
-            # Phase 2: validate against the soul's checkpoint space so a
-            # stale checkpoint_id fails loudly instead of steering nowhere.
+        if mgr is not None and session_id and hasattr(mgr, "stage_dmail"):
             try:
-                from coderai.soul.denwarenji import DenwaRenji
-
-                soul = mgr.get_soul(session_id) if hasattr(mgr, "get_soul") else None
-                renji = DenwaRenji()
-                n_ckpt = soul.checkpoint_count() if soul is not None else 1
-                renji.set_n_checkpoints(max(1, n_ckpt))
-                renji.send_dmail(DMail(message=message.strip()[:4000], checkpoint_id=checkpoint_id))
-                renji.fetch_pending_dmail()
+                mgr.stage_dmail(session_id, message.strip()[:4000], checkpoint_id)
             except DenwaRenjiError as exc:
                 return ToolResult(ok=False, name="SendDMail", error=str(exc))
-            except Exception:
-                pass
-            mgr._append_message(
-                mgr._build_message(
-                    session_id,
-                    "user",
-                    directive,
-                    meta={"isDMail": True, "checkpointId": checkpoint_id},
-                )
-            )
-            # Re-activate Schannel-style: schedule continuation without
-            # blocking the tool result path.
-            try:
-                activate = getattr(mgr, "_activate", None)
-                if callable(activate):
-                    try:
-                        loop = asyncio.get_running_loop()
-                        loop.create_task(activate(session_id))
-                    except RuntimeError:
-                        pass
-            except Exception:
-                pass
+            # The turn loop rewinds to the checkpoint and injects the directive.
+            # This text is what the model sees only when the rewind does not happen.
             return ToolResult(
                 ok=True,
                 name="SendDMail",
-                output="El Psy Kongroo — directive injected; turn re-activated.",
+                output=(
+                    "If you see this message, the D-Mail was NOT sent successfully. "
+                    "This may be because some other tool that needs approval was rejected."
+                ),
+                metadata={"brief": "El Psy Kongroo"},
             )
     except Exception as e:
         return ToolResult(ok=False, name="SendDMail", error=f"Failed to send D-Mail: {e}")

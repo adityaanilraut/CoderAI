@@ -422,8 +422,24 @@ Request = Union[ApprovalRequest, ToolCallRequest, QuestionRequest, HookRequest]
 WireMessage = Union[Event, Request]
 
 try:
+    from kosong.message import (
+        AudioURLPart as KosongAudioURLPart,
+        ImageURLPart as KosongImageURLPart,
+        TextPart as KosongTextPart,
+        ThinkPart as KosongThinkPart,
+        ToolCall as KosongToolCall,
+        ToolCallPart as KosongToolCallPart,
+        VideoURLPart as KosongVideoURLPart,
+    )
     from kosong.tooling import ToolResult as KosongToolResult
 except ImportError:
+    KosongTextPart = None  # type: ignore
+    KosongThinkPart = None  # type: ignore
+    KosongToolCallPart = None  # type: ignore
+    KosongToolCall = None  # type: ignore
+    KosongImageURLPart = None  # type: ignore
+    KosongAudioURLPart = None  # type: ignore
+    KosongVideoURLPart = None  # type: ignore
     KosongToolResult = None  # type: ignore
 
 EVENT_TYPES: tuple[type, ...] = tuple(
@@ -453,6 +469,13 @@ EVENT_TYPES: tuple[type, ...] = tuple(
         BtwBegin,
         BtwEnd,
         KosongToolResult,
+        KosongTextPart,
+        KosongThinkPart,
+        KosongToolCallPart,
+        KosongToolCall,
+        KosongImageURLPart,
+        KosongAudioURLPart,
+        KosongVideoURLPart,
     )
     if cls is not None
 )

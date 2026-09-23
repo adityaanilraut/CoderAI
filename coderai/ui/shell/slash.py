@@ -1,8 +1,21 @@
-"""Canonical slash-command catalog shared by help, completion, and dispatch."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+
+
+def __getattr__(name: str) -> Any:
+    if name in ("registry", "shell_mode_registry"):
+        from coderai.ui.shell import dispatch
+
+        return getattr(dispatch, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+SKILL_COMMAND_PREFIX = "skill:"
+FLOW_COMMAND_PREFIX = "flow:"
+
+
 
 
 @dataclass(frozen=True)
@@ -44,6 +57,12 @@ _COMMANDS = (
     ),
     SlashCommand("undo", "Revert to a previous checkpoint", "Planning & Safety"),
     SlashCommand("diff", "Show the current unified diff", "Planning & Safety"),
+    SlashCommand(
+        "review",
+        "Review uncommitted changes (Jev triage, model review, Jev gate)",
+        "Planning & Safety",
+        subcommands=("--all", "--no-untracked"),
+    ),
     SlashCommand("continue", "Continue agent execution", "Planning & Safety"),
     SlashCommand("yolo", "Toggle YOLO auto-approve all actions", "Planning & Safety"),
     SlashCommand("afk", "Toggle AFK auto-dismiss questions & approvals", "Planning & Safety"),
@@ -93,10 +112,10 @@ _COMMANDS = (
     ),
     SlashCommand(
         "agents",
-        "List discovered subagent roles",
+        "List live subagent runs or discovered roles",
         "Diagnostics",
         ("subagents", "subagent"),
-        ("list", "roles"),
+        ("list", "roles", "tree", "report", "send"),
     ),
     SlashCommand("teams", "Inspect active agent teams", "Diagnostics"),
     SlashCommand(
@@ -185,7 +204,7 @@ def completion_entries() -> list[tuple[str, str]]:
 
 
 import difflib
-from typing import Any
+
 
 
 _RICH = True
@@ -345,17 +364,20 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
     },
     "agents": {
         "title": "Subagents & Multi-Agent Hierarchy",
-        "syntax": "/agents or /subagents [list|roles]",
-        "summary": "List discovered subagent roles. Live run tree/report/send are planned.",
+        "syntax": "/agents [list|roles|tree|report <id>|send <id> <message>]",
+        "summary": "Inspect live subagent runs, or list discovered roles.",
         "description": (
-            "Inspect delegated subagent roles.\n"
-            "• /agents                   — List discovered agent roles\n"
-            "• /agents roles             — List bundled and discovered agent roles (.coderai/agents/*.md)\n"
-            "Planned (not yet implemented): tree, report <id>, send <id> <msg>."
+            "Inspect delegated subagents in the current session.\n"
+            "• /agents                   — List the live subagent tree\n"
+            "• /agents roles             — List bundled and discovered agent roles\n"
+            "• /agents report <id>       — Show a live agent's report\n"
+            "• /agents send <id> <msg>   — Queue a follow-up for a live agent"
         ),
         "examples": [
             "/agents",
             "/agents roles",
+            "/agents report agt_123",
+            "/agents send agt_123 Check the failing test",
         ],
     },
     "teams": {
@@ -423,9 +445,9 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
     },
     "effort": {
         "title": "Reasoning Effort Selection",
-        "syntax": "/effort [off|low|medium|high|max]",
+        "syntax": "/effort [off|low|medium|high|xhigh|max]",
         "summary": "Select or switch reasoning effort level (thinking token budget).",
-        "description": "Opens interactive reasoning effort menu or sets effort tier (off, low, medium, high, max).",
+        "description": "Opens interactive reasoning effort menu or sets effort tier (off, low, medium, high, xhigh, max).",
         "examples": [
             "/effort",
             "/effort max",
@@ -437,7 +459,7 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
     },
     "reasoning": {
         "title": "Reasoning Effort Selection (Alias)",
-        "syntax": "/reasoning [off|low|medium|high|max]",
+        "syntax": "/reasoning [off|low|medium|high|xhigh|max]",
         "summary": "Alias for /effort.",
         "description": "Select or switch reasoning effort level.",
         "examples": ["/reasoning", "/reasoning max"],
@@ -470,6 +492,21 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "summary": "Display syntax-highlighted unified diff of changes made during the session.",
         "description": "Renders git diff of workspace modifications since session start.",
         "examples": ["/diff"],
+    },
+    "review": {
+        "title": "Code Review",
+        "syntax": "/review [<base-ref>] [--all] [--no-untracked]",
+        "summary": "Review changes: Jev triages files, the active model reviews, Jev filters comments.",
+        "description": (
+            "Diffs the working tree (including untracked files) against HEAD, or against "
+            "merge-base(<base-ref>, HEAD). Jev System-One screens each file and skips low-risk "
+            "ones; the active chat model reviews the rest; Jev then drops comments it scores as "
+            "speculative or unlikely to be accepted. Without TYPESAFE_API_KEY every non-doc file "
+            "is reviewed and every comment is shown. • --all — review every file regardless of "
+            "triage • --no-untracked — ignore untracked files • CODERAI_REVIEW_MAX_CHARS caps "
+            "the diff sent to the model."
+        ),
+        "examples": ["/review", "/review main", "/review origin/main --all"],
     },
     "continue": {
         "title": "Continue Execution",
@@ -739,6 +776,7 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("/plan", "[on|off|apply]", "Toggle Plan Mode (strict read-only safety boundary)"),
             ("/undo", "", "Interactive turn & checkpoint rollback (code, conversation, or both)"),
             ("/diff", "", "Show syntax-highlighted diff of changes"),
+            ("/review", "[base] [--all]", "Review changes: Jev triage, model review, Jev comment gate"),
             ("/continue", "", "Continue bounded multi-step agent execution"),
         ],
     ),
@@ -746,7 +784,7 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
         "Models & Reasoning",
         [
             ("/model", "[name]", "Interactive model selector or switch directly"),
-            ("/effort", "[level]", "Interactive reasoning effort selector (low..max, off)"),
+            ("/effort", "[level]", "Interactive reasoning effort selector (low..max incl. xhigh, off)"),
             ("/thinking, /raw", "", "Toggle full reasoning trace or summary (lite/normal)"),
             ("/setup, /keys", "", "Configure API keys, providers, local endpoints & default model"),
             ("/skills", "", "Explore active and discovered workspace skills"),

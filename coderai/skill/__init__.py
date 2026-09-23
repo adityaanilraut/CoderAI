@@ -452,3 +452,52 @@ def match_skills_for_prompt(
     return registry.match_skills(
         user_prompt, enabled_skills=enabled_skills, loaded_names=loaded_names
     )
+
+
+# --- Typed Skill Models for Soul parity ---
+from typing import Literal
+import inspect
+from pydantic import BaseModel, ConfigDict
+from coderai.skill.flow import Flow
+from coderai.utils.logging import logger
+
+SkillType = Literal["standard", "flow"]
+SkillScope = Literal["builtin", "user", "project", "extra"]
+
+
+class Skill(BaseModel):
+    """Information about a single skill."""
+
+    model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
+
+    name: str
+    description: str = ""
+    type: SkillType = "standard"
+    dir: Any = None
+    skill_md_file: Any = None
+    flow: Flow | None = None
+    scope: SkillScope = "project"
+
+
+async def read_skill_text(skill: Skill) -> str | None:
+    """Read the SKILL.md contents for a skill."""
+    try:
+        f = getattr(skill, "skill_md_file", None)
+        if f is None:
+            return None
+        if hasattr(f, "read_text"):
+            res = f.read_text(encoding="utf-8")
+            if inspect.isawaitable(res):
+                res = await res
+            return res.strip() if res else None
+        p = pathlib.Path(str(f))
+        if p.exists():
+            return p.read_text(encoding="utf-8").strip()
+        return None
+    except OSError as exc:
+        logger.warning(
+            "Failed to read skill file {path}: {error}",
+            path=getattr(skill, "skill_md_file", None),
+            error=exc,
+        )
+        return None

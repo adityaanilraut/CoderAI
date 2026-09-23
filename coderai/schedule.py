@@ -11,7 +11,32 @@ from dataclasses import dataclass
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from coderai.utils.io import atomic_json_write
+
 MIN_EVERY_INTERVAL_SECONDS = 300  # 5 minutes
+
+
+def _load_target_timestamp(item: dict[str, Any]) -> float:
+    """Restore the fire time from the saved timestamp, or from scheduledAt."""
+    raw = item.get("targetTimestamp")
+    if raw is not None:
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            pass
+    scheduled_at = item.get("scheduledAt")
+    if isinstance(scheduled_at, str) and scheduled_at.strip():
+        clean = scheduled_at.strip()
+        if clean.endswith("Z"):
+            clean = clean[:-1] + "+00:00"
+        try:
+            dt = datetime.datetime.fromisoformat(clean)
+        except ValueError:
+            return 0.0
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.timestamp()
+    return 0.0
 
 
 @dataclass
@@ -44,6 +69,7 @@ class ScheduleRecord:
             d["afterSeconds"] = self.after_seconds
         if self.every_seconds is not None:
             d["everySeconds"] = self.every_seconds
+        d["targetTimestamp"] = self.target_timestamp
         return d
 
 
@@ -83,9 +109,9 @@ class ScheduleManager:
         if after_seconds is not None:
             try:
                 after_s = int(after_seconds)
-                if after_s <= 0:
-                    raise ValueError("`after_seconds` must be a positive integer.")
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as exc:
+                raise ValueError("`after_seconds` must be a positive integer.") from exc
+            if after_s <= 0:
                 raise ValueError("`after_seconds` must be a positive integer.")
 
             target_ts = now_ts + after_s
@@ -104,12 +130,12 @@ class ScheduleManager:
         elif every_seconds is not None:
             try:
                 every_s = int(every_seconds)
-                if every_s < MIN_EVERY_INTERVAL_SECONDS:
-                    raise ValueError(
-                        f"`every_seconds` must be at least {MIN_EVERY_INTERVAL_SECONDS} seconds (5 minutes)."
-                    )
-            except (ValueError, TypeError):
-                raise ValueError("`every_seconds` must be a valid integer.")
+            except (ValueError, TypeError) as exc:
+                raise ValueError("`every_seconds` must be a valid integer.") from exc
+            if every_s < MIN_EVERY_INTERVAL_SECONDS:
+                raise ValueError(
+                    f"`every_seconds` must be at least {MIN_EVERY_INTERVAL_SECONDS} seconds (5 minutes)."
+                )
 
             target_ts = now_ts + every_s
             target_dt = datetime.datetime.fromtimestamp(target_ts, tz=datetime.timezone.utc)
@@ -242,13 +268,11 @@ class ScheduleManager:
         if not self.storage_path:
             return
         try:
-            p = pathlib.Path(self.storage_path)
-            p.parent.mkdir(parents=True, exist_ok=True)
             data = {
                 "nextId": self._next_id,
                 "schedules": [s.to_dict() for s in self._schedules.values()],
             }
-            p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            atomic_json_write(data, pathlib.Path(self.storage_path))
         except Exception:
             pass
 
@@ -272,6 +296,7 @@ class ScheduleManager:
                     delivery_mode=item.get("deliveryMode", "session-local"),
                     after_seconds=item.get("afterSeconds"),
                     every_seconds=item.get("everySeconds"),
+                    target_timestamp=_load_target_timestamp(item),
                     session_id=item.get("sessionId"),
                 )
                 self._schedules[rec.id] = rec

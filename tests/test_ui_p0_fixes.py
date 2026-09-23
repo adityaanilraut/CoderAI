@@ -7,7 +7,7 @@ Covers the safety-critical findings from the terminal-UI deep dive:
 - partial --provider/--key setup errors instead of opening the wizard
 - conflicting --preset/--tools-preset/--permission flags are rejected
 - --agent/--agent-file are mutually exclusive
-- /agents no longer shadows /agent; tree/report/send are honest stubs
+- /agents no longer shadows /agent; tree/report/send inspect live runs
 """
 
 from __future__ import annotations
@@ -116,11 +116,15 @@ def test_undo_empty_targets_reports_no_crash() -> None:
     assert not mgr.undo.called
 
 
-def test_agents_roles_delegates_and_tree_honest() -> None:
-    """'/agents roles' lists roles; '/agents tree' admits unimplemented."""
+def test_agents_roles_delegates_and_tree_lists_live_runs(capsys: pytest.CaptureFixture[str]) -> None:
+    """'/agents roles' lists roles; '/agents tree' prints the live tree."""
     mgr = MagicMock()
     mgr.project_root = "."
     mgr.get_active_agent_role.return_value = "default"
+    mgr.agent_registry = None
     with patch("coderai.subagents.registry.discover_markdown_agents", return_value=[]):
         assert cmd_agents(_ctx(mgr, None), "roles") == SlashAction.HANDLED
     assert cmd_agents(_ctx(mgr, None), "tree") == SlashAction.HANDLED
+    captured = capsys.readouterr()
+    assert "not yet implemented" not in captured.out
+    assert "No live subagents" in captured.out

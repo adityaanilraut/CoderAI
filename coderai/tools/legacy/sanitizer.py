@@ -28,7 +28,7 @@ PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ),
     (
         "openai_api_key",
-        re.compile(r"sk-(?:proj-)?[A-Za-z0-9_-]{24,}", re.ASCII),
+        re.compile(r"(?<![A-Za-z0-9])sk-(?:proj-)?[A-Za-z0-9_-]{24,}", re.ASCII),
         "[REDACTED_OPENAI_KEY]",
     ),
     # GitHub Tokens
@@ -68,7 +68,7 @@ PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     (
         "database_uri_password",
         re.compile(
-            r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp|mssql):\/\/[^:\/\s]+:)(.*)(@[^/@:\s]+(?::[0-9]+)?(?:\/[^\s\"']*)?)",
+            r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp|mssql):\/\/[^:\/\s]+:)([^@\s]*)(@[^/@:\s]+(?::[0-9]+)?(?:\/[^\s\"']*)?)",
             re.IGNORECASE,
         ),
         r"\1[REDACTED_DB_PASSWORD]\3",

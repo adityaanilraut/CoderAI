@@ -1,0 +1,32 @@
+[1m143[0m	[1;31mSIM105[0m	[ ] suppressible-exception
+[1m 82[0m	[1;31mB023[0m  	[ ] function-uses-loop-variable
+[1m 64[0m	[1;31mARG001[0m	[ ] unused-function-argument
+[1m 59[0m	[1;31mARG002[0m	[ ] unused-method-argument
+[1m 32[0m	[1;31mRET505[0m	[[36m*[0m] superfluous-else-return
+[1m 29[0m	[1;31mSIM102[0m	[ ] collapsible-if
+[1m 19[0m	[1;31mPIE810[0m	[ ] multiple-starts-ends-with
+[1m 13[0m	[1;31mRET504[0m	[ ] unnecessary-assign
+[1m 12[0m	[1;31mPIE790[0m	[[36m*[0m] unnecessary-placeholder
+[1m 11[0m	[1;31mB904[0m  	[ ] raise-without-from-inside-except
+[1m  9[0m	[1;31mSIM108[0m	[ ] if-else-block-instead-of-if-exp
+[1m  8[0m	[1;31mARG003[0m	[ ] unused-class-method-argument
+[1m  7[0m	[1;31mARG004[0m	[ ] unused-static-method-argument
+[1m  6[0m	[1;31mB009[0m  	[[36m*[0m] get-attr-with-constant
+[1m  6[0m	[1;31mSIM103[0m	[ ] needless-bool
+[1m  6[0m	[1;31mB905[0m  	[ ] zip-without-explicit-strict
+[1m  5[0m	[1;31mB010[0m  	[[36m*[0m] set-attr-with-constant
+[1m  4[0m	[1;31mSIM114[0m	[[36m*[0m] if-with-same-arms
+[1m  4[0m	[1;31mPIE807[0m	[[36m*[0m] reimplemented-container-builtin
+[1m  4[0m	[1;31mRET508[0m	[[36m*[0m] superfluous-else-break
+[1m  3[0m	[1;31mRET502[0m	[[36m*[0m] implicit-return-value
+[1m  3[0m	[1;31mRET501[0m	[[36m*[0m] unnecessary-return-none
+[1m  2[0m	[1;31mRET503[0m	[ ] implicit-return
+[1m  2[0m	[1;31mSIM115[0m	[ ] open-file-with-context-handler
+[1m  2[0m	[1;31mRET507[0m	[[36m*[0m] superfluous-else-continue
+[1m  2[0m	[1;31mARG005[0m	[ ] unused-lambda-argument
+[1m  2[0m	[1;31mB007[0m  	[ ] unused-loop-control-variable
+[1m  1[0m	[1;31mSIM117[0m	[ ] multiple-with-statements
+[1m  1[0m	[1;31mRET506[0m	[[36m*[0m] superfluous-else-raise
+[1m  1[0m	[1;31mPIE808[0m	[[36m*[0m] unnecessary-range-start
+Found 542 errors.
+[[36m*[0m] 77 fixable with the `--fix` option (213 hidden fixes can be enabled with the `--unsafe-fixes` option).

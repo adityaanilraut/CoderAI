@@ -131,6 +131,7 @@ class ToolExecutionContext:
     list_session_events: Callable[[str], list[Any]] | None = None
     plan_mode: bool = False
     session_manager: Any = None
+    allowed_tools: list[str] | tuple[str, ...] | None = None
     deferred_contexts: list[ToolExecutionFollowUpMessage | dict[str, Any]] = field(
         default_factory=list
     )
@@ -184,6 +185,7 @@ class ToolExecutionHooks:
     list_session_events: Callable[[str], list[Any]] | None = None
     plan_mode: bool = False
     session_manager: Any = None
+    allowed_tools: list[str] | tuple[str, ...] | None = None
 
 
 TOOL_ABORTED_BEFORE_DISPATCH = "TOOL_ABORTED_BEFORE_DISPATCH"

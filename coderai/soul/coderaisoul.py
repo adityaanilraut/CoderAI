@@ -1,13 +1,8 @@
-"""Activation and tool-iteration controller for one agent turn.
+"""Activation, tool-iteration, and soul controllers for agent execution.
 
-Turn/Step lifecycle::
-
-    turn/start → step/start → derive_request → LLM call → response →
-    [tool/call → tool/result]* → step/end → [turn-stopping check] → turn/end
-
-Each turn may contain multiple steps (one LLM call + tool execution per step).
-A turn ends when the model produces no tool calls (natural completion) or
-when the model is interrupted/cancelled.
+Provides:
+- AgentLoop: activation and tool-iteration controller for one turn in SessionManager.
+- Error classifiers (``classify_api_error`` / ``is_retryable_api_error``) shared by telemetry.
 """
 
 from __future__ import annotations
@@ -15,29 +10,25 @@ from __future__ import annotations
 import asyncio
 import datetime
 import time
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from coderai.utils.logging import log_api_error
-from coderai.utils.common.llm_error import describe_llm_error
-from coderai.utils.common.model_capabilities import (
-    is_fast_model,
-    resolve_adaptive_reasoning_effort,
+from kosong.chat_provider import (
+    APIConnectionError,
+    APIEmptyResponseError,
+    APIStatusError,
+    APITimeoutError,
+    ChatProviderError,
 )
-from coderai.utils.common.openai_thinking import build_thinking_request_options
-from coderai.utils.common.usage import extract_usage_dict
-from coderai.soul.compaction import evaluate_compaction_trigger
+
 from coderai.events import (
     SessionEvent,
-    make_turn_start,
-    make_turn_end,
-    make_step_start,
     make_step_end,
+    make_step_start,
+    make_turn_end,
+    make_turn_start,
 )
-from coderai.soul.approval import (
-    PLAN_MODE_FORCE_ASK_SCOPES,
-    apply_auto_approve_to_permission_plan,
-    compute_tool_call_permissions,
-    resolve_snippet_file_path,
+from coderai.llm import (
+    apply_request_completion_cap,
 )
 from coderai.prompt import (
     calculate_context_budget,
@@ -45,7 +36,25 @@ from coderai.prompt import (
     get_tools,
 )
 from coderai.skill import get_skill_read_exempt_paths
+from coderai.soul.approval import (
+    PLAN_MODE_FORCE_ASK_SCOPES,
+    apply_auto_approve_to_permission_plan,
+    compute_tool_call_permissions,
+    resolve_snippet_file_path,
+)
+from coderai.soul.compaction import (
+    estimate_text_tokens,
+    evaluate_compaction_trigger,
+)
 from coderai.state import rebuild_session_state_from_history
+from coderai.utils.common.llm_error import describe_llm_error
+from coderai.utils.common.model_capabilities import (
+    is_fast_model,
+    resolve_adaptive_reasoning_effort,
+)
+from coderai.utils.common.openai_thinking import build_thinking_request_options
+from coderai.utils.common.usage import extract_usage_dict
+from coderai.utils.logging import log_api_error
 
 if TYPE_CHECKING:
     from coderai.soul.session.manager import SessionManager
@@ -67,6 +76,45 @@ class AgentLoop:
             self._turn = 0
             self._step = 0
         self._controller: asyncio.Event | None = None
+
+    def _consume_steers(self) -> bool:
+        """Append queued steer text as user messages. True when any were applied."""
+        steers = self.manager.pop_steers(self.session_id)
+        if not steers:
+            return False
+        for text in steers:
+            self.manager._append_message(self.manager._build_message(self.session_id, "user", text))
+        return True
+
+    async def _rewind_dmail(self) -> bool:
+        """Revert to a staged D-Mail checkpoint and inject its directive."""
+        pending = self.manager.take_pending_dmail(self.session_id)
+        if pending is None:
+            return False
+        message, checkpoint_id = pending
+        await self.manager.revert_context_to(self.session_id, checkpoint_id)
+        self.manager.checkpoint_context(self.session_id)
+        body = (
+            "<system>You just got a D-Mail from your future self. "
+            "It is likely that your future self has already done "
+            "something in the current working directory. Please read "
+            "the D-Mail and decide what to do next. You MUST NEVER "
+            "mention to the user about this information. "
+            f"D-Mail content:\n\n{message.strip()}</system>"
+        )
+        self.manager._append_message(
+            self.manager._build_message(
+                self.session_id,
+                "user",
+                body,
+                meta={"isDMail": True, "checkpointId": checkpoint_id},
+            )
+        )
+        try:
+            self.manager._repeat_reminders.pop(self.session_id, None)
+        except Exception:
+            pass
+        return True
 
     def _claim_controller(self) -> asyncio.Event:
         """Return this activation's controller without clobbering a live one."""
@@ -254,22 +302,30 @@ class AgentLoop:
         )
 
         if client is None:
+            if base_url == "jev://system-one":
+                fail_reason = "Jev System-One cannot run the chat loop"
+                fail_message = (
+                    f"{model} is a non-autoregressive triage/gating model and cannot drive "
+                    "chat or tool calls. Select a chat model with /model; Jev keeps working "
+                    "alongside it via TYPESAFE_API_KEY."
+                )
+            else:
+                fail_reason = "API key not found"
+                fail_message = (
+                    "API key not found. Set your API key in .env (e.g. OPENAI_API_KEY=...), "
+                    "export it in your shell, or configure ~/.coderai/settings.json."
+                )
             manager._update_entry(
                 session_id,
                 lambda entry: {
                     **entry,
                     "status": "failed",
-                    "failReason": "API key not found",
+                    "failReason": fail_reason,
                     "updateTime": _now(),
                 },
             )
             manager.on_assistant_message(
-                manager._build_message(
-                    session_id,
-                    "assistant",
-                    "API key not found. Set your API key in .env (e.g. OPENAI_API_KEY=...), "
-                    "export it in your shell, or configure ~/.coderai/settings.json.",
-                ),
+                manager._build_message(session_id, "assistant", fail_message),
                 False,
             )
             self._release_controller()
@@ -317,6 +373,22 @@ class AgentLoop:
 
                     if manager.is_interrupted(session_id):
                         return
+                    if await self._rewind_dmail():
+                        continue
+                    if getattr(waiting, "stop_reason", None) == "tool_call_repeat":
+                        if self._consume_steers():
+                            continue
+                        self.emit_turn_end("tool_call_repeat")
+                        manager._update_entry(
+                            session_id,
+                            lambda entry: {
+                                **entry,
+                                "status": "completed",
+                                "failReason": None,
+                                "updateTime": _now(),
+                            },
+                        )
+                        return
                     if waiting:
                         manager._update_entry(
                             session_id,
@@ -331,14 +403,17 @@ class AgentLoop:
                     continue
 
                 current_entry = manager._get_entry(session_id) or {}
-                active_tokens = current_entry.get("activeTokens", 0)
+                active_tokens = int(current_entry.get("activeTokens") or 0)
+                # Provider usage lags tool results appended after the last call.
+                # The text estimate covers that pending payload.
+                token_count = max(active_tokens, estimate_text_tokens(messages))
                 budget = calculate_context_budget(model)
                 auto_compact_threshold = (
                     settings.get("autoCompactWindow") or budget["pressure_threshold"]
                 )
                 # Dual trigger with reserved budget + ratio
                 trigger = evaluate_compaction_trigger(
-                    active_tokens,
+                    token_count,
                     budget["context_limit"],
                     pressure_ratio=settings.get("compactionTriggerRatio", 0.85),
                     overflow_ratio=0.95,
@@ -362,7 +437,7 @@ class AgentLoop:
                         False,
                     )
                     return
-                if active_tokens > auto_compact_threshold or trigger is not None:
+                if token_count > auto_compact_threshold or trigger is not None:
                     effective_trigger = trigger or "pressure"
                     compact_notice = manager._build_assistant(
                         session_id,
@@ -375,17 +450,11 @@ class AgentLoop:
                     await manager._compact_session(session_id, trigger=effective_trigger)
                     messages = manager.list_session_messages(session_id)
 
-                steers = manager.pop_steers(session_id)
-                if steers:
-                    for st in steers:
-                        manager._append_message(
-                            manager._build_message(
-                                session_id,
-                                "user",
-                                st,
-                            )
-                        )
+                if self._consume_steers():
                     messages = manager.list_session_messages(session_id)
+
+                # Checkpoint before the model call so a D-Mail can rewind this step.
+                manager.checkpoint_context(session_id)
 
                 self.emit_step_start()
 
@@ -462,6 +531,13 @@ class AgentLoop:
                 )
                 if not request.get("tools"):
                     request.pop("tools", None)
+                apply_request_completion_cap(
+                    request,
+                    context_limit=int(budget["context_limit"]),
+                    active_tokens=token_count,
+                    response_budget=int(budget["max_output_tokens"]),
+                    reserved_context_size=int(settings.get("reservedContextSize") or 50_000),
+                )
 
                 try:
                     response = await manager._create_completion_with_retry(
@@ -553,8 +629,12 @@ class AgentLoop:
                         "askPermissions": permission_plan.get("askPermissions"),
                     }
 
-                manager._append_message(assistant_message)
-                manager.on_assistant_message(assistant_message, True)
+                async def _commit_assistant() -> None:
+                    manager._append_message(assistant_message)
+                    manager.on_assistant_message(assistant_message, True)
+
+                # Keep the assistant row if this task is cancelled mid-commit.
+                await asyncio.shield(_commit_assistant())
 
                 waiting_for_user = False
                 if tool_calls:
@@ -596,6 +676,28 @@ class AgentLoop:
                     self.emit_turn_end("interrupted")
                     return
 
+                if await self._rewind_dmail():
+                    self.emit_step_end()
+                    continue
+                if getattr(waiting_for_user, "stop_reason", None) == "tool_call_repeat":
+                    if self._consume_steers():
+                        self.emit_step_end()
+                        continue
+                    self.emit_step_end()
+                    self.emit_turn_end("tool_call_repeat")
+                    manager._update_entry(
+                        session_id,
+                        lambda entry: {
+                            **entry,
+                            "status": "completed",
+                            "assistantReply": content,
+                            "activeTokens": total_active or entry.get("activeTokens", 0),
+                            "failReason": None,
+                            "updateTime": _now(),
+                        },
+                    )
+                    return
+
                 new_status = (
                     "failed"
                     if refusal
@@ -626,10 +728,16 @@ class AgentLoop:
                 )
 
                 if refusal or waiting_for_user:
+                    if refusal and not waiting_for_user and self._consume_steers():
+                        self.emit_step_end()
+                        continue
                     self.emit_step_end()
                     self.emit_turn_end("refusal" if refusal else "waiting")
                     return
                 if not tool_calls:
+                    if self._consume_steers():
+                        self.emit_step_end()
+                        continue
                     self.emit_step_end()
                     self.emit_turn_end("natural")
                     return
@@ -654,6 +762,12 @@ class AgentLoop:
                 False,
             )
         except asyncio.CancelledError:
+            try:
+                wire = self._wire()
+                if wire is not None:
+                    wire.step_interrupted()
+            except Exception:
+                pass
             self.emit_turn_end("cancelled")
             manager._update_entry(
                 session_id,
@@ -675,3 +789,70 @@ class AgentLoop:
     @property
     def step(self) -> int:
         return self._step
+
+
+def classify_api_error(e: Exception) -> tuple[str, int | None]:
+    """Classify an LLM API exception into (error_type, status_code).
+
+    Exposed at module level so telemetry tests can import the real function
+    instead of duplicating the classification table.
+
+    Returns:
+        (error_type, status_code) where status_code is None for non-HTTP errors.
+    """
+    status_code: int | None = None
+    if isinstance(e, APIStatusError):
+        status = getattr(e, "status_code", getattr(e, "status", 0))
+        status_code = int(status) if status else None
+        if status == 429:
+            return "rate_limit", status_code
+        if status in (401, 403):
+            return "auth", status_code
+        if status == 529:
+            return "overloaded", status_code
+        if status >= 500:
+            return "5xx_server", status_code
+        if 400 <= status < 500:
+            msg_lower = str(e).lower()
+            if (
+                "context length" in msg_lower
+                or "context_length" in msg_lower
+                or "max tokens" in msg_lower
+                or "maximum context" in msg_lower
+                or "too many tokens" in msg_lower
+            ):
+                return "context_overflow", status_code
+            return "4xx_client", status_code
+        return "other", status_code
+    if isinstance(e, APIConnectionError):
+        return "network", None
+    if isinstance(e, (APITimeoutError, TimeoutError)):
+        return "timeout", None
+    if isinstance(e, APIEmptyResponseError):
+        return "empty_response", None
+    return "other", None
+
+
+_RETRYABLE_STATUS_CODES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
+
+
+def is_retryable_api_error(e: Exception) -> bool:
+    """Classify retryability for the ``api_error`` telemetry event.
+
+    Aligned with the TS ``isRetryableGenerateError``: the listed status codes
+    (including 529 overloaded) count as retryable, and any ChatProviderError
+    (network/timeout/empty-response) counts as retryable by the fallback rule.
+
+    Note: the session retry loop (``SessionManager._create_completion_with_retry``)
+    has its own retry policy; telemetry must still report the TS-comparable value.
+    """
+    if isinstance(e, APIStatusError):
+        return e.status_code in _RETRYABLE_STATUS_CODES
+    return isinstance(e, ChatProviderError)
+
+
+__all__ = [
+    "AgentLoop",
+    "classify_api_error",
+    "is_retryable_api_error",
+]

@@ -21,7 +21,7 @@ from types import SimpleNamespace as NS
 from coderai.acp.convert import AcpNdjsonParser
 from coderai.acp.types import AcpMessage
 from coderai.background import get_task_supervisor, spawn_background_agent
-from coderai.utils.shell_quoting import (
+from coderai.utils.subprocess_env import (
     build_shell_env,
     is_sensitive_env_var,
     scrub_subprocess_env,

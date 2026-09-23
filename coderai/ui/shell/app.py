@@ -91,6 +91,52 @@ def _clear_task_cancellation() -> None:
         pass
 
 
+async def _guard_slash_dispatch(
+    cmd: str,
+    cmd_arg: str,
+    ctx: ShellContext,
+    *,
+    drain_fn: Any,
+    mgr: Any,
+    session_id: str | None,
+    console: Any,
+) -> SlashAction:
+    """Run a slash command without letting a handler crash the REPL."""
+    try:
+        return await dispatch_slash_command(cmd, cmd_arg, ctx, drain_fn=drain_fn)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        _clear_task_cancellation()
+        try:
+            ensure_tty_sane()
+        except Exception:
+            pass
+        if session_id:
+            try:
+                mgr.interrupt_session(session_id)
+            except Exception:
+                pass
+        if console is not None and _RICH:
+            console.print("\n[bold yellow]Turn interrupted by user.[/]")
+        else:
+            print("\nTurn interrupted by user.")
+        return SlashAction.HANDLED
+    except Exception as exc:
+        from rich.markup import escape
+
+        from coderai.utils.logging import logger
+
+        logger.exception(f"slash command failed: {cmd}")
+        text = f"Command failed: {exc}"
+        if console is not None and _RICH:
+            try:
+                console.print(escape(text))
+            except Exception:
+                print(text)
+        else:
+            print(text)
+        return SlashAction.HANDLED
+
+
 ALWAYS_ALLOWED_SCOPES = {
     "read-in-cwd",
     "read-out-cwd",
@@ -1499,6 +1545,15 @@ class _StreamState:
 _STREAM_STATE = _StreamState()
 
 
+def repl_input_is_streaming(active_turn_task: asyncio.Task[Any] | None) -> bool:
+    """True only while a turn task is actually running.
+
+    ``_STREAM_STATE.is_streaming`` can stay set after Ctrl-C. Later input,
+    including ``/exit``, must not be queued because of that leftover flag.
+    """
+    return active_turn_task is not None and not active_turn_task.done()
+
+
 def _on_assistant_message(message: SessionMessage, should_connect: bool) -> None:
     """Format and render assistant messages, thinking blocks, and tool executions."""
     if _STREAM_STATE.silent:
@@ -1907,6 +1962,7 @@ async def _run_interactive(
                 session_id = res_id
         except (KeyboardInterrupt, asyncio.CancelledError):
             _clear_task_cancellation()
+            _STREAM_STATE.reset()
             if session_id:
                 mgr.interrupt_session(session_id)
             if console is not None and _RICH:
@@ -1992,6 +2048,7 @@ async def _run_interactive(
                     raw = read_user_turn(prompt_label).strip()
             except KeyboardInterrupt:
                 _clear_task_cancellation()
+                _STREAM_STATE.reset()
                 try:
                     ensure_tty_sane()
                 except Exception:
@@ -2013,10 +2070,7 @@ async def _run_interactive(
             try:
                 from coderai.ui.shell.visualize._input_router import classify_input
 
-                is_streaming = active_turn_task is not None and not active_turn_task.done()
-                # also consider _STREAM_STATE.is_streaming for Live tail
-                if not is_streaming and getattr(_STREAM_STATE, "is_streaming", False):
-                    is_streaming = True
+                is_streaming = repl_input_is_streaming(active_turn_task)
                 action = classify_input(raw, is_streaming=is_streaming)
                 if action.kind == "ignored":
                     print(action.args)
@@ -2088,8 +2142,14 @@ async def _run_interactive(
                     ptk_session=_ptk_session,
                     thinking_expanded=_THINKING_EXPANDED,
                 )
-                action = await dispatch_slash_command(
-                    cmd, cmd_arg, ctx, drain_fn=_drain_pending_interactions
+                action = await _guard_slash_dispatch(
+                    cmd,
+                    cmd_arg,
+                    ctx,
+                    drain_fn=_drain_pending_interactions,
+                    mgr=mgr,
+                    session_id=session_id,
+                    console=console,
                 )
                 session_id = ctx.session_id
                 active_plan_mode = ctx.active_plan_mode
@@ -2238,6 +2298,7 @@ async def _run_interactive(
                             active_turn_task = None
                     except (KeyboardInterrupt, asyncio.CancelledError):
                         _clear_task_cancellation()
+                        _STREAM_STATE.reset()
                         if session_id:
                             mgr.interrupt_session(session_id)
                         break
@@ -2327,6 +2388,7 @@ async def _run_interactive(
                         # plain "reject" stays in plan mode; conversation continues.
             except (KeyboardInterrupt, asyncio.CancelledError):
                 _clear_task_cancellation()
+                _STREAM_STATE.reset()
                 try:
                     ensure_tty_sane()
                 except Exception:
@@ -2339,6 +2401,7 @@ async def _run_interactive(
                     print("\nTurn interrupted by user.")
                 continue
             except Exception as exc:
+                _STREAM_STATE.reset()
                 try:
                     ensure_tty_sane()
                 except Exception:

@@ -209,8 +209,8 @@ def resolve_agent_spec(
                     system_prompt_args={},
                     model=None,
                     when_to_use=defn.description,
-                    tools=list(defn.tools) if defn.tools else ["read", "bash", "edit"],
-                    allowed_tools=list(defn.tools) if defn.tools else None,
+                    tools=list(defn.tools) if defn.tools is not None else ["read", "bash", "edit"],
+                    allowed_tools=list(defn.tools) if defn.tools is not None else None,
                     exclude_tools=[],
                     subagents={},
                 )
@@ -235,8 +235,8 @@ def resolve_agent_spec(
                 system_prompt_args={},
                 model=None,
                 when_to_use=defn.description,
-                tools=list(defn.tools) if defn.tools else ["read", "bash", "edit"],
-                allowed_tools=list(defn.tools) if defn.tools else None,
+                tools=list(defn.tools) if defn.tools is not None else ["read", "bash", "edit"],
+                allowed_tools=list(defn.tools) if defn.tools is not None else None,
                 exclude_tools=[],
                 subagents={},
             )

@@ -170,7 +170,7 @@ def test_config_settings_legacy_fallback_returns_default_model(isolated_home: pa
     from coderai.config import resolve_current_settings
 
     resolved = resolve_current_settings(str(isolated_home))
-    assert resolved["model"] == "gpt-5.6-luna"
+    assert resolved["model"] == "gpt-6-luna"
     assert resolved["providerType"] == "openai_legacy"
 
 
@@ -281,7 +281,7 @@ def test_config_model_picker_number_selects_curated(monkeypatch: pytest.MonkeyPa
     from coderai.ui.shell.session_picker import select_model_interactive
 
     monkeypatch.setattr("builtins.input", lambda _: "1")
-    assert select_model_interactive(None, "gpt-5.6-luna") == "gpt-5.6-sol"
+    assert select_model_interactive(None, "gpt-6-luna") == "gpt-6-astra"
 
 
 def test_typed_config_normalizes_wire_model_and_allows_curated() -> None:

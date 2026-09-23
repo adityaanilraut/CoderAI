@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-ReasoningEffortLevel = Literal["off", "minimal", "low", "medium", "high", "max"]
+ReasoningEffortLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 #: Default response field carrying reasoning text.
 DEFAULT_REASONING_KEY = "reasoning_content"
 
 _OFF_ALIASES = {"off", "none", "disabled", "false", "0", "disable"}
-_OPENAI_EFFORTS = {"low", "medium", "high", "none"}
+# GPT-6: Sol/Luna support none/low/medium/high/xhigh/max; Astra supports
+# low/medium/high/xhigh/max (no none — low is the minimum).
+_OPENAI_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
 
 # Provider-specific thinking token budgets mapped from effort levels
 GEMINI_THINKING_BUDGETS: dict[str, int] = {
@@ -31,16 +33,14 @@ ANTHROPIC_THINKING_BUDGETS: dict[str, int] = {
 
 
 def normalize_reasoning_effort(reasoning_effort: str | None) -> str:
-    """Canonicalize effort to off|minimal|low|medium|high|max. Unknown values become max."""
+    """Canonicalize effort to off|minimal|low|medium|high|xhigh|max. Unknown values become max."""
     if not reasoning_effort:
         return "max"
     raw = str(reasoning_effort).strip().lower()
     if raw in _OFF_ALIASES:
         return "off"
-    if raw in ("minimal", "low", "medium", "high", "max"):
+    if raw in ("minimal", "low", "medium", "high", "xhigh", "max"):
         return raw
-    if raw == "xhigh":
-        return "max"
     return "max"
 
 
@@ -77,20 +77,44 @@ def build_thinking_request_options(
     m = model.strip().lower()
     effort = normalize_reasoning_effort(reasoning_effort)
 
-    is_gpt5 = m.startswith("gpt-5") or "luna" in m or "terra" in m or "sol" in m
-    is_openai_reasoning = is_gpt5 or m.startswith(
+    is_gpt = (
+        m.startswith("gpt-5")
+        or m.startswith("gpt-6")
+        or "astra" in m
+        or "luna" in m
+        or "terra" in m
+        or "sol" in m
+    )
+    is_openai_reasoning = is_gpt or m.startswith(
         ("o1", "o3", "o4", "deepseek-reasoner", "deepseek-r1")
     )
 
-    # 1. Disabled / Off state
+    # 1. Disabled / Off state (wire uses "none" for GPT Sol/Luna)
     if not thinking_enabled or effort == "off":
-        if is_gpt5 and has_tools:
+        if is_gpt and has_tools:
+            # Astra has no "none" — fall back to minimum effort instead.
+            if "astra" in m:
+                return {"reasoning_effort": "low"}
             return {"reasoning_effort": "none"}
         return {}
 
-    # 2. OpenAI / o-series / GPT-5.6 (top-level reasoning_effort parameter)
+    # 2. OpenAI / o-series / GPT-5.6 / GPT-6 (top-level reasoning_effort parameter)
     if is_openai_reasoning:
-        openai_effort = effort if effort in _OPENAI_EFFORTS else "high"
+        # Astra rejects "none"; coerce off->low (already handled above, belt & braces).
+        if "astra" in m and effort == "off":
+            return {"reasoning_effort": "low"}
+        if is_gpt:
+            # GPT-5.6/6 wire supports none/low/medium/high/xhigh/max.
+            openai_effort = effort if effort in _OPENAI_EFFORTS else "high"
+            # Internal "off" maps to wire "none" for Sol/Luna.
+            if openai_effort == "off":
+                openai_effort = "none"
+            return {"reasoning_effort": openai_effort}
+        # Legacy o-series / DeepSeek-reasoner wire: low/medium/high/none only.
+        legacy_efforts = {"none", "low", "medium", "high"}
+        openai_effort = effort if effort in legacy_efforts else "high"
+        if openai_effort == "off":
+            openai_effort = "none"
         return {"reasoning_effort": openai_effort}
 
     # 3. Extra body for DeepSeek, Gemini, OpenRouter, Qwen
