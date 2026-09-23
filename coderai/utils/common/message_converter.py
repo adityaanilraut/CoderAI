@@ -16,6 +16,7 @@ from typing import Any
 
 from coderai.utils.common.model_capabilities import supports_multimodal
 from coderai.soul.session.log import derive_messages
+from coderai.soul.compaction import DEFAULT_MAX_TOOL_RESULT_CHARS
 
 
 def canonicalize_tool_call(tool_call: Any) -> dict[str, Any]:
@@ -217,7 +218,7 @@ class OpenAIMessageConverter:
         message: Any,
         thinking_enabled: bool,
         model: str,
-        max_tool_result_chars: int = 16_000,
+        max_tool_result_chars: int = DEFAULT_MAX_TOOL_RESULT_CHARS,
     ) -> dict[str, Any]:
         role = getattr(message, "role", "user")
         content = self._render_content(message)

@@ -384,13 +384,20 @@ def wait_for_device_token(auth: DeviceAuthorization, on_waiting: Any = None) -> 
     """Poll until the user authorizes (sync; async callers use ``to_thread``)."""
     interval = max(auth.interval, 1)
     printed_wait = False
+    start_time = time.time()
     while True:
+        if auth.expires_in and (time.time() - start_time) > auth.expires_in:
+            raise OAuthDeviceExpired("Device code expired.")
         status, data = _poll_device_token(auth)
         if status == 200 and "access_token" in data:
             return OAuthToken.from_response(data)
         error_code = str(data.get("error") or "unknown_error")
-        if error_code == "expired_token":
+        if error_code in ("expired_token", "token_expired"):
             raise OAuthDeviceExpired("Device code expired.")
+        if error_code == "access_denied":
+            raise OAuthError("User denied access.")
+        if error_code == "slow_down":
+            interval += 5
         if not printed_wait:
             printed_wait = True
             if on_waiting is not None:
@@ -599,7 +606,12 @@ class OAuthManager:
 # -- login / logout flows -------------------------------------------------------
 
 
-async def login_device_flow(*, open_browser: bool = True) -> AsyncIterator[OAuthEvent]:
+async def login_device_flow(
+    *,
+    open_browser: bool = True,
+    _retry_count: int = 0,
+    max_restarts: int = 2,
+) -> AsyncIterator[OAuthEvent]:
     """Run the RFC 8628 device flow, yielding progress events."""
     platform = get_platform_by_id(KIMI_CODE_PLATFORM_ID)
     if platform is None:
@@ -636,8 +648,15 @@ async def login_device_flow(*, open_browser: bool = True) -> AsyncIterator[OAuth
     try:
         token = await asyncio.to_thread(wait_for_device_token, auth, _on_waiting)
     except OAuthDeviceExpired:
+        if _retry_count >= max_restarts:
+            yield OAuthEvent("error", "Device code expired. Maximum retry attempts reached.")
+            return
         yield OAuthEvent("info", "Device code expired, restarting login...")
-        async for event in login_device_flow(open_browser=False):
+        async for event in login_device_flow(
+            open_browser=False,
+            _retry_count=_retry_count + 1,
+            max_restarts=max_restarts,
+        ):
             yield event
         return
     except OAuthError as exc:

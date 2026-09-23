@@ -32,8 +32,17 @@ Keep credentials in the process environment or a protected local secret store. D
 
 ## Generate
 
+The helper script requires its sibling helper modules. Run it from within its directory (e.g., via `cd` or `uv run`) or with `PYTHONPATH` set:
+
 ```bash
-python3 scripts/image_generator.py \
+# Option A: Run from the skill's scripts directory
+cd <path-to-skill>/scripts && python3 image_generator.py \
+  --prompt "<final prompt>" \
+  --size "1024x1024" \
+  --output "<target image path>"
+
+# Option B: Run with PYTHONPATH set to the scripts directory
+PYTHONPATH="<path-to-skill>/scripts" python3 <path-to-skill>/scripts/image_generator.py \
   --prompt "<final prompt>" \
   --size "1024x1024" \
   --output "<target image path>"

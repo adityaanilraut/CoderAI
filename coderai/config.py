@@ -12,15 +12,54 @@ import json
 import os
 import pathlib
 import re
+import sys
 from typing import Any, Literal, cast
 
 from coderai.utils.common.model_capabilities import defaults_to_thinking_mode
 from coderai.prompt.sections import normalize_tool_preset
 from coderai.sandbox import apply_preset, parse_sandbox_mode
 
-DEFAULT_MODEL = "gpt-6-luna"
-DEFAULT_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_CONTEXT_WINDOW = 256 * 1024
+from coderai.provider_registry import (
+    DEFAULT_BASE_URL as DEFAULT_BASE_URL,
+    DEFAULT_CONTEXT_WINDOW as DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_MODEL as DEFAULT_MODEL,
+    KNOWN_PROVIDERS as KNOWN_PROVIDERS,
+    PROVIDER_REGISTRY as PROVIDER_REGISTRY,
+    get_configured_provider_keys as get_configured_provider_keys,
+    save_active_model_setting as save_active_model_setting,
+    save_base_url_setting as save_base_url_setting,
+    save_custom_endpoint_config as save_custom_endpoint_config,
+    save_provider_api_key as save_provider_api_key,
+    save_setting_key as save_setting_key,
+)
+from coderai.typed_config import (
+    _chmod_quiet as _chmod_quiet,
+    BackgroundConfig as BackgroundConfig,
+    Config as Config,
+    HookDef as HookDef,
+    LLMModel as LLMModel,
+    LLMProvider as LLMProvider,
+    LoopControl as LoopControl,
+    MCPClientConfig as MCPClientConfig,
+    MCPConfig as MCPConfig,
+    McpConfig as McpConfig,
+    MoonshotFetchConfig as MoonshotFetchConfig,
+    MoonshotSearchConfig as MoonshotSearchConfig,
+    NotificationConfig as NotificationConfig,
+    NotificationsConfig as NotificationsConfig,
+    OAuthRef as OAuthRef,
+    Services as Services,
+    TypedConfig as TypedConfig,
+    clear_typed_config_cache as clear_typed_config_cache,
+    get_config_file as get_config_file,
+    get_default_config as get_default_config,
+    load_config as load_config,
+    load_typed_config as load_typed_config,
+    load_typed_config_from_string as load_typed_config_from_string,
+    resolve_hierarchical_config_path as resolve_hierarchical_config_path,
+    save_config as save_config,
+    save_typed_config as save_typed_config,
+)
 
 PermissionScope = Literal[
     "read-in-cwd",
@@ -68,11 +107,28 @@ def _home() -> pathlib.Path:
 
 
 def get_user_settings_path() -> str:
-    return str(_home() / ".coderai" / "settings.json")
+    from coderai.share import get_share_dir
+
+    return str(get_share_dir() / "settings.json")
 
 
 def get_project_settings_path(project_root: str = ".") -> str:
     return str(pathlib.Path(project_root) / ".coderai" / "settings.json")
+
+
+# Paths already warned about, so a broken config prints one stderr warning
+# instead of spamming every settings resolution (IN-A14).
+_warned_parse_errors: set[str] = set()
+
+
+def _warn_parse_error_once(path: str, detail: str) -> None:
+    if path in _warned_parse_errors:
+        return
+    _warned_parse_errors.add(path)
+    try:
+        print(f"coderai: warning: ignoring invalid config {path}: {detail}", file=sys.stderr)
+    except OSError:
+        pass
 
 
 def _read_settings_file(path: str) -> dict | None:
@@ -81,8 +137,12 @@ def _read_settings_file(path: str) -> dict | None:
         if not p.is_file():
             return None
         data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except (OSError, ValueError):
+        if isinstance(data, dict):
+            return data
+        _warn_parse_error_once(path, "top-level JSON value is not an object")
+        return None
+    except (OSError, ValueError) as exc:
+        _warn_parse_error_once(path, str(exc) or exc.__class__.__name__)
         return None
 
 
@@ -94,10 +154,58 @@ def read_project_settings(project_root: str = ".") -> dict | None:
     return _read_settings_file(get_project_settings_path(project_root))
 
 
+def tighten_config_permissions() -> None:
+    """Clamp user-scope config dirs/files to 0700/0600 (IN-A2).
+
+    Idempotent; safe to call at startup. Never touches the repository.
+    """
+    user_dir = _home() / ".coderai"
+    try:
+        user_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    _chmod_quiet(user_dir, 0o700)
+    try:
+        from coderai.share import get_share_dir
+
+        _chmod_quiet(get_share_dir(), 0o700)
+    except OSError:
+        pass
+    for name in ("settings.json", ".env", "config.toml"):
+        p = user_dir / name
+        try:
+            if p.is_file():
+                _chmod_quiet(p, 0o600)
+        except OSError:
+            pass
+    try:
+        from coderai.share import get_share_dir as _share_dir
+
+        store = _share_dir() / "trusted_projects.json"
+        if store.is_file():
+            _chmod_quiet(store, 0o600)
+    except OSError:
+        pass
+
+
 def _write_settings_file(path: str, settings: dict) -> None:
+    from coderai.utils.io import atomic_json_write
+
     p = pathlib.Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    try:
+        user_dir = _home() / ".coderai"
+        try:
+            same = p.parent.resolve() == user_dir.resolve()
+        except OSError:
+            same = False
+        if same:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            _chmod_quiet(p.parent, 0o700)
+    except OSError:
+        pass
+    # atomic_json_write uses mkstemp (0600); keep it that way for secrets.
+    atomic_json_write(settings, p)
+    _chmod_quiet(p, 0o600)
 
 
 def write_settings(settings: dict) -> None:
@@ -108,15 +216,25 @@ def write_project_settings(settings: dict, project_root: str = ".") -> None:
     _write_settings_file(get_project_settings_path(project_root), settings)
 
 
-def load_dotenv(project_root: str = ".") -> dict[str, str]:
-    """Parse key=value pairs from .env in project root and ~/.coderai/.env into os.environ."""
+def load_dotenv(project_root: str = ".", *, trusted: bool | None = None) -> dict[str, str]:
+    """Parse key=value pairs from .env in project root and ~/.coderai/.env into os.environ.
+
+    The project ``.env`` is skipped until the project is trusted (IN-A1);
+    the user-scope ``~/.coderai/.env`` always loads.
+    """
+    if trusted is None:
+        from coderai.trust import is_project_trusted
+
+        trusted = is_project_trusted(project_root)
     loaded: dict[str, str] = {}
+    from coderai.share import get_share_dir
+
     candidates = [
-        _home() / ".coderai" / ".env",
-        pathlib.Path(project_root) / ".env",
+        (get_share_dir() / ".env", True),
+        (pathlib.Path(project_root) / ".env", bool(trusted)),
     ]
-    for p in candidates:
-        if not p.is_file():
+    for p, allowed in candidates:
+        if not allowed or not p.is_file():
             continue
         try:
             for line in p.read_text(encoding="utf-8").splitlines():
@@ -157,13 +275,16 @@ def resolve_typed_config_overlay(project_root: str = ".") -> dict[str, Any]:
         if override_text:
             typed = load_typed_config_from_string(override_text)
         elif override_file:
-            typed = load_typed_config(pathlib.Path(override_file).expanduser())
+            typed = load_typed_config(
+                pathlib.Path(override_file).expanduser(), project_root=project_root
+            )
         else:
-            typed = load_typed_config()
-    except Exception:
+            typed = load_typed_config(project_root=project_root)
+    except Exception as exc:
         # Best-effort overlay: any load/validation failure (including
         # unexpected errors from patched loaders in tests) falls back to
         # legacy settings.json + env resolution.
+        _warn_parse_error_once("typed-config", str(exc) or exc.__class__.__name__)
         return {}
     try:
         if not typed.default_model or typed.default_model not in typed.models:
@@ -197,12 +318,16 @@ def resolve_typed_config_overlay(project_root: str = ".") -> dict[str, Any]:
 def _typed_global_knobs(typed: Any) -> dict[str, Any]:
     """Model-independent knobs from the typed config."""
     try:
-        return {
+        knobs: dict[str, Any] = {
             "mergeAllAvailableSkills": bool(typed.merge_all_available_skills),
             "extraSkillDirs": list(typed.extra_skill_dirs or []),
             "notificationsClaimStaleAfterMs": int(typed.notifications.claim_stale_after_ms),
             "mcpToolCallTimeoutMs": int(typed.mcp.client.tool_call_timeout_ms),
         }
+        if getattr(typed, "telemetry", None) is not None:
+            knobs["telemetry"] = bool(typed.telemetry)
+            knobs["telemetryEnabled"] = bool(typed.telemetry)
+        return knobs
     except (AttributeError, TypeError, ValueError):
         return {}
 
@@ -361,11 +486,45 @@ def get_default_auto_compact_window(model: str = "") -> int:
     return max(1, get_default_context_window(model) // 2)
 
 
-def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
+# Project-scope keys that can execute commands or steer secrets. Ignored
+# until the project is trusted (IN-A1).
+_UNTRUSTED_PROJECT_DENY_KEYS = frozenset(
+    {"mcpServers", "baseURL", "env", "statusline", "hooks", "webSearchTool"}
+)
+
+
+def _strip_untrusted_project_settings(project: dict) -> dict:
+    """Drop command/secret-steering keys from an untrusted project's settings."""
+    return {k: v for k, v in project.items() if k not in _UNTRUSTED_PROJECT_DENY_KEYS}
+
+
+def settings_env_value(name: str, project_root: str = ".") -> str | None:
+    """Value of ``name`` from the settings ``env`` blocks; project wins only when trusted."""
+    from coderai.trust import is_project_trusted
+
+    envs = [_normalize_env((read_settings() or {}).get("env"))]
+    if is_project_trusted(project_root):
+        envs.insert(0, _normalize_env((read_project_settings(project_root) or {}).get("env")))
+    for env in envs:
+        val = env.get(name, "").strip()
+        if val:
+            return val
+    return None
+
+
+def resolve_current_settings(
+    project_root: str = ".", *, trusted: bool | None = None
+) -> dict[str, Any]:
     """Resolve user + project + env into a single settings dict."""
-    load_dotenv(project_root)
+    if trusted is None:
+        from coderai.trust import is_project_trusted
+
+        trusted = is_project_trusted(project_root)
+    load_dotenv(project_root, trusted=trusted)
     user = read_settings() or {}
     project = read_project_settings(project_root) or {}
+    if not trusted:
+        project = _strip_untrusted_project_settings(project)
 
     user_env = _normalize_env(user.get("env"))
     project_env = _normalize_env(project.get("env"))
@@ -387,6 +546,14 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         return None
 
     typed_overlay = resolve_typed_config_overlay(project_root)
+    if not trusted and not (
+        os.environ.get("CODERAI_CONFIG_FILE") or os.environ.get("CODERAI_CONFIG_STRING")
+    ):
+        # Never pair a user-scope apiKey with a project config.toml baseURL
+        # until the project is trusted (IN-A1). An explicit config-file
+        # override is the user's own intent, so it stays.
+        typed_overlay.pop("baseURL", None)
+        typed_overlay.pop("apiKey", None)
 
     # merge_all_available_skills (default True).
     _merge_all_parsed = first_parsed(
@@ -398,29 +565,61 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
     )
     merge_all_available_skills = True if _merge_all_parsed is None else _merge_all_parsed
 
-    model = (
-        first(system_env.get("MODEL"))
-        or _trim(project.get("model"))
-        or _trim(user.get("model"))
-        or _trim(typed_overlay.get("model"))
-        or DEFAULT_MODEL
-    )
+    is_project_typed = not typed_overlay.get("isDefaultLocation", True)
 
-    base_url = (
-        first(system_env.get("BASE_URL"))
-        or _trim(project.get("baseURL"))
-        or _trim(user.get("baseURL"))
-        or _trim(typed_overlay.get("baseURL"))
-        or DEFAULT_BASE_URL
-    )
+    env_model = first(system_env.get("MODEL"))
+    env_base_url = first(system_env.get("BASE_URL"))
+    env_api_key = first(system_env.get("API_KEY"))
 
-    api_key = (
-        first(system_env.get("API_KEY"))
-        or _trim(project.get("apiKey"))
-        or _trim(user.get("apiKey"))
-        or _trim(typed_overlay.get("apiKey"))
-        or None
-    )
+    if _trim(project.get("model")):
+        model = _trim(project.get("model"))
+        base_url = (
+            _trim(project.get("baseURL")) or _trim(typed_overlay.get("baseURL")) or DEFAULT_BASE_URL
+        )
+        api_key = _trim(project.get("apiKey")) or _trim(typed_overlay.get("apiKey")) or None
+    elif is_project_typed and _trim(typed_overlay.get("model")):
+        model = _trim(typed_overlay.get("model"))
+        base_url = _trim(typed_overlay.get("baseURL")) or DEFAULT_BASE_URL
+        api_key = _trim(typed_overlay.get("apiKey")) or None
+    elif _trim(user.get("model")):
+        model = _trim(user.get("model"))
+        base_url = (
+            _trim(user.get("baseURL"))
+            or (_trim(typed_overlay.get("baseURL")) if not is_project_typed else "")
+            or DEFAULT_BASE_URL
+        )
+        api_key = (
+            _trim(user.get("apiKey"))
+            or (_trim(typed_overlay.get("apiKey")) if not is_project_typed else "")
+            or None
+        )
+    elif not is_project_typed and _trim(typed_overlay.get("model")):
+        model = _trim(typed_overlay.get("model"))
+        base_url = _trim(typed_overlay.get("baseURL")) or DEFAULT_BASE_URL
+        api_key = _trim(typed_overlay.get("apiKey")) or None
+    else:
+        model = DEFAULT_MODEL
+        base_url = (
+            _trim(project.get("baseURL"))
+            or (is_project_typed and _trim(typed_overlay.get("baseURL")))
+            or _trim(user.get("baseURL"))
+            or _trim(typed_overlay.get("baseURL"))
+            or DEFAULT_BASE_URL
+        )
+        api_key = (
+            _trim(project.get("apiKey"))
+            or (is_project_typed and _trim(typed_overlay.get("apiKey")))
+            or _trim(user.get("apiKey"))
+            or _trim(typed_overlay.get("apiKey"))
+            or None
+        )
+
+    if env_model:
+        model = env_model
+    if env_base_url:
+        base_url = env_base_url
+    if env_api_key:
+        api_key = env_api_key
 
     # OPENAI_* fallback for compat.
     if not api_key and os.getenv("OPENAI_API_KEY"):
@@ -607,6 +806,19 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         "typedLoopControl": typed_overlay.get("loopControl") or {},
         "typedConfigDefaultLocation": typed_overlay.get("isDefaultLocation", False),
     }
+    _telemetry_val = first_parsed(
+        _parse_bool,
+        system_env.get("TELEMETRY"),
+        project.get("telemetry"),
+        project.get("telemetryEnabled"),
+        user.get("telemetry"),
+        user.get("telemetryEnabled"),
+        typed_overlay.get("telemetry"),
+        typed_overlay.get("telemetryEnabled"),
+    )
+    if _telemetry_val is not None:
+        resolved["telemetry"] = _telemetry_val
+        resolved["telemetryEnabled"] = _telemetry_val
     # Back-compat alias: snake_case mirrors camelCase (single computed list).
     resolved["fallback_models"] = resolved["fallbackModels"]
     return resolved
@@ -878,84 +1090,6 @@ def _merge_statusline(user: dict | None, project: dict | None) -> dict[str, Any]
     }
 
 
-KNOWN_PROVIDERS = {
-    "openai": {
-        "name": "OpenAI",
-        "env_var": "OPENAI_API_KEY",
-        "default_base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-6-luna",
-        "doc_url": "https://platform.openai.com/api-keys",
-        "models": [
-            "gpt-6-astra",
-            "gpt-6-sol",
-            "gpt-6-luna",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "o3-mini",
-            "o1",
-            "gpt-4o",
-        ],
-    },
-    "deepseek": {
-        "name": "DeepSeek",
-        "env_var": "DEEPSEEK_API_KEY",
-        "default_base_url": "https://api.deepseek.com",
-        "default_model": "deepseek-flash",
-        "doc_url": "https://platform.deepseek.com/api_keys",
-        "models": ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash"],
-    },
-    "gemini": {
-        "name": "Google Gemini",
-        "env_var": "GEMINI_API_KEY",
-        "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "default_model": "gemini-3.7-flash",
-        "doc_url": "https://aistudio.google.com/app/apikey",
-        "models": ["gemini-3.7-flash", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
-    },
-    "anthropic": {
-        "name": "Anthropic Claude",
-        "env_var": "ANTHROPIC_API_KEY",
-        "default_base_url": "https://api.anthropic.com/v1",
-        "default_model": "claude-3-7-sonnet",
-        "doc_url": "https://console.anthropic.com/settings/keys",
-        "models": ["claude-3-7-sonnet", "claude-3-5-sonnet"],
-    },
-    "openrouter": {
-        "name": "OpenRouter",
-        "env_var": "OPENROUTER_API_KEY",
-        "default_base_url": "https://openrouter.ai/api/v1",
-        "default_model": "openrouter/anthropic/claude-3.7-sonnet",
-        "doc_url": "https://openrouter.ai/keys",
-        "models": [
-            "openrouter/anthropic/claude-3.7-sonnet",
-            "openrouter/deepseek/deepseek-r1",
-            "openrouter/meta-llama/llama-3.3-70b-instruct",
-        ],
-    },
-    "jev": {
-        "name": "Jev System-One (TypeSafe NAR)",
-        "env_var": "TYPESAFE_API_KEY",
-        "default_base_url": "",
-        "default_model": "jev-system-one",
-        "doc_url": "",
-        "models": ["jev-system-one"],
-    },
-}
-
-
-PROVIDER_REGISTRY = KNOWN_PROVIDERS
-"""Canonical cloud provider registry (6 providers).
-
-Single source of truth for provider metadata. The setup wizard's local
-endpoint presets are a separate concern (local/custom OpenAI-compatible
-endpoints) and must not duplicate or shadow these keys.
-Note: `jev` is a non-autoregressive System-One triage/gating backend
-(TypeSafe SDK, TYPESAFE_API_KEY / JEV_API_KEY), not an OpenAI-compatible
-chat provider — it never handles the main tool-calling turn loop.
-"""
-
-
 def mask_api_key(key: str | None) -> str:
     """Mask secret API key showing only first 4 and last 3 characters."""
     if not key or not isinstance(key, str) or not key.strip():
@@ -964,636 +1098,3 @@ def mask_api_key(key: str | None) -> str:
     if len(s) <= 8:
         return "****"
     return f"{s[:4]}...{s[-3:]}"
-
-
-def save_setting_key(key: str, value: Any, scope: str = "user", project_root: str = ".") -> None:
-    """Update a specific configuration key in user (~/.coderai) or project settings."""
-    if scope == "project":
-        current = read_project_settings(project_root) or {}
-        current[key] = value
-        write_project_settings(current, project_root)
-    else:
-        current = read_settings() or {}
-        current[key] = value
-        write_settings(current)
-
-
-def save_provider_api_key(
-    provider: str,
-    api_key: str,
-    scope: str = "user",
-    project_root: str = ".",
-) -> str:
-    """Save an API key for a specified provider and update os.environ.
-
-    Returns the environment variable name updated.
-    """
-    prov_key = provider.strip().lower()
-    info = KNOWN_PROVIDERS.get(prov_key)
-    if info is None:
-        known = ", ".join(sorted(KNOWN_PROVIDERS))
-        raise ValueError(f"Unknown provider {provider!r}. Known providers: {known}.")
-    env_var = str(info["env_var"])
-    api_key_clean = api_key.strip()
-
-    # Determine target settings
-    if scope == "project":
-        current = read_project_settings(project_root) or {}
-    else:
-        current = read_settings() or {}
-
-    env_dict = dict(current.get("env") or {})
-    env_dict[env_var] = api_key_clean
-
-    if prov_key == "openai":
-        current["apiKey"] = api_key_clean
-
-    current["env"] = env_dict
-
-    if scope == "project":
-        write_project_settings(current, project_root)
-    else:
-        write_settings(current)
-
-    # Immediately reflect in process env
-    os.environ[env_var] = api_key_clean
-    if prov_key == "openai":
-        os.environ["OPENAI_API_KEY"] = api_key_clean
-        os.environ["CODERAI_API_KEY"] = api_key_clean
-
-    return env_var
-
-
-def save_active_model_setting(
-    model: str,
-    scope: str = "user",
-    project_root: str = ".",
-) -> None:
-    """Save the default active model in user or project settings."""
-    model_clean = model.strip()
-    save_setting_key("model", model_clean, scope=scope, project_root=project_root)
-    os.environ["CODERAI_MODEL"] = model_clean
-    try:
-        # Same-module globals (defined below); no self-import needed.
-        cfg = load_typed_config()
-        target_model = model_clean
-        if target_model not in cfg.models:
-            for key, m in cfg.models.items():
-                if m.model == model_clean:
-                    target_model = key
-                    break
-        cfg.default_model = target_model
-        save_typed_config(cfg)
-    except (OSError, ValueError):
-        pass
-
-
-def save_base_url_setting(
-    base_url: str,
-    scope: str = "user",
-    project_root: str = ".",
-) -> None:
-    """Save the baseURL setting in user or project settings."""
-    url_clean = base_url.strip()
-    save_setting_key("baseURL", url_clean, scope=scope, project_root=project_root)
-    os.environ["CODERAI_BASE_URL"] = url_clean
-
-
-def save_custom_endpoint_config(
-    provider_name: str,
-    base_url: str,
-    api_key: str,
-    default_model: str,
-    scope: str = "user",
-    project_root: str = ".",
-) -> None:
-    """Configure and persist a custom/local OpenAI-compatible endpoint."""
-    if scope == "project":
-        current = read_project_settings(project_root) or {}
-    else:
-        current = read_settings() or {}
-
-    current["baseURL"] = base_url.strip()
-    if api_key.strip():
-        current["apiKey"] = api_key.strip()
-    if default_model.strip():
-        current["model"] = default_model.strip()
-
-    env_dict = dict(current.get("env") or {})
-    clean_name = provider_name.strip().upper().replace(" ", "_").replace("-", "_")
-    if api_key.strip():
-        env_dict[f"{clean_name}_API_KEY"] = api_key.strip()
-        env_dict["OPENAI_API_KEY"] = api_key.strip()
-    if base_url.strip():
-        env_dict[f"{clean_name}_BASE_URL"] = base_url.strip()
-        env_dict["OPENAI_BASE_URL"] = base_url.strip()
-
-    current["env"] = env_dict
-
-    if scope == "project":
-        write_project_settings(current, project_root)
-    else:
-        write_settings(current)
-
-    # Update process env
-    os.environ["CODERAI_BASE_URL"] = base_url.strip()
-    os.environ["OPENAI_BASE_URL"] = base_url.strip()
-    if api_key.strip():
-        os.environ["CODERAI_API_KEY"] = api_key.strip()
-        os.environ["OPENAI_API_KEY"] = api_key.strip()
-    if default_model.strip():
-        os.environ["CODERAI_MODEL"] = default_model.strip()
-
-
-def get_configured_provider_keys(project_root: str = ".") -> dict[str, dict[str, Any]]:
-    """Retrieve key and endpoint status for all known and configured providers."""
-    settings = resolve_current_settings(project_root)
-    env_map = settings.get("env") or {}
-    status_map: dict[str, dict[str, Any]] = {}
-
-    for prov_key, info in KNOWN_PROVIDERS.items():
-        var_name = str(info["env_var"])
-        # Check env_map then os.environ
-        key_val = (
-            env_map.get(var_name)
-            or os.getenv(var_name)
-            or (settings.get("apiKey") if prov_key == "openai" else None)
-        )
-        if not key_val and prov_key == "gemini":
-            key_val = env_map.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not key_val and prov_key == "jev":
-            key_val = env_map.get("JEV_API_KEY") or os.getenv("JEV_API_KEY")
-
-        is_configured = bool(key_val and key_val.strip())
-        status_map[prov_key] = {
-            "name": info["name"],
-            "env_var": var_name,
-            "configured": is_configured,
-            "masked_key": mask_api_key(key_val) if is_configured else "Not configured",
-            "raw_key": key_val if is_configured else None,
-            "default_base_url": info["default_base_url"],
-            "default_model": info["default_model"],
-            "doc_url": info["doc_url"],
-            "models": info["models"],
-        }
-
-    # Custom endpoint check
-    custom_base_url = settings.get("baseURL")
-    if custom_base_url and custom_base_url != DEFAULT_BASE_URL:
-        status_map["custom"] = {
-            "name": "Custom / Local Endpoint",
-            "env_var": "CODERAI_BASE_URL",
-            "configured": True,
-            "masked_key": mask_api_key(settings.get("apiKey")),
-            "raw_key": settings.get("apiKey"),
-            "default_base_url": custom_base_url,
-            "default_model": settings.get("model", DEFAULT_MODEL),
-            "doc_url": "",
-            "models": [settings.get("model", DEFAULT_MODEL)],
-        }
-
-    return status_map
-
-
-# --- merged from coderai/core/typed_config.py ---
-"""Validated TOML/JSON configuration.
-
-This is the *typed* config layer: ``providers`` / ``models`` / ``services`` /
-``loop_control`` / ``hooks`` validated with pydantic, loaded from
-``~/.coderai/config.toml`` (JSON also accepted). It coexists with the legacy
-dict-based ``settings.py`` (``settings.json`` + ``CODERAI_*`` env) — migration
-copies legacy keys forward; ``TypedConfig`` is authoritative for the new
-provider/model vocabulary (``llm_types``).
-"""
-
-
-from pathlib import Path
-from typing import Literal, Self
-
-from coderai.exception import ConfigError
-from coderai.llm import ModelCapability, ProviderType
-from coderai.log import logger
-from coderai.share import get_share_dir
-
-try:
-    import tomlkit
-    from tomlkit.exceptions import TOMLKitError
-except ImportError:  # minimal installs: JSON-only mode
-    tomlkit = None  # type: ignore[assignment]
-
-    class TOMLKitError(Exception):  # type: ignore[no-redef]
-        pass
-
-
-from pydantic import (
-    AliasChoices,
-    BaseModel,
-    Field,
-    SecretStr,
-    ValidationError,
-    field_serializer,
-    model_validator,
-)
-
-
-class OAuthRef(BaseModel):
-    """Reference to OAuth credentials stored outside the config file."""
-
-    storage: Literal["keyring", "file"] = "file"
-    key: str
-
-
-class LLMProvider(BaseModel):
-    """LLM provider configuration."""
-
-    type: ProviderType
-    base_url: str
-    api_key: SecretStr
-    env: dict[str, str] | None = None
-    custom_headers: dict[str, str] | None = None
-    reasoning_key: str | None = None
-    oauth: OAuthRef | None = None
-
-    @field_serializer("api_key", when_used="json")
-    def dump_secret(self, v: SecretStr) -> str:
-        return v.get_secret_value()
-
-
-class LLMModel(BaseModel):
-    """LLM model configuration."""
-
-    provider: str
-    model: str
-    max_context_size: int
-    capabilities: set[ModelCapability] | None = None
-    display_name: str | None = None
-
-
-class LoopControl(BaseModel):
-    """Agent loop control configuration."""
-
-    max_steps_per_turn: int = Field(
-        default=1000,
-        ge=1,
-        validation_alias=AliasChoices("max_steps_per_turn", "max_steps_per_run"),
-    )
-    max_retries_per_step: int = Field(default=3, ge=1)
-    max_ralph_iterations: int = Field(default=0, ge=-1)
-    reserved_context_size: int = Field(default=50_000, ge=1000)
-    compaction_trigger_ratio: float = Field(default=0.85, ge=0.5, le=0.99)
-
-
-class MoonshotSearchConfig(BaseModel):
-    """Moonshot Search service configuration."""
-
-    base_url: str
-    api_key: SecretStr
-    custom_headers: dict[str, str] | None = None
-    oauth: OAuthRef | None = None
-
-    @field_serializer("api_key", when_used="json")
-    def dump_secret(self, v: SecretStr) -> str:
-        return v.get_secret_value()
-
-
-class MoonshotFetchConfig(BaseModel):
-    """Moonshot Fetch service configuration."""
-
-    base_url: str
-    api_key: SecretStr
-    custom_headers: dict[str, str] | None = None
-    oauth: OAuthRef | None = None
-
-    @field_serializer("api_key", when_used="json")
-    def dump_secret(self, v: SecretStr) -> str:
-        return v.get_secret_value()
-
-
-class Services(BaseModel):
-    """External tool-backing services."""
-
-    moonshot_search: MoonshotSearchConfig | None = None
-    moonshot_fetch: MoonshotFetchConfig | None = None
-
-
-class HookDef(BaseModel):
-    """A single hook definition in config.toml."""
-
-    event: str
-    command: str
-    matcher: str = ""
-    timeout: int = Field(default=30, ge=1, le=600)
-
-
-class BackgroundConfig(BaseModel):
-    """Background task runtime configuration."""
-
-    max_running_tasks: int = Field(default=4, ge=1)
-    read_max_bytes: int = Field(default=30_000, ge=1024)
-    notification_tail_lines: int = Field(default=20, ge=1)
-    notification_tail_chars: int = Field(default=3_000, ge=256)
-    wait_poll_interval_ms: int = Field(default=500, ge=50)
-    worker_heartbeat_interval_ms: int = Field(default=5_000, ge=100)
-    worker_stale_after_ms: int = Field(default=15_000, ge=1000)
-    kill_grace_period_ms: int = Field(default=2_000, ge=100)
-    keep_alive_on_exit: bool = Field(
-        default=False,
-        description="Keep background tasks alive when CLI exits. Default: kill on exit.",
-    )
-    agent_task_timeout_s: int = Field(default=900, ge=60)
-    print_wait_ceiling_s: int = Field(default=3600, ge=1)
-
-
-class NotificationsConfig(BaseModel):
-    """Notification delivery tuning."""
-
-    claim_stale_after_ms: int = Field(default=15_000, ge=1000)
-
-
-NotificationConfig = NotificationsConfig
-
-
-class MCPClientConfig(BaseModel):
-    """MCP client tuning."""
-
-    tool_call_timeout_ms: int = Field(default=60_000, ge=1000)
-
-
-class MCPConfig(BaseModel):
-    """MCP configuration."""
-
-    client: MCPClientConfig = Field(default_factory=MCPClientConfig)
-
-
-McpConfig = MCPConfig
-
-
-class TypedConfig(BaseModel):
-    """Main validated configuration structure."""
-
-    is_from_default_location: bool = Field(default=False, exclude=True)
-    source_file: Path | None = Field(default=None, exclude=True)
-    default_model: str = Field(default="")
-    default_thinking: bool = Field(default=False)
-    default_yolo: bool = Field(default=False)
-    skip_afk_prompt_injection: bool = Field(default=False)
-    default_plan_mode: bool = Field(default=False)
-    default_editor: str = Field(default="")
-    theme: Literal["dark", "light"] = Field(default="dark")
-    show_thinking_stream: bool = Field(default=True)
-    models: dict[str, LLMModel] = Field(default_factory=dict)
-    providers: dict[str, LLMProvider] = Field(default_factory=dict)
-    loop_control: LoopControl = Field(default_factory=LoopControl)
-    background: BackgroundConfig = Field(default_factory=BackgroundConfig)
-    services: Services = Field(default_factory=Services)
-    hooks: list[HookDef] = Field(default_factory=list)
-    telemetry: bool = Field(default=False)
-    merge_all_available_skills: bool = Field(default=True)
-    extra_skill_dirs: list[str] = Field(default_factory=list)
-    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
-    mcp: MCPConfig = Field(default_factory=MCPConfig)
-
-    @model_validator(mode="after")
-    def validate_model(self) -> Self:
-        if self.default_model and self.default_model not in self.models:
-            for key, model in self.models.items():
-                if model.model == self.default_model:
-                    self.default_model = key
-                    break
-        for name, model in self.models.items():
-            if model.provider not in self.providers:
-                raise ValueError(
-                    f"Model {name!r}: provider {model.provider!r} not found in providers"
-                )
-        return self
-
-
-# Alias
-Config = TypedConfig
-
-
-def get_config_file() -> Path:
-    """Default typed-config path (``~/.coderai/config.toml``)."""
-    return get_share_dir() / "config.toml"
-
-
-def get_default_config() -> TypedConfig:
-    """Empty validated config (no models/providers)."""
-    return TypedConfig(default_model="", models={}, providers={}, services=Services())
-
-
-def _parse_text(config_text: str, source: str) -> dict:
-    text = config_text.strip()
-    if not text:
-        raise ConfigError("Configuration text cannot be empty")
-    json_error: Exception | None = None
-    try:
-        data = json.loads(text)
-        if isinstance(data, dict):
-            return data
-    except json.JSONDecodeError as exc:
-        json_error = exc
-    if tomlkit is None:
-        raise ConfigError(f"Invalid JSON in {source}: {json_error} (TOML unavailable)")
-    try:
-        data = tomlkit.loads(text)
-    except TOMLKitError as exc:
-        raise ConfigError(f"Invalid configuration in {source}: {json_error}; {exc}") from exc
-    return dict(data)
-
-
-#: In-process cache for ``load_typed_config`` keyed by
-#: ``(resolved path, mtime_ns, size)``. Typed-config parsing + pydantic
-#: validation runs on every ``resolve_current_settings`` /
-#: ``create_openai_client`` call (i.e. on the TTFT path of every turn), so
-#: caching it removes repeated TOML parse + validation when the file is
-#: unchanged. Invalidated by mtime/size and by ``save_typed_config``.
-_typed_config_cache: dict[tuple[str, int, int], TypedConfig] = {}
-
-
-def clear_typed_config_cache() -> None:
-    """Drop cached typed configs (tests / explicit config rewrites)."""
-    _typed_config_cache.clear()
-
-
-def resolve_hierarchical_config_path(
-    config_file: Path | None = None,
-    *,
-    project_root: str | Path | None = None,
-) -> tuple[Path, bool]:
-    """Resolve configuration file path following the strict cascade:
-    1. Explicit path (CLI Flag)
-    2. CODERAI_CONFIG_FILE environment variable
-    3. Workspace local: <project_root>/.coderai/config.toml
-    4. XDG global: ~/.config/coderai/config.toml
-    5. Share global: ~/.coderai/config.toml (default)
-
-    Returns (resolved_path, is_default_location).
-    """
-    default_path = get_config_file().expanduser().resolve(strict=False)
-    if config_file is not None:
-        p = config_file.expanduser().resolve(strict=False)
-        return p, p == default_path
-
-    env_override = os.environ.get("CODERAI_CONFIG_FILE")
-    if env_override:
-        p = Path(env_override).expanduser().resolve(strict=False)
-        return p, p == default_path
-
-    # Check workspace local .coderai/config.toml
-    root_path = Path(project_root).resolve() if project_root else Path.cwd().resolve()
-    local_cfg = root_path / ".coderai" / "config.toml"
-    if local_cfg.is_file():
-        return local_cfg.resolve(strict=False), False
-
-    # Check XDG global config
-    xdg_cfg = Path.home() / ".config" / "coderai" / "config.toml"
-    if xdg_cfg.is_file():
-        return xdg_cfg.resolve(strict=False), False
-
-    return default_path, True
-
-
-def load_typed_config(
-    config_file: Path | None = None,
-    *,
-    project_root: str | Path | None = None,
-) -> TypedConfig:
-    """Load + validate config following the hierarchical configuration cascade."""
-    default_path = get_config_file().expanduser().resolve(strict=False)
-    config_file, is_default = resolve_hierarchical_config_path(
-        config_file, project_root=project_root
-    )
-    logger.debug("Loading typed config from file: {file}", file=str(config_file))
-
-    if is_default and not config_file.exists():
-        _migrate_legacy_settings_once()
-
-    if not config_file.exists():
-        config = get_default_config()
-        save_typed_config(config, config_file)
-        config.is_from_default_location = is_default
-        config.source_file = config_file
-        return config
-
-    try:
-        stat = config_file.stat()
-        cache_key = (str(config_file), stat.st_mtime_ns, stat.st_size)
-    except OSError:
-        cache_key = None
-    if cache_key is not None:
-        cached = _typed_config_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-    try:
-        data = _parse_text(config_file.read_text(encoding="utf-8"), str(config_file))
-        # If loading workspace local config, merge over global definitions when available
-        if not is_default and config_file != default_path and default_path.is_file():
-            try:
-                global_data = _parse_text(default_path.read_text(encoding="utf-8"), str(default_path))
-                merged_providers = dict(global_data.get("providers") or {})
-                merged_providers.update(data.get("providers") or {})
-                merged_models = dict(global_data.get("models") or {})
-                merged_models.update(data.get("models") or {})
-                data["providers"] = merged_providers
-                data["models"] = merged_models
-                if "default_model" not in data and "default_model" in global_data:
-                    data["default_model"] = global_data["default_model"]
-            except Exception as exc:
-                logger.debug("Global config cascade merge skipped: {error}", error=exc)
-        config = TypedConfig.model_validate(data)
-    except ConfigError:
-        raise
-    except ValidationError as e:
-        raise ConfigError(f"Invalid configuration file {config_file}: {e}") from e
-    except OSError as e:
-        raise ConfigError(f"Cannot read configuration file {config_file}: {e}") from e
-    config.is_from_default_location = is_default
-    config.source_file = config_file
-    if cache_key is not None:
-        # Bound growth: entries are keyed by (path, mtime, size); stale keys
-        # are naturally orphaned on rewrite. Keep the newest few only.
-        if len(_typed_config_cache) > 16:
-            _typed_config_cache.clear()
-        _typed_config_cache[cache_key] = config
-    return config
-
-
-def load_typed_config_from_string(config_string: str) -> TypedConfig:
-    """Load + validate config from a TOML/JSON string (never default-located)."""
-    try:
-        config = TypedConfig.model_validate(_parse_text(config_string, "configuration text"))
-    except ConfigError:
-        raise
-    except ValidationError as e:
-        raise ConfigError(f"Invalid configuration text: {e}") from e
-    config.is_from_default_location = False
-    config.source_file = None
-    return config
-
-
-def save_typed_config(config: TypedConfig, config_file: Path | None = None) -> None:
-    """Persist config as TOML (or JSON for ``.json`` paths)."""
-    target = config_file or get_config_file()
-    logger.debug("Saving typed config to file: {file}", file=str(target))
-    # Invalidate cached loads of this path (content is about to change).
-    try:
-        resolved = str(target.expanduser().resolve(strict=False))
-        for key in [k for k in _typed_config_cache if k[0] == resolved]:
-            _typed_config_cache.pop(key, None)
-    except OSError:
-        pass
-    target.parent.mkdir(parents=True, exist_ok=True)
-    data = config.model_dump(mode="json", exclude_none=True)
-    if target.suffix.lower() == ".json" or tomlkit is None:
-        target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    else:
-        target.write_text(tomlkit.dumps(data), encoding="utf-8")
-
-
-# Aliases
-load_config = load_typed_config
-save_config = save_typed_config
-
-
-def _migrate_legacy_settings_once() -> None:
-    """One-time migration from legacy ``settings.json`` to ``config.toml``.
-
-    Copies ``model``/``baseURL``/``apiKey`` into a single ``default`` model +
-    ``default`` provider. Never overwrites an existing ``config.toml``.
-    """
-    target = get_config_file()
-    if target.exists():
-        return
-    legacy = get_share_dir() / "settings.json"
-    if not legacy.is_file():
-        return
-    try:
-        raw = json.loads(legacy.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return
-    if not isinstance(raw, dict):
-        return
-    try:
-        model_name = str(raw.get("model") or "").strip()
-        base_url = str(raw.get("baseURL") or "").strip()
-        api_key = str(raw.get("apiKey") or "").strip()
-        if not (model_name and base_url and api_key):
-            return
-        config = get_default_config()
-        config.providers["default"] = LLMProvider(
-            type="openai_legacy",
-            base_url=base_url,
-            api_key=SecretStr(api_key),
-        )
-        config.models["default"] = LLMModel(
-            provider="default",
-            model=model_name,
-            max_context_size=256 * 1024,
-        )
-        config.default_model = "default"
-        save_typed_config(config, target)
-        logger.info("Migrated legacy settings.json to {file}", file=str(target))
-    except (ValidationError, OSError) as exc:
-        logger.warning("Legacy settings migration skipped: {error}", error=exc)

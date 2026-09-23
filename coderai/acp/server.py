@@ -481,10 +481,10 @@ class ACPServer:
         if cursor is not None:
             try:
                 offset = max(0, int(cursor))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as err:
                 raise acp.RequestError.invalid_params(
                     {"cursor": "Cursor must be an integer offset"}
-                )
+                ) from err
         work_dir = KaosPath.unsafe_from_local_path(Path(cwd))
         sessions = await Session.list(work_dir)
         page = sessions[offset : offset + _SESSION_LIST_PAGE_SIZE]

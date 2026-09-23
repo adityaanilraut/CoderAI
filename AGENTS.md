@@ -11,7 +11,7 @@ CoderAI is an enterprise-grade AI software engineering CLI and agentic execution
 ### Core Systems
 - **Terminal CLI (`coderai/ui/shell/`, `coderai/cli/`)**: Pure CLI interface (`coderai` and `cai`) with rich terminal rendering, interactive REPL, slash command dispatcher (`coderai/ui/shell/slash.py`), and multi-provider configuration.
 - **Session Manager (`coderai/soul/session/manager.py`)**: Stateful session orchestrator managing conversation histories, event streams, turn life cycles, compaction, and file history checkpoints.
-- **Agent Roles & Discovery (`coderai/subagents/` & `.coderai/agents/`)**: Dynamic discovery of specialized markdown agent specifications (`.coderai/agents/*.md`, `.agents/agents/*.md`, `~/.agents/agents/*.md`). Discovered roles include `architect`, `build-error-resolver`, `code-reviewer`, `planner`, `security-reviewer`, and `tdd-guide`.
+- **Agent Roles & Discovery (`coderai/subagents/` & `.coderai/agents/`)**: Dynamic discovery of specialized markdown agent specifications (`.coderai/agents/*.md`, `~/.coderai/agents/*.md`, `.agents/agents/*.md`, `~/.agents/agents/*.md`). Discovered roles include `architect`, `build-error-resolver`, `code-reviewer`, `planner`, `security-reviewer`, and `tdd-guide`.
 - **Autonomous Swarms (`coderai/teams/`)**: Decentralized multi-agent swarm coordination featuring `TeamManager`, DAG-validated `TeamTaskBoard`, priority actor mailboxes (`ActorChannel` / `AsyncMailbox`), and synchronization barriers (`wait_agent`).
 - **Tool Platform (`coderai/tools/`, `coderai/tools/legacy/`)**: Sandboxed tool execution with dry-run verification, approval workflows (`YOLO` and `AFK` modes), AST-based code transforms, ripgrep search, and git working tree isolation.
 - **Agent Control Protocol (`coderai/acp/`)**: In-process JSON-RPC server implementing the ACP protocol with session creation, resume, fork (`fork_session`), and extensible method dispatch (`ext_method`).
@@ -26,13 +26,18 @@ CoderAI provides both bundled and dynamically discovered agent roles:
 | Role / Spec | Type | Mode | Description |
 |---|---|---|---|
 | `default` | Bundled | Primary | Full software engineering tool suite. |
-| `okabe` | Bundled | Extended | Experimental mad-scientist persona with advanced toolsets. |
+| `okabe` | Bundled | Extended | Okabe Rintaro mad scientist persona (configured with focused engineering tools, dropping meta/team tools). |
 | `architect` | Discovered | General | Systems architect designing components, interfaces, and boundary layers. |
 | `build-error-resolver` | Discovered | General | Pinpoints root causes of compiler, build, and typecheck errors. |
-| `code-reviewer` | Discovered | Read-Only | Read-only security, correctness, and architecture review. |
+| `code-reviewer` | Discovered | Read-Only | Read-only security, correctness, and architecture review using `read`, `grep`, `glob`. |
 | `planner` | Discovered | Read-Only | Generates actionable implementation plans with phased milestones. |
 | `security-reviewer` | Discovered | Read-Only | Security auditor auditing OWASP vulnerabilities, authorization, and sanitization. |
 | `tdd-guide` | Discovered | General | Test-driven development specialist writing failing reproduction tests first. |
+
+### Role Tool Policies & Planning
+- **Read-Only Roles**: `code-reviewer`, `planner`, and `security-reviewer` enforce read-only tool access (`read`, `grep`, `glob`). Mutating tools (`write`, `edit`), shell tools (`bash`), and subagent delegation are strictly disallowed.
+- **General Roles**: Discovered and bundled general roles have access to engineering tools per their declared allowlists and mode restrictions.
+- **Authoritative Planning Tools**: `enter_plan_mode` and `exit_plan_mode` are the authoritative plan tools across the runtime, prompts, and dynamic reminders.
 
 ### CLI Usage
 ```bash
@@ -57,7 +62,8 @@ coderai --agent-file .coderai/agents/code-reviewer.md
 
 ### Testing Conventions
 - Never run the entire test suite in a single process due to test memory isolation.
-- Run tests on individual test files using:
-  ```bash
-  python3 -m pytest tests/<test_file>.py -p no:cacheprovider --benchmark-disable -q
-  ```
+- Run tests on individual test files with the project virtualenv (it has `pytest-benchmark`; the system `python3` may not):
+ ```bash
+ .venv/bin/python -m pytest tests/<test_file>.py -p no:cacheprovider --benchmark-disable -q
+ ```
+- Install `pip install -e '.[dev,jev]'` so the real-SDK Jev tests (`tests/test_jev_calibration.py`) run instead of skipping.

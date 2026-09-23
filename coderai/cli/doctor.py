@@ -44,11 +44,9 @@ class DoctorReport:
 
 def mask_secret(secret: str | None) -> str:
     """Mask secret API key showing only first 4 and last 3 characters."""
-    if not secret:
-        return "Not Set"
-    if len(secret) <= 8:
-        return "****"
-    return f"{secret[:4]}...{secret[-3:]}"
+    from coderai.config import mask_api_key
+
+    return mask_api_key(secret)
 
 
 def run_doctor_diagnostics(project_root: str, mgr: Any) -> DoctorReport:
@@ -214,9 +212,10 @@ def run_doctor_diagnostics(project_root: str, mgr: Any) -> DoctorReport:
             )
         )
 
-    # 6. Storage & Permissions
+    from coderai.share import get_share_dir
+
     dot_coderai = pathlib.Path(project_root) / ".coderai"
-    home_coderai = pathlib.Path.home() / ".coderai"
+    home_coderai = get_share_dir()
     can_write_project = False
     try:
         if dot_coderai.is_dir():

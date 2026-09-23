@@ -49,6 +49,7 @@ from coderai.skill import list_skills, load_skill
 
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 
 from coderai.utils.term import ensure_new_line, ensure_tty_sane
@@ -607,13 +608,16 @@ def _prompt_permissions(
 
             card_lines = []
             if command:
-                card_lines.append(f"  [bold cyan]Action:[/]   [bold white]{name}[/]")
-                card_lines.append(f"  [bold cyan]Command:[/]  [bold white]{command}[/]")
+                # UI-A4: the model-generated command/description must not
+                # render as markup; a hidden `[black on black]` segment or a
+                # stray `[/]` could otherwise hide the dangerous part.
+                card_lines.append(f"  [bold cyan]Action:[/]   [bold white]{escape(name)}[/]")
+                card_lines.append(f"  [bold cyan]Command:[/]  [bold white]{escape(command)}[/]")
             else:
-                card_lines.append(f"  [bold cyan]Action:[/]   [bold white]{name}[/]")
+                card_lines.append(f"  [bold cyan]Action:[/]   [bold white]{escape(name)}[/]")
 
             if description:
-                card_lines.append(f"  [dim italic]{description}[/]")
+                card_lines.append(f"  [dim italic]{escape(description)}[/]")
 
             if is_forced_plan_scope:
                 card_lines.append(
@@ -1608,8 +1612,11 @@ async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes:
         if entry.status == "ask_permission":
             _STREAM_STATE.stop_spinner()
             _STREAM_STATE.ensure_newline()
-            replies, always = _prompt_permissions(
-                entry.ask_permissions or [], auto, plan_mode=bool(entry.plan_mode)
+            replies, always = await asyncio.to_thread(
+                _prompt_permissions,
+                entry.ask_permissions or [],
+                auto,
+                plan_mode=bool(entry.plan_mode),
             )
             if always:
                 append_project_permission_allows(mgr.project_root, always)
@@ -1638,7 +1645,7 @@ async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes:
                 questions = entry.ask_permissions
 
             if questions:
-                answers_text = _prompt_user_questions(questions)
+                answers_text = await asyncio.to_thread(_prompt_user_questions, questions)
                 _STREAM_STATE.reset()
                 await mgr.reply_session(session_id, user_prompt=answers_text)
                 continue
@@ -1830,62 +1837,48 @@ async def _run_interactive(
 
     # Setup Custom SIGINT Handler for Interactive REPL (async-safe)
     active_turn_task: asyncio.Task[Any] | None = None
-    # Graceful SIGINT: first Ctrl+C interrupts turn, second exits
+    current_cancellable_task: asyncio.Task[Any] | None = None
+    # Graceful SIGINT: first Ctrl+C interrupts current task, second exits
     sigint_count: list[int] = [0]
 
-    def _sigint_handler(signum: int, frame: Any) -> None:  # sync fallback
-        nonlocal active_turn_task
-        if active_turn_task is not None and not active_turn_task.done():
-            active_turn_task.cancel()
+    def _async_sigint() -> None:
+        nonlocal current_cancellable_task
+        if current_cancellable_task is not None and not current_cancellable_task.done():
+            current_cancellable_task.cancel()
+            sigint_count[0] = 0
             if console is not None and _RICH:
                 try:
                     console.print(
-                        "\n[dim]Interrupting current turn... (press Ctrl+C again to exit)[/]"
+                        "\n[dim]Interrupting current task... (press Ctrl+C again to exit)[/]"
                     )
                 except Exception:
                     pass
-            sigint_count[0] += 1
+            else:
+                print("\nInterrupting current task... (press Ctrl+C again to exit)")
+            return
+
+        if sigint_count[0] >= 1:
+            raise KeyboardInterrupt()
+        sigint_count[0] += 1
+        if console is not None and _RICH:
+            try:
+                console.print("\n[dim]Press Ctrl+C again to exit[/]")
+            except Exception:
+                pass
         else:
-            if sigint_count[0] >= 1:
-                raise KeyboardInterrupt()
-            sigint_count[0] += 1
-            if console is not None and _RICH:
-                try:
-                    console.print("\n[dim]Press Ctrl+C again to exit[/]")
-                except Exception:
-                    pass
-            # Reset after 2s
-            import threading as _th
+            print("\nPress Ctrl+C again to exit")
 
-            def _reset() -> None:
-                import time as _t
-
-                _t.sleep(2)
-                sigint_count[0] = 0
-
-            _th.Thread(target=_reset, daemon=True).start()
-
-    def _async_sigint() -> None:  # loop.add_signal_handler path
-        if active_turn_task is not None and not active_turn_task.done():
-            active_turn_task.cancel()
-            sigint_count[0] += 1
-        else:
-            if sigint_count[0] >= 1:
-                raise KeyboardInterrupt()
-            sigint_count[0] += 1
+        try:
+            loop = asyncio.get_running_loop()
+            loop.call_later(2.0, lambda: sigint_count.__setitem__(0, 0))
+        except Exception:
+            pass
 
     _remove_sigint: Any = None
-    old_sigint_handler = None
-    try:
-        loop = asyncio.get_running_loop()
-        from coderai.utils.signals import install_sigint_handler
+    loop = asyncio.get_running_loop()
+    from coderai.utils.signals import install_sigint_handler
 
-        _remove_sigint = install_sigint_handler(loop, _async_sigint)
-    except RuntimeError:
-        try:
-            old_sigint_handler = signal.signal(signal.SIGINT, _sigint_handler)
-        except (ValueError, AttributeError):
-            pass
+    _remove_sigint = install_sigint_handler(loop, _async_sigint)
 
     # Phase0: ensure TTY sane and cursor at column 0 before banner
     try:
@@ -1955,7 +1948,7 @@ async def _run_interactive(
             await _drain_pending_interactions(mgr, s_id, yes)
             return s_id
 
-        active_turn_task = asyncio.create_task(_run_initial())
+        active_turn_task = current_cancellable_task = asyncio.create_task(_run_initial())
         try:
             res_id = await active_turn_task
             if session_id is None and res_id:
@@ -1970,7 +1963,7 @@ async def _run_interactive(
             else:
                 print("\nTurn interrupted by user.")
         finally:
-            active_turn_task = None
+            active_turn_task = current_cancellable_task = None
 
     try:
         while True:
@@ -2022,25 +2015,51 @@ async def _run_interactive(
                         getattr(_ptk_session, "shell_mode", False)
                         and raw
                         and not raw.startswith("/")
-                    ):
-                        import subprocess as _sp
-
+                    ) or (raw and raw.startswith("!")):
+                        cmd_to_run = raw[1:].strip() if raw.startswith("!") else raw
                         try:
-                            res = _sp.run(
-                                raw,
-                                shell=True,
+                            proc = await asyncio.create_subprocess_shell(
+                                cmd_to_run,
                                 cwd=mgr.project_root,
-                                capture_output=True,
-                                text=True,
-                                timeout=120,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                                start_new_session=True,
                             )
-                            out = (res.stdout or "") + (res.stderr or "")
-                            if console is not None and _RICH:
-                                console.print(
-                                    f"[dim]{out.strip()[:4000] or '(exit ' + str(res.returncode) + ')'}[/]"
+                            try:
+                                stdout_b, stderr_b = await asyncio.wait_for(
+                                    proc.communicate(),
+                                    timeout=120.0,
                                 )
+                            except (KeyboardInterrupt, asyncio.CancelledError):
+                                try:
+                                    os.killpg(proc.pid, signal.SIGINT)
+                                except Exception:
+                                    proc.kill()
+                                await proc.wait()
+                                print("\nShell command interrupted.")
+                                continue
+                            except asyncio.TimeoutError:
+                                try:
+                                    os.killpg(proc.pid, signal.SIGKILL)
+                                except Exception:
+                                    proc.kill()
+                                await proc.wait()
+                                print("\nShell command timed out after 120s.")
+                                continue
+
+                            out = (
+                                stdout_b.decode("utf-8", errors="replace")
+                                + stderr_b.decode("utf-8", errors="replace")
+                            ).strip()
+                            if console is not None and _RICH:
+                                from rich.text import Text
+
+                                if out:
+                                    console.print(Text(out[:4000], style="dim"))
+                                else:
+                                    console.print(Text(f"(exit {proc.returncode})", style="dim"))
                             else:
-                                print(out.strip() or f"(exit {res.returncode})")
+                                print(out or f"(exit {proc.returncode})")
                         except Exception as e:
                             print(f"shell error: {e}")
                         continue
@@ -2109,7 +2128,7 @@ async def _run_interactive(
                         console.print("[dim]Press Enter to dismiss btw...[/]")
                         try:
                             if sys.stdin.isatty():
-                                input()
+                                await asyncio.to_thread(input)
                         except (EOFError, KeyboardInterrupt):
                             _clear_task_cancellation()
                         _STREAM_STATE.set_btw_panel(None)
@@ -2123,7 +2142,7 @@ async def _run_interactive(
                     except Exception:
                         pass
                     if console is not None and _RICH:
-                        console.print(f"[dim]Queued for next turn:[/] [white]{raw[:80]}[/]")
+                        console.print(f"[dim]Queued for next turn:[/] [white]{escape(raw[:80])}[/]")
                     else:
                         print(f"Queued: {raw}")
                     continue
@@ -2142,15 +2161,26 @@ async def _run_interactive(
                     ptk_session=_ptk_session,
                     thinking_expanded=_THINKING_EXPANDED,
                 )
-                action = await _guard_slash_dispatch(
-                    cmd,
-                    cmd_arg,
-                    ctx,
-                    drain_fn=_drain_pending_interactions,
-                    mgr=mgr,
-                    session_id=session_id,
-                    console=console,
+                slash_task = asyncio.create_task(
+                    _guard_slash_dispatch(
+                        cmd,
+                        cmd_arg,
+                        ctx,
+                        drain_fn=_drain_pending_interactions,
+                        mgr=mgr,
+                        session_id=session_id,
+                        console=console,
+                    )
                 )
+                current_cancellable_task = slash_task
+                try:
+                    action = await slash_task
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    _clear_task_cancellation()
+                    print("\nSlash command cancelled.")
+                    continue
+                finally:
+                    current_cancellable_task = None
                 session_id = ctx.session_id
                 active_plan_mode = ctx.active_plan_mode
                 _THINKING_EXPANDED = ctx.thinking_expanded
@@ -2176,7 +2206,7 @@ async def _run_interactive(
                 if maybe != raw:
                     display_command = maybe
                     if console is not None and _RICH:
-                        console.print(f"[dim]{display_command}[/]")
+                        console.print(f"[dim]{escape(display_command)}[/]")
                     # toast dedup
                     try:
                         from coderai.ui.shell.prompt import toast
@@ -2247,13 +2277,13 @@ async def _run_interactive(
                     await _drain_pending_interactions(mgr, s_id, yes)
                     return s_id
 
-                active_turn_task = asyncio.create_task(_run_user_turn())
+                active_turn_task = current_cancellable_task = asyncio.create_task(_run_user_turn())
                 try:
                     res_id = await active_turn_task
                     if session_id is None and res_id:
                         session_id = res_id
                 finally:
-                    active_turn_task = None
+                    active_turn_task = current_cancellable_task = None
                 # Drain queued prompts (QUEUE) — send as sequential turns
                 while (
                     getattr(_STREAM_STATE, "_btw_pending_queue", None)
@@ -2289,13 +2319,15 @@ async def _run_interactive(
                             await _drain_pending_interactions(mgr, q_id, yes)
                             return q_id
 
-                        active_turn_task = asyncio.create_task(_run_queued())
+                        active_turn_task = current_cancellable_task = asyncio.create_task(
+                            _run_queued()
+                        )
                         try:
                             q_res = await active_turn_task
                             if session_id is None and q_res:
                                 session_id = q_res
                         finally:
-                            active_turn_task = None
+                            active_turn_task = current_cancellable_task = None
                     except (KeyboardInterrupt, asyncio.CancelledError):
                         _clear_task_cancellation()
                         _STREAM_STATE.reset()
@@ -2350,16 +2382,20 @@ async def _run_interactive(
                                 )
                                 await _drain_pending_interactions(mgr, session_id, yes)
 
-                            active_turn_task = asyncio.create_task(_run_plan_execution())
+                            active_turn_task = current_cancellable_task = asyncio.create_task(
+                                _run_plan_execution()
+                            )
                             try:
                                 await active_turn_task
                             finally:
-                                active_turn_task = None
+                                active_turn_task = current_cancellable_task = None
                         elif action_taken == "revise":
                             refine_input = (decision.get("feedback") or "").strip()
                             if not refine_input:
                                 try:
-                                    refine_input = input("Enter plan refinements: ").strip()
+                                    refine_input = (
+                                        await asyncio.to_thread(input, "Enter plan refinements: ")
+                                    ).strip()
                                 except (EOFError, KeyboardInterrupt):
                                     _clear_task_cancellation()
                                     refine_input = ""
@@ -2374,11 +2410,13 @@ async def _run_interactive(
                                     )
                                     await _drain_pending_interactions(mgr, session_id, yes)
 
-                                active_turn_task = asyncio.create_task(_run_plan_refine())
+                                active_turn_task = current_cancellable_task = asyncio.create_task(
+                                    _run_plan_refine()
+                                )
                                 try:
                                     await active_turn_task
                                 finally:
-                                    active_turn_task = None
+                                    active_turn_task = current_cancellable_task = None
                         elif action_taken == "reject-exit":
                             active_plan_mode = False
                             if console is not None and _RICH:
@@ -2424,11 +2462,6 @@ async def _run_interactive(
             try:
                 _remove_sigint()
             except Exception:
-                pass
-        if old_sigint_handler is not None:
-            try:
-                signal.signal(signal.SIGINT, old_sigint_handler)
-            except (ValueError, AttributeError):
                 pass
         # SessionEnd + Notification hooks fire on REPL exit.
         try:
@@ -2515,7 +2548,7 @@ async def _run_once(
         return 0
     except (KeyboardInterrupt, asyncio.CancelledError):
         _clear_task_cancellation()
-        return 0
+        return 130
     except Exception as e:
         if console is not None and _RICH:
             console.print(f"[bold red]Error:[/] {e}")
@@ -2579,6 +2612,14 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     project_root = str(pathlib.Path.cwd().resolve())
 
+    # IN-A2: clamp user-scope config/log permissions on every startup.
+    try:
+        from coderai.config import tighten_config_permissions
+
+        tighten_config_permissions()
+    except Exception:
+        pass
+
     # Forward orchestration flags to the CODERAI_* environment contract so the
     # shared orchestration layer (and child processes) resolve one source.
     for flag, env_name in (
@@ -2597,6 +2638,21 @@ def main(argv: list[str] | None = None) -> int:
     # redirect settings resolution; --skills-dir/--add-dir/--mcp-config-file preload.
     if getattr(args, "work_dir", None):
         project_root = str(pathlib.Path(args.work_dir).expanduser().resolve())
+    # IN-A1: --trust-project/--no-trust-project feed the CODERAI_TRUST_PROJECT
+    # contract so config, hooks, and child contexts resolve one source.
+    _trust_flag = getattr(args, "trust_project", None)
+    if _trust_flag is True:
+        os.environ["CODERAI_TRUST_PROJECT"] = "1"
+    elif _trust_flag is False:
+        os.environ["CODERAI_TRUST_PROJECT"] = "0"
+    if not getattr(args, "print_mode", False) and not getattr(args, "wire", False):
+        try:
+            if sys.stdin.isatty():
+                from coderai.trust import ensure_project_trust
+
+                ensure_project_trust(project_root)
+        except Exception:
+            pass
     if getattr(args, "config_file", None):
         os.environ["CODERAI_CONFIG_FILE"] = str(args.config_file)
     if getattr(args, "config_string", None):
@@ -2650,6 +2706,39 @@ def main(argv: list[str] | None = None) -> int:
         if has_prompt_flag
         else (exec_str if exec_str else (" ".join(args.prompt) if has_positional else None))
     )
+
+    # Handle --list-sessions
+    if getattr(args, "list_sessions", False):
+        from coderai.soul.session.manager import SessionManager
+        from coderai.ui.shell.session_picker import _RICH
+
+        mgr = SessionManager(project_root)
+        sessions = mgr.list_sessions()
+        if not sessions:
+            print("No saved sessions found for this project.")
+            return 0
+
+        if _RICH and sys.stdout.isatty():
+            from rich.console import Console
+            from rich.table import Table
+
+            table = Table(title=f"Saved Sessions ({project_root})", show_header=True)
+            table.add_column("Session ID", style="cyan", no_wrap=True)
+            table.add_column("Created", style="dim")
+            table.add_column("Status", style="green")
+            table.add_column("Summary")
+
+            for s in sessions:
+                created = s.create_time[:19] if s.create_time else "-"
+                table.add_row(s.id, created, s.status, s.summary or "-")
+            Console().print(table)
+        else:
+            print(f"Saved Sessions ({project_root}):")
+            for s in sessions:
+                created = s.create_time[:19] if s.create_time else "-"
+                summary = f" - {s.summary}" if s.summary else ""
+                print(f"  {s.id} [{s.status}] ({created}){summary}")
+        return 0
 
     # Check if CLI invocation is setup, config, or provider key management
     is_setup_cmd = (
@@ -2938,7 +3027,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return asyncio.run(_main())
     except (KeyboardInterrupt, asyncio.CancelledError):
-        return 0
+        return 130
 
 
 if __name__ == "__main__":

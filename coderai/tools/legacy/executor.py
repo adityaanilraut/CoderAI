@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import time
 from typing import Any
 from collections.abc import Callable
@@ -44,6 +45,16 @@ __all__ = [
 
 
 DEFAULT_TOOL_CONCURRENCY = 8
+
+
+def _get_default_tool_concurrency() -> int:
+    env_val = os.environ.get("CODERAI_MAX_PARALLEL_TOOL_CALLS")
+    if env_val:
+        try:
+            return max(1, int(env_val))
+        except (ValueError, TypeError):
+            pass
+    return DEFAULT_TOOL_CONCURRENCY
 
 
 class SlidingWindowRateLimiter:
@@ -93,15 +104,18 @@ class ToolExecutor:
         create_openai_client: Callable[[], dict[str, Any]] | None = None,
         mcp_manager: Any = None,
         registry: ToolRegistry | None = None,
-        concurrency_limit: int = DEFAULT_TOOL_CONCURRENCY,
+        concurrency_limit: int | None = None,
     ) -> None:
         self.project_root = project_root
         self.create_openai_client = create_openai_client
         self.mcp_manager = mcp_manager
         self.registry = registry or get_tool_registry()
         self.rate_limiter = SlidingWindowRateLimiter()
-        self.concurrency_limit = concurrency_limit
-        self._concurrency_semaphore = asyncio.Semaphore(max(1, concurrency_limit))
+        limit = (
+            concurrency_limit if concurrency_limit is not None else _get_default_tool_concurrency()
+        )
+        self.concurrency_limit = limit
+        self._concurrency_semaphore = asyncio.Semaphore(max(1, limit))
         self._plugin_defs: list[dict[str, Any]] | None = None
 
     def refresh_plugin_tools(self) -> list[dict[str, Any]]:
@@ -517,25 +531,54 @@ class ToolExecutor:
                     error="PreExecuteDenied: tool call blocked by pre-execute hook.",
                 )
 
-        guards = get_hook("guards") or []
+        # Monotonic execution guards from hooks and registry (TL-B8)
+        guards = list(get_hook("guards") or [])
+        tool_def = self.registry.get(tool_name, scope=getattr(context, "session_id", None))
+        if hasattr(self.registry, "get_guards"):
+            sid = getattr(context, "session_id", None)
+            guards.extend(self.registry.get_guards(sid))
+
         for guard in guards:
             if not callable(guard):
                 continue
-            if guard(tool_name, args, context) == "deny":
+            verdict = None
+            try:
+                verdict = guard(tool_def or tool_name, args, context)
+            except TypeError:
+                try:
+                    verdict = guard(tool_name, args, context)
+                except Exception:
+                    pass
+            if verdict == "deny":
                 return ToolResult(
                     ok=False,
                     name=tool_name,
                     error="GuardDenied: tool call blocked by a monotonic guard.",
                 )
 
-        # Check sliding-window rate limiting on tool definition
-        tool_def = self.registry.get(tool_name, scope=getattr(context, "session_id", None))
-        if tool_def and tool_def.rate_limit is not None:
-            max_reqs, window_s = tool_def.rate_limit
+        # Check sliding-window rate limiting on tool definition or rate_limited_id (TL-B8)
+        effective_rate_limit = tool_def.rate_limit if tool_def else None
+        r_id = getattr(tool_def, "rate_limited_id", None) if tool_def else None
+        if effective_rate_limit is None and r_id:
+            DEFAULT_RATE_LIMITS: dict[str, tuple[int, float]] = {
+                "WebSearch": (30, 60.0),
+                "WebFetch": (60, 60.0),
+                "UnderstandImage": (30, 60.0),
+            }
+            effective_rate_limit = DEFAULT_RATE_LIMITS.get(r_id)
+
+        if effective_rate_limit is not None:
+            max_reqs, window_s = effective_rate_limit
             sid = getattr(context, "session_id", "global")
-            limiter_key = f"{sid}:{tool_name}"
+            limiter_key = f"{sid}:{r_id or tool_name}"
             allowed, retry_after = self.rate_limiter.acquire(limiter_key, max_reqs, window_s)
             if not allowed:
+                on_rl = get_hook("on_plugin_rate_limit_exceeded")
+                if callable(on_rl) and r_id:
+                    try:
+                        on_rl(r_id)
+                    except Exception:
+                        pass
                 return ToolResult(
                     ok=False,
                     name=tool_name,
@@ -620,13 +663,34 @@ class ToolExecutor:
                     lock_paths.extend(extract_redirect_paths(cmd_arg))
 
             path_lock_mgr = get_path_lock_manager()
+            from coderai.tools.file.utils import get_effective_workdir
+
+            effective_workdir = get_effective_workdir(context) if context else self.project_root
             async with _contextlib.AsyncExitStack() as _lock_stack:
                 for lock_path in sorted(set(lock_paths)):
                     await _lock_stack.enter_async_context(
-                        path_lock_mgr.acquire_write_lock(lock_path, self.project_root)
+                        path_lock_mgr.acquire_write_lock(lock_path, effective_workdir)
                     )
                 if timeout_ms and int(timeout_ms) > 0:
-                    res = await asyncio.wait_for(_invoke(), timeout=int(timeout_ms) / 1000.0)
+                    invoke_task = asyncio.create_task(_invoke())
+                    try:
+                        res = await asyncio.wait_for(
+                            asyncio.shield(invoke_task),
+                            timeout=int(timeout_ms) / 1000.0,
+                        )
+                    except (TimeoutError, asyncio.TimeoutError):
+                        transferred_stack = _lock_stack.pop_all()
+
+                        async def _release_when_done(
+                            stack: _contextlib.AsyncExitStack, task: asyncio.Task[Any]
+                        ) -> None:
+                            try:
+                                await asyncio.wait([task])
+                            finally:
+                                await stack.aclose()
+
+                        asyncio.create_task(_release_when_done(transferred_stack, invoke_task))
+                        raise
                 else:
                     res = await _invoke()
         except (TimeoutError, asyncio.TimeoutError):

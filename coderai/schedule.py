@@ -238,7 +238,9 @@ class ScheduleManager:
                     dt = dt.replace(tzinfo=datetime.timezone.utc)
                 return dt.astimezone(datetime.timezone.utc)
             except Exception as exc:
-                raise ValueError(f"Invalid RFC3339 timestamp string for `at`: {at_input} ({exc})")
+                raise ValueError(
+                    f"Invalid RFC3339 timestamp string for `at`: {at_input} ({exc})"
+                ) from exc
 
         elif isinstance(at_input, dict):
             date_str = at_input.get("date")
@@ -260,7 +262,7 @@ class ScheduleManager:
                 dt_local = dt_local.replace(tzinfo=tz)
                 return dt_local.astimezone(datetime.timezone.utc)
             except Exception as exc:
-                raise ValueError(f"Invalid date/time components for `at`: {exc}")
+                raise ValueError(f"Invalid date/time components for `at`: {exc}") from exc
 
         raise ValueError("`at` must be an ISO 8601 string or `{date, time, time_zone}` object.")
 
@@ -311,4 +313,7 @@ def get_schedule_manager(storage_path: str | None = None) -> ScheduleManager:
     global _default_schedule_manager
     if _default_schedule_manager is None:
         _default_schedule_manager = ScheduleManager(storage_path=storage_path)
+    elif storage_path is not None and _default_schedule_manager.storage_path != storage_path:
+        _default_schedule_manager.storage_path = storage_path
+        _default_schedule_manager._load()
     return _default_schedule_manager

@@ -135,7 +135,7 @@ def _open(context: Any) -> tuple[JsonlSessionStore, list[SessionEntry]]:
                 return store, [item for item in listed if isinstance(item, SessionEntry)]
         return store, _entries_from_store(store)
     root = getattr(context, "project_root", None) or os.getcwd()
-    opened = JsonlSessionStore(str(root))
+    opened = JsonlSessionStore(str(root), cleanup=False)
     return opened, _entries_from_store(opened)
 
 

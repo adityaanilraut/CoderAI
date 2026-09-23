@@ -25,7 +25,7 @@ _RESETS = (
 
 
 @pytest.fixture(autouse=True)
-def _reset(monkeypatch):
+def _reset(monkeypatch, tmp_path_factory):
     for var in (
         "TYPESAFE_API_KEY",
         "JEV_API_KEY",
@@ -33,6 +33,7 @@ def _reset(monkeypatch):
         "CODERAI_JEV_MAX_DIFF_CHARS",
     ):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CODERAI_SHARE_DIR", str(tmp_path_factory.mktemp("share")))
     for fn in _RESETS:
         fn()
     yield
@@ -194,9 +195,7 @@ def test_shared_client_does_not_retry():
 
 def test_status_reports_unavailable_on_auth_failure(monkeypatch):
     monkeypatch.setenv("TYPESAFE_API_KEY", "bad-key")
-    _patch_shared_transport(
-        "bad-key", lambda req: httpx2.Response(401, json={"detail": "bad key"})
-    )
+    _patch_shared_transport("bad-key", lambda req: httpx2.Response(401, json={"detail": "bad key"}))
     s = jev_client.jev_status(use_cache=False)
     assert s["configured"] is True
     assert s["available"] is False
@@ -206,9 +205,7 @@ def test_status_reports_unavailable_on_auth_failure(monkeypatch):
 def test_connectivity_probe_reports_auth_failure():
     from coderai.llm import probe_provider_connectivity
 
-    _patch_shared_transport(
-        "bad-key", lambda req: httpx2.Response(401, json={"detail": "bad key"})
-    )
+    _patch_shared_transport("bad-key", lambda req: httpx2.Response(401, json={"detail": "bad key"}))
     ok, msg = probe_provider_connectivity("jev-system-one", api_key="bad-key")
     assert ok is False
     assert "401" in msg

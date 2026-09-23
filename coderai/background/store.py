@@ -3,6 +3,9 @@ from __future__ import annotations
 import threading
 import time
 
+from collections.abc import Callable
+from typing import Any
+
 from coderai.background.models import Job, _MAX_JOBS_PER_SESSION
 from coderai.utils.subprocess_env import kill_process_tree
 
@@ -16,6 +19,11 @@ class JobStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._jobs: dict[str, Job] = {}
+        self._cancel_callbacks: dict[str, Callable[[], Any]] = {}
+
+    def register_cancel_callback(self, job_id: str, callback: Callable[[], Any]) -> None:
+        with self._lock:
+            self._cancel_callbacks[job_id] = callback
 
     def start(
         self,
@@ -91,22 +99,30 @@ class JobStore:
 
     def kill(self, job_id: str, session_id: str, reason: str | None = None) -> str:
         """Request cancellation. Returns cancellation-requested | already-finished | not-found."""
+        cb = None
+        pid = None
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None or job.session_id != session_id:
                 return "not-found"
             if job.status in ("completed", "killed", "failed"):
                 return "already-finished"
+            cb = self._cancel_callbacks.pop(job_id, None)
             if not job.process_id:
                 job.status = "killed"
                 if reason:
                     job.detail = reason
                 job.finished_at = int(time.time() * 1000)
-                return "cancellation-requested"
-            job.status = "stopping"
-            if reason:
-                job.detail = reason
-            pid = job.process_id
+            else:
+                job.status = "stopping"
+                if reason:
+                    job.detail = reason
+                pid = job.process_id
+        if cb:
+            try:
+                cb()
+            except Exception:
+                pass
         if pid:
             try:
                 kill_process_tree(int(pid))

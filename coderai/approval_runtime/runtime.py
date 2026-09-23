@@ -106,8 +106,8 @@ class ApprovalRuntime:
                 return record.response, record.feedback
             try:
                 waiter = asyncio.get_running_loop().create_future()
-            except RuntimeError:
-                raise ApprovalCancelledError(f"No loop for approval request: {request_id}")
+            except RuntimeError as err:
+                raise ApprovalCancelledError(f"No loop for approval request: {request_id}") from err
             self._waiters[request_id] = waiter
         self._waiter_counts[request_id] = self._waiter_counts.get(request_id, 0) + 1
         try:

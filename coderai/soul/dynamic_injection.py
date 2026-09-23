@@ -130,7 +130,6 @@ __all__ = [
 
 
 @dataclass
-
 class InjectionRegistry:
     """Ordered provider set; collects injections before each LLM step."""
 
@@ -210,4 +209,3 @@ def normalize_history(history: Sequence[Message]) -> list[Message]:
         else:
             result.append(msg)
     return result
-

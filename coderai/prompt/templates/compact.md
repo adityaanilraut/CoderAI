@@ -1,4 +1,3 @@
-
 ---
 
 The above is a list of messages in an agent conversation. You are now given a task to compact this conversation context according to specific priorities and rules.

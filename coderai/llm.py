@@ -12,11 +12,11 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
-from kosong.chat_provider import ChatProvider, StreamedMessage, ThinkingEffort
+from kosong.chat_provider import ChatProvider
 from kosong.message import (
     AudioURLPart,
     ImageURLPart,
@@ -26,7 +26,6 @@ from kosong.message import (
     VideoURLPart,
 )
 from kosong.tooling import Tool
-from kosong.utils.aio import Callback, callback
 from pydantic import SecretStr
 
 from coderai.constant import USER_AGENT
@@ -74,122 +73,6 @@ class LLM:
     @property
     def model_name(self) -> str:
         return self.chat_provider.model_name
-
-
-class _GenerationOverrideProvider(Protocol):
-    async def generate(
-        self,
-        system_prompt: str,
-        tools: Sequence[Tool],
-        history: Sequence[Message],
-        *,
-        generation_overrides: Mapping[str, Any] | None = None,
-    ) -> StreamedMessage: ...
-
-
-@dataclass(slots=True)
-class _KimiRequestChatProvider:
-    """Adapt a Kimi-backed provider to the standard provider interface for one request."""
-
-    _provider: ChatProvider
-    _generation_overrides: Mapping[str, Any]
-    name: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        self.name = self._provider.name
-
-    @property
-    def model_name(self) -> str:
-        return self._provider.model_name
-
-    @property
-    def thinking_effort(self) -> ThinkingEffort | None:
-        return self._provider.thinking_effort
-
-    async def generate(
-        self,
-        system_prompt: str,
-        tools: Sequence[Tool],
-        history: Sequence[Message],
-    ) -> StreamedMessage:
-        provider = cast(_GenerationOverrideProvider, self._provider)
-        return await provider.generate(
-            system_prompt,
-            tools,
-            history,
-            generation_overrides=self._generation_overrides,
-        )
-
-    def with_thinking(self, effort: ThinkingEffort) -> Self:
-        return type(self)(
-            self._provider.with_thinking(effort),
-            self._generation_overrides,
-        )
-
-
-@dataclass(slots=True)
-class _TraceCallbackChatProvider:
-    _provider: ChatProvider
-    _on_trace_id: Callback[[str | None], None]
-    name: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        self.name = self._provider.name
-
-    @property
-    def model_name(self) -> str:
-        return self._provider.model_name
-
-    @property
-    def thinking_effort(self) -> ThinkingEffort | None:
-        return self._provider.thinking_effort
-
-    async def generate(
-        self,
-        system_prompt: str,
-        tools: Sequence[Tool],
-        history: Sequence[Message],
-    ) -> StreamedMessage:
-        await callback(self._on_trace_id, None)
-        try:
-            stream = await self._provider.generate(system_prompt, tools, history)
-        except BaseException as error:
-            if trace_id := getattr(error, "trace_id", None):
-                await callback(self._on_trace_id, trace_id)
-            raise
-        await callback(self._on_trace_id, getattr(stream, "trace_id", None))
-        return stream
-
-    def with_thinking(self, effort: ThinkingEffort) -> Self:
-        return type(self)(self._provider.with_thinking(effort), self._on_trace_id)
-
-
-def find_kimi_provider(chat_provider: ChatProvider) -> Kimi | None:
-    """Return the Kimi provider backing a supported provider wrapper."""
-    from kosong.chat_provider.chaos import ChaosChatProvider
-    from kosong.chat_provider.kimi import Kimi
-
-    provider = chat_provider
-    while isinstance(provider, ChaosChatProvider):
-        provider = provider.wrapped_provider
-    return provider if isinstance(provider, Kimi) else None
-
-
-def with_kimi_generation_overrides(
-    chat_provider: ChatProvider,
-    generation_overrides: Mapping[str, Any] | None,
-) -> ChatProvider:
-    """Apply request-scoped generation overrides only to Kimi-backed providers."""
-    if not generation_overrides or find_kimi_provider(chat_provider) is None:
-        return chat_provider
-    return _KimiRequestChatProvider(chat_provider, dict(generation_overrides))
-
-
-def with_trace_callback(
-    chat_provider: ChatProvider,
-    on_trace_id: Callback[[str | None], None],
-) -> ChatProvider:
-    return _TraceCallbackChatProvider(chat_provider, on_trace_id)
 
 
 def compute_max_completion_tokens(
@@ -747,13 +630,16 @@ def resolve_model_provider_routing(
 
     # 0. Jev System-One is NAR triage/gating only — never a chat/tool model.
     # Return its key with a jev:// marker so callers can fail with a clear message.
-    if m in {"jev-system-one"} or m.startswith("jev-") or m.startswith("typesafe"):
+    from coderai.utils.common.model_capabilities import is_jev_model
+
+    if is_jev_model(m):
+        from coderai.triage.engine import resolve_jev_api_key
+
         jev_key = (
             explicit_api_key
             or env.get("TYPESAFE_API_KEY")
-            or os.getenv("TYPESAFE_API_KEY")
             or env.get("JEV_API_KEY")
-            or os.getenv("JEV_API_KEY")
+            or resolve_jev_api_key()
         )
         return "jev://system-one", jev_key
 
@@ -1266,35 +1152,21 @@ def probe_provider_connectivity(
         from coderai.utils.common.model_capabilities import is_jev_model
 
         if is_jev_model(model or ""):
-            from coderai.jev.client import jev_status
+            from coderai.jev.client import jev_probe
+            from coderai.triage.engine import is_jev_configured
 
-            status = jev_status() if not api_key else None
-            if status is not None and not status.get("configured"):
+            if not is_jev_configured(api_key):
                 return (
                     False,
                     "Jev System-One not configured: set TYPESAFE_API_KEY (or JEV_API_KEY).",
                 )
-            # Lightweight live probe when reachable; never raise.
             try:
-                from coderai.triage.engine import get_triage_engine
-
-                engine = get_triage_engine(api_key=api_key)
-                if not engine.is_available:
-                    if status is not None:
-                        return (
-                            False,
-                            "Jev client unavailable: install typesafe_sdk and set TYPESAFE_API_KEY.",
-                        )
-                    return (
-                        False,
-                        "No API key provided for Jev System-One (TYPESAFE_API_KEY).",
-                    )
-                probe = engine.screen_diff_hunk("probe.py", "x = 1\n")
-                if probe.reason.startswith("Triage error fallback"):
-                    return False, f"Jev probe failed: {probe.reason[:160]}"
-                return True, "Successfully connected! Jev System-One triage responded."
+                ok, _latency, error = jev_probe(api_key=api_key)
             except Exception as exc:
                 return False, f"Jev probe error ({type(exc).__name__}): {str(exc)[:120]}"
+            if ok:
+                return True, "Successfully connected! Jev System-One triage responded."
+            return False, f"Jev probe failed: {(error or 'no response')[:160]}"
     except Exception:
         pass
     wire_model = model

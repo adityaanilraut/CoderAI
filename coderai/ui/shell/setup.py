@@ -293,7 +293,7 @@ def configure_provider_key_interactive(
         console.print("  [dim](Press Enter to keep current, type 'cancel' or 'q' to abort)[/]")
         console.print()
 
-    new_key = _read_input(f"Enter {info['env_var']}", default="", allow_cancel=True)
+    new_key = _read_input(f"Enter {info['env_var']}", default="", allow_cancel=True, is_secret=True)
     if new_key is None:
         if console is not None and _RICH:
             console.print("  [dim]Key configuration cancelled.[/dim]")
@@ -375,6 +375,7 @@ def configure_custom_endpoint_interactive(
         "API Key (enter 'not-needed' or press enter for local)",
         default=default_key or "not-needed",
         allow_cancel=True,
+        is_secret=True,
     )
     if api_key is None:
         if console is not None and _RICH:
@@ -806,6 +807,15 @@ def run_setup_cli(args: Any, project_root: str = ".") -> int:
 
     if provider and key:
         try:
+            if scope == "project" and key != "not-needed":
+                # IN-A16: a key in <repo>/.coderai/settings.json can be
+                # committed by accident. Warn; the user asked for it explicitly.
+                print(
+                    "coderai: warning: saving an API key to "
+                    f"{get_project_settings_path(project_root)} inside the repository. "
+                    "Make sure this file is git-ignored.",
+                    file=sys.stderr,
+                )
             saved_var = save_provider_api_key(provider, key, scope=scope, project_root=project_root)
         except ValueError as exc:
             console.print(f"[bold red]✗ Setup failed:[/] {exc}")

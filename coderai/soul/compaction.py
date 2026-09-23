@@ -21,6 +21,27 @@ if TYPE_CHECKING:
 
 DEFAULT_MAX_TOOL_RESULT_CHARS = 32_000
 
+COMPACTION_DIRECTIVE_TEMPLATE = (
+    "You are now acting as a compaction engine for this AI coding assistant. "
+    "Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.\n\n"
+    'Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.\n\n'
+    "## Primary Request and Intent\n"
+    "- [the user's original and evolving goals; quote verbatim where the exact wording matters; include all explicit user messages]\n\n"
+    "## Key Technical Concepts\n"
+    "- [technologies, frameworks, patterns, runtime versions, and conventions in play]\n\n"
+    "## Files and Code Sections\n"
+    "- [exact file paths, functions, and line numbers examined, modified, or created]\n\n"
+    "## Errors and Fixes\n"
+    "- [all encountered error messages, stack traces, root causes, and verified fixes]\n\n"
+    "## Critical Decisions & Constraints\n"
+    "- [architectural, design, and implementation decisions made, plan-mode state, and plan file path if active]\n\n"
+    "## State of Progress & Completed Tasks\n"
+    "- [completed tasks, modified files, verified behaviors, loaded skills, background job IDs, subagent IDs, and todo state]\n\n"
+    "## Pending Work & Next Steps\n"
+    "- [immediate next actions and known open questions]\n\n"
+    "Do not include conversational filler before or after the summary."
+)
+
 
 @dataclass
 class CompactionResult:
@@ -122,25 +143,47 @@ def evaluate_compaction_trigger(
 
 
 def estimate_text_tokens(messages: Any) -> int:
-    """Estimate tokens from message text content using a character-based heuristic."""
+    """Estimate tokens from message text content and tool calls using a character-based heuristic."""
     total_chars = 0
+    non_ascii_count = 0
+
+    def _add_text(t: str) -> None:
+        nonlocal total_chars, non_ascii_count
+        if not t:
+            return
+        ascii_chars = sum(c.isascii() for c in t)
+        total_chars += ascii_chars
+        non_ascii_count += len(t) - ascii_chars
+
     for msg in messages:
         content = getattr(msg, "content", None)
+        if content is None and isinstance(msg, dict):
+            content = msg.get("content")
         if isinstance(content, str):
-            total_chars += len(content)
+            _add_text(content)
         elif isinstance(content, (list, tuple)):
             for part in content:
                 if hasattr(part, "text"):
-                    total_chars += len(getattr(part, "text", "") or "")
+                    _add_text(getattr(part, "text", "") or "")
                 elif isinstance(part, dict) and "text" in part:
-                    total_chars += len(part["text"])
+                    _add_text(part.get("text") or "")
                 elif isinstance(part, str):
-                    total_chars += len(part)
-        elif isinstance(msg, dict) and "content" in msg:
-            raw_c = msg["content"]
-            if isinstance(raw_c, str):
-                total_chars += len(raw_c)
-    return total_chars // 4
+                    _add_text(part)
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls is None and isinstance(msg, dict):
+            tool_calls = msg.get("tool_calls") or msg.get("toolCalls")
+        if isinstance(tool_calls, (list, tuple)):
+            for tc in tool_calls:
+                fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+                if fn:
+                    args = (
+                        fn.get("arguments")
+                        if isinstance(fn, dict)
+                        else getattr(fn, "arguments", None)
+                    )
+                    if isinstance(args, str):
+                        _add_text(args)
+    return (total_chars + 3) // 4 + non_ascii_count
 
 
 def should_auto_compact(
@@ -240,8 +283,10 @@ class BasicCompaction(CompactionEngine):
             make_compaction_summary,
             make_compaction_end,
         )
+        from coderai.soul.session.log import derive_messages
 
-        messages = self.manager.list_session_messages(session_id)
+        all_messages = self.manager.list_session_messages(session_id)
+        messages = derive_messages(all_messages)
         if start_idx < 0 or end_idx > len(messages) or start_idx >= end_idx:
             return None
 
@@ -259,27 +304,8 @@ class BasicCompaction(CompactionEngine):
 
         compaction_id = f"cmp_{uuid.uuid4().hex[:10]}"
         model = self.manager.get_active_model()
-        # Build KV-cache preserving compaction messages:
-        # Replay conversation prefix up to end_idx using standard message conversion
-        # so the auxiliary compaction request reuses the warm prefix cache.
         settings = self.manager.get_resolved_settings()
         thinking_enabled = bool(settings.get("thinkingEnabled"))
-        tools_preset = settings.get("toolsPreset") or settings.get("preset")
-        multimodal_mode = settings.get("multimodal", "default")
-
-        from coderai.prompt import get_tools, format_tool_definitions
-
-        tools = get_tools(
-            {
-                "model": model,
-                "nonInteractive": self.manager.non_interactive,
-                "multimodal": multimodal_mode,
-                "preset": tools_preset,
-            },
-            external_tools=self.manager.get_external_tool_definitions(tools_preset),
-        )
-        if tools:
-            tools = format_tool_definitions(tools, model=model)
 
         prefix_messages = messages[:end_idx]
         pruned_prefix = self.pruner.prune_messages(prefix_messages)
@@ -304,22 +330,7 @@ class BasicCompaction(CompactionEngine):
             extra = f"\n\nAdditional focus instruction from user: {_custom}\nPay extra attention to this focus while keeping all sections."
         else:
             extra = ""
-        compaction_directive = (
-            "You are now acting as a compaction engine for this AI coding assistant. "
-            "Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.\n\n"
-            'Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.\n\n'
-            "## Primary Request and Intent\n"
-            "- [the user's original and evolving goals; quote verbatim where the exact wording matters]\n\n"
-            "## Key Technical Concepts\n"
-            "- [technologies, frameworks, patterns, and conventions in play]\n\n"
-            "## Critical Decisions & Constraints\n"
-            "- [architectural, design, and implementation decisions made and why]\n\n"
-            "## State of Progress\n"
-            "- [completed tasks, modified files, and verified behaviors]\n\n"
-            "## Pending Work & Next Steps\n"
-            "- [immediate next actions and known open questions]\n\n"
-            f"Do not include conversational filler before or after the summary.{extra}"
-        )
+        compaction_directive = f"{COMPACTION_DIRECTIVE_TEMPLATE}{extra}"
 
         if converted_prefix:
             compaction_messages = list(converted_prefix) + [
@@ -328,6 +339,29 @@ class BasicCompaction(CompactionEngine):
         else:
             prompt = get_compact_prompt(pruned_slice)
             compaction_messages = [{"role": "user", "content": prompt}]
+
+        # AL-A3: Send compaction request without tools or with tool_choice="none"
+        request: dict[str, Any] = {
+            "model": model,
+            "messages": compaction_messages,
+            "tool_choice": "none",
+        }
+
+        # AL-A3: Use retrying completion helper
+        response = await self.manager._create_completion_with_retry(
+            session_id,
+            client,
+            request,
+        )
+        raw = (response.get("choices") or [{}])[0].get("message") or {}
+        raw_summary = str(raw.get("content") or "").strip()
+        summary = re.sub(
+            r"<analysis>[\s\S]*?</analysis>", "", raw_summary, flags=re.IGNORECASE
+        ).strip()
+
+        # AL-A3: Abort without committing if summary is empty
+        if not summary:
+            return None
 
         # Emit compaction/start with trigger metadata
         self.manager._append_event(
@@ -339,24 +373,6 @@ class BasicCompaction(CompactionEngine):
                 trigger=trigger,
             ),
         )
-
-        request: dict[str, Any] = {
-            "model": model,
-            "messages": compaction_messages,
-        }
-        if tools:
-            request["tools"] = tools
-
-        response = await self.manager._create_completion(
-            client,
-            request,
-            emit_stream=False,
-        )
-        raw = (response.get("choices") or [{}])[0].get("message") or {}
-        raw_summary = str(raw.get("content") or "").strip()
-        summary = re.sub(
-            r"<analysis>[\s\S]*?</analysis>", "", raw_summary, flags=re.IGNORECASE
-        ).strip()
 
         usage = response.get("usage")
         tokens = usage.get("total_tokens", 0) if usage else 0
@@ -376,34 +392,18 @@ class BasicCompaction(CompactionEngine):
         ]
         replaced_id_set = set(replaced_ids)
 
-        # Honor shadowed seqs: derive() hides history by event seq, so record
-        # the persisted seqs covered by [start_idx, end_idx). Rows are walked
-        # in log order with a message-position cursor so the range aligns with
-        # the messages slice above even as the log grows.
         shadowed_seqs: list[int] = []
         try:
             rows = self.manager.session_store.read_rows(session_id)
         except Exception:
             rows = []
-        pos = 0
         for row in rows:
-            try:
-                probe = self.manager._deserialize_message(row, session_id)
-            except Exception:
-                probe = None
-            if probe is None:
-                continue
-            if start_idx <= pos < end_idx:
+            row_data = row.get("data") if isinstance(row.get("data"), dict) else {}
+            row_id = row.get("id") or row_data.get("id")
+            if row_id in replaced_id_set or row_data.get("compactionId") in replaced_id_set:
                 seq = row.get("seq")
-                if isinstance(seq, int):
-                    if seq not in shadowed_seqs:
-                        shadowed_seqs.append(seq)
-                elif row.get("id") in replaced_id_set:
-                    # Legacy rows carry no persisted seq; their derive-time
-                    # seq is the positional index, which is unstable, so they
-                    # stay shadowed by id only.
-                    pass
-            pos += 1
+                if isinstance(seq, int) and seq not in shadowed_seqs:
+                    shadowed_seqs.append(seq)
 
         # Emit compaction/summary event
         summary_seq = self.manager._next_seq(session_id)
@@ -444,13 +444,15 @@ class BasicCompaction(CompactionEngine):
         preserve_ids: set[str] | None = None,
         custom_instruction: str | None = None,
     ) -> CompactionResult | None:
+        from coderai.soul.session.log import derive_messages
+
         messages = self.manager.list_session_messages(session_id)
-        region = self._find_safe_region(messages, preserve_ids=preserve_ids)
+        derived = derive_messages(messages)
+        region = self._find_safe_region(derived, preserve_ids=preserve_ids)
         if not region:
             return None
         # Custom instruction appended to directive when /compact <focus>
         if custom_instruction:
-            # Inject via temporary directive augmentation in compact_region
             self._pending_custom_instruction = custom_instruction  # type: ignore
         try:
             return await self.compact_region(
@@ -466,29 +468,42 @@ class BasicCompaction(CompactionEngine):
         preserve_ids: set[str] | None = None,
     ) -> CompactionResult | None:
         from coderai.prompt import calculate_context_budget
+        from coderai.soul.session.log import derive_messages
 
         entry = self.manager._get_entry(session_id) or {}
-        active_tokens = entry.get("activeTokens", 0)
+        active_tokens = int(entry.get("activeTokens", 0) or 0)
+        messages = self.manager.list_session_messages(session_id)
+        derived = derive_messages(messages)
+        token_count = max(active_tokens, estimate_text_tokens(derived))
+
         model = self.manager.get_active_model()
         budget = calculate_context_budget(model)
         limit = budget["context_limit"]
 
-        evaluated_trigger = evaluate_compaction_trigger(active_tokens, limit)
+        settings = self.manager.get_resolved_settings()
+        pressure_ratio = float(settings.get("compactionTriggerRatio") or 0.85)
+        reserved_size = int(settings.get("reservedContextSize") or 50_000)
+        auto_window = settings.get("autoCompactWindow")
+
+        evaluated_trigger = evaluate_compaction_trigger(
+            token_count,
+            limit,
+            pressure_ratio=pressure_ratio,
+            overflow_ratio=0.95,
+            reserved_context_size=reserved_size,
+        )
+        if auto_window and token_count > auto_window:
+            evaluated_trigger = evaluated_trigger or "pressure"
+
         if (
             trigger == "force"
             or evaluated_trigger == trigger
             or (trigger == "pressure" and evaluated_trigger in ("pressure", "overflow"))
+            or (trigger == "overflow" and evaluated_trigger == "overflow")
         ):
-            effective_trigger = evaluated_trigger or trigger
-            messages = self.manager.list_session_messages(session_id)
-            region = self._find_safe_region(messages, preserve_ids=preserve_ids)
-            if not region:
-                return None
-            return await self.compact_region(
+            return await self.compact_now(
                 session_id,
-                region[0],
-                region[1],
-                trigger=effective_trigger,
+                trigger=evaluated_trigger or trigger,
                 preserve_ids=preserve_ids,
             )
         return None
@@ -510,8 +525,7 @@ class Compaction(Protocol):
         llm: Any,
         *,
         custom_instruction: str = "",
-    ) -> Any:
-        ...
+    ) -> Any: ...
 
 
 class SimpleCompaction:
@@ -524,9 +538,7 @@ class SimpleCompaction:
         compact_message: Any | None
         to_preserve: Sequence[Any]
 
-    def prepare(
-        self, messages: Sequence[Any], *, custom_instruction: str = ""
-    ) -> PrepareResult:
+    def prepare(self, messages: Sequence[Any], *, custom_instruction: str = "") -> PrepareResult:
         from kosong.message import Message
         from coderai.wire.types import TextPart
         from coderai.prompt import prompts_dir
@@ -565,7 +577,9 @@ class SimpleCompaction:
                 compact_message.content.append(TextPart(text=msg_content))
             elif isinstance(msg_content, (list, tuple)):
                 compact_message.content.extend(
-                    part for part in msg_content if getattr(part, "type", "") == "text" or isinstance(part, TextPart)
+                    part
+                    for part in msg_content
+                    if getattr(part, "type", "") == "text" or isinstance(part, TextPart)
                 )
 
         compact_prompt_file = prompts_dir() / "compact.md" if callable(prompts_dir) else None
@@ -574,10 +588,7 @@ class SimpleCompaction:
             prompt_text = "\n" + compact_prompt_file.read_text(encoding="utf-8")
 
         if custom_instruction:
-            prompt_text += (
-                "\n\n**User's Custom Compaction Instruction:**\n"
-                f"{custom_instruction}"
-            )
+            prompt_text += f"\n\n**User's Custom Compaction Instruction:**\n{custom_instruction}"
         compact_message.content.append(TextPart(text=prompt_text))
         return self.PrepareResult(compact_message=compact_message, to_preserve=to_preserve)
 
@@ -610,4 +621,3 @@ class SimpleCompaction:
         content.extend(part for part in compacted_msg.content if not isinstance(part, ThinkPart))
         compacted_messages = [Message(role="user", content=content), *to_preserve]
         return compacted_messages
-

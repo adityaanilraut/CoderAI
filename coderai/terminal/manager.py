@@ -66,10 +66,14 @@ class TerminalSession:
         try:
             self.cwd = resolve_exec_cwd(cwd or os.getcwd(), workspace_root or cwd or os.getcwd())
         except (ValueError, OSError) as exc:
-            raise ValueError(f"Terminal cwd rejected: {exc}")
+            raise ValueError(f"Terminal cwd rejected: {exc}") from exc
         self.created_at = time.time()
+        import codecs
+
+        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self.output_buffer: list[str] = []
         self._unread_buffer: list[str] = []
+        self.max_buffer_chars = DEFAULT_MAX_BUFFER_CHARS
 
         # Prepare environment
         run_env = os.environ.copy()
@@ -153,8 +157,22 @@ class TerminalSession:
             return None
         return self.proc.poll()
 
+    def _append_to_buffer(self, buf: list[str], text: str) -> None:
+        buf.append(text)
+        total = sum(len(c) for c in buf)
+        while buf and total > self.max_buffer_chars:
+            first = buf[0]
+            excess = total - self.max_buffer_chars
+            if len(first) <= excess:
+                buf.pop(0)
+                total -= len(first)
+            else:
+                buf[0] = first[excess:]
+                total -= excess
+                break
+
     def send(self, text: str, submit: bool = True) -> None:
-        """Write text to terminal stdin."""
+        """Write text to terminal stdin with write loop for non-blocking fd."""
         if not self.is_alive:
             raise RuntimeError(
                 f"Terminal {self.session_id} is not running (exit code: {self.exit_code})"
@@ -165,7 +183,27 @@ class TerminalSession:
             payload += "\n"
 
         data = payload.encode("utf-8")
-        os.write(self.master_fd, data)
+        total_written = 0
+        data_len = len(data)
+        deadline = time.time() + 10.0
+
+        while total_written < data_len:
+            rem = max(0.0, deadline - time.time())
+            if rem <= 0:
+                raise TimeoutError(f"Timed out writing to terminal {self.session_id}")
+            _, wlist, _ = select.select([], [self.master_fd], [], rem)
+            if not wlist:
+                raise TimeoutError(
+                    f"Timed out waiting for terminal {self.session_id} to be writable"
+                )
+            try:
+                written = os.write(self.master_fd, data[total_written:])
+                total_written += written
+            except (BlockingIOError, OSError) as e:
+                if getattr(e, "errno", None) in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    time.sleep(0.01)
+                    continue
+                raise
 
     def read_available(self, timeout_s: float = 0.1) -> str:
         """Read available data from master_fd without blocking indefinitely."""
@@ -185,10 +223,11 @@ class TerminalSession:
                 raw = os.read(self.master_fd, 8192)
                 if not raw:
                     break
-                text = raw.decode("utf-8", errors="replace")
-                chunks.append(text)
-                self.output_buffer.append(text)
-                self._unread_buffer.append(text)
+                text = self._decoder.decode(raw, final=False)
+                if text:
+                    chunks.append(text)
+                    self._append_to_buffer(self.output_buffer, text)
+                    self._append_to_buffer(self._unread_buffer, text)
             except OSError as e:
                 if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                     break
@@ -307,7 +346,7 @@ class TerminalManager:
             try:
                 cwd = resolve_exec_cwd(cwd or workspace_root, workspace_root or cwd)
             except (ValueError, OSError) as exc:
-                raise ValueError(f"Terminal cwd rejected: {exc}")
+                raise ValueError(f"Terminal cwd rejected: {exc}") from exc
         if command is None:
             # Default to bash or sh
             shell = os.environ.get("SHELL") or "/bin/bash"

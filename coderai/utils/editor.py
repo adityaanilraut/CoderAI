@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -32,7 +33,7 @@ def open_external_editor(initial_text: str = "") -> str:
 
     try:
         # Run editor in foreground
-        ret = subprocess.run(f"{editor} {temp_path}", shell=True)
+        ret = subprocess.run(f"{editor} {shlex.quote(temp_path)}", shell=True)
         if ret.returncode == 0 and os.path.exists(temp_path):
             with open(temp_path, "r", encoding="utf-8") as f:
                 content = f.read()

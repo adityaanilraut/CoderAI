@@ -1,42 +1,30 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
+from coderai.utils.slashcmd import (
+    SlashCommand,
+    SlashCommandCall,
+    SlashCommandRegistry,
+    parse_slash_command_call,
+)
 
-def __getattr__(name: str) -> Any:
-    if name in ("registry", "shell_mode_registry"):
-        from coderai.ui.shell import dispatch
-
-        return getattr(dispatch, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-SKILL_COMMAND_PREFIX = "skill:"
-FLOW_COMMAND_PREFIX = "flow:"
-
-
-
-
-@dataclass(frozen=True)
-class SlashCommand:
-    name: str
-    summary: str
-    category: str
-    aliases: tuple[str, ...] = ()
-    subcommands: tuple[str, ...] = ()
-
-    @property
-    def display_name(self) -> str:
-        aliases = ", ".join(f"/{alias}" for alias in self.aliases)
-        return f"/{self.name}" + (f", {aliases}" if aliases else "")
-
+__all__ = [
+    "SlashCommand",
+    "SlashCommandCall",
+    "SlashCommandRegistry",
+    "parse_slash_command_call",
+]
 
 _COMMANDS = (
     SlashCommand("new", "Start a fresh session", "Session Management"),
     SlashCommand("init", "Initialize or update AGENTS.md guidelines", "Session Management"),
-    SlashCommand("sessions", "Browse, resume, delete, or fork sessions", "Session Management"),
-    SlashCommand("resume", "Resume a saved session by ID", "Session Management"),
+    SlashCommand(
+        "sessions",
+        "Browse, resume, delete, or fork sessions",
+        "Session Management",
+        aliases=("resume",),
+    ),
     SlashCommand("fork", "Fork the current or specified session", "Session Management"),
     SlashCommand("delete", "Delete a saved session", "Session Management", ("rm",)),
     SlashCommand("rename", "View or set the session title", "Session Management", ("title",)),
@@ -61,7 +49,7 @@ _COMMANDS = (
         "review",
         "Review uncommitted changes (Jev triage, model review, Jev gate)",
         "Planning & Safety",
-        subcommands=("--all", "--no-untracked"),
+        subcommands=("--all", "--untracked", "--no-untracked"),
     ),
     SlashCommand("continue", "Continue agent execution", "Planning & Safety"),
     SlashCommand("yolo", "Toggle YOLO auto-approve all actions", "Planning & Safety"),
@@ -117,7 +105,18 @@ _COMMANDS = (
         ("subagents", "subagent"),
         ("list", "roles", "tree", "report", "send"),
     ),
-    SlashCommand("teams", "Inspect active agent teams", "Diagnostics"),
+    SlashCommand(
+        "teams",
+        "Inspect active agent teams",
+        "Diagnostics",
+        aliases=("team", "swarm"),
+    ),
+    SlashCommand(
+        "web-vis",
+        "Pure CLI notice for removed web/browser UI",
+        "Utilities",
+        aliases=("web", "vis", "browser", "web_vis"),
+    ),
     SlashCommand(
         "mcp",
         "Inspect MCP servers, tools, prompts, and resources",
@@ -129,7 +128,7 @@ _COMMANDS = (
         "compact", "Compress conversation context", "Tools & Analytics", subcommands=("keep",)
     ),
     SlashCommand("history", "Show the session timeline", "Tools & Analytics"),
-    SlashCommand("import", "Import context from file or session", "Tools & Analytics"),
+    SlashCommand("import", "Import context from a file", "Tools & Analytics"),
     SlashCommand("config", "Show resolved configuration", "Tools & Analytics", ("settings",)),
     SlashCommand(
         "permission",
@@ -179,7 +178,15 @@ COMMAND_ALIASES = {alias: command.name for command in _COMMANDS for alias in com
 def resolve_command(name: str) -> SlashCommand | None:
     """Resolve a command or alias without its leading slash."""
     key = name.strip().lower().lstrip("/")
-    return COMMAND_CATALOG.get(COMMAND_ALIASES.get(key, key))
+    cmd = COMMAND_CATALOG.get(COMMAND_ALIASES.get(key, key))
+    if cmd is not None:
+        return cmd
+    try:
+        from coderai.ui.shell.dispatch import registry
+
+        return registry.find_command(key)
+    except Exception:
+        return None
 
 
 def parse_slash_command(raw: str) -> tuple[str, str]:
@@ -193,9 +200,27 @@ def parse_slash_command(raw: str) -> tuple[str, str]:
 def completion_entries() -> list[tuple[str, str]]:
     """Return canonical commands and aliases for readline completion."""
     entries: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for command in _COMMANDS:
         entries.append((f"/{command.name}", command.summary))
-        entries.extend((f"/{alias}", f"{command.summary} (alias)") for alias in command.aliases)
+        seen.add(command.name)
+        for alias in command.aliases:
+            entries.append((f"/{alias}", f"{command.summary} (alias)"))
+            seen.add(alias)
+
+    try:
+        from coderai.ui.shell.dispatch import registry
+
+        for trig, cmd in registry.iter_command_entries():
+            if trig not in seen:
+                is_alias = trig != cmd.name
+                suffix = " (alias)" if is_alias else ""
+                desc = cmd.description or cmd.summary or ""
+                entries.append((f"/{trig}", f"{desc}{suffix}"))
+                seen.add(trig)
+    except Exception:
+        pass
+
     return entries
 
 
@@ -204,7 +229,6 @@ def completion_entries() -> list[tuple[str, str]]:
 
 
 import difflib
-
 
 
 _RICH = True
@@ -495,15 +519,16 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
     },
     "review": {
         "title": "Code Review",
-        "syntax": "/review [<base-ref>] [--all] [--no-untracked]",
+        "syntax": "/review [<base-ref>] [--all] [--untracked]",
         "summary": "Review changes: Jev triages files, the active model reviews, Jev filters comments.",
         "description": (
-            "Diffs the working tree (including untracked files) against HEAD, or against "
+            "Diffs the working tree (tracked files only, unless --untracked) against HEAD, or against "
             "merge-base(<base-ref>, HEAD). Jev System-One screens each file and skips low-risk "
             "ones; the active chat model reviews the rest; Jev then drops comments it scores as "
             "speculative or unlikely to be accepted. Without TYPESAFE_API_KEY every non-doc file "
             "is reviewed and every comment is shown. • --all — review every file regardless of "
-            "triage • --no-untracked — ignore untracked files • CODERAI_REVIEW_MAX_CHARS caps "
+            "triage • --untracked — also include untracked files (dotfiles and secret-looking "
+            "paths are always skipped) • CODERAI_REVIEW_MAX_CHARS caps "
             "the diff sent to the model."
         ),
         "examples": ["/review", "/review main", "/review origin/main --all"],
@@ -752,6 +777,55 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         ),
         "examples": ["/hooks"],
     },
+    "reset": {
+        "title": "Reset Session",
+        "syntax": "/reset",
+        "summary": "Clear conversation context and reset session state.",
+        "description": "Clears conversation history, drops active plan mode, and resets session file cache.",
+        "examples": ["/reset"],
+    },
+    "yolo": {
+        "title": "YOLO Mode",
+        "syntax": "/yolo",
+        "summary": "Toggle YOLO mode (auto-approve all actions without prompts).",
+        "description": "Toggles execution mode to bypass confirmation prompts for shell commands and file mutations.",
+        "examples": ["/yolo"],
+    },
+    "afk": {
+        "title": "AFK Mode",
+        "syntax": "/afk",
+        "summary": "Toggle AFK mode (auto-dismiss questions & approvals with defaults).",
+        "description": "Toggles AFK mode so long-running agent tasks continue without blocking on interactive prompts.",
+        "examples": ["/afk"],
+    },
+    "add-dir": {
+        "title": "Add Workspace Directory",
+        "syntax": "/add-dir <directory_path> (alias: /add_dir)",
+        "summary": "Add an additional directory to the active workspace boundaries.",
+        "description": "Expands workspace scope to allow tools to read and edit files in the specified directory.",
+        "examples": ["/add-dir ../shared-lib"],
+    },
+    "context": {
+        "title": "Context Utilization",
+        "syntax": "/context",
+        "summary": "Inspect live context window utilization and token allocation.",
+        "description": "Shows breakdown of tokens across system prompt, conversation history, and tool outputs.",
+        "examples": ["/context"],
+    },
+    "import": {
+        "title": "Import Context",
+        "syntax": "/import <file_or_session>",
+        "summary": "Import context from a file into active session.",
+        "description": "Reads contents of an external file and inserts it into current session context.",
+        "examples": ["/import ./notes.txt"],
+    },
+    "web-vis": {
+        "title": "Web Visualizer (Deprecated)",
+        "syntax": "/web-vis (aliases: /web, /vis, /browser)",
+        "summary": "Notice regarding removal of web frontend.",
+        "description": "CoderAI is strictly a terminal CLI and daemon application. Web UI and browser viewers have been removed.",
+        "examples": ["/web-vis"],
+    },
 }
 
 # Grouped command definitions for clean, categorized presentation
@@ -767,6 +841,7 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("/rename", "[title]", "Rename active or specified session summary"),
             ("/export", "[file]", "Export session history to Markdown or JSON"),
             ("/init", "", "Initialize or update AGENTS.md contributor guidelines"),
+            ("/reset", "", "Clear conversation context and reset session state"),
             ("/btw", "<question>", "Side question (BTW modal, not queued)"),
         ],
     ),
@@ -776,19 +851,31 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("/plan", "[on|off|apply]", "Toggle Plan Mode (strict read-only safety boundary)"),
             ("/undo", "", "Interactive turn & checkpoint rollback (code, conversation, or both)"),
             ("/diff", "", "Show syntax-highlighted diff of changes"),
-            ("/review", "[base] [--all]", "Review changes: Jev triage, model review, Jev comment gate"),
+            (
+                "/review",
+                "[base] [--all]",
+                "Review changes: Jev triage, model review, Jev comment gate",
+            ),
             ("/continue", "", "Continue bounded multi-step agent execution"),
+            ("/yolo", "", "Toggle YOLO auto-approve all actions"),
+            ("/afk", "", "Toggle AFK auto-dismiss questions & approvals"),
+            ("/add-dir, /add_dir", "<path>", "Add additional directory to workspace"),
         ],
     ),
     (
         "Models & Reasoning",
         [
             ("/model", "[name]", "Interactive model selector or switch directly"),
-            ("/effort", "[level]", "Interactive reasoning effort selector (low..max incl. xhigh, off)"),
+            (
+                "/effort",
+                "[level]",
+                "Interactive reasoning effort selector (low..max incl. xhigh, off)",
+            ),
             ("/thinking, /raw", "", "Toggle full reasoning trace or summary (lite/normal)"),
             ("/setup, /keys", "", "Configure API keys, providers, local endpoints & default model"),
             ("/skills", "", "Explore active and discovered workspace skills"),
             ("/skill", "<name>", "Load a skill into the current session"),
+            ("/agent, /role", "[name]", "View or switch active agent role / persona"),
         ],
     ),
     (
@@ -812,6 +899,8 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("/tokens, /cost", "", "View detailed token usage and context analytics"),
             ("/compact", "", "Compress history to free up active context tokens"),
             ("/history", "", "View turn-by-turn conversation timeline"),
+            ("/context", "", "Inspect live context window utilization"),
+            ("/import", "<file>", "Import context from a file into active session"),
             ("/config, /settings", "", "Inspect resolved workspace & user settings"),
             ("/teams", "", "Inspect active agent team members and status"),
         ],
@@ -832,6 +921,7 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("/theme", "[dark|light]", "Switch diff theme (dark/light)"),
             ("/task", "", "Interactive background-task browser (list/detail/output)"),
             ("/upgrade", "", "Upgrade coderai-agent via pip"),
+            ("/web-vis, /browser", "", "Pure CLI notice for removed web/browser UI"),
             ("/exit, /quit", "", "Exit CoderAI session with summary card"),
         ],
     ),
@@ -874,11 +964,23 @@ def render_help(cmd_name: str | None = None, console: Any | None = None) -> None
 
 def _render_contextual_help(cmd_name: str, console: Any | None) -> None:
     key = cmd_name.strip().lstrip("/").lower()
+    details = COMMAND_HELP_DETAILS.get(key)
     command = resolve_command(key)
     canonical_key = command.name if command else key
-    details = COMMAND_HELP_DETAILS.get(canonical_key)
+    if not details and canonical_key:
+        details = COMMAND_HELP_DETAILS.get(canonical_key)
+
+    if not details and command:
+        details = {
+            "title": command.name.capitalize(),
+            "syntax": str(command.display_name),
+            "summary": command.summary or command.description,
+            "description": command.description or command.summary,
+            "examples": [f"/{command.name}"],
+        }
 
     if details:
+        display_key = canonical_key or key
         if console is not None and _RICH and Panel is not None:
             summary_esc = escape(str(details.get("summary", "")))
             syntax_esc = escape(str(details.get("syntax", "")))
@@ -896,7 +998,7 @@ def _render_contextual_help(cmd_name: str, console: Any | None) -> None:
 
             panel = Panel(
                 body.strip(),
-                title=f"[bold cyan]CoderAI Help:[/] [bold yellow]/{canonical_key}[/]",
+                title=f"[bold cyan]CoderAI Help:[/] [bold yellow]/{display_key}[/]",
                 border_style="bright_blue",
                 padding=(1, 2),
             )
@@ -904,7 +1006,7 @@ def _render_contextual_help(cmd_name: str, console: Any | None) -> None:
             console.print(panel)
             console.print()
         else:
-            print(f"\n--- CoderAI Command Help: /{canonical_key} ---")
+            print(f"\n--- CoderAI Command Help: /{display_key} ---")
             print(f"Summary: {details['summary']}")
             print(f"Syntax:  {details['syntax']}\n")
             print("Details:")
@@ -1149,11 +1251,12 @@ def cmd_title(mgr: Any, session_id: str | None, arg: str = "", console: Any = No
     entry = mgr.get_session(session_id) if session_id else None
     if entry is None:
         msg = "No active session."
-        if console is not None:
-            try:
-                console.print(f"[yellow]{msg}[/]")
-            except Exception:
-                print(msg)
+    if console is not None:
+        try:
+            # UI-A14: session titles are user/model-written; never markup.
+            console.print(f"[bold cyan]{escape(msg)}[/]")
+        except Exception:
+            print(msg)
         else:
             print(msg)
         return None
@@ -1252,11 +1355,8 @@ def cmd_upgrade(console: Any = None) -> str:
         import asyncio
 
         try:
-            asyncio.get_running_loop()
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                pool.submit(lambda: asyncio.run(do_update(print=True))).result()
+            loop = asyncio.get_running_loop()
+            loop.create_task(do_update(print=True))
         except RuntimeError:
             asyncio.run(do_update(print=True))
     except Exception as e:
@@ -1288,25 +1388,52 @@ def cmd_login(
 
 
 def cmd_logout(console: Any = None, project_root: str = ".", mgr: Any = None) -> int:
-    """Clear stored credentials."""
+    """Clear stored credentials from the raw settings files (UI-A6)."""
     try:
         from coderai.config import (
-            get_configured_provider_keys,
-            resolve_current_settings,
+            read_project_settings,
+            read_settings,
+            write_project_settings,
             write_settings,
         )
 
-        settings = resolve_current_settings(project_root) or {}
-        providers = get_configured_provider_keys(project_root)
-        cleared = 0
-        if isinstance(settings.get("providers"), dict):
-            for key in list(settings["providers"].keys()):
-                prov = settings["providers"][key]
-                if isinstance(prov, dict) and "api_key" in prov:
-                    prov.pop("api_key", None)
-                    cleared += 1
+        removed: list[str] = []
+
+        def _scrub(data: dict | None, scope: str) -> dict | None:
+            if not isinstance(data, dict):
+                return None
+            changed = False
+            # Top-level apiKey (legacy) and env-exported keys.
+            for key in ("apiKey",):
+                if data.pop(key, None) is not None:
+                    removed.append(f"{scope}:{key}")
+                    changed = True
+            env = data.get("env")
+            if isinstance(env, dict):
+                for name in [k for k in env if "KEY" in str(k).upper()]:
+                    env.pop(name, None)
+                    removed.append(f"{scope}:env.{name}")
+                    changed = True
+            providers = data.get("providers")
+            if isinstance(providers, dict):
+                for pname, prov in providers.items():
+                    if isinstance(prov, dict) and prov.pop("api_key", None) is not None:
+                        removed.append(f"{scope}:providers.{pname}.api_key")
+                        changed = True
+            return data if changed else data
+
+        user = read_settings()
+        if isinstance(user, dict):
+            _scrub(user, "user")
             try:
-                write_settings(settings)
+                write_settings(user)
+            except Exception:
+                pass
+        project = read_project_settings(project_root)
+        if isinstance(project, dict):
+            _scrub(project, "project")
+            try:
+                write_project_settings(project, project_root)
             except Exception:
                 pass
         # Also clear env-exported keys for this process.
@@ -1319,10 +1446,15 @@ def cmd_logout(console: Any = None, project_root: str = ".", mgr: Any = None) ->
 
             removed_tokens = logout_all()
             cleared_provider = clear_login_config()
-            cleared += len(removed_tokens)
+            removed.extend(f"oauth:{t}" for t in removed_tokens)
         except Exception:
             cleared_provider = False
-        msg = f"Logged out ({cleared} provider credential(s) cleared, {len(providers)} known)."
+        if removed:
+            msg = f"Logged out (removed: {', '.join(removed)})."
+        else:
+            msg = "Logged out (no stored credentials found)."
+        if cleared_provider:
+            msg += " Managed OAuth provider removed."
         if cleared_provider:
             msg += " Managed OAuth provider removed."
         if console is not None:

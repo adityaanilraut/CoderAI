@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
+from coderai.prompt import COMPACT, INIT, get_init_command_prompt, load_template
 
-INIT = (Path(__file__).parent / "init.md").read_text(encoding="utf-8")
-COMPACT = (Path(__file__).parent / "compact.md").read_text(encoding="utf-8")
+__all__ = ["INIT", "COMPACT", "get_init_command_prompt", "load_template"]

@@ -110,6 +110,7 @@ def call_stream_or_sync(
     on_chunk: Callable[[str], None] | None = None,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
     on_thinking_chunk: Callable[[str], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Stream response tokens while parsing deltas, tool calls, and reasoning tokens."""
     stream_req = {
@@ -156,6 +157,16 @@ def call_stream_or_sync(
 
             try:
                 for chunk in resp:
+                    if is_cancelled and is_cancelled():
+                        if hasattr(resp, "close"):
+                            try:
+                                resp.close()
+                            except Exception:
+                                pass
+                        from coderai.soul.session.manager import SessionInterrupted
+
+                        raise SessionInterrupted("Streaming cancelled by user")
+
                     choices = getattr(chunk, "choices", None) or []
                     if choices:
                         c = choices[0]
@@ -229,10 +240,14 @@ def call_stream_or_sync(
                     if chunk_usage:
                         usage_dict = extract_usage_dict(chunk_usage)
             except Exception as stream_err:
+                from coderai.soul.session.manager import SessionInterrupted
+
+                if isinstance(stream_err, SessionInterrupted):
+                    raise stream_err
                 if thinking_parts:
-                    setattr(stream_err, "partial_thinking", "".join(thinking_parts))
+                    setattr(stream_err, "partial_thinking", "".join(str(p) for p in thinking_parts))
                 if content_parts:
-                    setattr(stream_err, "partial_content", "".join(content_parts))
+                    setattr(stream_err, "partial_content", "".join(str(p) for p in content_parts))
                 raise stream_err
 
             if on_progress:

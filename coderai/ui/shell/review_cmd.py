@@ -24,13 +24,19 @@ _SEVERITY_RANK = {"critical": 0, "major": 1, "minor": 2}
 
 
 def parse_review_args(args: str) -> tuple[str | None, bool, bool] | None:
-    """Return (base, review_all, include_untracked), or None for invalid input."""
+    """Return (base, review_all, include_untracked), or None for invalid input.
+
+    Untracked files are excluded by default (WF-B5: a stray `.env.local`
+    must not leak to the reviewer); pass `--untracked` to opt in.
+    """
     base: str | None = None
     review_all = False
-    include_untracked = True
+    include_untracked = False
     for token in args.split():
         if token == "--all":
             review_all = True
+        elif token == "--untracked":
+            include_untracked = True
         elif token == "--no-untracked":
             include_untracked = False
         elif token.startswith("-") or base is not None:
@@ -97,6 +103,8 @@ def _why(t: Any) -> str:
         return f"risk {t.risk:.2f} · {t.category}{conf} · P{t.priority}{extra}"
     if t.reason.startswith("Bypassed"):
         return "doc/asset extension"
+    if t.reason.startswith("Local:"):
+        return "secret-looking path, not sent to Jev"
     return "Jev unavailable (fail-closed)"
 
 
@@ -104,7 +112,9 @@ def render_triage(console: Any, report: ReviewReport) -> None:
     rows = list(zip(report.files, report.triage))
     skipped = 0
     if len(rows) > COLLAPSE_SKIPPED_ABOVE:
-        shown = [(f, t) for f, t in rows if f.path in report.reviewed or f.path in report.over_budget]
+        shown = [
+            (f, t) for f, t in rows if f.path in report.reviewed or f.path in report.over_budget
+        ]
         skipped = len(rows) - len(shown)
         rows = shown
     if console is not None:
@@ -114,7 +124,9 @@ def render_triage(console: Any, report: ReviewReport) -> None:
         table.add_column("Why", style="dim")
         for f, t in rows:
             table.add_row(
-                escape(f.path), _decision(report, f.path, t.should_review, t.reason), escape(_why(t))
+                escape(f.path),
+                _decision(report, f.path, t.should_review, t.reason),
+                escape(_why(t)),
             )
         console.print(table)
     else:
@@ -123,7 +135,9 @@ def render_triage(console: Any, report: ReviewReport) -> None:
             decision = Text.from_markup(_decision(report, f.path, t.should_review, t.reason)).plain
             print(f"  {f.path}: {decision} ({_why(t)})")
     if skipped:
-        _out(console, f"[dim]{skipped} more file(s) skipped by triage (docs/assets or low risk).[/]")
+        _out(
+            console, f"[dim]{skipped} more file(s) skipped by triage (docs/assets or low risk).[/]"
+        )
     if report.over_budget:
         _out(
             console,
@@ -139,12 +153,17 @@ def _location(f: ReviewFinding) -> str:
 def _gate_scores(f: ReviewFinding) -> str:
     g = f.gate
     if g is None:
-        return "not gated (file not in diff)"
+        return "file not in diff, cannot be grounded"
+    if g.reason.startswith("Local:"):
+        return "secret-looking path, not sent to Jev"
     if not g.reason.startswith("Jev gate"):
         return "Jev unavailable (fail-open)"
     spec = f" · speculative {g.is_speculative:.2f}" if g.is_speculative is not None else ""
     trunc = " · diff truncated" if g.truncated else ""
-    return f"bug {g.is_actionable_bug:.2f} · accept {g.will_developer_accept:.2f}{spec}{trunc}"
+    kept = " · below gate, kept (critical)" if not g.passed else ""
+    return (
+        f"bug {g.is_actionable_bug:.2f} · accept {g.will_developer_accept:.2f}{spec}{trunc}{kept}"
+    )
 
 
 def render_findings(console: Any, report: ReviewReport) -> None:
@@ -177,19 +196,31 @@ def render_findings(console: Any, report: ReviewReport) -> None:
             )
 
 
-async def run_review_command(mgr: Any, console: Any, args: str) -> None:
+def _jev_unavailable_reason() -> str | None:
     from coderai.jev.client import jev_is_available
+    from coderai.triage.engine import is_jev_configured, jev_sdk_installed
 
+    if jev_is_available():
+        return None
+    if not jev_sdk_installed():
+        return "typesafe-sdk is not installed (pip install 'coderai-agent[jev]')"
+    if not is_jev_configured():
+        return "TYPESAFE_API_KEY is not set"
+    return "the TypeSafe client could not be created"
+
+
+async def run_review_command(mgr: Any, console: Any, args: str) -> None:
     parsed = parse_review_args(args)
     if parsed is None:
         _out(console, USAGE)
         return
     base, review_all, include_untracked = parsed
 
-    if not jev_is_available():
+    reason = _jev_unavailable_reason()
+    if reason:
         _out(
             console,
-            "[dim]Jev System-One is not configured (TYPESAFE_API_KEY), so every non-doc file "
+            f"[dim]Jev System-One is off ({escape(reason)}), so every non-doc file "
             "is reviewed and every comment is shown.[/]",
         )
 
@@ -211,6 +242,9 @@ async def run_review_command(mgr: Any, console: Any, args: str) -> None:
         return
     render_triage(console, report)
     if not report.reviewed:
-        _out(console, "[bold green]Jev found nothing worth a full review.[/] Use /review --all to force one.")
+        _out(
+            console,
+            "[bold green]Jev found nothing worth a full review.[/] Use /review --all to force one.",
+        )
         return
     render_findings(console, report)

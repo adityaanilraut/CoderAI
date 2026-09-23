@@ -46,8 +46,8 @@ def resolve_exec_cwd(
     resolved = candidate.resolve()
     try:
         resolved.relative_to(root)
-    except ValueError:
-        raise ValueError(f"CWD '{raw}' escapes execution root '{root}'.")
+    except ValueError as err:
+        raise ValueError(f"CWD '{raw}' escapes execution root '{root}'.") from err
     return str(resolved)
 
 
@@ -363,6 +363,9 @@ def wrap_sandbox_command(
             "--proc",
             "/proc",
         ]
+        if parsed == "read-only":
+            # Match the macOS Seatbelt read-only profile: no network.
+            bwrap.append("--unshare-net")
         if parsed != "read-only":
             bwrap.extend(["--tmpfs", "/tmp"])
         if parsed == "workspace-write":
@@ -418,6 +421,15 @@ def check_sandbox_path_access(
                 is_under_ws = True
             except ValueError:
                 is_under_ws = False
+
+            if not is_under_ws:
+                # Also allow session plans directory in ~/.coderai/plans
+                try:
+                    plans_home = (pathlib.Path.home() / ".coderai" / "plans").resolve()
+                    p.relative_to(plans_home)
+                    is_under_ws = True
+                except ValueError:
+                    pass
 
             if not is_under_ws:
                 return (

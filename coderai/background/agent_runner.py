@@ -135,7 +135,7 @@ class TaskSupervisor:
         """Cancel and terminate a background task or subagent."""
         handle = self._registry.get(task_id)
         if handle:
-            self._registry.interrupt(task_id)
+            self._registry.kill(task_id)
             return True
 
         from coderai.background.manager import get_job_store
@@ -155,8 +155,8 @@ class TaskSupervisor:
         """Cancel all running background tasks for a session or globally."""
         killed: list[str] = []
         for handle in self._registry.list(parent_session_id=session_id):
-            if handle.status == "running":
-                self._registry.interrupt(handle.id)
+            if handle.status == "running" or (handle.task and not handle.task.done()):
+                self._registry.kill(handle.id)
                 killed.append(handle.id)
 
         from coderai.background.manager import get_job_store
@@ -237,7 +237,9 @@ async def spawn_background_agent(
     siblings = [
         h
         for h in registry.list(parent_session_id=spec.parent_session_id)
-        if h.id != agent_id and h.status in ("running", "interrupted")
+        if h.id != agent_id
+        and not getattr(h, "killed", False)
+        and (h.status in ("running", "interrupted") or (h.task is not None and not h.task.done()))
     ]
     if len(siblings) >= max_continuable:
         raise RuntimeError(

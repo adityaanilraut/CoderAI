@@ -18,27 +18,24 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from functools import partial
 from typing import Any
 
 from coderai.triage.engine import (
     JEV_DEFAULT_TIMEOUT_S,
-    JEV_MAX_DIFF_CHARS,
     GateResult,
-    TriageEngine,
     TriageResult,
     get_triage_engine,
     jev_accept_threshold,
     jev_gate_threshold,
     jev_min_confidence,
+    jev_sdk_installed,
     jev_speculative_threshold,
     jev_triage_threshold,
     truncate_diff,
 )
 
-# Single authoritative payload budget lives in coderai.triage.engine;
-# this alias is kept for backward compatibility (no second cut here).
-_MAX_DIFF_CHARS = JEV_MAX_DIFF_CHARS
 _DEFAULT_CACHE_SIZE = 512
 
 _triage_cache: OrderedDict[str, TriageResult] = OrderedDict()
@@ -76,12 +73,9 @@ def _cache_put(cache: OrderedDict, key: str, val: Any) -> None:
             cache.popitem(last=False)
 
 
-def _record_hit(miss_key: str, hit: bool) -> None:
+def _record_lookup(tier: str, hit: bool) -> None:
     with _cache_lock:
-        if hit:
-            _cache_counters[miss_key.replace("misses", "hits")] += 1
-        else:
-            _cache_counters[miss_key] += 1
+        _cache_counters[f"{tier}_{'hits' if hit else 'misses'}"] += 1
 
 
 def _key_id(api_key: str | None) -> str:
@@ -194,44 +188,30 @@ def jev_is_available(api_key: str | None = None) -> bool:
         return False
 
 
-def _screen_sync(
-    engine: TriageEngine,
-    file_path: str,
-    diff: str,
-    threshold: float | None,
-    timeout_s: float | None = None,
-) -> TriageResult:
-    # No slice here: engine.truncate_diff is the single authoritative cut.
-    # Contract: engine.screen_diff_hunk accepts timeout_s; fall back to the
-    # legacy 3-arg call when running against an engine without it.
-    try:
-        return engine.screen_diff_hunk(
-            file_path, diff, threshold=threshold, timeout_s=timeout_s
-        )
-    except TypeError as exc:
-        if "timeout_s" in str(exc):
-            return engine.screen_diff_hunk(file_path, diff, threshold=threshold)
-        raise
+async def _run_bounded(fn: Callable[[], Any], timeout: float) -> Any:
+    """Run ``fn`` in the Jev pool with ``timeout`` measured from when it starts running.
 
+    Time spent queued behind other calls gets its own ``timeout`` budget; a job still
+    queued when that expires is cancelled before it runs, so a burst of slow calls
+    cannot snowball into timeouts for work that never started.
+    """
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
 
-def _gate_sync(
-    engine: TriageEngine,
-    file_path: str,
-    diff: str,
-    comment: str,
-    threshold: float | None,
-    timeout_s: float | None = None,
-) -> GateResult:
+    def _job() -> Any:
+        try:
+            loop.call_soon_threadsafe(started.set)
+        except RuntimeError:
+            pass
+        return fn()
+
+    fut = loop.run_in_executor(_get_executor(), _job)
     try:
-        return engine.gate_candidate_comment(
-            file_path, diff, comment, threshold=threshold, timeout_s=timeout_s
-        )
-    except TypeError as exc:
-        if "timeout_s" in str(exc):
-            return engine.gate_candidate_comment(
-                file_path, diff, comment, threshold=threshold
-            )
+        await asyncio.wait_for(started.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        fut.cancel()
         raise
+    return await asyncio.wait_for(fut, timeout=timeout)
 
 
 def _log_timeout(
@@ -273,29 +253,29 @@ async def jev_screen_diff_async(
     key = _triage_key(file_path, diff_hunk, cutoff, engine.is_available, engine.api_key)
     if use_cache:
         hit = _cache_get(_triage_cache, key)
-        _record_hit("triage_misses", hit is not None)
+        _record_lookup("triage", hit is not None)
         if hit is not None:
             return hit
     timeout = timeout_s if timeout_s is not None else jev_timeout_s()
     start = time.monotonic()
     try:
-        loop = asyncio.get_running_loop()
-        result = await asyncio.wait_for(
-            loop.run_in_executor(
-                _get_executor(),
-                _screen_sync,
-                engine,
+        result = await _run_bounded(
+            partial(
+                engine.screen_diff_hunk,
                 file_path,
                 diff_hunk,
-                threshold,
-                timeout,
+                threshold=threshold,
+                timeout_s=timeout,
             ),
-            timeout=timeout,
+            timeout,
         )
     except Exception as exc:
         elapsed = time.monotonic() - start
         _log_timeout(
-            "triage", file_path, elapsed, timeout,
+            "triage",
+            file_path,
+            elapsed,
+            timeout,
             is_timeout=isinstance(exc, asyncio.TimeoutError),
         )
         result = TriageResult(
@@ -336,30 +316,30 @@ async def jev_gate_comment_async(
     )
     if use_cache:
         hit = _cache_get(_gate_cache, key)
-        _record_hit("gate_misses", hit is not None)
+        _record_lookup("gate", hit is not None)
         if hit is not None:
             return hit
     timeout = timeout_s if timeout_s is not None else jev_timeout_s()
     start = time.monotonic()
     try:
-        loop = asyncio.get_running_loop()
-        result = await asyncio.wait_for(
-            loop.run_in_executor(
-                _get_executor(),
-                _gate_sync,
-                engine,
+        result = await _run_bounded(
+            partial(
+                engine.gate_candidate_comment,
                 file_path,
                 diff_hunk,
                 comment,
-                threshold,
-                timeout,
+                threshold=threshold,
+                timeout_s=timeout,
             ),
-            timeout=timeout,
+            timeout,
         )
     except Exception as exc:
         elapsed = time.monotonic() - start
         _log_timeout(
-            "gate", file_path, elapsed, timeout,
+            "gate",
+            file_path,
+            elapsed,
+            timeout,
             is_timeout=isinstance(exc, asyncio.TimeoutError),
         )
         result = GateResult(
@@ -448,6 +428,28 @@ def jev_status_ttl_s() -> float:
     return _STATUS_TTL_S
 
 
+def jev_probe(api_key: str | None = None) -> tuple[bool, float | None, str | None]:
+    """One bounded live call: (reachable, latency_ms, error). Never raises or hangs."""
+    if not jev_sdk_installed():
+        return False, None, "typesafe-sdk is not installed (pip install 'coderai-agent[jev]')"
+    try:
+        engine = get_triage_engine(api_key=api_key)
+    except Exception as exc:
+        return False, None, f"{type(exc).__name__}: {exc}"
+    if not engine.is_available:
+        return False, None, "no API key (TYPESAFE_API_KEY)"
+    start = time.monotonic()
+    fut = _get_executor().submit(engine.screen_diff_hunk, "probe.py", "x = 1\n")
+    try:
+        probe = fut.result(timeout=jev_timeout_s())
+    except Exception as exc:
+        fut.cancel()
+        return False, None, f"no response within {jev_timeout_s():.1f}s ({type(exc).__name__})"
+    if _is_failure_fallback(probe.reason):
+        return False, None, probe.reason
+    return True, (time.monotonic() - start) * 1000.0, None
+
+
 def jev_status(*, use_cache: bool = True) -> dict[str, Any]:
     """Snapshot for setup/status UI: configured, reachable, latency probe.
 
@@ -464,46 +466,27 @@ def jev_status(*, use_cache: bool = True) -> dict[str, Any]:
         with _status_lock:
             cached = _status_cache.get("payload")
             age = time.monotonic() - float(_status_cache.get("ts") or 0.0)
-            if (
-                cached is not None
-                and age < ttl
-                and _status_cache.get("key_hash") == cur_hash
-            ):
+            if cached is not None and age < ttl and _status_cache.get("key_hash") == cur_hash:
                 return dict(cached)
 
     configured = bool(key)
+    sdk_installed = jev_sdk_installed()
     available = False
     latency_ms: float | None = None
+    error: str | None = None
     if configured:
-        try:
-            engine = get_triage_engine()
-            available = engine.is_available
-            if available:
-                start = time.monotonic()
-                # Bounded probe: never block /doctor on a hung SDK call.
-                fut = _get_executor().submit(
-                    engine.screen_diff_hunk, "probe.py", "x = 1\n"
-                )
-                try:
-                    probe = fut.result(timeout=jev_timeout_s())
-                    if _is_failure_fallback(probe.reason):
-                        available = False
-                    else:
-                        latency_ms = (time.monotonic() - start) * 1000.0
-                except Exception:
-                    available = False
-                    latency_ms = None
-        except Exception:
-            available = False
+        available, latency_ms, error = jev_probe()
     from coderai.config import mask_api_key
 
     payload: dict[str, Any] = {
         "model": "jev-system-one",
         "env_var": "TYPESAFE_API_KEY",
         "configured": configured,
+        "sdk_installed": sdk_installed,
         "available": available,
         "masked_key": mask_api_key(key) if configured else "Not configured",
         "latency_ms": latency_ms,
+        "error": error,
         "timeout_s": jev_timeout_s(),
         **jev_cache_stats(),  # type: ignore[arg-type]
     }

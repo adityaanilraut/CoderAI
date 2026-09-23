@@ -152,14 +152,16 @@ class AcpSubagentRunner:
         self._write_message(msg)
 
         try:
-            resp = await asyncio.wait_for(fut, timeout=timeout_s)
-            if resp.error:
-                raise RuntimeError(f"ACP error on {method}: {resp.error}")
-            return resp.result
-        except asyncio.TimeoutError:
+            try:
+                resp = await asyncio.wait_for(fut, timeout=timeout_s)
+                if resp.error:
+                    raise RuntimeError(f"ACP error on {method}: {resp.error}")
+                return resp.result
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError(f"ACP request '{method}' timed out after {timeout_s}s") from exc
+        finally:
             with self._lock:
                 self._pending_requests.pop(req_id, None)
-            raise TimeoutError(f"ACP request '{method}' timed out after {timeout_s}s")
 
     async def execute(self, prompt: str) -> dict[str, Any]:
         """Execute a full task turn over ACP lifecycle."""

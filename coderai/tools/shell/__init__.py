@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import os
 import pathlib
 import re
@@ -20,6 +21,8 @@ from coderai.background import get_job_store
 from coderai.sandbox import (
     SandboxUnavailableError,
     check_sandbox_path_access,
+    delete_seatbelt_profile,
+    parse_sandbox_mode,
     resolve_exec_cwd,
     wrap_sandbox_command,
 )
@@ -45,6 +48,62 @@ from coderai.tools.legacy.types import (
 
 MAX_OUTPUT_CHARS = 30000
 MAX_CAPTURE_CHARS = 10 * 1024 * 1024
+
+
+class HeadTailBuffer:
+    """Thread-safe buffer capped at max_chars, keeping head and tail when truncated."""
+
+    def __init__(self, max_chars: int = MAX_CAPTURE_CHARS, head_ratio: float = 0.5) -> None:
+        self.max_chars = max(1, int(max_chars))
+        self.head_limit = max(1, int(self.max_chars * head_ratio))
+        self.tail_limit = max(1, self.max_chars - self.head_limit)
+        self.head_chunks: list[str] = []
+        self.tail_chunks: collections.deque[str] = collections.deque()
+        self.head_len = 0
+        self.tail_len = 0
+        self.total_dropped = 0
+        self._lock = threading.Lock()
+
+    def append(self, text: str) -> None:
+        if not text:
+            return
+        with self._lock:
+            if self.head_len < self.head_limit:
+                avail = self.head_limit - self.head_len
+                if len(text) <= avail:
+                    self.head_chunks.append(text)
+                    self.head_len += len(text)
+                    return
+                else:
+                    self.head_chunks.append(text[:avail])
+                    self.head_len += avail
+                    text = text[avail:]
+
+            self.tail_chunks.append(text)
+            self.tail_len += len(text)
+            while self.tail_len > self.tail_limit and self.tail_chunks:
+                first = self.tail_chunks.popleft()
+                excess = self.tail_len - self.tail_limit
+                if len(first) <= excess:
+                    self.tail_len -= len(first)
+                    self.total_dropped += len(first)
+                else:
+                    trimmed = first[excess:]
+                    self.tail_chunks.appendleft(trimmed)
+                    self.total_dropped += excess
+                    self.tail_len -= excess
+                    break
+
+    def get_value(self) -> str:
+        with self._lock:
+            head_str = "".join(self.head_chunks)
+            tail_str = "".join(self.tail_chunks)
+            if self.total_dropped > 0:
+                sep = f"\n... [truncated {self.total_dropped} characters] ...\n"
+                return head_str + sep + tail_str
+            return head_str + tail_str
+
+
 BACKGROUND_OUTPUT_DIR = pathlib.Path(tempfile.gettempdir()) / "coderai-background"
 TRAILING_BACKGROUND_OPERATOR_PATTERN = re.compile(r"(^|[^\\&])\s*&\s*$")
 
@@ -135,7 +194,13 @@ def _reject_escaping_redirects(
     """Deny shell `>`/`>>` targets that escape the execution root or sandbox.
 
     Redirects otherwise bypass per-path write locks and file sandbox checks.
+    Skipped in `danger-full-access`: the user explicitly opted out of
+    containment there. This check is a tripwire, not containment (see
+    `extract_redirect_paths`); the OS sandbox is the real boundary.
     """
+    parsed_mode = parse_sandbox_mode(mode) if isinstance(mode, str) else None
+    if parsed_mode == "danger-full-access":
+        return None
     for target in extract_redirect_paths(command or ""):
         candidate = target if os.path.isabs(target) else os.path.join(start_cwd, target)
         try:
@@ -333,7 +398,11 @@ def _execute_persistent_bash(
     wrapped_cmd = f'printf "\\n%s\\n" "{start_marker}"; {command}; printf "\\n%s:%d:%s\\n" "{end_marker}" "$?" "$PWD"'
 
     timeout_ms = args.get("timeout_ms")
-    timeout_s = (float(timeout_ms) / 1000.0) if timeout_ms else (DEFAULT_BASH_TIMEOUT_MS / 1000.0)
+    timeout_s = (
+        (clamp_bash_timeout_ms(float(timeout_ms)) / 1000.0)
+        if timeout_ms is not None
+        else (DEFAULT_BASH_TIMEOUT_MS / 1000.0)
+    )
 
     try:
         term.send(wrapped_cmd, submit=True)
@@ -510,7 +579,13 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
         )
 
     execution = _execute_shell_command(
-        shell_path, shell_args, start_cwd, command, context, eff_mode
+        shell_path,
+        shell_args,
+        start_cwd,
+        command,
+        context,
+        eff_mode,
+        timeout_ms_override=args.get("timeout_ms"),
     )
     cleaned_stdout, cwd = _strip_marker(execution["stdout"], marker)
     combined = _join_output(cleaned_stdout, execution["stderr"])
@@ -600,6 +675,7 @@ def _execute_shell_command(
     command: str,
     context: Any,
     mode_override: Any = None,
+    timeout_ms_override: float | None = None,
 ) -> dict[str, Any]:
     configured_env: dict[str, str] = {}
     if isinstance(context, dict):
@@ -613,8 +689,13 @@ def _execute_shell_command(
         bash_timeout_ms = context.get("bash_timeout_ms", bash_timeout_ms)
         bash_min_timeout_ms = context.get("bash_min_timeout_ms", bash_min_timeout_ms)
 
+    target_timeout = (
+        timeout_ms_override
+        if timeout_ms_override is not None
+        else (bash_timeout_ms if bash_timeout_ms is not None else DEFAULT_BASH_TIMEOUT_MS)
+    )
     initial_timeout_ms = clamp_bash_timeout_ms(
-        bash_timeout_ms if bash_timeout_ms is not None else DEFAULT_BASH_TIMEOUT_MS,
+        target_timeout,
         bash_min_timeout_ms,
     )
 
@@ -660,9 +741,13 @@ def _execute_shell_command(
             "sandbox_denied": True,
             "sandbox_mode": mode_override if isinstance(mode_override, str) else None,
         }
+
+    profile_path = sandbox_meta.get("sandboxProfile") if isinstance(sandbox_meta, dict) else None
     try:
         proc = subprocess.Popen(argv, **kwargs)
     except Exception as spawn_err:
+        if profile_path:
+            delete_seatbelt_profile(profile_path)
         return {
             "stdout": "",
             "stderr": "",
@@ -696,38 +781,49 @@ def _execute_shell_command(
     timer_lock = threading.Lock()
     active_timer: list[threading.Timer | None] = [None]
 
-    def get_timeout_info() -> ProcessTimeoutInfo:
+    def on_timeout() -> None:
         with timer_lock:
-            return ProcessTimeoutInfo(
-                timeout_ms=int(state["timeout_ms"]),
-                started_at_ms=started_at_ms,
-                deadline_at_ms=int(state["deadline_at_ms"]),
-                timed_out=bool(state["timed_out"]),
-            )
-
-    def trigger_timeout() -> None:
-        with timer_lock:
-            if state["settled"] or state["timed_out"] or not pid:
+            if state["settled"]:
                 return
             state["timed_out"] = True
-        kill_process_tree(pid)
-
-    def schedule_timeout() -> None:
-        with timer_lock:
+            state["settled"] = True
             if active_timer[0]:
                 active_timer[0].cancel()
                 active_timer[0] = None
+        if pid:
+            try:
+                kill_process_tree(pid)
+            except Exception:
+                pass
+
+    def schedule_timeout() -> None:
+        with timer_lock:
             if state["settled"]:
                 return
-            remaining_s = max(0.0, (state["deadline_at_ms"] - int(time.time() * 1000)) / 1000.0)
-            t = threading.Timer(remaining_s, trigger_timeout)
-            t.daemon = True
-            active_timer[0] = t
-            t.start()
+            if active_timer[0]:
+                active_timer[0].cancel()
+                active_timer[0] = None
+            now_ms = int(time.time() * 1000)
+            remaining_ms = max(0, state["deadline_at_ms"] - now_ms)
+            timer = threading.Timer(remaining_ms / 1000.0, on_timeout)
+            timer.daemon = True
+            active_timer[0] = timer
+            timer.start()
 
-    def set_timeout_ms(next_timeout_ms: int) -> ProcessTimeoutInfo:
+    def get_timeout_info() -> ProcessTimeoutInfo:
+        with timer_lock:
+            return ProcessTimeoutInfo(
+                timeout_ms=state["timeout_ms"],
+                started_at_ms=started_at_ms,
+                deadline_at_ms=state["deadline_at_ms"],
+                timed_out=state["timed_out"],
+            )
+
+    def set_timeout_ms(next_timeout_ms: float) -> ProcessTimeoutInfo:
         clamped = clamp_bash_timeout_ms(next_timeout_ms, bash_min_timeout_ms)
         with timer_lock:
+            if state["settled"]:
+                return get_timeout_info()
             state["timeout_ms"] = clamped
             state["deadline_at_ms"] = started_at_ms + clamped
         schedule_timeout()
@@ -743,29 +839,33 @@ def _execute_shell_command(
 
     schedule_timeout()
 
-    stdout_chunks: list[str] = []
-    stderr_chunks: list[str] = []
+    stdout_buf = HeadTailBuffer(max_chars=MAX_CAPTURE_CHARS)
+    stderr_buf = HeadTailBuffer(max_chars=MAX_CAPTURE_CHARS)
 
-    def reader(stream: Any, chunk_list: list[str]) -> None:
+    def reader(stream: Any, buf: HeadTailBuffer) -> None:
         try:
             for line in iter(stream.readline, ""):
                 if not line:
                     break
-                chunk_list.append(line)
+                buf.append(line)
                 if on_process_stdout and pid:
                     on_process_stdout(pid, line)
             stream.close()
         except Exception:
             pass
 
-    t_out = threading.Thread(target=reader, args=(proc.stdout, stdout_chunks), daemon=True)
-    t_err = threading.Thread(target=reader, args=(proc.stderr, stderr_chunks), daemon=True)
+    t_out = threading.Thread(target=reader, args=(proc.stdout, stdout_buf), daemon=True)
+    t_err = threading.Thread(target=reader, args=(proc.stderr, stderr_buf), daemon=True)
     t_out.start()
     t_err.start()
 
-    proc.wait()
-    t_out.join(timeout=2.0)
-    t_err.join(timeout=2.0)
+    try:
+        proc.wait()
+        t_out.join(timeout=2.0)
+        t_err.join(timeout=2.0)
+    finally:
+        if profile_path:
+            delete_seatbelt_profile(profile_path)
 
     with timer_lock:
         state["settled"] = True
@@ -785,8 +885,8 @@ def _execute_shell_command(
         exit_code = None
 
     return {
-        "stdout": "".join(stdout_chunks),
-        "stderr": "".join(stderr_chunks),
+        "stdout": stdout_buf.get_value(),
+        "stderr": stderr_buf.get_value(),
         "exit_code": exit_code,
         "signal": signal_name,
         "error": None,
@@ -894,55 +994,70 @@ def _start_background_shell_command(
                 pass
         return ToolResult(ok=False, name="bash", error=str(exc))
 
+    project_root = getattr(context, "project_root", None) or (
+        context.get("project_root", os.getcwd()) if isinstance(context, dict) else os.getcwd()
+    )
+    isolated = _isolated_root(context)
+
     # Background worker thread to stream output to file and notify completion
     def bg_worker() -> None:
-        stdout_captured = ""
-        stderr_captured = ""
-
-        def append_output_file(text: str) -> None:
-            try:
-                with open(output_path, "a", encoding="utf-8") as f:
-                    f.write(text)
-            except Exception:
-                pass
-
-        def read_pipe(stream: Any, is_stderr: bool) -> None:
-            nonlocal stdout_captured, stderr_captured
-            try:
-                for line in iter(stream.readline, ""):
-                    if not line:
-                        break
-                    if is_stderr:
-                        stderr_captured = _append_chunk(stderr_captured, line)
-                    else:
-                        stdout_captured = _append_chunk(stdout_captured, line)
-                    append_output_file(line)
-                    if on_process_stdout and pid:
-                        on_process_stdout(pid, line)
-                stream.close()
-            except Exception:
-                pass
-
-        t1 = threading.Thread(target=read_pipe, args=(proc.stdout, False), daemon=True)
-        t2 = threading.Thread(target=read_pipe, args=(proc.stderr, True), daemon=True)
-        t1.start()
-        t2.start()
-
-        proc.wait()
-        t1.join(timeout=2.0)
-        t2.join(timeout=2.0)
-
-        cleaned_stdout, next_cwd = _strip_marker(stdout_captured, marker)
-        final_output = _join_output(cleaned_stdout, stderr_captured)
-
-        # Overwrite file with marker stripped final output
+        bg_profile = sandbox_meta.get("sandboxProfile") if isinstance(sandbox_meta, dict) else None
         try:
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(final_output)
-        except Exception:
-            pass
+            stdout_captured = ""
+            stderr_captured = ""
 
-        _update_session_cwd(session_id, cwd, next_cwd)
+            def append_output_file(text: str) -> None:
+                try:
+                    with open(output_path, "a", encoding="utf-8") as f:
+                        f.write(text)
+                except Exception:
+                    pass
+
+            def read_pipe(stream: Any, is_stderr: bool) -> None:
+                nonlocal stdout_captured, stderr_captured
+                try:
+                    for line in iter(stream.readline, ""):
+                        if not line:
+                            break
+                        if is_stderr:
+                            stderr_captured = _append_chunk(stderr_captured, line)
+                        else:
+                            stdout_captured = _append_chunk(stdout_captured, line)
+                        append_output_file(line)
+                        if on_process_stdout and pid:
+                            on_process_stdout(pid, line)
+                    stream.close()
+                except Exception:
+                    pass
+
+            t1 = threading.Thread(target=read_pipe, args=(proc.stdout, False), daemon=True)
+            t2 = threading.Thread(target=read_pipe, args=(proc.stderr, True), daemon=True)
+            t1.start()
+            t2.start()
+
+            proc.wait()
+            t1.join(timeout=2.0)
+            t2.join(timeout=2.0)
+
+            cleaned_stdout, next_cwd = _strip_marker(stdout_captured, marker)
+            final_output = _join_output(cleaned_stdout, stderr_captured)
+
+            # Overwrite file with marker stripped final output
+            try:
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(final_output)
+            except Exception:
+                pass
+
+            if next_cwd:
+                try:
+                    resolve_exec_cwd(next_cwd, str(project_root), isolated)
+                except (ValueError, OSError):
+                    next_cwd = None
+            _update_session_cwd(session_id, cwd, next_cwd)
+        finally:
+            if bg_profile:
+                delete_seatbelt_profile(bg_profile)
 
         if on_process_exit and pid:
             on_process_exit(pid)
@@ -1020,8 +1135,6 @@ import pathlib
 import shutil
 import tempfile
 
-from coderai.sandbox import delete_seatbelt_profile
-
 MAX_OUTPUT_CHARS = 30000
 DEFAULT_PWSH_TIMEOUT_S = 120.0
 
@@ -1055,6 +1168,25 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
         sandbox_mode = context.get("sandbox_mode", sandbox_mode)
         project_root = context.get("project_root", project_root)
 
+    isolated = _isolated_root(context)
+    try:
+        start_cwd = resolve_exec_cwd(
+            _get_session_cwd(str(session_id), str(project_root)), str(project_root), isolated
+        )
+    except (ValueError, OSError) as exc:
+        return ToolResult(ok=False, name="pwsh", error=f"CWD rejected: {exc}")
+
+    raw_timeout = args.get("timeout_ms")
+    if raw_timeout is None and context:
+        raw_timeout = getattr(context, "bash_timeout_ms", None) or (
+            context.get("bash_timeout_ms") if isinstance(context, dict) else None
+        )
+    pwsh_timeout_s = (
+        (clamp_bash_timeout_ms(float(raw_timeout)) / 1000.0)
+        if raw_timeout is not None
+        else DEFAULT_PWSH_TIMEOUT_S
+    )
+
     pwsh_bin = _resolve_pwsh_executable()
     if not pwsh_bin:
         # Fallback error if no powershell is installed on non-Windows
@@ -1068,9 +1200,9 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
 
     redirect_error = _reject_escaping_redirects(
         command,
+        start_cwd,
         str(project_root),
-        str(project_root),
-        _isolated_root(context),
+        isolated,
         sandbox_mode,
         tool_name="pwsh",
     )
@@ -1083,7 +1215,7 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
             cmd_argv,
             mode=sandbox_mode,
             workspace_root=str(project_root),
-            cwd=str(project_root),
+            cwd=start_cwd,
         )
     except SandboxUnavailableError as sb_err:
         # Fail-closed: never run the command without the requested OS sandbox.
@@ -1094,6 +1226,17 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
             metadata={"sandbox": {"sandboxApplied": False, "sandboxDenied": str(sb_err)}},
         )
 
+    popen_kwargs: dict[str, Any] = {
+        "cwd": start_cwd,
+        "env": build_shell_env(pwsh_bin),
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    profile_path = sandbox_meta.get("sandboxProfile") if isinstance(sandbox_meta, dict) else None
+
     if run_in_background:
         # Background job execution
         job_id = f"job_pwsh_{uuid.uuid4().hex[:8]}"
@@ -1102,23 +1245,58 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
         log_file = log_dir / f"{job_id}.log"
 
         f = open(log_file, "w", encoding="utf-8")
-        proc = subprocess.Popen(
-            wrapped_argv,
-            cwd=project_root,
-            stdout=f,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        try:
+            proc = subprocess.Popen(
+                wrapped_argv,
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                text=True,
+                **popen_kwargs,
+            )
+        finally:
+            f.close()
 
         job_store = get_job_store()
-        job_store.start(
-            job_id=job_id,
-            session_id=session_id,
-            kind="pwsh",
-            label=description,
-            output_path=str(log_file),
-            process_id=proc.pid,
-        )
+        try:
+            job_store.start(
+                job_id=job_id,
+                session_id=str(session_id),
+                kind="pwsh",
+                label=description,
+                output_path=str(log_file),
+                process_id=proc.pid,
+            )
+        except RuntimeError as exc:
+            if proc.pid:
+                try:
+                    kill_process_tree(int(proc.pid))
+                except Exception:
+                    pass
+            if profile_path:
+                delete_seatbelt_profile(profile_path)
+            return ToolResult(ok=False, name="pwsh", error=str(exc))
+
+        def _pwsh_bg_watcher() -> None:
+            try:
+                proc.wait()
+            except Exception:
+                pass
+            finally:
+                if profile_path:
+                    delete_seatbelt_profile(profile_path)
+                try:
+                    job_store.complete(
+                        job_id,
+                        ok=(proc.returncode == 0),
+                        exit_code=proc.returncode,
+                        detail=None
+                        if proc.returncode == 0
+                        else f"Process exited with code {proc.returncode}",
+                    )
+                except Exception:
+                    pass
+
+        threading.Thread(target=_pwsh_bg_watcher, daemon=True).start()
 
         meta: dict[str, Any] = {"job_id": job_id, "pid": proc.pid, "kind": "pwsh"}
         if sandbox_meta:
@@ -1137,15 +1315,14 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
 
     # Synchronous execution offloaded to worker thread to prevent event loop starvation
     start_time = time.time()
-    profile_path = sandbox_meta.get("sandboxProfile")
     try:
         completed = await asyncio.to_thread(
             subprocess.run,
             wrapped_argv,
-            cwd=project_root,
             capture_output=True,
             text=True,
-            timeout=DEFAULT_PWSH_TIMEOUT_S,
+            timeout=pwsh_timeout_s,
+            **popen_kwargs,
         )
 
         combined_output: str = completed.stdout or ""
@@ -1161,7 +1338,7 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
         # Apply spill policy if output is large
         output_text, _ = apply_spill_policy(
             combined_output,
-            session_id=session_id,
+            session_id=str(session_id),
             tool_name="pwsh",
         )
 
@@ -1188,7 +1365,7 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
         return ToolResult(
             ok=False,
             name="pwsh",
-            error=f"PowerShell command timed out after {DEFAULT_PWSH_TIMEOUT_S}s.",
+            error=f"PowerShell command timed out after {pwsh_timeout_s}s.",
         )
     except Exception as exc:
         return ToolResult(

@@ -19,6 +19,7 @@ import re
 import sys
 import threading
 from collections.abc import Iterator
+from types import FrameType
 from typing import IO, Any
 
 _STD_LOGGER = logging.getLogger("coderai")
@@ -35,11 +36,31 @@ def redact_secrets(text: str) -> str:
     error log) so secrets never fan out to disk unmasked.
     """
     text = re.sub(r"(Authorization:\s*Bearer\s+)[^\s\r\n]+", r"\1***MASKED***", text, flags=re.I)
+    # JSON-style: {"Authorization": "Bearer <token>"}
     text = re.sub(
-        r"((?:api[Kk]ey|api_key|secret)\"?\s*[:=]\s*\"?)[^\",}\s]+",
+        r'("Authorization"\s*:\s*"Bearer\s+)[^"]+',
         r"\1***MASKED***",
         text,
         flags=re.I,
+    )
+    # OAuth / session tokens in either JSON or query-string form.
+    text = re.sub(
+        r'((?:access_token|refresh_token)"?\s*[:=]\s*"?)[^\s",}&]+',
+        r"\1***MASKED***",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"((?:api[Kk]ey|api_key|secret)\"?\s*[:=]\s*\"?)[^\",}\s&;]+",
+        r"\1***MASKED***",
+        text,
+        flags=re.I,
+    )
+    # Bare OpenAI-style keys. Leading boundary keeps `disk-usage-...` intact.
+    text = re.sub(
+        r"(?<![A-Za-z0-9])sk-(?:proj-)?[A-Za-z0-9_-]{20,}",
+        "***MASKED***",
+        text,
     )
     return text
 
@@ -160,6 +181,27 @@ __all__ = [
 ]
 
 
+class InterceptHandler(logging.Handler):
+    """Route standard library logging records into loguru."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = logger.level(record.levelname).name
+        except (ValueError, AttributeError):
+            level = record.levelno
+
+        frame: FrameType | None = logging.currentframe()
+        depth = 2
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        try:
+            logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        except Exception:
+            pass
+
+
 def enable_logging(debug: bool = False, *, redirect_stderr: bool = True) -> None:
     """Enable file logging under the share dir; optionally capture fd=2."""
     from coderai.share import get_share_dir
@@ -172,6 +214,11 @@ def enable_logging(debug: bool = False, *, redirect_stderr: bool = True) -> None
             pass
     log_file = get_share_dir() / "logs" / "coderai.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
+    # IN-A2: logs may carry redacted-but-sensitive traces; keep them 0600.
+    with contextlib.suppress(OSError):
+        os.chmod(log_file.parent, 0o700)
+        if log_file.is_file():
+            os.chmod(log_file, 0o600)
     if type(inner).__name__ == "Logger":  # real loguru
         try:
             inner.enable("coderai")
@@ -185,6 +232,12 @@ def enable_logging(debug: bool = False, *, redirect_stderr: bool = True) -> None
                 rotation="06:00",
                 retention="10 days",
             )
+            # IN-B7: Route stdlib loggers into loguru
+            logging.basicConfig(
+                handlers=[InterceptHandler()],
+                level=logging.DEBUG if debug else logging.INFO,
+                force=True,
+            )
         except Exception:
             pass
     else:
@@ -196,6 +249,8 @@ def enable_logging(debug: bool = False, *, redirect_stderr: bool = True) -> None
                     logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s")
                 )
                 _STD_LOGGER.addHandler(handler)
+                with contextlib.suppress(OSError):
+                    os.chmod(log_file, 0o600)
             except OSError:
                 pass
     if redirect_stderr:

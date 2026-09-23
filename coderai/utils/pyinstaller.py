@@ -73,7 +73,7 @@ datas = collect_data_files(
         "agents/**/*.yaml",
         "agents/**/*.md",
         "agents/**/*.py",
-        "prompts/**/*.md",
+        "prompt/templates/**/*.md",
         "skills/**",
         "tools/**/*.md",
         # NOTE: the changelog lives at the repo root, so there is no

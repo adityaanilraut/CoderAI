@@ -22,7 +22,7 @@ from coderai.utils.common.string_matcher import (
     normalize_quotes as _normalize_quotes,
 )
 from coderai.utils.common.validate import execute_validated_tool, semantic_boolean, semantic_integer
-from coderai.state import (
+from coderai.file_snippets import (
     FileSnippet,
     FileState,
     create_full_file_snippet,
@@ -34,8 +34,13 @@ from coderai.state import (
     normalize_file_path,
     record_file_state,
 )
+from coderai.config import DEFAULT_MODEL
 from coderai.tools.legacy.types import ToolResult, as_str
-from coderai.tools.file.utils import check_file_write_access, write_file_with_callbacks
+from coderai.tools.file.utils import (
+    check_file_write_access,
+    get_effective_workdir,
+    write_file_with_callbacks,
+)
 
 MAX_CANDIDATE_COUNT = 5
 REPLACE_ALL_MATCH_THRESHOLD = 5
@@ -97,11 +102,7 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 return ToolResult(ok=False, name="edit", error=f"Unknown snippet_id: {snippet_id}")
             file_path = normalize_file_path(file_path_arg if file_path_arg else snippet.file_path)
             if not is_absolute_file_path(file_path):
-                project_root = (
-                    ctx.get("project_root")
-                    if isinstance(ctx, dict)
-                    else getattr(ctx, "project_root", None)
-                ) or "."
+                project_root = get_effective_workdir(ctx)
                 file_path = normalize_file_path(str(pathlib.Path(project_root) / file_path))
             if snippet.file_path != file_path and not file_path.endswith(snippet.file_path):
                 return ToolResult(
@@ -114,29 +115,7 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 return ToolResult(
                     ok=False, name="edit", error="file_path is required when snippet_id is omitted."
                 )
-            iso_val = (
-                ctx.get("isolated_cwd")
-                if isinstance(ctx, dict)
-                else getattr(ctx, "isolated_cwd", None)
-            )
-            isolated_cwd = (
-                str(iso_val)
-                if isinstance(iso_val, (str, pathlib.Path))
-                and "MagicMock" not in str(type(iso_val))
-                else None
-            )
-
-            pr_val = (
-                ctx.get("project_root")
-                if isinstance(ctx, dict)
-                else getattr(ctx, "project_root", None)
-            )
-            project_root = (
-                str(pr_val)
-                if isinstance(pr_val, (str, pathlib.Path)) and "MagicMock" not in str(type(pr_val))
-                else "."
-            )
-            effective_root = isolated_cwd or project_root
+            effective_root = get_effective_workdir(ctx)
             file_path = (
                 file_path_arg
                 if is_absolute_file_path(file_path_arg)
@@ -152,19 +131,21 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 return ToolResult(ok=False, name="edit", error="file_path points to a directory.")
             try:
                 content_res = read_text_file_with_metadata(file_path)
+                if content_res.get("is_binary"):
+                    return ToolResult(
+                        ok=False, name="edit", error=f"Cannot edit binary file: {file_path}"
+                    )
+                if content_res.get("has_replacement_characters"):
+                    return ToolResult(
+                        ok=False,
+                        name="edit",
+                        error=f"Cannot edit file with replacement characters (not UTF-8): {file_path}",
+                    )
                 lines = content_res["content"].splitlines()
                 total_lines = max(1, len(lines))
                 snippet = create_full_file_snippet(
                     session_id, file_path, 1, total_lines, content_res["content"]
                 )
-                from coderai.state import mark_file_read
-                from coderai.tools.legacy.observation import get_observation_tracker
-
-                get_observation_tracker().record_observation(
-                    session_id, file_path, content_res["content"]
-                )
-                mark_file_read(session_id, file_path, content_res)
-                file_state = get_file_state(session_id, file_path)
             except Exception as e:
                 return ToolResult(
                     ok=False, name="edit", error=f"Error reading file before editing: {e}"
@@ -221,6 +202,15 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
             metadata = read_text_file_with_metadata(file_path)
         except Exception as e:
             return ToolResult(ok=False, name="edit", error=str(e))
+
+        if metadata.get("is_binary"):
+            return ToolResult(ok=False, name="edit", error=f"Cannot edit binary file: {file_path}")
+        if metadata.get("has_replacement_characters"):
+            return ToolResult(
+                ok=False,
+                name="edit",
+                error=f"Cannot edit file with replacement characters (not UTF-8): {file_path}",
+            )
 
         raw = metadata["content"]
         scope = _build_search_scope(file_path, raw, snippet)
@@ -373,8 +363,9 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
             )
 
         try:
+            line_endings = metadata.get("line_endings_list") or metadata.get("lineEndings")
             write_file_with_callbacks(
-                ctx, file_path, updated_content, metadata["encoding"], metadata["lineEndings"]
+                ctx, file_path, updated_content, metadata["encoding"], line_endings
             )
 
             fresh_metadata = read_text_file_with_metadata(file_path)
@@ -674,7 +665,7 @@ def _correct_escaped_strings_with_llm(
         client = info.get("client")
         if not client:
             return None
-        model = info.get("model", "gpt-6-luna")
+        model = info.get("model", DEFAULT_MODEL)
         problem = _describe_correction_problems(old_string, matched_text)
 
         response = _call_completions(
@@ -779,7 +770,7 @@ def _infer_old_string_not_found_reason_with_llm(
         client = info.get("client")
         if not client:
             return None
-        model = info.get("model", "gpt-6-luna")
+        model = info.get("model", DEFAULT_MODEL)
         lines = raw.splitlines()
         before = "\n".join(
             lines[max(0, scope["start_line"] - 1 - 20) : max(0, scope["start_line"] - 1)]
@@ -858,8 +849,8 @@ from coderai.utils.path import (
 DEFAULT_MAX_OUTPUT_CHARS = 32_000
 TRUNCATED_MESSAGE = "\n<response clipped>"
 
-# History stack for undo_edit: path -> list of previous file contents
-_UNDO_HISTORY: dict[str, list[str]] = {}
+# History stack for undo_edit: session_id -> path -> list of previous file contents
+_UNDO_HISTORY: dict[str, dict[str, list[str]]] = {}
 
 
 def _record_state(session_id: str, file_path: str, content: str) -> None:
@@ -877,20 +868,49 @@ def _record_state(session_id: str, file_path: str, content: str) -> None:
         pass
 
 
-def _push_undo(path: str, content: str) -> None:
+def _push_undo(*args: Any, **kwargs: Any) -> None:
+    session_id = kwargs.get("session_id")
+    if len(args) == 3:
+        session_id = args[0]
+        path = args[1]
+        content = args[2]
+    elif len(args) == 2:
+        path = args[0]
+        content = args[1]
+        if session_id is None:
+            session_id = "default"
+    else:
+        raise ValueError("Invalid arguments to _push_undo")
+
+    sess_id = str(session_id or "default")
     norm = normalize_file_path(path)
-    if norm not in _UNDO_HISTORY:
-        _UNDO_HISTORY[norm] = []
-    _UNDO_HISTORY[norm].append(content)
+    if sess_id not in _UNDO_HISTORY:
+        _UNDO_HISTORY[sess_id] = {}
+    if norm not in _UNDO_HISTORY[sess_id]:
+        _UNDO_HISTORY[sess_id][norm] = []
+    _UNDO_HISTORY[sess_id][norm].append(content)
     # Keep last 20 revisions
-    if len(_UNDO_HISTORY[norm]) > 20:
-        _UNDO_HISTORY[norm].pop(0)
+    if len(_UNDO_HISTORY[sess_id][norm]) > 20:
+        _UNDO_HISTORY[sess_id][norm].pop(0)
 
 
-def _pop_undo(path: str) -> str | None:
+def _pop_undo(*args: Any, **kwargs: Any) -> str | None:
+    session_id = kwargs.get("session_id")
+    if len(args) == 2:
+        session_id = args[0]
+        path = args[1]
+    elif len(args) == 1:
+        path = args[0]
+        if session_id is None:
+            session_id = "default"
+    else:
+        raise ValueError("Invalid arguments to _pop_undo")
+
+    sess_id = str(session_id or "default")
     norm = normalize_file_path(path)
-    if norm in _UNDO_HISTORY and _UNDO_HISTORY[norm]:
-        return _UNDO_HISTORY[norm].pop()
+    sess_history = _UNDO_HISTORY.get(sess_id)
+    if sess_history and norm in sess_history and sess_history[norm]:
+        return sess_history[norm].pop()
     return None
 
 
@@ -920,25 +940,6 @@ def _format_lines(content: str, start_line: int = 1, end_line: int = -1) -> str:
     return "\n".join(formatted)
 
 
-def _find_line_numbers(content: str, search: str) -> list[int]:
-    offsets: list[int] = []
-    pos = 0
-    while True:
-        idx = content.find(search, pos)
-        if idx == -1:
-            break
-        offsets.append(idx)
-        pos = idx + len(search)
-        if not search:
-            break
-
-    line_nums: list[int] = []
-    for off in offsets:
-        line_num = content[:off].count("\n") + 1
-        line_nums.append(line_num)
-    return line_nums
-
-
 def handle_str_replace_editor_tool(args: dict[str, Any], context: Any) -> ToolResult:
     """Execute str_replace_editor command."""
     command = as_str(args.get("command", "")).strip()
@@ -958,32 +959,11 @@ def handle_str_replace_editor_tool(args: dict[str, Any], context: Any) -> ToolRe
             error="Missing required parameter `path`.",
         )
 
-    iso_val = (
-        context.get("isolated_cwd")
-        if isinstance(context, dict)
-        else getattr(context, "isolated_cwd", None)
-    )
-    isolated_cwd = (
-        str(iso_val)
-        if isinstance(iso_val, (str, pathlib.Path)) and "MagicMock" not in str(type(iso_val))
-        else None
-    )
-
-    pr_val = (
-        context.get("project_root")
-        if isinstance(context, dict)
-        else getattr(context, "project_root", None)
-    )
-    project_root = (
-        str(pr_val)
-        if isinstance(pr_val, (str, pathlib.Path)) and "MagicMock" not in str(type(pr_val))
-        else "."
-    )
-    effective_root = isolated_cwd or project_root
+    effective_root = get_effective_workdir(context)
     target_path = _resolve_path(path_arg, effective_root)
 
     if command == "view":
-        return _handle_view(target_path, args.get("view_range"), project_root, context)
+        return _handle_view(target_path, args.get("view_range"), effective_root, context)
     elif command == "create":
         return _handle_create(target_path, args.get("file_text"), context, args=args)
     elif command == "str_replace":
@@ -1153,6 +1133,16 @@ def _handle_str_replace(
 
     try:
         meta = read_text_file_with_metadata(target_path)
+        if meta.get("is_binary"):
+            return ToolResult(
+                ok=False, name="str_replace_editor", error=f"Cannot edit binary file: {target_path}"
+            )
+        if meta.get("has_replacement_characters"):
+            return ToolResult(
+                ok=False,
+                name="str_replace_editor",
+                error=f"Cannot edit file with replacement characters (not UTF-8): {target_path}",
+            )
         current_content = meta["content"]
     except Exception as exc:
         return ToolResult(
@@ -1214,10 +1204,13 @@ def _handle_str_replace(
         )
 
     # Save for undo
-    _push_undo(target_path, current_content)
+    _push_undo(target_path, current_content, session_id=session_id)
 
     try:
-        write_file_with_callbacks(context, target_path, new_content)
+        line_endings = meta.get("line_endings_list") or meta.get("lineEndings")
+        write_file_with_callbacks(
+            context, target_path, new_content, meta.get("encoding", "utf8"), line_endings
+        )
     except Exception as exc:
         return ToolResult(
             ok=False,
@@ -1276,6 +1269,16 @@ def _handle_insert(
 
     try:
         meta = read_text_file_with_metadata(target_path)
+        if meta.get("is_binary"):
+            return ToolResult(
+                ok=False, name="str_replace_editor", error=f"Cannot edit binary file: {target_path}"
+            )
+        if meta.get("has_replacement_characters"):
+            return ToolResult(
+                ok=False,
+                name="str_replace_editor",
+                error=f"Cannot edit file with replacement characters (not UTF-8): {target_path}",
+            )
         current_content = meta["content"]
     except Exception as exc:
         return ToolResult(
@@ -1331,10 +1334,13 @@ def _handle_insert(
             metadata={"dry_run": True, "virtual_patch": patch, "file_path": target_path},
         )
 
-    _push_undo(target_path, current_content)
+    _push_undo(target_path, current_content, session_id=session_id)
 
     try:
-        write_file_with_callbacks(context, target_path, new_content)
+        line_endings = meta.get("line_endings_list") or meta.get("lineEndings")
+        write_file_with_callbacks(
+            context, target_path, new_content, meta.get("encoding", "utf8"), line_endings
+        )
     except Exception as exc:
         return ToolResult(
             ok=False,
@@ -1353,7 +1359,20 @@ def _handle_insert(
 
 
 def _handle_undo(target_path: str, context: Any) -> ToolResult:
-    prev = _pop_undo(target_path)
+    session_id = str(getattr(context, "session_id", "default") or "default")
+    sandbox_error = check_file_write_access(context, target_path)
+    if sandbox_error:
+        return ToolResult(ok=False, name="str_replace_editor", error=sandbox_error)
+
+    from coderai.tools.legacy.observation import get_observation_tracker
+
+    allowed, obs_err = get_observation_tracker().check_mutation_allowed(
+        session_id, target_path, require_observed=True
+    )
+    if not allowed and obs_err:
+        return ToolResult(ok=False, name="str_replace_editor", error=obs_err)
+
+    prev = _pop_undo(target_path, session_id=session_id)
     if prev is None:
         return ToolResult(
             ok=False,
@@ -1370,8 +1389,8 @@ def _handle_undo(target_path: str, context: Any) -> ToolResult:
             error=f"Failed to restore file `{target_path}`: {exc}",
         )
 
-    session_id = str(getattr(context, "session_id", "default") or "default")
     _record_state(session_id, target_path, prev)
+    get_observation_tracker().record_observation(session_id, target_path, content=prev)
 
     return ToolResult(
         ok=True,

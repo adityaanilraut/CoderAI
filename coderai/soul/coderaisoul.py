@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +20,8 @@ from kosong.chat_provider import (
     APITimeoutError,
     ChatProviderError,
 )
+
+logger = logging.getLogger(__name__)
 
 from coderai.events import (
     SessionEvent,
@@ -116,10 +119,15 @@ class AgentLoop:
             pass
         return True
 
-    def _claim_controller(self) -> asyncio.Event:
+    def _claim_controller(self, fresh_turn: bool = True) -> asyncio.Event:
         """Return this activation's controller without clobbering a live one."""
         existing = self.manager.session_controllers.get(self.session_id)
         if existing is not None:
+            if fresh_turn and existing.is_set():
+                controller = asyncio.Event()
+                self.manager.session_controllers[self.session_id] = controller
+                self._controller = controller
+                return controller
             self._controller = existing
             return existing
         controller = asyncio.Event()
@@ -199,6 +207,16 @@ class AgentLoop:
         except Exception:
             pass
         if reason not in ("permission", "question"):
+            try:
+                from coderai.goals.core import get_goal_store
+
+                goal_store = get_goal_store(self.manager.project_root)
+                active_goal = goal_store.get_active_goal(self.session_id)
+                if active_goal and active_goal.status == "running":
+                    goal_store.advance_round(self.session_id, active_goal.id)
+            except Exception:
+                pass
+
             from coderai.hooks.runner import run_post_turn, run_stop
 
             try:
@@ -259,6 +277,7 @@ class AgentLoop:
     ) -> None:
         """Run one activation until completion, pause, interruption, or iteration limit."""
         from coderai.soul.session.manager import (
+            SessionInterrupted,
             _accumulate_usage,
             _accumulate_usage_per_model,
             _normalize_tool_calls,
@@ -282,7 +301,7 @@ class AgentLoop:
         )
         settings = manager.get_resolved_settings()
 
-        self._claim_controller()
+        self._claim_controller(fresh_turn=(permission_replies is None))
         if permission_replies is None:
             self.emit_turn_start()
 
@@ -328,6 +347,7 @@ class AgentLoop:
                 manager._build_message(session_id, "assistant", fail_message),
                 False,
             )
+            self.emit_turn_end("error")
             self._release_controller()
             return
 
@@ -449,6 +469,9 @@ class AgentLoop:
                     manager.on_assistant_message(compact_notice, False)
                     await manager._compact_session(session_id, trigger=effective_trigger)
                     messages = manager.list_session_messages(session_id)
+                    from coderai.soul.session.log import derive_messages
+
+                    token_count = estimate_text_tokens(derive_messages(messages))
 
                 if self._consume_steers():
                     messages = manager.list_session_messages(session_id)
@@ -499,8 +522,10 @@ class AgentLoop:
                         )
                         manager._append_message(msg)
                         converted.append({"role": "user", "content": wrapped})
-                except Exception:
-                    pass
+                except Exception as inj_err:
+                    logger.warning(
+                        "Dynamic injection failed for session %s: %s", session_id, inj_err
+                    )
                 request: dict[str, Any] = {
                     "model": wire_model,
                     "messages": converted,
@@ -543,9 +568,11 @@ class AgentLoop:
                     response = await manager._create_completion_with_retry(
                         session_id, client, request
                     )
+                except (SessionInterrupted, asyncio.CancelledError):
+                    raise
                 except Exception as error:
                     if manager.is_interrupted(session_id):
-                        return
+                        raise SessionInterrupted("Session was interrupted") from error
                     error_text = describe_llm_error(error)
                     log_api_error(error, {"sessionId": session_id, "model": model})
                     manager._update_entry(
@@ -761,6 +788,23 @@ class AgentLoop:
                 ),
                 False,
             )
+        except SessionInterrupted:
+            try:
+                wire = self._wire()
+                if wire is not None:
+                    wire.step_interrupted()
+            except Exception:
+                pass
+            self.emit_turn_end("interrupted")
+            manager._update_entry(
+                session_id,
+                lambda entry: {
+                    **entry,
+                    "status": "interrupted",
+                    "failReason": "interrupted",
+                    "updateTime": _now(),
+                },
+            )
         except asyncio.CancelledError:
             try:
                 wire = self._wire()
@@ -775,6 +819,25 @@ class AgentLoop:
                     **entry,
                     "status": "interrupted",
                     "failReason": "interrupted",
+                    "updateTime": _now(),
+                },
+            )
+            raise
+        except Exception as exc:
+            fail_reason = str(exc)
+            try:
+                wire = self._wire()
+                if wire is not None:
+                    wire.step_interrupted()
+            except Exception:
+                pass
+            self.emit_turn_end("error")
+            manager._update_entry(
+                session_id,
+                lambda entry, r=fail_reason: {
+                    **entry,
+                    "status": "failed",
+                    "failReason": r,
                     "updateTime": _now(),
                 },
             )
@@ -848,6 +911,9 @@ def is_retryable_api_error(e: Exception) -> bool:
     """
     if isinstance(e, APIStatusError):
         return e.status_code in _RETRYABLE_STATUS_CODES
+    status = getattr(e, "status_code", getattr(e, "status", None))
+    if status in _RETRYABLE_STATUS_CODES:
+        return True
     return isinstance(e, ChatProviderError)
 
 

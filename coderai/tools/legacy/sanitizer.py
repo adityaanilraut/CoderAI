@@ -111,7 +111,15 @@ def sanitize_text(text: str) -> tuple[str, list[str]]:
         return text, []
 
     detected_types: list[str] = []
-    sanitized = text
+    # PR-B4: neutralize spoofed <system-reminder> tags in tool output so a
+    # hostile file or web page cannot inject authoritative directives. Real
+    # reminders are separate runtime messages and never pass through here.
+    sanitized = re.sub(
+        r"</?system-reminder\s*>",
+        lambda m: m.group(0).replace("<", "&lt;").replace(">", "&gt;"),
+        text,
+        flags=re.IGNORECASE,
+    )
 
     for secret_type, pattern, replacement in PATTERNS:
         if pattern.search(sanitized):

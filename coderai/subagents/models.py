@@ -18,6 +18,7 @@ class SubagentTypeDefinition:
     supports_background: bool = True
     system_prompt: str = ""
     mode: str = "general"
+    model: str | None = None
     source: str = "builtin"
     source_path: Path | None = None
 

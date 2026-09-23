@@ -22,6 +22,7 @@ from coderai.skill.flow import (
 )
 
 DEFAULT_MAX_FLOW_MOVES = 1000
+MAX_DECISION_RETRIES = 3
 
 # Sessions currently inside a flow/ralph run. Flow node turns call
 # ``_activate`` directly so the ralph branch in ``reply_session`` skips them
@@ -38,6 +39,7 @@ class FlowTurnResult:
     stop_reason: str  # "natural" | "tool_rejected" | "error" | "interrupted"
     final_message: str = ""
     steps_used: int = 0
+    attempts: int = 1
 
 
 @dataclass
@@ -83,7 +85,7 @@ class FlowRunner:
             label=(
                 f"{text}. (You are running in an automated loop where the same "
                 "prompt is fed repeatedly. Only choose STOP when the task is fully complete. "
-                "Including it will stop further iterations. If you are not 100% sure, "
+                "Choosing STOP will stop further iterations. If you are not 100% sure, "
                 "choose CONTINUE.)"
             ).strip(),
             kind="decision",
@@ -121,6 +123,8 @@ class FlowRunner:
                 if moves >= self._max_moves:
                     raise FlowBudgetExceeded(f"Agent flow exceeded {self._max_moves} moves.")
                 next_id, turn = await self._execute_flow_node(mgr, session_id, node, edges)
+                attempts = getattr(turn, "attempts", 1)
+                moves += attempts
                 if turn.stop_reason == "tool_rejected":
                     return FlowOutcome(
                         status="tool_rejected",
@@ -133,7 +137,6 @@ class FlowRunner:
                     )
                 if next_id is None:
                     return FlowOutcome(status="completed", moves=moves)
-                moves += 1
                 current_id = next_id
         except FlowBudgetExceeded as exc:
             return FlowOutcome(status="budget_exceeded", detail=str(exc))
@@ -149,8 +152,11 @@ class FlowRunner:
             )
         base_prompt = self._build_flow_prompt(node, edges)
         prompt = base_prompt
-        while True:
+        attempts = 0
+        while attempts < MAX_DECISION_RETRIES:
+            attempts += 1
             result = await self._flow_turn(mgr, session_id, prompt)
+            result.attempts = attempts
             if result.stop_reason == "tool_rejected":
                 return None, result
             if result.stop_reason in ("error", "interrupted"):
@@ -168,6 +174,14 @@ class FlowRunner:
                 f"(got: {choice or '<missing>'}; available: {options}). "
                 "Reply with one of the choices using <choice>...</choice>."
             )
+        return None, FlowTurnResult(
+            stop_reason="error",
+            final_message=(
+                f'Decision node "{node.id}" exceeded max retry limit '
+                f"({MAX_DECISION_RETRIES}) without a valid choice."
+            ),
+            attempts=attempts,
+        )
 
     @staticmethod
     def _build_flow_prompt(node: FlowNode, edges: list[FlowEdge]) -> str:
@@ -188,9 +202,24 @@ class FlowRunner:
     def _match_flow_edge(edges: list[FlowEdge], choice: str | None) -> str | None:
         if not choice:
             return None
+        choice_clean = choice.strip().lower()
+        aliases = {
+            "continue": {"continue", "next", "proceed", "yes", "y"},
+            "stop": {"stop", "end", "halt", "done", "finish", "no", "n", "exit"},
+        }
         for edge in edges:
-            if edge.label == choice:
+            if not edge.label:
+                continue
+            edge_clean = edge.label.strip().lower()
+            if edge_clean == choice_clean:
                 return edge.dst
+            if edge_clean in aliases and choice_clean in aliases[edge_clean]:
+                return edge.dst
+            for key, alt_set in aliases.items():
+                if edge_clean == key and choice_clean in alt_set:
+                    return edge.dst
+                if choice_clean == key and edge_clean in alt_set:
+                    return edge.dst
         return None
 
     @staticmethod

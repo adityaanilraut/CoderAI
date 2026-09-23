@@ -125,16 +125,32 @@ class MergedHookOutcome:
         }
 
 
-def load_hook_config(project_root: str, settings: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Load hooks configuration from resolved settings or standard config files."""
+def load_hook_config(
+    project_root: str, settings: dict[str, Any] | None = None, *, trusted: bool | None = None
+) -> dict[str, Any]:
+    """Load hooks configuration from resolved settings or standard config files.
+
+    Project-scope hook files are ignored until the project is trusted (IN-A1);
+    the user-scope ``~/.coderai/hooks.json`` always loads.
+    """
     if isinstance(settings, dict) and isinstance(settings.get("hooks"), dict):
         return settings["hooks"]
 
-    candidates = [
-        pathlib.Path(project_root) / ".coderai" / "hooks.json",
-        pathlib.Path(project_root) / ".claude" / "settings.json",
-        pathlib.Path.home() / ".coderai" / "hooks.json",
-    ]
+    if trusted is None:
+        from coderai.trust import is_project_trusted
+
+        trusted = is_project_trusted(project_root)
+    candidates = []
+    if trusted:
+        candidates.extend(
+            [
+                pathlib.Path(project_root) / ".coderai" / "hooks.json",
+                pathlib.Path(project_root) / ".claude" / "settings.json",
+            ]
+        )
+    from coderai.share import get_share_dir
+
+    candidates.append(get_share_dir() / "hooks.json")
     for candidate in candidates:
         if not candidate.is_file():
             continue

@@ -48,7 +48,11 @@ async def handle_web_search_tool(args: dict[str, Any], context: Any) -> ToolResu
     if len(queries) > MAX_QUERIES:
         queries = queries[:MAX_QUERIES]
 
-    max_results = int(args.get("max_results", DEFAULT_MAX_RESULTS))
+    try:
+        max_results = int(args.get("max_results", DEFAULT_MAX_RESULTS))
+    except (ValueError, TypeError):
+        max_results = DEFAULT_MAX_RESULTS
+    max_results = max(1, min(max_results, 50))
     provider_name = as_str(args.get("provider", "")).strip() or None
 
     provider = resolve_web_search_provider(provider_name)

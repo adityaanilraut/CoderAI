@@ -261,6 +261,15 @@ class ToolRegistry:
 
         return disposer
 
+    def get_guards(
+        self, scope: str | None = None
+    ) -> list[Callable[[ToolDefinition, dict[str, Any], Any], str | None]]:
+        """Return active monotonic execution guards for scope and global layer."""
+        guards = list(self._global_layer.guards)
+        if scope and scope in self._scoped_layers:
+            guards.extend(self._scoped_layers[scope].guards)
+        return guards
+
     def get(self, name: str, scope: str | None = None) -> ToolDefinition | None:
         """Resolve a tool definition by name or alias, applying scoping and active restrictions."""
         # 1. Check scoped layer first
@@ -356,8 +365,7 @@ class ToolRegistry:
 
             param_spec = tool_def.parameters.get(param_name)
             if not param_spec:
-                # Extra unknown argument - allow for forward compatibility
-                continue
+                raise ValidationError(f"Tool '{name}' received unknown argument '{param_name}'.")
 
             expected_type = param_spec.get("type")
             if expected_type == "string":
@@ -384,6 +392,15 @@ class ToolRegistry:
                     raise ValidationError(
                         f"Argument '{param_name}' for tool '{name}' must be an array/list, got {type(value).__name__}."
                     )
+                items_spec = param_spec.get("items")
+                if isinstance(items_spec, dict):
+                    item_enum = items_spec.get("enum")
+                    if item_enum and isinstance(item_enum, list):
+                        for item in value:
+                            if item not in item_enum:
+                                raise ValidationError(
+                                    f"Array item '{item}' in argument '{param_name}' for tool '{name}' is invalid. Allowed: {item_enum}"
+                                )
             elif expected_type == "object":
                 if not isinstance(value, dict):
                     raise ValidationError(
@@ -486,7 +503,7 @@ class ToolRegistry:
                         "description": "Run inside a persistent PTY bash shell retaining variables and working directory across calls.",
                     },
                     "timeout_ms": {
-                        "type": "number",
+                        "type": "integer",
                         "description": "Command execution timeout in milliseconds.",
                     },
                     "sandbox_permissions": {
@@ -525,6 +542,10 @@ class ToolRegistry:
                         "items": {"type": "string", "enum": sorted(BASH_SCOPE_ENUM)},
                     },
                     "run_in_background": {"type": "boolean"},
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "Command execution timeout in milliseconds.",
+                    },
                 },
                 required=["command", "sideEffects"],
                 handler=_pwsh.handle_pwsh_tool,
@@ -624,11 +645,11 @@ class ToolRegistry:
                         "description": "Absolute or workspace-relative path to read.",
                     },
                     "offset": {
-                        "type": "number",
+                        "type": "integer",
                         "description": "1-based starting line number to read from.",
                     },
                     "limit": {
-                        "type": "number",
+                        "type": "integer",
                         "description": "Maximum number of lines to return (default: 2000).",
                     },
                 },
@@ -813,7 +834,19 @@ class ToolRegistry:
                     "url": {
                         "type": "string",
                         "description": "The URL to fetch and convert to Markdown.",
-                    }
+                    },
+                    "raw": {
+                        "type": "boolean",
+                        "description": "Whether to return the raw HTML instead of Markdown.",
+                    },
+                    "max_length": {
+                        "type": "integer",
+                        "description": "Maximum number of characters to return.",
+                    },
+                    "use_cache": {
+                        "type": "boolean",
+                        "description": "Whether to use the HTTP response cache.",
+                    },
                 },
                 required=["url"],
                 handler=_fetch.handle_web_fetch_tool,
@@ -825,6 +858,8 @@ class ToolRegistry:
         )
 
         # 7. Subagents & Delegation
+
+        from coderai.subagents.registry import format_subagent_types_description
 
         self.register(
             define_tool(
@@ -841,7 +876,7 @@ class ToolRegistry:
                     },
                     "subagent_type": {
                         "type": "string",
-                        "description": "Builtin agent flavor: coder (general engineering), explore (read-only research), plan (implementation planning).",
+                        "description": format_subagent_types_description(),
                     },
                     "mode": {
                         "type": "string",
@@ -875,7 +910,7 @@ class ToolRegistry:
                     },
                     "subagent_type": {
                         "type": "string",
-                        "description": "Builtin agent flavor: coder, explore, or plan.",
+                        "description": format_subagent_types_description(),
                     },
                     "mode": {
                         "type": "string",
@@ -1236,11 +1271,18 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="exit_plan_mode",
-                description="Leave Plan Mode while mutation tools stay active.",
+                description=(
+                    "Exit plan mode and present the finalized plan to the user for approval. "
+                    "Provide a concise implementation summary in the `summary` parameter before regular "
+                    "mutation and execution tools are reactivated."
+                ),
                 parameters={
                     "summary": {
                         "type": "string",
-                        "description": "Summary of plan conclusions before exiting plan mode.",
+                        "description": (
+                            "Concise summary of the planned approach and key decisions "
+                            "presented to the user for plan approval."
+                        ),
                     }
                 },
                 required=[],

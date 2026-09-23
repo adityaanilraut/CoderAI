@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from rich.panel import Panel
+from rich.markup import escape
 from rich.table import Table
 
 from coderai.utils.slashcmd import SlashCommandRegistry
@@ -32,10 +33,10 @@ class ShellContext:
     """Encapsulates interactive shell state during slash command execution."""
 
     mgr: Any
-    session_id: str | None
-    active_plan_mode: bool
-    console: Any
-    yes: bool
+    session_id: str | None = None
+    active_plan_mode: bool = False
+    console: Any = None
+    yes: bool = False
     pending_skills: list[str] = field(default_factory=list)
     ptk_session: Any = None
     turn_prompt: str | None = None
@@ -171,7 +172,9 @@ def cmd_jobs(ctx: ShellContext, args: str) -> SlashAction:
                         if j.status == "completed"
                         else ("yellow" if j.status == "running" else "red")
                     )
-                    jt.add_row(f"[{status_color}]{j.status.upper()}[/]", j.id, j.kind, j.label[:60])
+                    jt.add_row(
+                        f"[{status_color}]{j.status.upper()}[/]", j.id, j.kind, escape(j.label[:60])
+                    )
                 ctx.console.print(jt)
             else:
                 for j in jobs:
@@ -227,7 +230,7 @@ def cmd_schedule(ctx: ShellContext, args: str) -> SlashAction:
                         f"[{state_color}]{r.state}[/]",
                         r.kind,
                         r.scheduled_at[:19],
-                        r.prompt[:50],
+                        escape(r.prompt[:50]),
                     )
                 ctx.console.print(st)
             else:
@@ -315,7 +318,9 @@ def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
                 rt.add_row(b, "bundled", "primary", active_mark, f"Bundled {b} agent specification")
             for d in discovered:
                 active_mark = "[bold green]● YES[/]" if d.name == cur_role else "[dim]○[/]"
-                rt.add_row(d.name, "discovered", d.mode, active_mark, d.description)
+                rt.add_row(
+                    escape(d.name), "discovered", escape(d.mode), active_mark, escape(d.description)
+                )
             ctx.console.print(rt)
         else:
             print(f"Active role: {cur_role}")
@@ -347,10 +352,10 @@ def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
 
 
 def _emit(ctx: ShellContext, text: str) -> None:
-    if ctx.console is not None:
-        ctx.console.print(text)
-    else:
-        print(text)
+    # UI-A13: /agents output carries model-written statuses/descriptions.
+    from coderai.ui.shell.emit import _emit_plain
+
+    _emit_plain(ctx.console, text)
 
 
 @registry.command(name="agents", aliases=["subagents", "subagent"])
@@ -390,7 +395,7 @@ def cmd_agents(ctx: ShellContext, args: str) -> SlashAction:
     return SlashAction.HANDLED
 
 
-@registry.command(name="title", aliases=["rename"])
+@registry.command(name="rename", aliases=["title"])
 def cmd_title_action(ctx: ShellContext, args: str) -> SlashAction:
     """View or set the session title."""
     from coderai.ui.shell.slash import cmd_title
@@ -537,7 +542,7 @@ def cmd_goal(ctx: ShellContext, args: str) -> SlashAction:
         updated = store.update(sid, rest, status=status_map[goal_action])
         print(f"Updated {updated.id}" if updated else f"Unknown goal '{rest}'")
     else:
-        print("Usage: /goal [list|add <title>|done <id>|cancel <id>]")
+        print("Usage: /goal [list|add <title>|start <id>|done <id>|cancel <id>]")
     return SlashAction.HANDLED
 
 
@@ -559,8 +564,12 @@ async def cmd_mcp(ctx: ShellContext, args: str) -> SlashAction:
         render_mcp_resources_async,
     )
 
-    if args.startswith("reconnect"):
-        server_name = args.replace("reconnect", "", 1).strip()
+    tokens = args.strip().split(None, 1)
+    sub = tokens[0].lower() if tokens else ""
+    rest = tokens[1].strip() if len(tokens) > 1 else ""
+
+    if sub == "reconnect":
+        server_name = rest
         if not server_name:
             print("Usage: /mcp reconnect <server_name>")
             return SlashAction.HANDLED
@@ -580,17 +589,19 @@ async def cmd_mcp(ctx: ShellContext, args: str) -> SlashAction:
             err_msg = f": {status.error}" if status and status.error else ""
             if ctx.console is not None:
                 ctx.console.print(
-                    f"[bold red]Failed to reconnect MCP server '{server_name}'{err_msg}[/]"
+                    f"[bold red]Failed to reconnect MCP server '{escape(server_name)}'{escape(err_msg)}[/]"
                 )
             else:
                 print(f"Failed to reconnect MCP server '{server_name}'{err_msg}")
-    elif args.startswith("prompts"):
+    elif sub == "prompts":
         render_mcp_prompts(ctx.console, ctx.mgr)
-    elif args.startswith("resources"):
-        uri_arg = args.replace("resources", "", 1).strip() or None
+    elif sub == "resources":
+        uri_arg = rest or None
         await render_mcp_resources_async(ctx.console, ctx.mgr, uri=uri_arg)
-    else:
+    elif not sub:
         render_mcp_interactive(ctx.console, ctx.mgr)
+    else:
+        print("Usage: /mcp [prompts|resources [uri]|reconnect <server_name>]")
     return SlashAction.HANDLED
 
 
@@ -635,10 +646,13 @@ def cmd_thinking(ctx: ShellContext, args: str) -> SlashAction:
     elif arg in ("summary", "off", "lite"):
         ctx.thinking_expanded = False
         msg = "Concise summary view enabled."
-    else:
+    elif not arg:
         ctx.thinking_expanded = not ctx.thinking_expanded
         mode_str = "Full expanded" if ctx.thinking_expanded else "Concise summary"
         msg = f"Switched to {mode_str}."
+    else:
+        _emit(ctx, "Usage: /thinking [full|summary|on|off]")
+        return SlashAction.HANDLED
     if ctx.console is not None:
         ctx.console.print(f"[bold magenta]Reasoning traces:[/] {msg}")
     else:
@@ -699,7 +713,24 @@ def cmd_fork(ctx: ShellContext, args: str) -> SlashAction:
 @registry.command(aliases=["rm"])
 def cmd_delete(ctx: ShellContext, args: str) -> SlashAction:
     """Delete a saved session."""
-    del_target_id = args.strip() if args.strip() else ctx.session_id
+    raw = args.strip()
+    if not raw:
+        # UI-A19: deleting the current session without an explicit id needs
+        # confirmation; a bare /delete must never nuke it silently.
+        if not ctx.session_id:
+            print("Usage: /delete <session_id>")
+            return SlashAction.HANDLED
+        try:
+            answer = input(f"Delete the current session '{ctx.session_id}'? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("Delete cancelled.")
+            return SlashAction.HANDLED
+        if answer not in ("y", "yes"):
+            print("Delete cancelled.")
+            return SlashAction.HANDLED
+        del_target_id = ctx.session_id
+    else:
+        del_target_id = raw
     if not del_target_id:
         print("Usage: /delete <session_id>")
         return SlashAction.HANDLED
@@ -771,6 +802,9 @@ def cmd_plan(ctx: ShellContext, args: str) -> SlashAction:
     elif sub in ("clear", "reset"):
         if ctx.session_id:
             ctx.mgr.clear_plan(ctx.session_id)
+        ctx.active_plan_mode = False
+        if ctx.ptk_session is not None and hasattr(ctx.ptk_session, "set_plan_mode"):
+            ctx.ptk_session.set_plan_mode(False)
         print("Session plan cleared.")
         return SlashAction.HANDLED
     elif sub == "apply":
@@ -784,8 +818,11 @@ def cmd_plan(ctx: ShellContext, args: str) -> SlashAction:
         print("Exited Plan Mode. Executing plan...")
         ctx.turn_prompt = f"Implement the following plan step by step:\n\n{plan_content}"
         return SlashAction.TURN
-    else:
+    elif not sub:
         ctx.active_plan_mode = not ctx.active_plan_mode
+    else:
+        print("Usage: /plan [on|off|view|apply|reset]")
+        return SlashAction.HANDLED
 
     if ctx.ptk_session is not None and hasattr(ctx.ptk_session, "set_plan_mode"):
         ctx.ptk_session.set_plan_mode(ctx.active_plan_mode)
@@ -1017,11 +1054,10 @@ def cmd_new(ctx: ShellContext, args: str) -> SlashAction:
 @registry.command
 def cmd_init(ctx: ShellContext, args: str) -> SlashAction:
     """Queue a turn that writes or updates AGENTS.md from the project."""
-    from coderai.prompts import INIT
+    from coderai.prompts import get_init_command_prompt
 
-    extra = args.strip()
-    prompt = INIT if not extra else f"{INIT}\n\nAdditional focus from the user:\n{extra}"
-    ctx.turn_prompt = prompt
+    project_root = getattr(ctx.mgr, "project_root", None) if ctx.mgr else None
+    ctx.turn_prompt = get_init_command_prompt(project_root=project_root, extra=args.strip())
     _emit(ctx, "Starting an AGENTS.md initialization turn.")
     return SlashAction.TURN
 
@@ -1115,13 +1151,17 @@ def cmd_add_dir(ctx: ShellContext, args: str) -> SlashAction:
 
 @registry.command(name="import")
 def cmd_import(ctx: ShellContext, args: str) -> SlashAction:
-    """Import context from file or session."""
+    """Import context from a file."""
     _MAX_IMPORT_CHARS = 100_000
     target = args.strip().strip("'\"")
     if not target:
-        print("Usage: /import <file_path or session_id>")
+        print("Usage: /import <file_path>")
         return SlashAction.HANDLED
-    p = pathlib.Path(target)
+    # UI-A18: resolve against the project root (not the process cwd), and
+    # never grant file content system-level authority.
+    p = pathlib.Path(target).expanduser()
+    if not p.is_absolute():
+        p = pathlib.Path(getattr(ctx.mgr, "project_root", ".")).expanduser() / p
     if p.exists() and p.is_file():
         try:
             content = p.read_text(encoding="utf-8", errors="replace")
@@ -1141,7 +1181,9 @@ def cmd_import(ctx: ShellContext, args: str) -> SlashAction:
             return SlashAction.HANDLED
         try:
             msg = ctx.mgr._build_message(
-                ctx.session_id, "user", f"<system>Imported from {p.name}:\n{content}</system>"
+                ctx.session_id,
+                "user",
+                f'<imported-file name="{p.name}">\n{content}\n</imported-file>',
             )
             ctx.mgr._append_message(msg)
         except Exception as exc:
@@ -1156,6 +1198,10 @@ def cmd_import(ctx: ShellContext, args: str) -> SlashAction:
 @registry.command
 def cmd_reset(ctx: ShellContext, args: str) -> SlashAction:
     """Clear conversation context and reset session state."""
+    if ctx.session_id:
+        from coderai.file_snippets import clear_session_state
+
+        clear_session_state(ctx.session_id)
     ctx.session_id = None
     ctx.active_plan_mode = False
     print("✓ Session state reset.")
@@ -1308,7 +1354,11 @@ def cmd_teams(ctx: ShellContext, args: str) -> SlashAction:
         else:
             for tm in teammates:
                 tt.add_row(
-                    tm.agent_id, tm.role, tm.status, str(tm.turn_count), tm.description or "-"
+                    escape(tm.agent_id),
+                    escape(tm.role),
+                    escape(tm.status),
+                    escape(str(tm.turn_count)),
+                    escape(tm.description or "-"),
                 )
         ctx.console.print(tt)
 
@@ -1323,7 +1373,11 @@ def cmd_teams(ctx: ShellContext, args: str) -> SlashAction:
         else:
             for t in tasks:
                 tb.add_row(
-                    t.task_id, t.title, t.assigned_to or "(unassigned)", t.priority, t.status
+                    escape(t.task_id),
+                    escape(t.title),
+                    escape(t.assigned_to or "(unassigned)"),
+                    escape(t.priority),
+                    escape(t.status),
                 )
         ctx.console.print(tb)
     else:
@@ -1345,18 +1399,19 @@ async def cmd_btw(ctx: ShellContext, args: str) -> SlashAction:
     from coderai.soul.btw import run_side_question
 
     if ctx.console is not None:
-        ctx.console.print(f"[dim]Thinking... (side question: {q[:60]}...)[/]")
+        ctx.console.print(f"[dim]Thinking... (side question: {escape(q[:60])}...)[/]")
     try:
         answer = await run_side_question(ctx.mgr, ctx.session_id, q)
         if ctx.console is not None:
+            # UI-A14: the model-written answer must not render as markup.
             ctx.console.print(
-                Panel(answer, title="[bold cyan]BTW / Side Note[/]", border_style="cyan")
+                Panel(escape(answer), title="[bold cyan]BTW / Side Note[/]", border_style="cyan")
             )
         else:
             print(f"\n--- BTW ---\n{answer}\n-----------")
     except Exception as err:
         if ctx.console is not None:
-            ctx.console.print(f"[red]Side question failed: {err}[/]")
+            ctx.console.print(f"[red]Side question failed: {escape(str(err))}[/]")
         else:
             print(f"Side question failed: {err}")
     return SlashAction.HANDLED

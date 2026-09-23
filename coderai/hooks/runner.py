@@ -20,8 +20,7 @@ from coderai.tools.legacy.types import ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HOOK_TIMEOUT_SECONDS = 10.0
-from coderai.hooks.config import MergedHookOutcome
+from coderai.hooks.config import DEFAULT_HOOK_TIMEOUT_SECONDS, MergedHookOutcome
 from coderai.hooks.engine import run_hook_point, run_hook_point_async
 from coderai.hooks.events import HookPoint
 
@@ -647,6 +646,10 @@ async def run_hook(
     cwd: str | None = None,
 ) -> HookResult:
     """Execute a single hook command. Fail-open: errors/timeouts -> allow."""
+    import os
+
+    from coderai.utils.subprocess_env import scrub_subprocess_env
+
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
@@ -654,6 +657,9 @@ async def run_hook(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            # WF-B2: hooks must not inherit ambient secrets; engine.run_hook_point
+            # already scrubs, so do the same here.
+            env=scrub_subprocess_env(dict(os.environ)),
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(

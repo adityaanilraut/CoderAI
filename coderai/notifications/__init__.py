@@ -51,4 +51,3 @@ __all__ = [
     "is_notification_message",
     "to_wire_notification",
 ]
-

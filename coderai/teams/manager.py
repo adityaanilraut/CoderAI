@@ -16,6 +16,15 @@ from coderai.teams.models import TeamMessage, TeamTask, Teammate
 
 logger = logging.getLogger(__name__)
 
+MAX_TEAM_INBOX = 100
+
+
+def is_acknowledgement_message(content: str) -> bool:
+    """Return True if the message is an acknowledgement reply."""
+    s = content.strip().lower()
+    return s.startswith("acknowledged by") or s.startswith("ack by")
+
+
 VALID_TASK_STATUSES = ("pending", "in_progress", "completed", "blocked", "failed")
 VALID_TASK_PRIORITIES = ("low", "medium", "high", "critical")
 
@@ -179,6 +188,9 @@ class TeamManager:
         mode: str = "general",
         allowed_tools: list[str] | None = None,
         auto_start: bool = True,
+        project_root: str | None = None,
+        parent_session_id: str | None = None,
+        depth: int = 0,
     ) -> Teammate:
         teammate_id = f"tm_{uuid.uuid4().hex[:8]}"
 
@@ -193,7 +205,7 @@ class TeamManager:
                 from coderai.subagents.registry import discover_markdown_agents
 
                 scan_root = Path(
-                    os.environ.get("CODERAI_PROJECT_ROOT") or str(Path.cwd())
+                    project_root or os.environ.get("CODERAI_PROJECT_ROOT") or str(Path.cwd())
                 ).resolve()
                 for d in discover_markdown_agents(scan_root):
                     if d.name.lower() == role.lower():
@@ -217,6 +229,9 @@ class TeamManager:
             system_prompt=system_prompt,
             allowed_tools=allowed_tools,
             status="idle",
+            project_root=project_root,
+            parent_session_id=parent_session_id,
+            depth=depth,
         )
         self._teammates[teammate_id] = teammate
         self.channel.register_mailbox(teammate_id)
@@ -259,6 +274,11 @@ class TeamManager:
         if recipient == "all":
             for tm in self._teammates.values():
                 tm.inbox.append(msg)
+                tm.unread_messages.append(msg)
+                if len(tm.inbox) > MAX_TEAM_INBOX:
+                    tm.inbox = tm.inbox[-MAX_TEAM_INBOX:]
+                if len(tm.unread_messages) > MAX_TEAM_INBOX:
+                    tm.unread_messages = tm.unread_messages[-MAX_TEAM_INBOX:]
                 mb = self.channel.get_mailbox(tm.teammate_id)
                 if mb:
                     if not mb.send_nowait(msg):
@@ -271,6 +291,11 @@ class TeamManager:
             target = self.get_teammate(recipient)
             if target:
                 target.inbox.append(msg)
+                target.unread_messages.append(msg)
+                if len(target.inbox) > MAX_TEAM_INBOX:
+                    target.inbox = target.inbox[-MAX_TEAM_INBOX:]
+                if len(target.unread_messages) > MAX_TEAM_INBOX:
+                    target.unread_messages = target.unread_messages[-MAX_TEAM_INBOX:]
                 mb = self.channel.get_mailbox(target.teammate_id)
                 if mb:
                     if not mb.send_nowait(msg):
@@ -289,12 +314,19 @@ class TeamManager:
         sender_tm = self.get_teammate(sender)
         if sender_tm:
             sender_tm.outbox.append(msg)
+            if len(sender_tm.outbox) > MAX_TEAM_INBOX:
+                sender_tm.outbox = sender_tm.outbox[-MAX_TEAM_INBOX:]
 
         return msg
 
-    def get_messages(self, teammate_id: str) -> list[TeamMessage]:
+    def get_messages(self, teammate_id: str, mark_read: bool = True) -> list[TeamMessage]:
         tm = self.get_teammate(teammate_id)
-        return list(tm.inbox) if tm else []
+        if not tm:
+            return []
+        msgs = list(tm.inbox)
+        if mark_read:
+            tm.unread_messages.clear()
+        return msgs
 
     async def wait_agent(
         self,
@@ -330,7 +362,7 @@ class TeamManager:
                 tm = self.get_teammate(aid)
                 if tm:
                     is_done = tm.status in ("completed", "failed", "interrupted")
-                    has_msg = len(tm.inbox) > 0
+                    has_msg = len(tm.unread_messages) > 0
 
                     if wait_for == "completion":
                         settled = is_done
@@ -410,6 +442,24 @@ class TeamManager:
 
             await asyncio.sleep(0.5)
 
+    def get_runnable_tasks_for_teammate(self, teammate_id: str) -> list[TeamTask]:
+        tm = self.get_teammate(teammate_id)
+        if not tm:
+            return []
+        candidate_tasks = self.task_board.list_tasks(
+            assigned_to=tm.teammate_id
+        ) + self.task_board.list_tasks(assigned_to=tm.name)
+        seen: set[str] = set()
+        runnable: list[TeamTask] = []
+        for t in candidate_tasks:
+            if t.task_id not in seen:
+                seen.add(t.task_id)
+                if t.status in ("pending", "in_progress") and self.task_board.can_start_task(
+                    t.task_id
+                ):
+                    runnable.append(t)
+        return runnable
+
     async def _execute_task(self, teammate: Teammate, task: TeamTask) -> str:
         """Execute task assigned to a teammate.
 
@@ -417,10 +467,11 @@ class TeamManager:
         RuntimeError when the sub-agent fails, is misconfigured, or produces
         no report — callers must mark the task ``failed``, never ``completed``.
         """
+        import os
         from pathlib import Path
 
         from coderai.llm import create_openai_client
-        from coderai.subagents.builder import SubAgentSpec
+        from coderai.subagents.builder import build_spec
         from coderai.subagents.runner import SubAgentManager
 
         prompt = (
@@ -429,17 +480,25 @@ class TeamManager:
             f"Task Description: {task.description}\n"
             f"Priority: {task.priority}\n"
         )
-        spec = SubAgentSpec(
-            subagent_type=teammate.role,
-            prompt=prompt,
-            description=task.title,
-            mode=teammate.mode,
+        spec = build_spec(
+            context=None,
+            args={
+                "description": task.title,
+                "prompt": prompt,
+                "subagent_type": teammate.role,
+                "mode": teammate.mode,
+            },
             allowed_tools=teammate.allowed_tools,
             system_prompt=teammate.system_prompt,
+            parent_session_id=teammate.parent_session_id,
+            depth=teammate.depth + 1,
+        )
+        exec_root = (
+            teammate.project_root or os.environ.get("CODERAI_PROJECT_ROOT") or str(Path.cwd())
         )
         runner = SubAgentManager(
-            project_root=str(Path.cwd()),
-            create_openai_client=lambda: create_openai_client(str(Path.cwd())),
+            project_root=exec_root,
+            create_openai_client=lambda: create_openai_client(exec_root),
         )
         result = await runner.spawn_subagent(spec)
         if result.status == "completed" and result.summary:
@@ -458,21 +517,12 @@ class TeamManager:
                 if not tm:
                     break
 
-                # 1. Check for tasks assigned to this teammate that are marked in_progress
-                runnable_tasks = [
-                    t
-                    for t in self.task_board.list_tasks(assigned_to=teammate_id)
-                    if t.status == "in_progress" and self.task_board.can_start_task(t.task_id)
-                ]
-                if not runnable_tasks:
-                    runnable_tasks = [
-                        t
-                        for t in self.task_board.list_tasks(assigned_to=tm.name)
-                        if t.status == "in_progress" and self.task_board.can_start_task(t.task_id)
-                    ]
-
+                # 1. Check for tasks assigned to this teammate that are ready
+                runnable_tasks = self.get_runnable_tasks_for_teammate(teammate_id)
                 if runnable_tasks:
                     task = runnable_tasks[0]
+                    if task.status == "pending":
+                        self.task_board.update_task(task.task_id, status="in_progress")
                     tm.status = "working"
                     try:
                         report = await self._execute_task(tm, task)
@@ -520,13 +570,14 @@ class TeamManager:
                     msg = await mb.receive_async(timeout_seconds=0.05)
                     if msg and msg.sender != tm.name:
                         if msg.recipient in (tm.name, tm.teammate_id):
-                            reply = f"Acknowledged by {tm.name} ({tm.role}): {msg.content[:60]}"
-                            self.send_message(
-                                sender=tm.name,
-                                recipient=msg.sender,
-                                content=reply,
-                                task_id=msg.task_id,
-                            )
+                            if not is_acknowledgement_message(msg.content):
+                                reply = f"Acknowledged by {tm.name} ({tm.role}): {msg.content[:60]}"
+                                self.send_message(
+                                    sender=tm.name,
+                                    recipient=msg.sender,
+                                    content=reply,
+                                    task_id=msg.task_id,
+                                )
 
                 await asyncio.sleep(0.1)
             except asyncio.CancelledError:

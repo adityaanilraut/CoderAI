@@ -20,6 +20,7 @@ import pytest
 from coderai.auth.oauth import OAuthManager, OAuthToken, save_token
 from coderai.config import TypedConfig, _typed_global_knobs
 from coderai.schedule import ScheduleManager
+from coderai.tools.file.read import handle_read_tool
 from coderai.tools.file.replace import handle_edit_tool
 from coderai.tools.legacy.executor import ToolExecutor
 from coderai.tools.legacy.registry import ToolRegistry
@@ -351,6 +352,7 @@ def test_edit_allows_partial_fix_of_unparseable_python(tmp_path: pathlib.Path) -
     broken = tmp_path / "broken.py"
     broken.write_text("def broken(\n    x = 1\ndef also(\n    y = 2\n")
     ctx = {"session_id": "phase1-edit", "project_root": str(tmp_path)}
+    handle_read_tool({"file_path": str(broken)}, ctx)
     partial = handle_edit_tool(
         {"file_path": str(broken), "old_string": "x = 1", "new_string": "x = 2"},
         ctx,
@@ -360,6 +362,7 @@ def test_edit_allows_partial_fix_of_unparseable_python(tmp_path: pathlib.Path) -
 
     valid = tmp_path / "ok.py"
     valid.write_text("x = 1\n")
+    handle_read_tool({"file_path": str(valid)}, ctx)
     rejected = handle_edit_tool(
         {"file_path": str(valid), "old_string": "x = 1", "new_string": "x = ("},
         ctx,

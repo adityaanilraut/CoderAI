@@ -32,7 +32,9 @@ def mask_sensitive(text: str) -> str:
     """Mask API keys, authorization bearer tokens, and secret parameters from text."""
     if not text:
         return ""
-    result = text
+    from coderai.log import redact_secrets
+
+    result = redact_secrets(text)
     for pattern, replacement in SENSITIVE_PATTERNS:
         result = pattern.sub(replacement, result)
     return result

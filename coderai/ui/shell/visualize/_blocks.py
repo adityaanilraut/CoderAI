@@ -933,9 +933,9 @@ def _render_collapsible_block(
         return
     shown = lines[:preview_limit]
     for line in shown:
-        # Escape unless already styled
-        text = line if line.startswith("[") and line.endswith("]") else escape(line)
-        console.print(f"{indent}{text}")
+        # UI-A2: untrusted tool output is never markup. A line that merely
+        # looks like "[...]" must not be rendered as a style tag.
+        console.print(f"{indent}{escape(line)}")
     remaining = len(lines) - len(shown)
     if remaining > 0:
         console.print(f"      [dim italic]... {remaining} more lines (press Enter to expand)[/]")
@@ -1019,7 +1019,7 @@ def _render_search_card(console: Any, output_text: str | None, metadata: dict[st
 
     if console is not None and _RICH:
         title = (
-            f'    ↳ [bold cyan]Web Search:[/] [bold yellow]"{query_title}"[/]'
+            f'    ↳ [bold cyan]Web Search:[/] [bold yellow]"{escape(query_title)}"[/]'
             if query_title
             else "    ↳ [bold cyan]Web Search Results[/]"
         )
@@ -1029,16 +1029,16 @@ def _render_search_card(console: Any, output_text: str | None, metadata: dict[st
             s_url = src.get("url") or ""
             snippet = src.get("snippet") or ""
             date_str = (
-                f" [dim cyan]({src.get('publishedAt') or src.get('published_at')})[/]"
+                f" [dim cyan]({escape(str(src.get('publishedAt') or src.get('published_at')))})[/]"
                 if (src.get("publishedAt") or src.get("published_at"))
                 else ""
             )
             console.print(
-                f"      [bold cyan]{idx}.[/] [bold]{s_title}[/]{date_str} [dim]•[/] [dim cyan]{s_url}[/]"
+                f"      [bold cyan]{idx}.[/] [bold]{escape(str(s_title))}[/]{date_str} [dim]•[/] [dim cyan]{escape(str(s_url))}[/]"
             )
             if snippet:
                 snip_short = snippet[:120] + "..." if len(snippet) > 120 else snippet
-                console.print(f"         [dim]{snip_short}[/]")
+                console.print(f"         [dim]{escape(snip_short)}[/]")
     elif sources:
         print(f"    ↳ Web Search: {query_title or 'Results'}")
         for idx, src in enumerate(sources[:6], 1):
@@ -1072,12 +1072,12 @@ def _render_fetch_card(
 
     if console is not None and _RICH:
         console.print(
-            f"    ↳ [bold cyan]WebFetch[/] [{status_style}][{status_code}][/] [dim]({size_str})[/] • [dim]{url}[/]"
+            f"    ↳ [bold cyan]WebFetch[/] [{status_style}][{escape(str(status_code))}][/] [dim]({escape(size_str)})[/] • [dim]{escape(str(url))}[/]"
         )
         if output_text and output_text.strip():
             preview_lines = output_text.strip().splitlines()[:5]
             for pl in preview_lines:
-                console.print(f"      [dim]│[/] {pl[:100]}")
+                console.print(f"      [dim]│[/] {escape(pl[:100])}")
     else:
         print(f"    ↳ WebFetch [{status_code}] ({size_str}) - {url}")
 
@@ -1090,7 +1090,7 @@ def _render_read_card(
     lines_cnt = metadata.get("line_count")
     offset = metadata.get("offset", 1)
     range_str = f"L{offset}-L{offset + lines_cnt - 1}" if lines_cnt else ""
-    target_str = f"[bold cyan]{file_path}[/]" if file_path else "File Read"
+    target_str = f"[bold cyan]{escape(str(file_path))}[/]" if file_path else "File Read"
 
     badges = []
     if range_str:
@@ -1222,8 +1222,10 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
         pass
 
     if console is not None and _RICH:
-        # Display main tool status line
-        console.print(f"  {bullet} [bold cyan]{name}[/] [dim]•[/] [white]{escape(summary_text)}[/]")
+        # Display main tool status line (name can come from an MCP server).
+        console.print(
+            f"  {bullet} [bold cyan]{escape(str(name))}[/] [dim]•[/] [white]{escape(summary_text)}[/]"
+        )
 
         # Tool-specific compact events
         if metadata:

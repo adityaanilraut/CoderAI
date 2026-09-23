@@ -31,11 +31,13 @@ Use the focused English references in `references/`. For commands and flags, pre
 
 1. `<project>/.coderai/skills/`
 2. `<project>/.agents/skills/`
-3. `~/.coderai/skills/`
-4. `~/.agents/skills/`
-5. Bundled skills shipped in the `coderai` package
+3. `<project>/.claude/skills/`
+4. `~/.coderai/skills/`
+5. `~/.agents/skills/`
+6. `~/.claude/skills/`
+7. Bundled skills shipped in the `coderai` package
 
-Additional roots may be configured with `skillScanPaths`. Skills are de-duplicated by frontmatter `name` in discovery order, and `enabledSkills` can disable a resolved name.
+Additional roots may be configured with `skillScanPaths` or `custom_scan_paths`. Skills are de-duplicated by frontmatter `name` in discovery order, and `enabledSkills` can disable a resolved name.
 
 Do not confuse skills with slash commands or always-injected prompt text.
 

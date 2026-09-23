@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import pathlib
 from coderai.log import (
     StderrRedirector as StderrRedirector,
@@ -21,6 +23,12 @@ def get_debug_log_path(project_root: str = ".") -> str:
     return str(pathlib.Path(project_root) / ".coderai" / DEBUG_LOG_FILE)
 
 
+def _chmod_owner_only(path: pathlib.Path) -> None:
+    with contextlib.suppress(OSError):
+        if path.is_file():
+            os.chmod(path, 0o600)
+
+
 def log_openai_chat_completion_debug(entry: dict) -> None:
     try:
         path = pathlib.Path(get_debug_log_path(entry.get("projectRoot", ".")))
@@ -28,6 +36,7 @@ def log_openai_chat_completion_debug(entry: dict) -> None:
         line = redact_secrets(json.dumps(entry, ensure_ascii=False, default=str))
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+        _chmod_owner_only(path)
     except (OSError, TypeError, ValueError):
         pass
 
@@ -36,7 +45,9 @@ def log_openai_chat_completion_debug(entry: dict) -> None:
 """"""
 
 
-LOG_DIR = pathlib.Path.home() / ".coderai" / "logs"
+from coderai.share import get_share_dir
+
+LOG_DIR = get_share_dir() / "logs"
 ERROR_LOG_PATH = LOG_DIR / "error.log"
 
 
@@ -54,5 +65,6 @@ def log_api_error(error: Exception, context: dict | None = None) -> None:
         line = redact_secrets(line)
         with open(ERROR_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+        _chmod_owner_only(ERROR_LOG_PATH)
     except (OSError, TypeError, ValueError):
         pass

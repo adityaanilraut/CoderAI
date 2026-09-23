@@ -54,7 +54,7 @@ def extract_key_argument(json_content: Any, tool_name: str) -> str | None:
         return None
     key_argument: str = ""
     match tool_name:
-        case "Agent":
+        case "Agent" | "Task" | "subagent" | "subagent_fork":
             if not isinstance(curr_args, dict) or not curr_args.get("description"):
                 return None
             key_argument = str(curr_args["description"])
@@ -66,15 +66,18 @@ def extract_key_argument(json_content: Any, tool_name: str) -> str | None:
             key_argument = str(curr_args["thought"])
         case "SetTodoList":
             return None
-        case "Shell":
+        case "Shell" | "bash" | "pwsh" | "terminal_send":
             if not isinstance(curr_args, dict) or not curr_args.get("command"):
                 return None
             key_argument = str(curr_args["command"])
-        case "TaskOutput":
-            if not isinstance(curr_args, dict) or not curr_args.get("task_id"):
+        case "TaskOutput" | "job_output" | "job_kill":
+            if not isinstance(curr_args, dict):
                 return None
-            key_argument = str(curr_args["task_id"])
-        case "TaskList":
+            val = curr_args.get("job_id") or curr_args.get("task_id")
+            if not val:
+                return None
+            key_argument = str(val)
+        case "TaskList" | "job_list":
             if not isinstance(curr_args, dict):
                 return None
             key_argument = "active" if curr_args.get("active_only", True) else "all"
@@ -82,35 +85,36 @@ def extract_key_argument(json_content: Any, tool_name: str) -> str | None:
             if not isinstance(curr_args, dict) or not curr_args.get("task_id"):
                 return None
             key_argument = str(curr_args["task_id"])
-        case "ReadFile":
-            if not isinstance(curr_args, dict) or not curr_args.get("path"):
+        case "ReadFile" | "read" | "WriteFile" | "write" | "edit":
+            if not isinstance(curr_args, dict):
                 return None
-            key_argument = _normalize_path(str(curr_args["path"]))
-        case "ReadMediaFile":
-            if not isinstance(curr_args, dict) or not curr_args.get("path"):
+            val = curr_args.get("file_path") or curr_args.get("path")
+            if not val:
                 return None
-            key_argument = _normalize_path(str(curr_args["path"]))
-        case "Glob":
+            key_argument = _normalize_path(str(val))
+        case "ReadMediaFile" | "UnderstandImage":
+            if not isinstance(curr_args, dict):
+                return None
+            val = curr_args.get("file_path") or curr_args.get("path") or curr_args.get("image_path")
+            if not val:
+                return None
+            key_argument = _normalize_path(str(val))
+        case "StrReplaceFile" | "str_replace_editor":
+            if not isinstance(curr_args, dict):
+                return None
+            val = curr_args.get("path") or curr_args.get("file_path")
+            if not val:
+                return None
+            key_argument = _normalize_path(str(val))
+        case "Glob" | "glob" | "Grep" | "grep":
             if not isinstance(curr_args, dict) or not curr_args.get("pattern"):
                 return None
             key_argument = str(curr_args["pattern"])
-        case "Grep":
-            if not isinstance(curr_args, dict) or not curr_args.get("pattern"):
-                return None
-            key_argument = str(curr_args["pattern"])
-        case "WriteFile":
-            if not isinstance(curr_args, dict) or not curr_args.get("path"):
-                return None
-            key_argument = _normalize_path(str(curr_args["path"]))
-        case "StrReplaceFile":
-            if not isinstance(curr_args, dict) or not curr_args.get("path"):
-                return None
-            key_argument = _normalize_path(str(curr_args["path"]))
-        case "SearchWeb":
+        case "SearchWeb" | "WebSearch":
             if not isinstance(curr_args, dict) or not curr_args.get("query"):
                 return None
             key_argument = str(curr_args["query"])
-        case "FetchURL":
+        case "FetchURL" | "WebFetch":
             if not isinstance(curr_args, dict) or not curr_args.get("url"):
                 return None
             key_argument = str(curr_args["url"])

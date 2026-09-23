@@ -19,7 +19,7 @@ from collections.abc import Callable
 
 from coderai.approval_runtime import ApprovalRuntime
 from coderai.utils.common.validate import clean_json_string
-from coderai.state import get_snippet, is_absolute_file_path, normalize_file_path
+from coderai.file_snippets import get_snippet, is_absolute_file_path, normalize_file_path
 from coderai.tools.legacy.types import normalize_tool_call
 
 # Scopes (matching settings.PermissionScope). "unknown" is a bash-only sentinel.

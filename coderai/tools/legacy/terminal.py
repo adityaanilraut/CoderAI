@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Any
 
@@ -119,13 +120,34 @@ def handle_terminal_send_tool(args: dict[str, Any], context: Any) -> ToolResult:
             sess_id = str(getattr(context, "session_id", "default") or "default")
             job_id = f"job_pty_{int(time.time() * 1000)}"
             store = get_job_store()
-            job = store.start(
-                job_id=job_id,
-                session_id=sess_id,
-                kind="pty-send",
-                label=f"terminal_send({session_id}): {text[:50]}",
-                process_id=term.pid,
-            )
+            try:
+                job = store.start(
+                    job_id=job_id,
+                    session_id=sess_id,
+                    kind="pty-send",
+                    label=f"terminal_send({session_id}): {text[:50]}",
+                    process_id=term.pid,
+                )
+            except RuntimeError as exc:
+                return ToolResult(ok=False, name="terminal_send", error=str(exc))
+
+            def _pty_watcher() -> None:
+                while term.is_alive:
+                    time.sleep(0.05)
+                try:
+                    store.complete(
+                        job_id,
+                        ok=(term.exit_code == 0),
+                        exit_code=term.exit_code,
+                        detail=None
+                        if term.exit_code == 0
+                        else f"Terminal session exited with code {term.exit_code}",
+                    )
+                except Exception:
+                    pass
+
+            threading.Thread(target=_pty_watcher, daemon=True).start()
+
             bg_out: dict[str, Any] = {
                 "sessionId": session_id,
                 "jobId": job.id,

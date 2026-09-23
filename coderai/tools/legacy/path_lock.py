@@ -12,17 +12,32 @@ from collections.abc import AsyncIterator
 logger = logging.getLogger(__name__)
 
 _REDIRECT_RE = re.compile(r"(?<!>)(>{1,2})\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s;&|<>]+))")
+_QUOTED_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+
+
+def _mask_quoted_spans(command: str) -> str:
+    """Blank out single/double-quoted spans so `>` inside strings is ignored."""
+
+    def _blank(match: re.Match[str]) -> str:
+        return " " * len(match.group(0))
+
+    return _QUOTED_RE.sub(_blank, command)
 
 
 def extract_redirect_paths(command: str) -> list[str]:
     """Best-effort extraction of `>`/`>>` redirect targets from a shell command.
 
-    Skips fd-duplication (`>&2`, `2>&1`) and `/dev/null`. Callers must validate
-    each returned target (sandbox + cwd policy) and hold a write lock for it,
-    otherwise shell redirects bypass per-path locks.
+    Skips fd-duplication (`>&2`, `2>&1`) and `/dev/null`. Redirect operators
+    inside quoted strings are not real redirects and are ignored. Callers
+    must validate each returned target (sandbox + cwd policy) and hold a
+    write lock for it, otherwise shell redirects bypass per-path locks.
+
+    This is a best-effort tripwire, not containment: `cp`/`tee`/append-mode
+    tools can still write outside the root. Real containment is the OS
+    sandbox (Seatbelt/bwrap).
     """
     targets: list[str] = []
-    for match in _REDIRECT_RE.finditer(command or ""):
+    for match in _REDIRECT_RE.finditer(_mask_quoted_spans(command or "")):
         target = match.group(2) or match.group(3) or match.group(4) or ""
         target = target.strip()
         if not target or target.startswith("&") or target == "/dev/null":

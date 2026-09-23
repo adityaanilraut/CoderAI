@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 #: data check is skipped there with a note.
 EXPECTED_DATA_GLOBS = (
     "agents/default/agent.yaml",
-    "prompts/compact.md",
+    "prompt/templates/compact.md",
     "skills/*/SKILL.md",
     "tools/*/*.md",
 )
@@ -179,7 +179,7 @@ def check_bundled_data(binary: Path) -> bool:
 #: Markers that must appear in the single-file PKG archive manifest.
 ARCHIVE_MARKERS = (
     "agents/default/agent.yaml",
-    "prompts/compact.md",
+    "prompt/templates/compact.md",
     "SKILL.md",
     "vendor/rg",
 )

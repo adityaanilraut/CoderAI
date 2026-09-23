@@ -8,24 +8,71 @@ from typing import Generic, TypeVar, overload
 F = TypeVar("F", bound=Callable[..., None | Awaitable[None]])
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class SlashCommand(Generic[F]):
-    name: str
-    description: str
-    func: F
-    aliases: list[str]
+class _DisplayName(str):
+    _canonical: str
+    _aliases: set[str]
 
-    def display_name(self, trigger: str | None = None) -> str:
-        """/name for canonical triggers, /name (alias) for alias triggers."""
-        if trigger is not None and trigger != self.name and trigger in self.aliases:
-            return f"/{self.name} ({trigger})"
-        return f"/{self.name}"
+    def __new__(cls, value: str, canonical: str, aliases: Sequence[str] = ()):
+        obj = super().__new__(cls, value)
+        obj._canonical = canonical
+        obj._aliases = set(aliases)
+        return obj
+
+    def __call__(self, trigger: str | None = None) -> str:
+        if trigger is not None and trigger != self._canonical and trigger in self._aliases:
+            return f"/{self._canonical} ({trigger})"
+        return f"/{self._canonical}"
+
+
+class SlashCommand(Generic[F]):
+    __slots__ = ("name", "description", "category", "aliases", "subcommands", "func")
+
+    def __init__(
+        self,
+        name: str,
+        description: str = "",
+        category: str = "General",
+        aliases: Sequence[str] | None = None,
+        subcommands: Sequence[str] | None = None,
+        func: F | None = None,
+        *,
+        summary: str | None = None,
+    ) -> None:
+        self.name = name
+        self.description = summary if summary is not None else description
+        self.category = category
+        self.aliases = list(aliases) if aliases else []
+        self.subcommands = tuple(subcommands) if subcommands else ()
+        self.func = func
+
+    @property
+    def summary(self) -> str:
+        return self.description
+
+    @property
+    def display_name(self) -> _DisplayName:
+        canonical = f"/{self.name}"
+        alias_str = ", ".join(f"/{a}" for a in self.aliases)
+        full_str = canonical + (f", {alias_str}" if alias_str else "")
+        return _DisplayName(full_str, self.name, tuple(self.aliases))
 
     def slash_name(self) -> str:
         """/name (aliases)"""
         if self.aliases:
-            return f"/{self.name} ({', '.join(self.aliases)})"
+            aliases_part = ", ".join(self.aliases)
+            return f"/{self.name} ({aliases_part})"
         return f"/{self.name}"
+
+    def __hash__(self) -> int:
+        return hash(self.name)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SlashCommand):
+            return NotImplemented
+        return self.name == other.name
+
+    def __repr__(self) -> str:
+        return f"SlashCommand(name={self.name!r}, category={self.category!r}, aliases={self.aliases!r})"
 
 
 class SlashCommandRegistry(Generic[F]):
@@ -46,6 +93,9 @@ class SlashCommandRegistry(Generic[F]):
         *,
         name: str | None = None,
         aliases: Sequence[str] | None = None,
+        category: str = "General",
+        subcommands: Sequence[str] | None = None,
+        description: str | None = None,
     ) -> Callable[[F], F]: ...
 
     def command(
@@ -54,6 +104,9 @@ class SlashCommandRegistry(Generic[F]):
         *,
         name: str | None = None,
         aliases: Sequence[str] | None = None,
+        category: str = "General",
+        subcommands: Sequence[str] | None = None,
+        description: str | None = None,
     ) -> F | Callable[[F], F]:
         """Decorator to register a slash command with optional custom name and aliases."""
 
@@ -69,12 +122,15 @@ class SlashCommandRegistry(Generic[F]):
                 primary = func_name
             alias_list = list(aliases) if aliases else []
 
+            desc = description if description is not None else (f.__doc__ or "").strip()
             # Create the primary command with aliases
             cmd = SlashCommand[F](
                 name=primary,
-                description=(f.__doc__ or "").strip(),
-                func=f,
+                description=desc,
+                category=category,
                 aliases=alias_list,
+                subcommands=subcommands,
+                func=f,
             )
 
             # Register primary command

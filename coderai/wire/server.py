@@ -25,9 +25,11 @@ from coderai.wire.jsonrpc import ErrorCodes, Statuses
 from coderai.wire.protocol import WIRE_PROTOCOL_VERSION
 from coderai.wire.types import (
     ApprovalRequest,
+    HookRequest,
     QuestionItem,
     QuestionOption,
     QuestionRequest,
+    ToolCallRequest,
     is_event,
     is_request,
     serialize_wire_message,
@@ -83,6 +85,12 @@ class WireServer:
         self._cancel_event: asyncio.Event | None = None
         self._hub_queue: Any = None
         self._dispatch_tasks: set[asyncio.Task[Any]] = set()
+        self._cached_client_info: dict[str, Any] | None = None
+
+    @staticmethod
+    def _write_stdout(line: str) -> None:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
     # -- serve ------------------------------------------------------------
     async def serve(self) -> int:
@@ -152,8 +160,8 @@ class WireServer:
             except QueueShutDown:
                 break
             try:
-                sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
-                sys.stdout.flush()
+                line = json.dumps(msg, ensure_ascii=False) + "\n"
+                await asyncio.to_thread(self._write_stdout, line)
             except Exception:
                 break
 
@@ -327,7 +335,11 @@ class WireServer:
                         _parts.append(ThinkPart(think=item.get("think") or item.get("text", "")))
             _msg = _KMsg(role="user", content=_parts)
             active_settings = getattr(self._mgr, "get_resolved_settings", lambda: {})() or {}
-            client_info = getattr(self._mgr, "create_openai_client", lambda: {})() or {}
+            if self._cached_client_info is None:
+                self._cached_client_info = (
+                    getattr(self._mgr, "create_openai_client", lambda: {})() or {}
+                )
+            client_info = self._cached_client_info
             model_caps = set(
                 client_info.get("capabilities") or active_settings.get("capabilities") or []
             )
@@ -462,9 +474,34 @@ class WireServer:
             result = data.get("result") or {}
             answers = result.get("answers")
             request.resolve(dict(answers) if isinstance(answers, dict) else {})
+        elif isinstance(request, HookRequest):
+            # IN-A10: fail closed. A "block" answer — or no usable answer —
+            # must never become "allow".
+            if "error" in data:
+                request.resolve("block", "client error")
+                return
+            result = data.get("result") or {}
+            action = str(result.get("action", "block"))
+            if action not in ("allow", "block"):
+                action = "block"
+            request.resolve(action, str(result.get("reason", "")))
+        elif isinstance(request, ToolCallRequest):
+            if "error" in data:
+                request.resolve({"ok": False, "error": str(data["error"])})
+                return
+            result = data.get("result")
+            request.resolve(
+                result if result is not None else {"ok": False, "error": "empty result"}
+            )
         else:
+            # Unknown request type: fail closed, never resolve as "allow".
             try:
-                request.resolve("allow", "")
+                resolve = getattr(request, "resolve", None)
+                if callable(resolve):
+                    try:
+                        resolve("reject")
+                    except TypeError:
+                        resolve({})
             except Exception:
                 pass
 
@@ -709,6 +746,8 @@ class WireServer:
         return "\n".join(lines)
 
     def _shutdown_requests(self) -> None:
+        # IN-A10: fail closed on disconnect. A hook "block" answer or a
+        # dropped client must never become "allow".
         for request in self._pending.values():
             try:
                 if getattr(request, "resolved", False):
@@ -717,8 +756,17 @@ class WireServer:
                     request.resolve("reject")
                 elif isinstance(request, QuestionRequest):
                     request.resolve({})
+                elif isinstance(request, HookRequest):
+                    request.resolve("block", "client disconnected")
+                elif isinstance(request, ToolCallRequest):
+                    request.resolve({"ok": False, "error": "client disconnected"})
                 else:
-                    request.resolve("allow", "")
+                    resolve = getattr(request, "resolve", None)
+                    if callable(resolve):
+                        try:
+                            resolve("reject")
+                        except TypeError:
+                            resolve({})
             except Exception:
                 continue
         self._pending.clear()

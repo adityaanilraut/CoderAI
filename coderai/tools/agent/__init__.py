@@ -11,7 +11,7 @@ from coderai.subagents.core import (
 )
 from coderai.background import spawn_background_agent
 from coderai.orchestration import status_to_stop_reason
-from coderai.subagents.runner import MAX_SUBAGENT_DEPTH, SubAgentManager, SubAgentSpec
+from coderai.subagents.runner import MAX_SUBAGENT_DEPTH, SubAgentManager, SubAgentSpec, build_spec
 from coderai.tools.legacy.types import ToolExecutionContext, ToolResult, as_str
 
 # job_id -> (manager, subagent_session_id, task) for background one-shot
@@ -76,48 +76,53 @@ def _start_subagent_job(
     is delivered to the parent session once.
     """
     from coderai.background import get_job_store
+    import uuid
 
     store = get_job_store()
     session_id = context.session_id or ""
-    with store._lock:
-        counter = sum(1 for j in store._jobs.values() if j.kind == "subagent") + 1
-        job_id = f"subagent-{counter}"
-    store.start(
-        job_id=job_id,
-        session_id=session_id,
-        kind="subagent",
-        label=label[:240],
-    )
+    job_id = f"subagent-{uuid.uuid4().hex[:8]}"
+    try:
+        store.start(
+            job_id=job_id,
+            session_id=session_id,
+            kind="subagent",
+            label=label[:240],
+        )
+    except RuntimeError as exc:
+        return ToolResult(ok=False, name=tool_name, error=str(exc))
 
     async def _run_job() -> None:
         try:
-            result = await manager.spawn_subagent(spec)
-        except asyncio.CancelledError:
-            store.complete(job_id, ok=False, signal="SIGINT", detail="killed")
-            return
-        except Exception as exc:  # pragma: no cover - defensive
-            store.complete(job_id, ok=False, detail=str(exc))
-            return
-        store.complete(
-            job_id,
-            ok=result.status == "completed",
-            detail=result.status,
-        )
-        _SUBAGENT_JOB_TASKS.pop(job_id, None)
-        notice = (
-            f"Background job {job_id} finished [status: {result.status}, "
-            f"{status_to_stop_reason(result.status)}]."
-        )
-        if result.summary:
-            notice += f"\nResult: {result.summary}"
-        from coderai.subagents.core import notify_parent_session
-
-        if not notify_parent_session(session_id, notice):
-            append_parent_session_notice(
-                context.project_root, session_id, notice, source="job-completion"
+            try:
+                result = await manager.spawn_subagent(spec)
+            except asyncio.CancelledError:
+                store.complete(job_id, ok=False, signal="SIGINT", detail="killed")
+                raise
+            except Exception as exc:  # pragma: no cover - defensive
+                store.complete(job_id, ok=False, detail=str(exc))
+                return
+            store.complete(
+                job_id,
+                ok=result.status == "completed",
+                detail=result.status,
             )
+            notice = (
+                f"Background job {job_id} finished [status: {result.status}, "
+                f"{status_to_stop_reason(result.status)}]."
+            )
+            if result.summary:
+                notice += f"\nResult: {result.summary}"
+            from coderai.subagents.core import notify_parent_session
+
+            if not notify_parent_session(session_id, notice):
+                append_parent_session_notice(
+                    context.project_root, session_id, notice, source="job-completion"
+                )
+        finally:
+            _SUBAGENT_JOB_TASKS.pop(job_id, None)
 
     task = asyncio.create_task(_run_job())
+    store.register_cancel_callback(job_id, task.cancel)
     _SUBAGENT_JOB_TASKS[job_id] = (manager, spec_task_session(manager, spec), task)
     return ToolResult(
         ok=True,
@@ -158,8 +163,6 @@ async def handle_subagent_fork_tool(
     depth = _derive_depth(context, args)
 
     max_depth = MAX_SUBAGENT_DEPTH
-    token_budget = _parse_opt_int(args.get("token_budget"))
-    max_tokens = _parse_opt_int(args.get("max_tokens"))
 
     if depth >= max_depth:
         return ToolResult(
@@ -168,36 +171,20 @@ async def handle_subagent_fork_tool(
             error=f"RecursionLimitError: sub-agent depth cannot exceed {max_depth}.",
         )
 
-    timeout_raw = args.get("timeout_seconds")
-    try:
-        timeout_seconds = float(timeout_raw) if timeout_raw is not None else 90.0
-    except (ValueError, TypeError):
-        timeout_seconds = 90.0
-
     seed_messages = _extract_seed_messages(context)
 
     manager = SubAgentManager(
         project_root=context.project_root,
         create_openai_client=context.create_openai_client,
     )
-    spec = SubAgentSpec(
+    spec = build_spec(
+        context=context,
+        args=args,
         description=description,
         prompt=prompt,
-        mode=mode,
-        subagent_type=(str(args.get("subagent_type") or "").strip().lower() or None),
         depth=depth,
         max_depth=max_depth,
-        token_budget=token_budget,
-        max_tokens=max_tokens,
-        timeout_seconds=timeout_seconds,
-        parent_session_id=context.session_id,
-        extra_context=as_str(args.get("context", "")).strip() or None,
         seed_messages=seed_messages if seed_messages else None,
-        sandbox_mode=context.sandbox_mode,
-        plan_mode=context.plan_mode,
-        on_before_file_mutation=context.on_before_file_mutation,
-        on_after_file_mutation=context.on_after_file_mutation,
-        session_manager=context.session_manager,
     )
 
     if args.get("run_in_background") is True:
@@ -240,8 +227,6 @@ async def handle_continuable_subagent_tool(
         mode = "read_only"
     depth = _derive_depth(context, args)
     max_depth = MAX_SUBAGENT_DEPTH
-    token_budget = _parse_opt_int(args.get("token_budget"))
-    max_tokens = _parse_opt_int(args.get("max_tokens"))
 
     if depth >= max_depth:
         return ToolResult(
@@ -249,32 +234,17 @@ async def handle_continuable_subagent_tool(
             name="subagent",
             error=f"RecursionLimitError: sub-agent depth cannot exceed {max_depth}.",
         )
-    timeout_raw = args.get("timeout_seconds")
-    try:
-        timeout_seconds = float(timeout_raw) if timeout_raw is not None else 90.0
-    except (ValueError, TypeError):
-        timeout_seconds = 90.0
     manager = SubAgentManager(
         project_root=context.project_root,
         create_openai_client=context.create_openai_client,
     )
-    spec = SubAgentSpec(
+    spec = build_spec(
+        context=context,
+        args=args,
         description=description,
         prompt=prompt,
-        mode=mode,
-        subagent_type=(str(args.get("subagent_type") or "").strip().lower() or None),
         depth=depth,
         max_depth=max_depth,
-        token_budget=token_budget,
-        max_tokens=max_tokens,
-        timeout_seconds=timeout_seconds,
-        parent_session_id=context.session_id,
-        extra_context=as_str(args.get("context", "")).strip() or None,
-        sandbox_mode=context.sandbox_mode,
-        plan_mode=context.plan_mode,
-        on_before_file_mutation=context.on_before_file_mutation,
-        on_after_file_mutation=context.on_after_file_mutation,
-        session_manager=context.session_manager,
     )
 
     # run_in_background: false → one-shot foreground result (harness contract);
@@ -449,12 +419,6 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
     if mode is not None and mode not in ("read_only", "general"):
         mode = "read_only"
 
-    timeout_raw = args.get("timeout_seconds")
-    try:
-        timeout_seconds = float(timeout_raw) if timeout_raw is not None else 90.0
-    except (ValueError, TypeError):
-        timeout_seconds = 90.0
-
     if not context.create_openai_client:
         return ToolResult(
             ok=False,
@@ -472,8 +436,6 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
     depth = _derive_depth(context, args)
 
     max_depth = MAX_SUBAGENT_DEPTH
-    token_budget = _parse_opt_int(args.get("token_budget"))
-    max_tokens = _parse_opt_int(args.get("max_tokens"))
 
     if depth >= max_depth:
         return ToolResult(
@@ -486,7 +448,7 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
     if (args.get("fork_parent_history") is True or args.get("fork") is True) and context.session_id:
         from coderai.soul.session.store import JsonlSessionStore
 
-        store = JsonlSessionStore(context.project_root)
+        store = JsonlSessionStore(context.project_root, cleanup=False)
         rows = store.read_rows(context.session_id)
         if rows:
             seed_messages = []
@@ -496,24 +458,14 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
                 if role in ("user", "assistant") and isinstance(content, str) and content:
                     seed_messages.append({"role": role, "content": content})
 
-    spec = SubAgentSpec(
+    spec = build_spec(
+        context=context,
+        args=args,
         description=description,
         prompt=prompt,
-        mode=mode,
-        subagent_type=(str(args.get("subagent_type") or "").strip().lower() or None),
         depth=depth,
         max_depth=max_depth,
-        token_budget=token_budget,
-        max_tokens=max_tokens,
-        timeout_seconds=timeout_seconds,
-        parent_session_id=context.session_id,
-        extra_context=as_str(args.get("context", "")).strip() or None,
         seed_messages=seed_messages,
-        sandbox_mode=context.sandbox_mode,
-        plan_mode=context.plan_mode,
-        on_before_file_mutation=context.on_before_file_mutation,
-        on_after_file_mutation=context.on_after_file_mutation,
-        session_manager=context.session_manager,
     )
 
     if args.get("run_in_background") is True:

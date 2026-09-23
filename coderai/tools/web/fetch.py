@@ -409,11 +409,14 @@ async def handle_web_fetch_tool(args: dict[str, Any], context: Any) -> ToolResul
         url = "https://" + url
 
     raw_mode = bool(args.get("raw", False))
-    max_length = (
-        int(args.get("max_length", MAX_OUTPUT_CHARS))
-        if args.get("max_length") is not None
-        else MAX_OUTPUT_CHARS
-    )
+    try:
+        max_length = (
+            int(args.get("max_length", MAX_OUTPUT_CHARS))
+            if args.get("max_length") is not None
+            else MAX_OUTPUT_CHARS
+        )
+    except (ValueError, TypeError):
+        max_length = MAX_OUTPUT_CHARS
     use_cache = bool(args.get("use_cache", True))
 
     # Activity tracking hooks

@@ -107,6 +107,7 @@ class AgentHandle:
     settled_notified: bool = False
     last_stop_reason: str | None = None
     conversation: list[dict[str, Any]] | None = None
+    killed: bool = False
 
     def to_public_dict(self) -> dict[str, Any]:
         summary = self.report or (self.result.summary if self.result else None)
@@ -240,6 +241,39 @@ class AgentRegistry:
 
         _cancel_rec(agent_id)
         return interrupted
+
+    def kill(self, agent_id: str) -> AgentHandle | None:
+        """Permanently terminate a subagent worker and cancel its task."""
+        handle = self._agents.get(agent_id)
+        if handle is None:
+            return None
+        handle.killed = True
+        handle.status = "interrupted"
+        manager = getattr(handle, "manager", None)
+        session_id = getattr(handle, "run_session_id", None)
+        if manager is not None and session_id:
+            manager.cancel_subagent(session_id)
+        if handle.inbox_waiter is not None:
+            handle.inbox_waiter.set()
+        if handle.task and not handle.task.done():
+            handle.task.cancel()
+        return handle
+
+    def evict(self, agent_id: str) -> bool:
+        """Remove handle from registry."""
+        return self._agents.pop(agent_id, None) is not None
+
+    def evict_terminal(self) -> builtins.list[str]:
+        """Evict handles that are finished and whose tasks are completed."""
+        to_evict = [
+            aid
+            for aid, h in self._agents.items()
+            if (h.killed or h.status in ("completed", "failed", "interrupted", "timeout"))
+            and (h.task is None or h.task.done())
+        ]
+        for aid in to_evict:
+            self._agents.pop(aid, None)
+        return to_evict
 
 
 _registry = AgentRegistry()

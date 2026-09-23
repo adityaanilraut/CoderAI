@@ -47,4 +47,3 @@ __all__ = [
     "format_task_list",
     "list_task_views",
 ]
-

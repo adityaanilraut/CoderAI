@@ -6,8 +6,11 @@ with CoderAI's System 2 deep generative and reasoning loops.
 
 from __future__ import annotations
 
+import importlib.util
 import math
 import os
+import re
+import sys
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -39,49 +42,55 @@ JEV_DEFAULT_MAX_CLIENTS = 16
 JEV_MODEL_ID = "jev-system-one"
 
 
-def _env_float(name: str, default: float) -> float:
+def _as_probability(value: Any, default: float) -> float:
+    """Coerce a threshold to a finite value in [0, 1]; anything else yields ``default``.
+
+    NaN compares False against every score and values like ``75`` (percent) exceed
+    every probability, either of which would silently reject every comment.
+    """
     try:
-        raw = os.environ.get(name)
-        if raw is None or not raw.strip():
-            return default
-        return float(raw.strip())
+        p = float(value.strip() if isinstance(value, str) else value)
     except (TypeError, ValueError, AttributeError):
         return default
+    if not math.isfinite(p) or not 0.0 <= p <= 1.0:
+        return default
+    return p
+
+
+def _threshold(explicit: float | None, env_var: str, default: float) -> float:
+    if explicit is not None:
+        return _as_probability(explicit, default)
+    raw = os.environ.get(env_var)
+    if raw is None or not raw.strip():
+        return default
+    return _as_probability(raw, default)
 
 
 def jev_triage_threshold(explicit: float | None = None) -> float:
     """Resolve Tier-1 risk threshold: explicit arg, else env, else default."""
-    if explicit is not None:
-        return float(explicit)
-    return _env_float("CODERAI_JEV_TRIAGE_THRESHOLD", JEV_DEFAULT_TRIAGE_THRESHOLD)
+    return _threshold(explicit, "CODERAI_JEV_TRIAGE_THRESHOLD", JEV_DEFAULT_TRIAGE_THRESHOLD)
 
 
 def jev_gate_threshold(explicit: float | None = None) -> float:
     """Resolve Tier-3 is_bug threshold: explicit arg, else env, else default."""
-    if explicit is not None:
-        return float(explicit)
-    return _env_float("CODERAI_JEV_GATE_THRESHOLD", JEV_DEFAULT_GATE_THRESHOLD)
+    return _threshold(explicit, "CODERAI_JEV_GATE_THRESHOLD", JEV_DEFAULT_GATE_THRESHOLD)
 
 
 def jev_accept_threshold(explicit: float | None = None) -> float:
     """Resolve Tier-3 acceptance threshold: explicit arg, else env, else default."""
-    if explicit is not None:
-        return float(explicit)
-    return _env_float("CODERAI_JEV_ACCEPT_THRESHOLD", JEV_DEFAULT_ACCEPT_THRESHOLD)
+    return _threshold(explicit, "CODERAI_JEV_ACCEPT_THRESHOLD", JEV_DEFAULT_ACCEPT_THRESHOLD)
 
 
 def jev_speculative_threshold(explicit: float | None = None) -> float:
     """Resolve Tier-3 speculative ceiling: explicit arg, else env, else default."""
-    if explicit is not None:
-        return float(explicit)
-    return _env_float("CODERAI_JEV_SPECULATIVE_THRESHOLD", JEV_DEFAULT_SPECULATIVE_THRESHOLD)
+    return _threshold(
+        explicit, "CODERAI_JEV_SPECULATIVE_THRESHOLD", JEV_DEFAULT_SPECULATIVE_THRESHOLD
+    )
 
 
 def jev_min_confidence(explicit: float | None = None) -> float:
     """Resolve Tier-1 Choice confidence floor: explicit arg, else env, else default."""
-    if explicit is not None:
-        return float(explicit)
-    return _env_float("CODERAI_JEV_MIN_CONFIDENCE", JEV_DEFAULT_MIN_CONFIDENCE)
+    return _threshold(explicit, "CODERAI_JEV_MIN_CONFIDENCE", JEV_DEFAULT_MIN_CONFIDENCE)
 
 
 def jev_max_diff_chars() -> int:
@@ -134,46 +143,203 @@ def truncate_diff(diff_hunk: str) -> str:
 
 
 def resolve_jev_api_key(explicit: str | None = None) -> str | None:
-    """Resolve Jev/TypeSafe key from explicit arg then env. Returns None if unset."""
+    """Resolve Jev/TypeSafe key: explicit arg, then process env, then settings ``env``.
+
+    `/setup` persists keys to the settings ``env`` block, which is not exported to
+    ``os.environ`` on later launches, so it must be consulted here as well.
+    """
     if explicit and explicit.strip():
         return explicit.strip()
     for var in JEV_ENV_VARS:
         val = os.environ.get(var)
         if val and val.strip():
             return val.strip()
+    try:
+        from coderai.config import settings_env_value
+
+        for var in JEV_ENV_VARS:
+            val = settings_env_value(var)
+            if val:
+                return val
+    except Exception:
+        pass
     return None
 
 
 def is_jev_configured(api_key: str | None = None) -> bool:
-    """True if a Jev key is available via arg or env."""
+    """True if a Jev key is available via arg, env, or settings."""
     return resolve_jev_api_key(api_key) is not None
+
+
+def jev_sdk_installed() -> bool:
+    """True if ``typesafe_sdk`` is importable (or already stubbed into sys.modules)."""
+    if sys.modules.get("typesafe_sdk") is not None:
+        return True
+    try:
+        return importlib.util.find_spec("typesafe_sdk") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+# Paths that must never be sent to the third-party Jev API. They are still
+# reviewed (Tier 1 fails closed) and their comments still shown (Tier 3 fails open).
+_SECRET_PATH_RE = re.compile(
+    r"(?:^|/)\.env(?:\.|$)|secret|credential|private[_-]?key|\.pem$|\.key$|\.p12$"
+    r"|\bid_(?:rsa|dsa|ecdsa|ed25519)\b",
+    re.IGNORECASE,
+)
+
+
+def is_secret_path(file_path: str) -> bool:
+    """True for paths that look secret-bearing (``.env*``, keys, credentials)."""
+    return bool(_SECRET_PATH_RE.search(file_path.replace("\\", "/")))
+
 
 # Known documentation or boilerplate file extensions
 # NOTE: ".json-lock" was removed (dead entry: splitext("x.json-lock") yields
 # ".json-lock", which matches no real file; ".lock" already covers lockfiles).
 # This set is disjoint from CODE_EXTENSIONS by design — see below.
-DOC_OR_BOILERPLATE_EXTENSIONS = frozenset({
-    ".lock", ".svg", ".png", ".jpg", ".jpeg",
-    ".md", ".rst", ".txt", ".adoc",
-})
+DOC_OR_BOILERPLATE_EXTENSIONS = frozenset(
+    {
+        ".lock",
+        ".svg",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".md",
+        ".rst",
+        ".txt",
+        ".adoc",
+    }
+)
 
 # Authoritative post-SDK code-file policy. Disjoint from DOC_OR_BOILERPLATE_EXTENSIONS:
 # pre-SDK bypass skips docs/assets; post-SDK this set forces should_review=True
 # even when risk is low (fail-closed for source/config). ".json/.yml/.xml/
 # .properties" live here (not in DOC set), so e.g. package-lock.json (ext
 # ".json") is never bypassed — it is always reviewed.
-CODE_EXTENSIONS = frozenset({
-    ".java", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs",
-    ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".kt", ".kts", ".swift", ".m",
-    ".rb", ".php", ".scala", ".sql", ".sh", ".bash", ".zsh", ".ps1",
-    ".properties", ".json", ".xml", ".yml", ".yaml", ".toml", ".ini", ".cfg",
-    ".tf", ".gradle",
-})
+CODE_EXTENSIONS = frozenset(
+    {
+        ".java",
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".go",
+        ".rs",
+        ".c",
+        ".h",
+        ".cc",
+        ".cpp",
+        ".hpp",
+        ".cs",
+        ".kt",
+        ".kts",
+        ".swift",
+        ".m",
+        ".rb",
+        ".php",
+        ".scala",
+        ".sql",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".ps1",
+        ".properties",
+        ".json",
+        ".xml",
+        ".yml",
+        ".yaml",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".tf",
+        ".gradle",
+        ".vue",
+        ".svelte",
+        ".dart",
+        ".lua",
+        ".r",
+        ".pl",
+        ".pm",
+        ".ex",
+        ".exs",
+        ".erl",
+        ".hs",
+        ".clj",
+        ".zig",
+        ".groovy",
+        ".sol",
+        ".proto",
+        ".graphql",
+        ".gql",
+        ".html",
+        ".htm",
+        ".nix",
+        ".bzl",
+        ".cmake",
+        ".mk",
+    }
+)
+
+# Extensionless build/runtime files that carry executable semantics.
+CODE_FILENAMES = frozenset(
+    {
+        "dockerfile",
+        "containerfile",
+        "makefile",
+        "gnumakefile",
+        "justfile",
+        "jenkinsfile",
+        "gemfile",
+        "rakefile",
+        "procfile",
+        "vagrantfile",
+        "build",
+        "workspace",
+    }
+)
+
+# Doc-extension files that change behavior (dependency pins, agent specs, prompts,
+# editor rules) and so are treated as code: never bypassed, always reviewed.
+_BEHAVIORAL_DOC_RE = re.compile(
+    r"(?:^|/)(?:requirements|constraints)[^/]*\.txt$"
+    r"|(?:^|/)cmakelists\.txt$"
+    r"|(?:^|/)(?:agents|claude|gemini|skill|system)\.md$"
+    r"|(?:^|/)\.(?:coderai|agents|cursor|claude)/"
+    r"|(?:^|/)(?:agents|skills|prompts?)/(?:[^/]+/)*[^/]*\.md$"
+    r"|\.mdc$",
+    re.IGNORECASE,
+)
+
+
+def is_code_like(file_path: str) -> bool:
+    """True for source/config files that Tier 1 must not bypass on extension alone."""
+    path = file_path.replace("\\", "/")
+    base = os.path.basename(path).lower()
+    ext = os.path.splitext(base)[1]
+    return (
+        ext in CODE_EXTENSIONS
+        or base in CODE_FILENAMES
+        or base.startswith(("dockerfile.", "containerfile."))
+        or bool(_BEHAVIORAL_DOC_RE.search(path))
+    )
+
+
+def _is_doc_bypass(file_path: str) -> bool:
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext not in DOC_OR_BOILERPLATE_EXTENSIONS or is_code_like(file_path):
+        return False
+    return not any(k in file_path.lower() for k in ("message", "locale", "i18n"))
 
 
 @dataclass(frozen=True)
 class TriageResult:
     """Result of Tier 1 fast diff screening."""
+
     file_path: str
     risk: float
     category: str
@@ -192,6 +358,7 @@ class TriageResult:
 @dataclass(frozen=True)
 class GateResult:
     """Result of Tier 3 pre-flight precision gating."""
+
     is_actionable_bug: float
     will_developer_accept: float
     passed: bool
@@ -215,24 +382,36 @@ def _probability(value: Any, name: str) -> float:
     return p
 
 
-def _read_choice(answer: Any, name: str, labels: Mapping[str, Any]) -> tuple[str, float, dict[str, float] | None]:
+def _read_choice(
+    answer: Any, name: str, labels: Mapping[str, Any]
+) -> tuple[str, float, dict[str, float] | None]:
     label = str(answer.choice)
     if label not in labels:
         raise ValueError(f"{name} returned unknown label {label!r}")
     raw_probs = getattr(answer, "probabilities", None)
-    probs = {str(k): _probability(v, f"{name}[{k}]") for k, v in raw_probs.items()} if raw_probs else None
+    probs = (
+        {str(k): _probability(v, f"{name}[{k}]") for k, v in raw_probs.items()}
+        if raw_probs
+        else None
+    )
     conf = getattr(answer, "confidence", None)
     if conf is None and probs is not None:
         conf = probs.get(label)
     return label, _probability(conf, f"{name}.confidence") if conf is not None else 0.0, probs
 
 
-def _read_score(answer: Any, name: str, levels: int) -> tuple[int, float, float | None, dict[int, float] | None]:
+def _read_score(
+    answer: Any, name: str, levels: int
+) -> tuple[int, float, float | None, dict[int, float] | None]:
     expected = float(answer.score)
     if not math.isfinite(expected):
         raise ValueError(f"{name} is not finite: {answer.score!r}")
     raw_probs = getattr(answer, "probabilities", None)
-    probs = {int(k): _probability(v, f"{name}[{k}]") for k, v in raw_probs.items()} if raw_probs else None
+    probs = (
+        {int(k): _probability(v, f"{name}[{k}]") for k, v in raw_probs.items()}
+        if raw_probs
+        else None
+    )
     level = max(probs, key=probs.__getitem__) if probs else round(expected)
     conf = getattr(answer, "confidence", None)
     return (
@@ -281,7 +460,11 @@ def _get_triage_questions() -> dict[str, Any]:
         if _triage_questions is None or _triage_sdk_id != sid:
             _triage_questions = {
                 "needs_review": _Noul(
-                    instructions="Does this code change introduce potential logic bugs, security risks, or concurrency issues?"
+                    instructions="Does this code change introduce potential logic bugs, security risks, or concurrency issues?",
+                    criteria={
+                        "true": "The change alters runtime behavior in a way that could be wrong or unsafe.",
+                        "false": "The change is inert: comments, formatting, or renames with no behavioral effect.",
+                    },
                 ),
                 "change_type": _Choice(
                     instructions="What is the functional nature of this diff?",
@@ -313,20 +496,32 @@ def _get_gate_questions() -> dict[str, Any]:
                         "locale error, or valid code convention issue in the PR? "
                         "Score < 0.4 ONLY if it is an ungrounded hallucination, impossible edge case, "
                         "or subjective architectural complaint."
-                    )
+                    ),
+                    criteria={
+                        "true": "The comment names a concrete defect visible in the diff.",
+                        "false": "The comment is ungrounded, hypothetical, or a matter of taste.",
+                    },
                 ),
                 "is_speculative_or_nit": _Noul(
                     instructions=(
                         "Is this comment an ungrounded hallucination, an impossible edge case (such as "
                         "division by zero or NPE under impossible conditions), or a critique of deliberate "
                         "architectural design? Score 1.0 if speculative/hallucinated, 0.0 if a grounded defect."
-                    )
+                    ),
+                    criteria={
+                        "true": "Speculative, hallucinated, or a nit.",
+                        "false": "Grounded in the lines shown.",
+                    },
                 ),
                 "will_developer_accept": _Noul(
                     instructions=(
                         "Would a senior software engineer accept this PR comment as an accurate, actionable, "
                         "and valuable review finding rather than reject it as noise or pedantic micromanagement?"
-                    )
+                    ),
+                    criteria={
+                        "true": "The developer would fix it.",
+                        "false": "The developer would dismiss it.",
+                    },
                 ),
             }
             _gate_sdk_id = sid
@@ -425,11 +620,11 @@ class TriageEngine:
         """Tier 1: Fast Diff Triage (System 1).
 
         Screens a diff hunk in ~80ms to determine whether it warrants a deep LLM review.
-        Fail-closed: every fallback returns should_review=True.
+        Fail-closed: every fallback returns should_review=True. A code-like file is
+        skipped only when Jev is confident the change is documentation-only, low risk,
+        and trivial priority.
         """
-        # Fast local heuristic check for obvious docs / assets
-        ext = os.path.splitext(file_path)[1].lower()
-        if ext in DOC_OR_BOILERPLATE_EXTENSIONS and not any(k in file_path.lower() for k in ("message", "locale", "i18n")):
+        if _is_doc_bypass(file_path):
             return TriageResult(
                 file_path=file_path,
                 risk=0.05,
@@ -437,6 +632,16 @@ class TriageEngine:
                 priority=0,
                 should_review=False,
                 reason="Bypassed: documentation/asset file",
+            )
+
+        if is_secret_path(file_path):
+            return TriageResult(
+                file_path=file_path,
+                risk=JEV_FALLBACK_RISK,
+                category="core_logic",
+                priority=1,
+                should_review=True,
+                reason="Local: secret-looking path not sent to Jev",
             )
 
         if not self._client:
@@ -467,15 +672,17 @@ class TriageEngine:
                 resp.scores["priority"], "priority", len(PRIORITY_LEVELS)
             )
 
-            # Core review gating logic: preserve all source code and properties files
             triage_cutoff = jev_triage_threshold(threshold)
-            is_code_file = ext in CODE_EXTENSIONS
             truncated = len(diff_hunk) > jev_max_diff_chars()
             uncertain = category_conf < jev_min_confidence()
             doc_suppresses = category == "documentation" and not uncertain
-            should_review = (
-                is_code_file or truncated or (risk >= triage_cutoff and not doc_suppresses)
-            )
+            if truncated:
+                should_review = True
+            elif is_code_like(file_path):
+                # Code needs all three signals to skip: confident docs-only, low risk, trivial.
+                should_review = not (doc_suppresses and risk < triage_cutoff and priority == 0)
+            else:
+                should_review = risk >= triage_cutoff and not doc_suppresses
             return TriageResult(
                 file_path=file_path,
                 risk=risk,
@@ -524,6 +731,13 @@ class TriageEngine:
         Low scores on a complete diff still reject: this gate trades recall for precision.
         """
         gate_cutoff = jev_gate_threshold(threshold)
+        if is_secret_path(file_path):
+            return GateResult(
+                is_actionable_bug=JEV_FALLBACK_GATE_SCORE,
+                will_developer_accept=JEV_FALLBACK_GATE_SCORE,
+                passed=True,
+                reason="Local: secret-looking path not sent to Jev, comment passed",
+            )
         if not self._client:
             return GateResult(
                 is_actionable_bug=JEV_FALLBACK_GATE_SCORE,

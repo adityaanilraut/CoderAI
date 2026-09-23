@@ -20,7 +20,11 @@ console = Console()
 
 
 def _print_text(text: str) -> None:
-    console.print(text)
+    # UI-A14: print-mode output (including the [coderai]/[Error] prefixes and
+    # fail reasons) must render literally, never as Rich markup.
+    from coderai.ui.shell.emit import _emit_plain
+
+    _emit_plain(console, text)
 
 
 def _print_markdown(markdown_text: str) -> None:
@@ -162,7 +166,7 @@ async def run_exec_session(
         return 1 if had_error else 0
 
     except (KeyboardInterrupt, asyncio.CancelledError):
-        return 0
+        return 130
     except Exception as e:
         _print_text(f"[Error] Execution error: {e}")
         return 1

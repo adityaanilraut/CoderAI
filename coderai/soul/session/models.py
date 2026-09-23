@@ -184,17 +184,22 @@ def deserialize_message(d: dict[str, Any], session_id: str) -> SessionMessage | 
                 meta=data.get("meta"),
             )
         elif event_type == COMPACTION_SUMMARY:
+            summary_id = data.get("compactionId") or (
+                f"summary_{d.get('seq')}" if d.get("seq") is not None else uuid.uuid4().hex
+            )
             return SessionMessage(
-                id=uuid.uuid4().hex,
+                id=summary_id,
                 session_id=session_id,
-                role="system",
-                content=f"There are earlier parts of the conversation. Here is a summary:\n\n{data.get('content', '')}",
+                role="user",
+                content=f"[Context Summary]\nThere are earlier parts of the conversation. Here is a summary:\n\n{data.get('content', '')}",
                 create_time=create_time or _now(),
                 update_time=create_time or _now(),
                 meta={
                     "isSummary": True,
                     "kind": "compact/summary",
+                    "compactionId": data.get("compactionId"),
                     "replacedIds": data.get("shadowedIds", []),
+                    "shadowedSeqs": data.get("shadowedSeqs", []),
                 },
                 visible=False,
             )

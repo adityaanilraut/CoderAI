@@ -74,6 +74,25 @@ def _resolve_dict(raw: dict[str, Any], base_dir: Path) -> dict[str, Any]:
         raise AgentSpecError(f"Unsupported agent spec version: {version}")
     agent = dict(raw.get("agent", {}) or {})
 
+    # PR-A10: Resolve relative paths relative to base_dir
+    if "system_prompt_path" in agent and agent["system_prompt_path"]:
+        p = Path(agent["system_prompt_path"])
+        if not p.is_absolute():
+            agent["system_prompt_path"] = str((base_dir / p).resolve())
+
+    if "subagents" in agent and isinstance(agent["subagents"], dict):
+        sub_resolved = {}
+        for sub_name, sub_spec in agent["subagents"].items():
+            if isinstance(sub_spec, dict) and "path" in sub_spec and sub_spec["path"]:
+                sp = Path(sub_spec["path"])
+                sub_spec_copy = dict(sub_spec)
+                if not sp.is_absolute():
+                    sub_spec_copy["path"] = str((base_dir / sp).resolve())
+                sub_resolved[sub_name] = sub_spec_copy
+            else:
+                sub_resolved[sub_name] = sub_spec
+        agent["subagents"] = sub_resolved
+
     extend = agent.get("extend")
     if not extend:
         return agent
@@ -86,6 +105,8 @@ def _resolve_dict(raw: dict[str, Any], base_dir: Path) -> dict[str, Any]:
     base = _resolve_dict(_load_yaml(base_file), base_file.parent)
 
     merged = dict(base)
+    if "name" not in agent:
+        merged.pop("name", None)
     for key, value in agent.items():
         if key == "extend":
             continue
@@ -93,7 +114,8 @@ def _resolve_dict(raw: dict[str, Any], base_dir: Path) -> dict[str, Any]:
             merged_args = dict(base.get("system_prompt_args") or {})
             merged_args.update(value or {})
             merged[key] = merged_args
-        elif value is not None:
+        else:
+            # PR-A10: An explicit null (None) overrides the inherited value
             merged[key] = value
     return merged
 
@@ -113,15 +135,15 @@ def load_agent_spec(agent_file: Path) -> ResolvedAgentSpec:
 
     agent = _resolve_dict(_load_yaml(agent_file), agent_file.parent)
 
-    name = agent.get("name")
+    name = agent.get("name") or agent_file.stem
     if not name:
         raise AgentSpecError("Agent name is required")
     prompt_rel = agent.get("system_prompt_path")
     if not prompt_rel:
         raise AgentSpecError("System prompt path is required")
-    system_prompt_path = (agent_file.parent / str(prompt_rel)).resolve()
+    system_prompt_path = Path(prompt_rel).resolve()
     if not system_prompt_path.is_file() and DEFAULT_AGENT_FILE.is_file():
-        fallback_prompt = (DEFAULT_AGENT_FILE.parent / str(prompt_rel)).resolve()
+        fallback_prompt = (DEFAULT_AGENT_FILE.parent / Path(prompt_rel).name).resolve()
         if fallback_prompt.is_file():
             system_prompt_path = fallback_prompt
     tools = agent.get("tools")
@@ -130,14 +152,15 @@ def load_agent_spec(agent_file: Path) -> ResolvedAgentSpec:
 
     subagents_raw = agent.get("subagents") or {}
     subagents: dict[str, dict[str, str]] = {}
-    for key, spec in subagents_raw.items():
-        if not isinstance(spec, dict):
-            raise AgentSpecError(f"Invalid subagent spec for {key!r}")
-        sub_path = spec.get("path", "")
-        subagents[str(key)] = {
-            "path": str((agent_file.parent / str(sub_path)).resolve()) if sub_path else "",
-            "description": str(spec.get("description", "")),
-        }
+    if isinstance(subagents_raw, dict):
+        for key, spec in subagents_raw.items():
+            if not isinstance(spec, dict):
+                raise AgentSpecError(f"Invalid subagent spec for {key!r}")
+            sub_path = spec.get("path", "")
+            subagents[str(key)] = {
+                "path": str(Path(sub_path).resolve()) if sub_path else "",
+                "description": str(spec.get("description", "")),
+            }
 
     return ResolvedAgentSpec(
         name=str(name),
@@ -156,32 +179,47 @@ def load_agent_spec(agent_file: Path) -> ResolvedAgentSpec:
     )
 
 
-def render_system_prompt(spec: ResolvedAgentSpec, extra_args: dict[str, str] | None = None) -> str:
-    """Render the spec's system-prompt template with ``${VAR}`` substitution.
+def render_system_prompt(
+    spec: ResolvedAgentSpec,
+    extra_args: dict[str, str] | None = None,
+    project_root: Path | None = None,
+) -> str:
+    """Render the spec's system-prompt template via Jinja2 with BuiltinSystemPromptArgs.
 
     Raises:
         AgentSpecError: If the template file is missing.
+        SystemPromptTemplateError: If Jinja rendering fails (e.g. undefined variable).
     """
+    import jinja2
     from coderai.exception import SystemPromptTemplateError
+    from coderai.soul.agent import BuiltinSystemPromptArgs
 
     if not spec.system_prompt_path.is_file():
         raise AgentSpecError(f"System prompt file not found: {spec.system_prompt_path}")
-    template = spec.system_prompt_path.read_text(encoding="utf-8")
-    if template.startswith("---"):
-        parts = template.split("---", 2)
+    template_str = spec.system_prompt_path.read_text(encoding="utf-8")
+    if template_str.startswith("---"):
+        parts = template_str.split("---", 2)
         if len(parts) >= 3:
-            template = parts[2].strip()
-    args = dict(spec.system_prompt_args)
+            template_str = parts[2].strip()
+
+    builtin = BuiltinSystemPromptArgs.populate(project_root=project_root)
+    context: dict[str, Any] = builtin.to_dict()
+    if spec.system_prompt_args:
+        context.update(spec.system_prompt_args)
     if extra_args:
-        args.update(extra_args)
+        context.update(extra_args)
+
+    env = jinja2.Environment(
+        variable_start_string="${",
+        variable_end_string="}",
+        undefined=jinja2.StrictUndefined,
+        keep_trailing_newline=True,
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
     try:
-        import re
-
-        def _replace(match: re.Match[str]) -> str:
-            key = match.group(1)
-            return args.get(key, match.group(0))
-
-        return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", _replace, template)
+        tmpl = env.from_string(template_str)
+        return tmpl.render(**context)
     except Exception as exc:
         raise SystemPromptTemplateError(f"Failed to render system prompt: {exc}") from exc
 
@@ -207,11 +245,11 @@ def resolve_agent_spec(
                     name=defn.name,
                     system_prompt_path=defn.source_path or path_obj,
                     system_prompt_args={},
-                    model=None,
-                    when_to_use=defn.description,
+                    model=defn.model,
+                    when_to_use=defn.when_to_use or defn.description,
                     tools=list(defn.tools) if defn.tools is not None else ["read", "bash", "edit"],
                     allowed_tools=list(defn.tools) if defn.tools is not None else None,
-                    exclude_tools=[],
+                    exclude_tools=list(defn.exclude_tools),
                     subagents={},
                 )
 
@@ -233,11 +271,11 @@ def resolve_agent_spec(
                 name=defn.name,
                 system_prompt_path=defn.source_path or Path.cwd(),
                 system_prompt_args={},
-                model=None,
-                when_to_use=defn.description,
+                model=defn.model,
+                when_to_use=defn.when_to_use or defn.description,
                 tools=list(defn.tools) if defn.tools is not None else ["read", "bash", "edit"],
                 allowed_tools=list(defn.tools) if defn.tools is not None else None,
-                exclude_tools=[],
+                exclude_tools=list(defn.exclude_tools),
                 subagents={},
             )
 

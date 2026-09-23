@@ -77,8 +77,12 @@ class Teammate:
     allowed_tools: list[str] | None = None
     inbox: list[TeamMessage] = field(default_factory=list)
     outbox: list[TeamMessage] = field(default_factory=list)
+    unread_messages: list[TeamMessage] = field(default_factory=list)
     current_task_id: str | None = None
     last_report: str | None = None
+    project_root: str | None = None
+    parent_session_id: str | None = None
+    depth: int = 0
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
@@ -92,5 +96,8 @@ class Teammate:
             "inbox_count": len(self.inbox),
             "outbox_count": len(self.outbox),
             "last_report": self.last_report,
+            "project_root": self.project_root,
+            "parent_session_id": self.parent_session_id,
+            "depth": self.depth,
             "created_at": self.created_at,
         }

@@ -23,21 +23,18 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-import json
 import pathlib
 import pytest
 from unittest.mock import MagicMock
 
 from coderai.subagents.builder import SubAgentSpec
-from coderai.subagents.models import SubagentTypeDefinition
 from coderai.subagents.registry import (
-    discover_markdown_agents,
     get_subagent_definition,
     is_tool_allowed,
     parse_markdown_agent_spec,
     resolve_tool_policy,
 )
-from coderai.subagents.runner import SubAgentManager, MAX_SUBAGENT_DEPTH
+from coderai.subagents.runner import SubAgentManager
 from coderai.subagents.core import get_agent_registry, AgentHandle
 from coderai.tools.legacy.types import ToolExecutionContext, ToolExecutionHooks
 from coderai.tools.legacy.registry import get_tool_registry
@@ -88,7 +85,7 @@ def test_code_reviewer_role_is_read_only_and_restricted(tmp_path: pathlib.Path):
     defn = get_subagent_definition("code-reviewer", project_root=str(tmp_path))
     assert defn is not None
     assert defn.mode == "read_only"
-    assert defn.allowed_tools == ()
+    assert defn.allowed_tools == ("read", "grep", "glob")
 
     spec = SubAgentSpec(
         description="review",
@@ -165,7 +162,6 @@ def test_read_only_mode_allows_bash_in_read_only_sandbox(tmp_path: pathlib.Path)
 async def test_read_only_mode_blocks_mutating_execution_and_writable_child(tmp_path: pathlib.Path):
     """WF-A4: At execution time, mutating tools and writable children are blocked."""
     from coderai.subagents.runner import SubAgentManager
-    from unittest.mock import AsyncMock
 
     mock_client = MagicMock()
     mock_client.chat.completions.create = MagicMock()
@@ -225,7 +221,6 @@ async def test_read_only_mode_blocks_mutating_execution_and_writable_child(tmp_p
 @pytest.mark.security
 def test_spawn_approval_reflects_actual_capabilities():
     """WF-A6 / TL-A2: Spawn approval reflects role capabilities, not blind read_only default."""
-    from coderai.soul.approval import compute_tool_call_permissions
 
     # Task with coder subagent_type (general mode) -> requires write-in-cwd scope
     tc_coder = {
@@ -278,7 +273,6 @@ def test_task_schema_declares_mode():
 def test_recursion_depth_derived_from_lineage_and_clamped():
     """WF-A3: Recursion depth derives monotonically from lineage and clamps max_depth."""
     from coderai.tools.agent import _derive_depth
-    from coderai.tools.legacy.types import ToolExecutionContext
 
     registry = get_agent_registry()
     # Register handle for parent session
@@ -343,7 +337,10 @@ def test_allowed_tools_enforced_in_schemas_and_executor(tmp_path: pathlib.Path):
 @pytest.mark.security
 def test_resolve_agent_spec_preserves_empty_tool_list(tmp_path: pathlib.Path):
     """PR-A3: resolve_agent_spec must not turn empty tools list into None."""
-    spec = resolve_agent_spec("code-reviewer", project_root=tmp_path)
+    agent_dir = tmp_path / ".coderai" / "agents"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "empty-tools.md").write_text("---\nname: empty-tools\ntools: []\n---\nPrompt\n")
+    spec = resolve_agent_spec("empty-tools", project_root=tmp_path)
     assert spec.allowed_tools == []
 
 

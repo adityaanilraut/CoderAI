@@ -17,8 +17,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HOOK_TIMEOUT_SECONDS = 10.0
-
 
 class HookPoint(str, enum.Enum):
     PRE_TOOL_USE = "PreToolUse"
@@ -27,14 +25,9 @@ class HookPoint(str, enum.Enum):
     ON_TOOL_ERROR = "ToolError"
     PRE_TURN = "PreTurn"
     POST_TURN = "PostTurn"
-    PRE_STEP = "PreStep"
-    POST_STEP = "PostStep"
-    PRE_PROMPT = "PrePrompt"
-    POST_PROMPT = "PostPrompt"
     USER_PROMPT_SUBMIT = "UserPromptSubmit"
     STOP = "Stop"
     STOP_FAILURE = "StopFailure"
-    STOP_CRITERIA = "StopCriteria"
     SESSION_START = "SessionStart"
     SESSION_END = "SessionEnd"
     ON_SUBAGENT_SPAWN = "SubagentSpawn"
@@ -64,19 +57,7 @@ HOOK_POINT_ALIASES: dict[str, str] = {
     "preturn": "PreTurn",
     "post_turn": "PostTurn",
     "postturn": "PostTurn",
-    # Step hooks
-    "pre_step": "PreStep",
-    "prestep": "PreStep",
-    "post_step": "PostStep",
-    "poststep": "PostStep",
-    # Prompt hooks
-    "pre_prompt": "PrePrompt",
-    "preprompt": "PrePrompt",
-    "post_prompt": "PostPrompt",
-    "postprompt": "PostPrompt",
     # Stop / Session / Subagent hooks
-    "stop_criteria": "StopCriteria",
-    "stopcriteria": "StopCriteria",
     "stop": "Stop",
     "stop_failure": "StopFailure",
     "stopfailure": "StopFailure",

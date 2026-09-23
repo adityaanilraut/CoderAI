@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import pathlib
 import threading
 import time
@@ -12,10 +13,23 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from coderai.tools.legacy.types import ToolResult, as_str
+from coderai.utils.io import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_GOAL_ROUNDS = 20
+
+
+def get_default_max_goal_rounds() -> int:
+    env_val = os.environ.get("CODERAI_GOAL_MAX_ROUNDS")
+    if env_val:
+        try:
+            return max(1, int(env_val))
+        except (ValueError, TypeError):
+            pass
+    return DEFAULT_MAX_GOAL_ROUNDS
+
+
 VALID_GOAL_STATUS = ("running", "paused", "completed", "done", "failed", "pending", "cancelled")
 
 
@@ -52,14 +66,22 @@ class Goal:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Goal:
+        try:
+            r = max(1, int(data.get("round", 1)))
+        except (ValueError, TypeError):
+            r = 1
+        try:
+            mr = max(1, int(data.get("max_rounds", DEFAULT_MAX_GOAL_ROUNDS)))
+        except (ValueError, TypeError):
+            mr = DEFAULT_MAX_GOAL_ROUNDS
         return cls(
             id=str(data.get("id") or uuid.uuid4().hex[:8]),
             objective=str(data.get("objective") or data.get("title") or ""),
             status=str(
                 data.get("status") if data.get("status") in VALID_GOAL_STATUS else "running"
             ),
-            round=int(data.get("round", 1)),
-            max_rounds=int(data.get("max_rounds", DEFAULT_MAX_GOAL_ROUNDS)),
+            round=r,
+            max_rounds=mr,
             revision=int(data.get("revision", 1)),
             notes=str(data.get("notes") or ""),
             created_at=float(data.get("created_at", time.time())),
@@ -102,7 +124,7 @@ class GoalStore:
         self.root.mkdir(parents=True, exist_ok=True)
         path = self._path(session_id)
         data = [g.to_dict() for g in goals]
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        atomic_json_write(data, path)
         self._cache[session_id] = list(goals)
 
     def get_active_goal(self, session_id: str) -> Goal | None:
@@ -116,10 +138,18 @@ class GoalStore:
         self,
         session_id: str,
         objective: str,
-        max_rounds: int = DEFAULT_MAX_GOAL_ROUNDS,
+        max_rounds: int | None = None,
         notes: str = "",
     ) -> Goal:
         with self._lock:
+            default_max = get_default_max_goal_rounds()
+            if max_rounds is None:
+                valid_max = default_max
+            else:
+                try:
+                    valid_max = max(1, int(max_rounds))
+                except (ValueError, TypeError):
+                    valid_max = default_max
             goals = self.list(session_id)
             # Pause any currently running goals
             for g in goals:
@@ -133,7 +163,7 @@ class GoalStore:
                 objective=objective.strip(),
                 status="running",
                 round=1,
-                max_rounds=max_rounds,
+                max_rounds=valid_max,
                 revision=1,
                 notes=notes.strip(),
             )
@@ -150,6 +180,12 @@ class GoalStore:
     def update(self, session_id: str, goal_id: str, **changes: Any) -> Goal | None:
         with self._lock:
             goals = self.list(session_id)
+            if changes.get("status") == "running":
+                for g in goals:
+                    if g.id != goal_id and g.status == "running":
+                        g.status = "paused"
+                        g.revision += 1
+                        g.updated_at = time.time()
             for g in goals:
                 if g.id != goal_id:
                     continue
@@ -158,9 +194,15 @@ class GoalStore:
                 if "status" in changes and changes["status"] in VALID_GOAL_STATUS:
                     g.status = changes["status"]
                 if "round" in changes:
-                    g.round = int(changes["round"])
+                    try:
+                        g.round = max(1, int(changes["round"]))
+                    except (ValueError, TypeError):
+                        pass
                 if "max_rounds" in changes:
-                    g.max_rounds = int(changes["max_rounds"])
+                    try:
+                        g.max_rounds = max(1, int(changes["max_rounds"]))
+                    except (ValueError, TypeError):
+                        pass
                 if "notes" in changes and isinstance(changes["notes"], str):
                     g.notes = changes["notes"]
                 g.revision += 1
@@ -209,14 +251,16 @@ class GoalStore:
         return "\n".join(lines)
 
 
-_global_goal_store: GoalStore | None = None
+_global_goal_stores: dict[str, GoalStore] = {}
 
 
 def get_goal_store(project_root: str = ".") -> GoalStore:
-    global _global_goal_store
-    if _global_goal_store is None:
-        _global_goal_store = GoalStore(root_dir=pathlib.Path(project_root) / ".coderai" / "goals")
-    return _global_goal_store
+    resolved = str(pathlib.Path(project_root).resolve())
+    if resolved not in _global_goal_stores:
+        _global_goal_stores[resolved] = GoalStore(
+            root_dir=pathlib.Path(resolved) / ".coderai" / "goals"
+        )
+    return _global_goal_stores[resolved]
 
 
 def handle_goal_tool(args: dict[str, Any], context: Any) -> ToolResult:

@@ -23,20 +23,83 @@ from coderai.orchestration import (
 from coderai.prompt import get_runtime_context, get_subagent_system_prompt, get_tools
 from coderai.subagents.builder import (
     check_subagent_depth_quota,
+    cleanup_subagent_scratchpad,
     setup_subagent_scratchpad,
 )
-from coderai.state import clear_session_state
+from coderai.file_snippets import clear_session_state
 from coderai.tools.legacy.types import ToolExecutionHooks
 
 logger = logging.getLogger(__name__)
 from coderai.subagents.builder import (
     MAX_SUBAGENT_DEPTH,
     SubAgentSpec,
+    build_spec as build_spec,
 )
 from coderai.subagents.core import _call_llm_sync, _normalize_subagent_tool_calls
 from coderai.subagents.output import SubAgentResult
 
 _global_active_controllers: dict[str, asyncio.Event] = {}
+
+
+def make_subagent_result(
+    spec: SubAgentSpec,
+    session_id: str,
+    status: str,
+    summary: str = "",
+    *,
+    error: str | None = None,
+    exit_code: int = 0,
+    active_tokens: int = 0,
+    total_tokens: int = 0,
+    total_prompt_tokens: int = 0,
+    total_completion_tokens: int = 0,
+    total_cached_tokens: int = 0,
+    iteration: int = 0,
+    tool_calls_count: int = 0,
+    artifacts: list[str] | None = None,
+    diffs: list[Any] | None = None,
+    lifecycle_events: list[Any] | None = None,
+    duration_seconds: float = 0.0,
+) -> SubAgentResult:
+    """Consolidated builder for SubAgentResult instances (WF-D4)."""
+    if total_tokens == 0 and (total_prompt_tokens > 0 or total_completion_tokens > 0):
+        total_tokens = total_prompt_tokens + total_completion_tokens
+    elif total_tokens > 0 and total_prompt_tokens == 0 and total_completion_tokens == 0:
+        total_prompt_tokens = total_tokens
+    token_telemetry = (
+        {
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+            "cached_tokens": total_cached_tokens,
+            "active_tokens": active_tokens,
+            "total_tokens": total_tokens,
+        }
+        if (total_tokens > 0 or active_tokens > 0)
+        else None
+    )
+
+    return SubAgentResult(
+        task_id=spec.task_id,
+        session_id=session_id,
+        status=status,
+        summary=summary,
+        error=error,
+        exit_code=exit_code,
+        duration_seconds=duration_seconds,
+        active_tokens=active_tokens,
+        total_tokens=total_tokens,
+        cached_tokens=total_cached_tokens,
+        iterations=iteration,
+        tool_calls_count=tool_calls_count,
+        artifacts=artifacts or [],
+        diffs=diffs or [],
+        token_telemetry=token_telemetry,
+        parent_agent_id=spec.parent_agent_id,
+        root_agent_id=spec.root_agent_id,
+        depth=spec.depth,
+        children_ids=list(spec.children_ids),
+        lifecycle_events=lifecycle_events or [],
+    )
 
 
 class SubAgentManager:
@@ -45,14 +108,26 @@ class SubAgentManager:
     def __init__(
         self,
         project_root: str,
-        create_openai_client: Callable[[], dict[str, Any]],
+        create_openai_client: Callable[[], dict[str, Any]] | None = None,
         get_resolved_settings: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.project_root = str(pathlib.Path(project_root).resolve())
-        self.create_openai_client = create_openai_client
+        if create_openai_client is None:
+            from coderai.llm import create_openai_client as _default_create_client
+
+            self.create_openai_client = lambda: _default_create_client(self.project_root)
+        else:
+            self.create_openai_client = create_openai_client
         self.get_resolved_settings = get_resolved_settings or (lambda: {})
         self.message_converter = OpenAIMessageConverter()
         self._active_controllers: dict[str, asyncio.Event] = {}
+
+    def _resolve_subagent_cwd(self, spec: SubAgentSpec, session_id: str) -> str | None:
+        if spec.isolated_cwd:
+            return spec.isolated_cwd
+        if getattr(spec, "isolate", False) and spec.scratchpad_dir:
+            return spec.scratchpad_dir
+        return None
 
     def _emit_lifecycle_event(
         self,
@@ -180,22 +255,19 @@ class SubAgentManager:
                     or f"RecursionLimitError: Maximum sub-agent nesting depth exceeded (max {effective_max_depth})."
                 },
             )
-            return SubAgentResult(
-                task_id=spec.task_id,
-                session_id=session_id,
-                status="failed",
+            return make_subagent_result(
+                spec,
+                session_id,
+                "failed",
                 summary="Maximum sub-agent nesting depth exceeded.",
                 error=quota_err
                 or f"RecursionLimitError: Sub-agent depth {spec.depth} exceeds max_depth {effective_max_depth}.",
                 exit_code=1,
-                parent_agent_id=spec.parent_agent_id,
-                root_agent_id=spec.root_agent_id,
-                depth=spec.depth,
-                children_ids=list(spec.children_ids),
                 lifecycle_events=lifecycle_events,
             )
 
-        if not spec.scratchpad_dir:
+        has_explicit_isolation = bool(spec.isolated_cwd or getattr(spec, "isolate", False))
+        if has_explicit_isolation and not spec.scratchpad_dir:
             spec.scratchpad_dir = setup_subagent_scratchpad(self.project_root, session_id)
 
         abort_event = asyncio.Event()
@@ -211,9 +283,10 @@ class SubAgentManager:
 
         from coderai.hooks.runner import run_on_subagent_spawn, run_subagent_start
 
+        parent_sid = spec.parent_session_id or "root"
         try:
             run_on_subagent_spawn(
-                parent_session_id=spec.parent_agent_id or "root",
+                parent_session_id=parent_sid,
                 subagent_id=session_id,
                 task=spec.prompt or spec.description,
                 mode=spec.mode,
@@ -224,13 +297,15 @@ class SubAgentManager:
         # SubagentStart fires alongside legacy SubagentSpawn.
         try:
             run_subagent_start(
-                spec.parent_agent_id or "root",
+                parent_sid,
                 self.project_root,
                 getattr(spec, "agent_type", None) or spec.mode,
                 spec.prompt or spec.description,
             )
         except Exception:
             pass
+
+        outcome_summary: str = ""
 
         try:
             if spec.provider == "claude_code":
@@ -250,14 +325,15 @@ class SubAgentManager:
                     timeout=spec.timeout_seconds,
                 )
                 status = raw_res.get("status", "completed" if raw_res.get("ok") else "failed")
-                result = SubAgentResult(
-                    task_id=spec.task_id,
-                    session_id=session_id,
-                    status=status,
+                result = make_subagent_result(
+                    spec,
+                    session_id,
+                    status,
                     summary=raw_res.get("summary", ""),
                     error=raw_res.get("error"),
                     exit_code=0 if status == "completed" else 1,
                     duration_seconds=raw_res.get("duration_seconds", 0.0),
+                    lifecycle_events=lifecycle_events,
                 )
             elif spec.provider == "codex":
                 from coderai.subagents.backends.codex import CodexDriver, CodexConfig
@@ -273,14 +349,15 @@ class SubAgentManager:
                     timeout=spec.timeout_seconds,
                 )
                 status = raw_res.get("status", "completed" if raw_res.get("ok") else "failed")
-                result = SubAgentResult(
-                    task_id=spec.task_id,
-                    session_id=session_id,
-                    status=status,
+                result = make_subagent_result(
+                    spec,
+                    session_id,
+                    status,
                     summary=raw_res.get("summary", ""),
                     error=raw_res.get("error"),
                     exit_code=0 if status == "completed" else 1,
                     duration_seconds=raw_res.get("duration_seconds", 0.0),
+                    lifecycle_events=lifecycle_events,
                 )
             elif spec.provider == "acp":
                 from coderai.acp.runner import AcpSubagentRunner, AcpRunConfig
@@ -297,14 +374,15 @@ class SubAgentManager:
                     timeout=spec.timeout_seconds,
                 )
                 status = raw_res.get("status", "completed" if raw_res.get("ok") else "failed")
-                result = SubAgentResult(
-                    task_id=spec.task_id,
-                    session_id=session_id,
-                    status=status,
+                result = make_subagent_result(
+                    spec,
+                    session_id,
+                    status,
                     summary=raw_res.get("summary", ""),
                     error=raw_res.get("error"),
                     exit_code=0 if status == "completed" else 1,
                     duration_seconds=raw_res.get("duration_seconds", 0.0),
+                    lifecycle_events=lifecycle_events,
                 )
             else:
                 result = await asyncio.wait_for(
@@ -330,39 +408,25 @@ class SubAgentManager:
                     spec,
                     {"status": result.status, "error": result.error},
                 )
-            # SubagentStop fires on settlement.
-            try:
-                from coderai.hooks.runner import run_subagent_stop
-
-                run_subagent_stop(
-                    spec.parent_agent_id or "root",
-                    self.project_root,
-                    getattr(spec, "agent_type", None) or spec.mode,
-                    result.summary or "",
-                )
-            except Exception:
-                pass
+            outcome_summary = result.summary or ""
             return result
         except (asyncio.TimeoutError, TimeoutError):
+            outcome_summary = (
+                f"TimeoutError: Sub-agent execution exceeded {spec.timeout_seconds}s limit."
+            )
             self._emit_lifecycle_event(
                 lifecycle_events,
                 "subagent/error",
                 spec,
-                {
-                    "error": f"TimeoutError: Sub-agent execution exceeded {spec.timeout_seconds}s limit."
-                },
+                {"error": outcome_summary},
             )
-            return SubAgentResult(
-                task_id=spec.task_id,
-                session_id=session_id,
-                status="timeout",
+            return make_subagent_result(
+                spec,
+                session_id,
+                "timeout",
                 summary=f"Sub-agent timed out after {spec.timeout_seconds:.1f} seconds.",
-                error=f"TimeoutError: Sub-agent execution exceeded {spec.timeout_seconds}s limit.",
+                error=outcome_summary,
                 exit_code=124,
-                parent_agent_id=spec.parent_agent_id,
-                root_agent_id=spec.root_agent_id,
-                depth=spec.depth,
-                children_ids=list(spec.children_ids),
                 lifecycle_events=lifecycle_events,
             )
         except asyncio.CancelledError:
@@ -372,44 +436,56 @@ class SubAgentManager:
                 spec,
                 {"error": "CancelledError: Parent or runner cancelled sub-agent."},
             )
-            return SubAgentResult(
-                task_id=spec.task_id,
-                session_id=session_id,
-                status="interrupted",
-                summary="Sub-agent was cancelled.",
-                error="CancelledError: Parent or runner cancelled sub-agent.",
-                exit_code=130,
-                parent_agent_id=spec.parent_agent_id,
-                root_agent_id=spec.root_agent_id,
-                depth=spec.depth,
-                children_ids=list(spec.children_ids),
-                lifecycle_events=lifecycle_events,
-            )
+            outcome_summary = "Sub-agent was cancelled."
+            if abort_event.is_set():
+                return make_subagent_result(
+                    spec,
+                    session_id,
+                    "interrupted",
+                    summary="Sub-agent was cancelled.",
+                    error="CancelledError: Parent or runner cancelled sub-agent.",
+                    exit_code=130,
+                    lifecycle_events=lifecycle_events,
+                )
+            raise
         except Exception as e:
             logger.exception("Sub-agent execution error")
+            outcome_summary = str(e)
             self._emit_lifecycle_event(
                 lifecycle_events,
                 "subagent/error",
                 spec,
                 {"error": str(e)},
             )
-            return SubAgentResult(
-                task_id=spec.task_id,
-                session_id=session_id,
-                status="failed",
+            return make_subagent_result(
+                spec,
+                session_id,
+                "failed",
                 summary=f"Sub-agent encountered an error: {e}",
                 error=str(e),
                 exit_code=1,
-                parent_agent_id=spec.parent_agent_id,
-                root_agent_id=spec.root_agent_id,
-                depth=spec.depth,
-                children_ids=list(spec.children_ids),
                 lifecycle_events=lifecycle_events,
             )
         finally:
             self._active_controllers.pop(session_id, None)
             _global_active_controllers.pop(session_id, None)
             clear_session_state(session_id)
+            if has_explicit_isolation and spec.scratchpad_dir:
+                try:
+                    cleanup_subagent_scratchpad(spec.scratchpad_dir)
+                except Exception:
+                    pass
+            try:
+                from coderai.hooks.runner import run_subagent_stop
+
+                run_subagent_stop(
+                    parent_sid,
+                    self.project_root,
+                    getattr(spec, "agent_type", None) or spec.mode,
+                    outcome_summary,
+                )
+            except Exception:
+                pass
 
     async def run_parallel_subagents(
         self,
@@ -465,6 +541,32 @@ class SubAgentManager:
         abort_event = asyncio.Event()
         self._active_controllers[session_id] = abort_event
         last_result: SubAgentResult | None = None
+        from coderai.hooks.runner import (
+            run_on_subagent_spawn,
+            run_subagent_start,
+            run_subagent_stop,
+        )
+
+        parent_sid = spec.parent_session_id or "root"
+        try:
+            run_on_subagent_spawn(
+                parent_session_id=parent_sid,
+                subagent_id=session_id,
+                task=spec.prompt or spec.description,
+                mode=spec.mode,
+                project_root=self.project_root,
+            )
+        except Exception:
+            pass
+        try:
+            run_subagent_start(
+                parent_sid,
+                self.project_root,
+                getattr(spec, "agent_type", None) or spec.mode,
+                spec.prompt or spec.description,
+            )
+        except Exception:
+            pass
         try:
             while True:
                 abort_event.clear()
@@ -485,30 +587,25 @@ class SubAgentManager:
                         timeout=spec.timeout_seconds,
                     )
                 except asyncio.CancelledError:
-                    result = SubAgentResult(
-                        task_id=spec.task_id,
-                        session_id=session_id,
-                        status="interrupted",
-                        summary="Sub-agent was cancelled.",
-                        error="CancelledError: Parent or runner cancelled sub-agent.",
-                        exit_code=130,
-                        parent_agent_id=spec.parent_agent_id,
-                        root_agent_id=spec.root_agent_id,
-                        depth=spec.depth,
-                        children_ids=list(spec.children_ids),
-                    )
+                    if abort_event.is_set() or getattr(handle, "killed", False):
+                        result = make_subagent_result(
+                            spec,
+                            session_id,
+                            "interrupted",
+                            summary="Sub-agent was cancelled.",
+                            error="CancelledError: Parent or runner cancelled sub-agent.",
+                            exit_code=130,
+                        )
+                    else:
+                        raise
                 except (asyncio.TimeoutError, TimeoutError):
-                    result = SubAgentResult(
-                        task_id=spec.task_id,
-                        session_id=session_id,
-                        status="timeout",
+                    result = make_subagent_result(
+                        spec,
+                        session_id,
+                        "timeout",
                         summary=f"Sub-agent timed out after {spec.timeout_seconds:.1f} seconds.",
                         error=f"TimeoutError: Sub-agent execution exceeded {spec.timeout_seconds}s limit.",
                         exit_code=124,
-                        parent_agent_id=spec.parent_agent_id,
-                        root_agent_id=spec.root_agent_id,
-                        depth=spec.depth,
-                        children_ids=list(spec.children_ids),
                     )
                 last_result = result
                 handle.result = result
@@ -536,24 +633,36 @@ class SubAgentManager:
                     handle.settled_notified = True
 
                 # Park until send_message wakes us or the handle is killed.
+                if getattr(handle, "killed", False):
+                    return result
                 waiter = getattr(handle, "inbox_waiter", None)
                 if waiter is None:
                     return result
-                await waiter.wait()
+                idle_ttl = getattr(spec, "idle_ttl", None) or 300.0
+                try:
+                    await asyncio.wait_for(waiter.wait(), timeout=idle_ttl)
+                except (asyncio.TimeoutError, TimeoutError):
+                    handle.status = "completed"
+                    break
         finally:
             self._active_controllers.pop(session_id, None)
             clear_session_state(session_id)
-        return last_result or SubAgentResult(
-            task_id=spec.task_id,
-            session_id=session_id,
-            status="interrupted",
+            try:
+                run_subagent_stop(
+                    parent_sid,
+                    self.project_root,
+                    getattr(spec, "agent_type", None) or spec.mode,
+                    (last_result.summary if last_result else "") or "",
+                )
+            except Exception:
+                pass
+        return last_result or make_subagent_result(
+            spec,
+            session_id,
+            "interrupted",
             summary="Sub-agent was cancelled.",
             error="CancelledError: Parent or runner cancelled sub-agent.",
             exit_code=130,
-            parent_agent_id=spec.parent_agent_id,
-            root_agent_id=spec.root_agent_id,
-            depth=spec.depth,
-            children_ids=list(spec.children_ids),
         )
 
     async def _run_subagent_loop(
@@ -577,23 +686,20 @@ class SubAgentManager:
         events = lifecycle_events if lifecycle_events is not None else []
         client_info = self.create_openai_client()
         client = client_info.get("client")
-        model = str(client_info.get("model") or "gpt-6-luna")
+        model = str(spec.model or client_info.get("model") or "gpt-6-luna")
         base_url = client_info.get("baseURL")
         temperature = client_info.get("temperature")
         thinking_enabled = bool(client_info.get("thinkingEnabled"))
         reasoning_effort = client_info.get("reasoningEffort") or "max"
 
         if client is None:
-            return SubAgentResult(
-                task_id=spec.task_id,
-                session_id=session_id,
-                status="failed",
+            return make_subagent_result(
+                spec,
+                session_id,
+                "failed",
                 summary="API key not found for sub-agent execution.",
                 error="AuthenticationError: Missing API client.",
-                parent_agent_id=spec.parent_agent_id,
-                root_agent_id=spec.root_agent_id,
-                depth=spec.depth,
-                children_ids=list(spec.children_ids),
+                exit_code=1,
                 lifecycle_events=events,
             )
 
@@ -654,30 +760,20 @@ class SubAgentManager:
 
         for iteration in range(1, spec.max_iterations + 1):
             if abort_event.is_set():
-                return SubAgentResult(
-                    task_id=spec.task_id,
-                    session_id=session_id,
-                    status="interrupted",
+                return make_subagent_result(
+                    spec,
+                    session_id,
+                    "interrupted",
                     summary=last_assistant_reply or "Sub-agent was interrupted.",
                     active_tokens=active_tokens,
-                    total_tokens=total_prompt_tokens + total_completion_tokens,
-                    cached_tokens=total_cached_tokens,
-                    iterations=iteration,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cached_tokens=total_cached_tokens,
+                    iteration=iteration,
                     tool_calls_count=tool_calls_count,
                     artifacts=artifacts,
                     diffs=diffs,
                     exit_code=130,
-                    token_telemetry={
-                        "prompt_tokens": total_prompt_tokens,
-                        "completion_tokens": total_completion_tokens,
-                        "cached_tokens": total_cached_tokens,
-                        "active_tokens": active_tokens,
-                        "total_tokens": total_prompt_tokens + total_completion_tokens,
-                    },
-                    parent_agent_id=spec.parent_agent_id,
-                    root_agent_id=spec.root_agent_id,
-                    depth=spec.depth,
-                    children_ids=list(spec.children_ids),
                     lifecycle_events=events,
                 )
 
@@ -774,58 +870,38 @@ class SubAgentManager:
                         raise
 
             if abort_event.is_set():
-                return SubAgentResult(
-                    task_id=spec.task_id,
-                    session_id=session_id,
-                    status="interrupted",
+                return make_subagent_result(
+                    spec,
+                    session_id,
+                    "interrupted",
                     summary=last_assistant_reply or "Sub-agent was interrupted.",
                     active_tokens=active_tokens,
-                    total_tokens=total_prompt_tokens + total_completion_tokens,
-                    cached_tokens=total_cached_tokens,
-                    iterations=iteration,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cached_tokens=total_cached_tokens,
+                    iteration=iteration,
                     tool_calls_count=tool_calls_count,
                     artifacts=artifacts,
                     diffs=diffs,
                     exit_code=130,
-                    token_telemetry={
-                        "prompt_tokens": total_prompt_tokens,
-                        "completion_tokens": total_completion_tokens,
-                        "cached_tokens": total_cached_tokens,
-                        "active_tokens": active_tokens,
-                        "total_tokens": total_prompt_tokens + total_completion_tokens,
-                    },
-                    parent_agent_id=spec.parent_agent_id,
-                    root_agent_id=spec.root_agent_id,
-                    depth=spec.depth,
-                    children_ids=list(spec.children_ids),
                     lifecycle_events=events,
                 )
             if response is None:
-                return SubAgentResult(
-                    task_id=spec.task_id,
-                    session_id=session_id,
-                    status="failed",
+                return make_subagent_result(
+                    spec,
+                    session_id,
+                    "failed",
                     summary=f"LLM request error in sub-agent: {last_error}",
-                    active_tokens=active_tokens,
-                    total_tokens=total_prompt_tokens + total_completion_tokens,
-                    cached_tokens=total_cached_tokens,
-                    iterations=iteration,
-                    tool_calls_count=tool_calls_count,
                     error=str(last_error),
+                    active_tokens=active_tokens,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cached_tokens=total_cached_tokens,
+                    iteration=iteration,
+                    tool_calls_count=tool_calls_count,
                     exit_code=1,
-                    token_telemetry={
-                        "prompt_tokens": total_prompt_tokens,
-                        "completion_tokens": total_completion_tokens,
-                        "cached_tokens": total_cached_tokens,
-                        "active_tokens": active_tokens,
-                        "total_tokens": total_prompt_tokens + total_completion_tokens,
-                    },
                     artifacts=artifacts,
                     diffs=diffs,
-                    parent_agent_id=spec.parent_agent_id,
-                    root_agent_id=spec.root_agent_id,
-                    depth=spec.depth,
-                    children_ids=list(spec.children_ids),
                     lifecycle_events=events,
                 )
 
@@ -842,31 +918,21 @@ class SubAgentManager:
                 spec.token_budget is not None
                 and (total_prompt_tokens + total_completion_tokens) >= spec.token_budget
             ):
-                return SubAgentResult(
-                    task_id=spec.task_id,
-                    session_id=session_id,
-                    status="budget_exceeded",
+                return make_subagent_result(
+                    spec,
+                    session_id,
+                    "budget_exceeded",
                     summary=last_assistant_reply
                     or f"Sub-agent reached token budget cap ({spec.token_budget} tokens).",
                     active_tokens=active_tokens,
-                    total_tokens=total_prompt_tokens + total_completion_tokens,
-                    cached_tokens=total_cached_tokens,
-                    iterations=iteration,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cached_tokens=total_cached_tokens,
+                    iteration=iteration,
                     tool_calls_count=tool_calls_count,
                     exit_code=2,
-                    token_telemetry={
-                        "prompt_tokens": total_prompt_tokens,
-                        "completion_tokens": total_completion_tokens,
-                        "cached_tokens": total_cached_tokens,
-                        "active_tokens": active_tokens,
-                        "total_tokens": total_prompt_tokens + total_completion_tokens,
-                    },
                     artifacts=artifacts,
                     diffs=diffs,
-                    parent_agent_id=spec.parent_agent_id,
-                    root_agent_id=spec.root_agent_id,
-                    depth=spec.depth,
-                    children_ids=list(spec.children_ids),
                     lifecycle_events=events,
                 )
 
@@ -881,31 +947,21 @@ class SubAgentManager:
                 last_assistant_reply = content
 
             if refusal:
-                return SubAgentResult(
-                    task_id=spec.task_id,
-                    session_id=session_id,
-                    status="refusal",
+                return make_subagent_result(
+                    spec,
+                    session_id,
+                    "refusal",
                     summary=f"Model refused request: {refusal}",
-                    active_tokens=active_tokens,
-                    total_tokens=total_prompt_tokens + total_completion_tokens,
-                    cached_tokens=total_cached_tokens,
-                    iterations=iteration,
-                    tool_calls_count=tool_calls_count,
                     error=refusal,
+                    active_tokens=active_tokens,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cached_tokens=total_cached_tokens,
+                    iteration=iteration,
+                    tool_calls_count=tool_calls_count,
                     exit_code=1,
-                    token_telemetry={
-                        "prompt_tokens": total_prompt_tokens,
-                        "completion_tokens": total_completion_tokens,
-                        "cached_tokens": total_cached_tokens,
-                        "active_tokens": active_tokens,
-                        "total_tokens": total_prompt_tokens + total_completion_tokens,
-                    },
                     artifacts=artifacts,
                     diffs=diffs,
-                    parent_agent_id=spec.parent_agent_id,
-                    root_agent_id=spec.root_agent_id,
-                    depth=spec.depth,
-                    children_ids=list(spec.children_ids),
                     lifecycle_events=events,
                 )
 
@@ -924,30 +980,20 @@ class SubAgentManager:
 
             if not tool_calls:
                 # Agent concluded with final response
-                return SubAgentResult(
-                    task_id=spec.task_id,
-                    session_id=session_id,
-                    status="completed",
+                return make_subagent_result(
+                    spec,
+                    session_id,
+                    "completed",
                     summary=content or "Sub-agent completed task without text output.",
                     active_tokens=active_tokens,
-                    total_tokens=total_prompt_tokens + total_completion_tokens,
-                    cached_tokens=total_cached_tokens,
-                    iterations=iteration,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cached_tokens=total_cached_tokens,
+                    iteration=iteration,
                     tool_calls_count=tool_calls_count,
                     exit_code=0,
-                    token_telemetry={
-                        "prompt_tokens": total_prompt_tokens,
-                        "completion_tokens": total_completion_tokens,
-                        "cached_tokens": total_cached_tokens,
-                        "active_tokens": active_tokens,
-                        "total_tokens": total_prompt_tokens + total_completion_tokens,
-                    },
                     artifacts=artifacts,
                     diffs=diffs,
-                    parent_agent_id=spec.parent_agent_id,
-                    root_agent_id=spec.root_agent_id,
-                    depth=spec.depth,
-                    children_ids=list(spec.children_ids),
                     lifecycle_events=events,
                 )
 
@@ -978,7 +1024,17 @@ class SubAgentManager:
                 tdef = get_tool_registry().get_tool(fn_name)
                 is_mutating = bool(tdef and tdef.is_mutating)
 
-                if spec.allowed_tools is not None and not is_tool_allowed(
+                if spec.exclude_tools and is_tool_allowed(
+                    fn_name, "allowlist", tuple(spec.exclude_tools)
+                ):
+                    tool_result_content = json.dumps(
+                        {
+                            "ok": False,
+                            "name": fn_name,
+                            "error": f"PermissionDenied: Tool '{fn_name}' is excluded by sub-agent policy.",
+                        }
+                    )
+                elif spec.allowed_tools is not None and not is_tool_allowed(
                     fn_name, "allowlist", tuple(spec.allowed_tools)
                 ):
                     tool_result_content = json.dumps(
@@ -1046,7 +1102,7 @@ class SubAgentManager:
                     else:
                         hooks = ToolExecutionHooks(
                             should_stop=lambda: abort_event.is_set(),
-                            isolated_cwd=spec.isolated_cwd or spec.scratchpad_dir,
+                            isolated_cwd=self._resolve_subagent_cwd(spec, session_id),
                             dry_run=spec.dry_run,
                             on_before_file_mutation=spec.on_before_file_mutation,
                             on_after_file_mutation=lambda fp: (
@@ -1072,7 +1128,7 @@ class SubAgentManager:
                 else:
                     hooks = ToolExecutionHooks(
                         should_stop=lambda: abort_event.is_set(),
-                        isolated_cwd=spec.isolated_cwd or spec.scratchpad_dir,
+                        isolated_cwd=self._resolve_subagent_cwd(spec, session_id),
                         dry_run=spec.dry_run,
                         on_before_file_mutation=spec.on_before_file_mutation,
                         on_after_file_mutation=lambda fp: (
@@ -1106,31 +1162,21 @@ class SubAgentManager:
                 )
 
         # Exceeded max iterations
-        return SubAgentResult(
-            task_id=spec.task_id,
-            session_id=session_id,
-            status="max_iterations",
+        return make_subagent_result(
+            spec,
+            session_id,
+            "max_iterations",
             summary=last_assistant_reply
             or "Sub-agent reached max iteration limit before final conclusion.",
             active_tokens=active_tokens,
-            total_tokens=total_prompt_tokens + total_completion_tokens,
-            cached_tokens=total_cached_tokens,
-            iterations=spec.max_iterations,
+            total_prompt_tokens=total_prompt_tokens,
+            total_completion_tokens=total_completion_tokens,
+            total_cached_tokens=total_cached_tokens,
+            iteration=spec.max_iterations,
             tool_calls_count=tool_calls_count,
             exit_code=2,
-            token_telemetry={
-                "prompt_tokens": total_prompt_tokens,
-                "completion_tokens": total_completion_tokens,
-                "cached_tokens": total_cached_tokens,
-                "active_tokens": active_tokens,
-                "total_tokens": total_prompt_tokens + total_completion_tokens,
-            },
             artifacts=artifacts,
             diffs=diffs,
-            parent_agent_id=spec.parent_agent_id,
-            root_agent_id=spec.root_agent_id,
-            depth=spec.depth,
-            children_ids=list(spec.children_ids),
             lifecycle_events=events,
         )
 
@@ -1156,6 +1202,10 @@ class SubAgentManager:
 
             # Limit sub-agent recursion
             if name in ("Task", "subagent", "subagent_fork") and spec.depth >= MAX_SUBAGENT_DEPTH:
+                continue
+
+            # Exclude tools check
+            if spec.exclude_tools and is_tool_allowed(name, "allowlist", tuple(spec.exclude_tools)):
                 continue
 
             # Allowlist check (None = inherit, [] = deny all)

@@ -66,15 +66,27 @@ def _install_stub(client_cls):
 
 
 @pytest.fixture()
-def _clean_env():
-    saved = {k: os.environ.get(k) for k in (
-        "TYPESAFE_API_KEY", "JEV_API_KEY", "CODERAI_JEV_TRIAGE_THRESHOLD",
-        "CODERAI_JEV_GATE_THRESHOLD", "CODERAI_JEV_ACCEPT_THRESHOLD",
-        "CODERAI_JEV_SPECULATIVE_THRESHOLD", "CODERAI_JEV_MAX_DIFF_CHARS",
-        "CODERAI_JEV_TIMEOUT_S", "CODERAI_JEV_STATUS_TTL_S",
-    )}
+def _clean_env(tmp_path_factory):
+    saved = {
+        k: os.environ.get(k)
+        for k in (
+            "TYPESAFE_API_KEY",
+            "JEV_API_KEY",
+            "CODERAI_JEV_TRIAGE_THRESHOLD",
+            "CODERAI_JEV_GATE_THRESHOLD",
+            "CODERAI_JEV_ACCEPT_THRESHOLD",
+            "CODERAI_JEV_SPECULATIVE_THRESHOLD",
+            "CODERAI_JEV_MAX_DIFF_CHARS",
+            "CODERAI_JEV_TIMEOUT_S",
+            "CODERAI_JEV_STATUS_TTL_S",
+            "CODERAI_JEV_MAX_WORKERS",
+            "CODERAI_SHARE_DIR",
+            "CODERAI_TRUST_PROJECT",
+        )
+    }
     for k in saved:
         os.environ.pop(k, None)
+    os.environ["CODERAI_SHARE_DIR"] = str(tmp_path_factory.mktemp("share"))
     try:
         yield
     finally:
@@ -259,8 +271,6 @@ def test_threshold_constants_env_overridable(_clean_env, _restore_sdk):
 
 
 def test_gate_triple_condition_uses_constants(_clean_env, _restore_sdk):
-    seen = {}
-
     class Stub:
         def __init__(self, api_key=None, **kw):
             pass
@@ -304,14 +314,13 @@ def test_single_truncation_point(_clean_env, _restore_sdk):
     e = eng.TriageEngine(api_key="k1")
     e.screen_diff_hunk("src/a.py", big)
     assert len(captured["diff"]) == eng.jev_max_diff_chars()
-    assert jev_client._MAX_DIFF_CHARS == eng.JEV_MAX_DIFF_CHARS
     # client passes through; engine is the single cut
     seen_engine_diff = {}
 
     class Spy(eng.TriageEngine):
-        def screen_diff_hunk(self, fp, diff, threshold=None):
+        def screen_diff_hunk(self, fp, diff, threshold=None, timeout_s=None):
             seen_engine_diff["len"] = len(diff)
-            return super().screen_diff_hunk(fp, diff, threshold=threshold)
+            return super().screen_diff_hunk(fp, diff, threshold=threshold, timeout_s=timeout_s)
 
     orig = jev_client.get_triage_engine
     try:
@@ -386,14 +395,11 @@ def test_question_specs_hoisted(_clean_env, _restore_sdk):
 
 
 def test_cache_threshold_and_backend_keying(_clean_env):
-    e = eng.TriageEngine(api_key=None)
     r1 = asyncio.run(jev_client.jev_screen_diff_async("src/a.py", "ddd"))
     r2 = asyncio.run(jev_client.jev_screen_diff_async("src/a.py", "ddd"))
     assert r1 is r2  # cache hit
     # different threshold -> different key -> miss (new object)
-    r3 = asyncio.run(
-        jev_client.jev_screen_diff_async("src/a.py", "ddd", threshold=0.99)
-    )
+    r3 = asyncio.run(jev_client.jev_screen_diff_async("src/a.py", "ddd", threshold=0.99))
     assert r3 is not r1
     stats = jev_client.jev_cache_stats()
     assert stats["triage_hits"] >= 1
@@ -471,14 +477,10 @@ def test_gate_accept_threshold_change_invalidates_cache(_clean_env, _restore_sdk
             )
 
     _install_stub(Stub)
-    g1 = asyncio.run(
-        jev_client.jev_gate_comment_async("a.py", "d", "c", api_key="k1")
-    )
+    g1 = asyncio.run(jev_client.jev_gate_comment_async("a.py", "d", "c", api_key="k1"))
     assert g1.passed is True
     os.environ["CODERAI_JEV_ACCEPT_THRESHOLD"] = "0.95"
-    g2 = asyncio.run(
-        jev_client.jev_gate_comment_async("a.py", "d", "c", api_key="k1")
-    )
+    g2 = asyncio.run(jev_client.jev_gate_comment_async("a.py", "d", "c", api_key="k1"))
     assert g2 is not g1
     assert g2.passed is False
 
@@ -505,14 +507,10 @@ def test_fallback_not_cached(_clean_env, _restore_sdk):
     assert stats["triage_misses"] == 2
     assert stats["triage_hits"] == 0
     g1 = asyncio.run(
-        jev_client.jev_gate_comment_async(
-            "src/a.py", "diff", "c", api_key="k1", use_cache=True
-        )
+        jev_client.jev_gate_comment_async("src/a.py", "diff", "c", api_key="k1", use_cache=True)
     )
     g2 = asyncio.run(
-        jev_client.jev_gate_comment_async(
-            "src/a.py", "diff", "c", api_key="k1", use_cache=True
-        )
+        jev_client.jev_gate_comment_async("src/a.py", "diff", "c", api_key="k1", use_cache=True)
     )
     assert g1.passed is True
     assert g2.passed is True
@@ -550,12 +548,8 @@ def test_cross_key_isolation(_clean_env, _restore_sdk):
     assert r1b is r1
     r2b = asyncio.run(jev_client.jev_screen_diff_async("src/a.py", "ddd", api_key="k2"))
     assert r2b is r2
-    g1 = asyncio.run(
-        jev_client.jev_gate_comment_async("src/a.py", "ddd", "c", api_key="k1")
-    )
-    g2 = asyncio.run(
-        jev_client.jev_gate_comment_async("src/a.py", "ddd", "c", api_key="k2")
-    )
+    g1 = asyncio.run(jev_client.jev_gate_comment_async("src/a.py", "ddd", "c", api_key="k1"))
+    g2 = asyncio.run(jev_client.jev_gate_comment_async("src/a.py", "ddd", "c", api_key="k2"))
     assert g1 is not g2
 
 
@@ -622,3 +616,157 @@ def test_stale_gate_spec_after_sdk_swap(_clean_env, _restore_sdk):
     assert gb.is_actionable_bug == 0.99
     rb = eb.screen_diff_hunk("src/a.py", "d")
     assert rb.risk == 0.99
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-0.1", "75", "abc"])
+def test_invalid_thresholds_fall_back_to_defaults(_clean_env, _restore_sdk, raw):
+    os.environ["CODERAI_JEV_GATE_THRESHOLD"] = raw
+    os.environ["CODERAI_JEV_TRIAGE_THRESHOLD"] = raw
+    assert eng.jev_gate_threshold() == eng.JEV_DEFAULT_GATE_THRESHOLD
+    assert eng.jev_triage_threshold() == eng.JEV_DEFAULT_TRIAGE_THRESHOLD
+    assert eng.jev_gate_threshold(1.5) == eng.JEV_DEFAULT_GATE_THRESHOLD
+    assert eng.jev_gate_threshold(0.3) == 0.3
+
+    class Stub:
+        def __init__(self, api_key=None, **kw):
+            pass
+
+        def system_one(self, state=None, questions=None, **kw):
+            return _Resp(
+                nouls={
+                    "is_actionable_bug": _Val(noul=0.99),
+                    "is_speculative_or_nit": _Val(noul=0.0),
+                    "will_developer_accept": _Val(noul=0.99),
+                }
+            )
+
+    _install_stub(Stub)
+    assert eng.TriageEngine(api_key="k1").gate_candidate_comment("a.py", "d", "c").passed
+
+
+def _triage_stub(noul, choice, confidence, priority_probs):
+    class Stub:
+        def __init__(self, api_key=None, **kw):
+            pass
+
+        def system_one(self, state=None, questions=None, **kw):
+            return _Resp(
+                nouls={"needs_review": _Val(noul=noul)},
+                choices={"change_type": _Val(choice=choice, confidence=confidence)},
+                scores={"priority": _Val(score=0.1, probabilities=priority_probs)},
+            )
+
+    return Stub
+
+
+@pytest.mark.parametrize(
+    "noul, choice, confidence, probs, expected",
+    [
+        (0.05, "documentation", 0.95, {0: 0.9, 1: 0.1}, False),
+        (0.05, "documentation", 0.95, {0: 0.1, 1: 0.9}, True),
+        (0.50, "documentation", 0.95, {0: 0.9, 1: 0.1}, True),
+        (0.05, "documentation", 0.30, {0: 0.9, 1: 0.1}, True),
+        (0.05, "boilerplate", 0.95, {0: 0.9, 1: 0.1}, True),
+    ],
+)
+def test_code_file_skips_only_on_confident_trivial_docs_change(
+    _clean_env, _restore_sdk, noul, choice, confidence, probs, expected
+):
+    _install_stub(_triage_stub(noul, choice, confidence, probs))
+    r = eng.TriageEngine(api_key="k1").screen_diff_hunk("src/a.py", "+# comment")
+    assert r.should_review is expected
+
+
+def test_behavioral_docs_and_extra_languages_are_code_like(_clean_env):
+    for path in (
+        "Dockerfile",
+        "deploy/Dockerfile.prod",
+        "Makefile",
+        "src/App.vue",
+        "lib/x.dart",
+        "requirements.txt",
+        "requirements-dev.txt",
+        "CMakeLists.txt",
+        ".coderai/agents/code-reviewer.md",
+        "coderai/skills/img/SKILL.md",
+        "coderai/agents/default/system.md",
+        "AGENTS.md",
+        ".cursor/rules/x.mdc",
+    ):
+        assert eng.is_code_like(path), path
+    for path in ("docs/guide.md", "static/site.css", "notes.txt", "logo.png"):
+        assert not eng.is_code_like(path), path
+    e = eng.TriageEngine(api_key=None)
+    assert e.screen_diff_hunk("requirements.txt", "+requests==9").should_review is True
+    assert e.screen_diff_hunk(".coderai/agents/code-reviewer.md", "+tools: bash").should_review
+    assert e.screen_diff_hunk("docs/guide.md", "+typo").should_review is False
+
+
+def test_secret_paths_are_never_sent_to_jev(_clean_env, _restore_sdk):
+    calls = []
+
+    class Stub:
+        def __init__(self, api_key=None, **kw):
+            pass
+
+        def system_one(self, **kw):
+            calls.append(kw)
+            raise AssertionError("secret path reached Jev")
+
+    _install_stub(Stub)
+    e = eng.TriageEngine(api_key="k1")
+    for path in (".env", "config/.env.production", "config/credentials.yml", "keys/server.pem"):
+        r = e.screen_diff_hunk(path, "+SECRET=1")
+        assert r.should_review is True and r.reason.startswith("Local:"), path
+        g = e.gate_candidate_comment(path, "+SECRET=1", "leaks a secret")
+        assert g.passed is True and g.reason.startswith("Local:"), path
+    assert calls == []
+
+
+def test_key_resolved_from_settings_env_after_restart(_clean_env):
+    from coderai.config import write_settings
+
+    assert eng.resolve_jev_api_key() is None
+    write_settings({"env": {"TYPESAFE_API_KEY": "from-settings"}})
+    assert eng.resolve_jev_api_key() == "from-settings"
+    assert eng.is_jev_configured()
+    os.environ["TYPESAFE_API_KEY"] = "from-env"
+    assert eng.resolve_jev_api_key() == "from-env"
+    assert eng.resolve_jev_api_key("explicit") == "explicit"
+
+
+def test_queued_call_is_cancelled_instead_of_running_late(_clean_env, _restore_sdk):
+    import time as _time
+
+    calls = []
+
+    class Slow:
+        def __init__(self, api_key=None, **kw):
+            pass
+
+        def system_one(self, state=None, **kw):
+            calls.append(state["file"])
+            _time.sleep(1.0)
+            raise RuntimeError("slow")
+
+    _install_stub(Slow)
+    os.environ["CODERAI_JEV_MAX_WORKERS"] = "1"
+    jev_client._reset_executor_for_tests()
+
+    async def _both():
+        return await asyncio.gather(
+            jev_client.jev_screen_diff_async("src/a.py", "d", api_key="k1", timeout_s=0.3),
+            jev_client.jev_screen_diff_async("src/b.py", "d", api_key="k1", timeout_s=0.3),
+        )
+
+    results = asyncio.run(_both())
+    assert all(r.should_review and "async fallback" in r.reason for r in results)
+    _time.sleep(1.2)
+    assert calls == ["src/a.py"]
+
+
+def test_probe_reports_missing_sdk(_clean_env, monkeypatch):
+    monkeypatch.setattr(jev_client, "jev_sdk_installed", lambda: False)
+    ok, latency, error = jev_client.jev_probe()
+    assert ok is False and latency is None
+    assert "not installed" in error

@@ -243,6 +243,8 @@ CoderAI supports dynamic discovery of specialized markdown agent specifications 
 - **Diff Screening & Gating**: Rapid automated pre-screening of diffs and code review comments with calibrated confidence thresholds.
 - **Fail-Safe Fallback**: Guaranteed graceful degradation to standard System-Two autoregressive reasoning loops upon timeout or ambiguity.
 - **LRU In-Memory Caching**: Bounded thread-safe caching (`CODERAI_JEV_CACHE_SIZE`) with hit/miss telemetry and hash-keyed lookups.
+- **Setup**: `pip install 'coderai-agent[jev]'` and set `TYPESAFE_API_KEY` (env, `.env`, or `/setup`). Without either, `/review` reviews every non-doc file and shows every comment.
+- **Data egress**: When Jev is on, `/review` sends each changed file's diff (up to `CODERAI_JEV_MAX_DIFF_CHARS`) and each drafted comment to the TypeSafe API, separately from your chat model provider. Secret-looking paths (`.env*`, `*.pem`, `*.key`, `*credential*`, `*secret*`, SSH keys) are never sent; they are always reviewed and their comments always shown.
 
 ---
 
@@ -367,7 +369,7 @@ Settings are resolved in order of precedence: **CLI arguments > Environment vari
 - Project configuration and tracked agent content now use lowercase `.coderai`; rename `.coderAI` directories before upgrading.
 - Workspace skills use the singular filename `SKILL.md`; rename legacy `SKILLS.md` files.
 - Use `--prompt` (or a positional prompt) instead of the removed `--message` flag.
-- Use `--preset` instead of the removed `--tools-preset` spelling.
+- `--preset`, `--tools-preset`, and `--permission` are aliases for the same tool-preset slot; pass only one.
 - Tool presets accept only `full`, `core`, or `shell_edit`.
 - Settings JSON uses the documented camelCase keys (`baseURL`, `apiKey`, `thinkingEnabled`, `reasoningEffort`, and `toolsPreset`); environment overrides use `CODERAI_*`.
 

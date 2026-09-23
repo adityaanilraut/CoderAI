@@ -5,7 +5,9 @@ from __future__ import annotations
 import secrets
 from pathlib import Path
 
-PLANS_DIR = Path.home() / ".coderai" / "plans"
+from coderai.share import get_share_dir
+
+PLANS_DIR = get_share_dir() / "plans"
 
 HERO_NAMES: list[str] = [
     # --- Marvel ---
@@ -264,14 +266,27 @@ def get_or_create_slug(session_id: str) -> str:
     return slug
 
 
-def get_plan_file_path(session_id: str) -> Path:
-    """Get the plan file path for the given session."""
-    return PLANS_DIR / f"{get_or_create_slug(session_id)}.md"
+def get_plan_file_path(session_id: str, project_root: str | Path | None = None) -> Path:
+    """Get the plan file path for the given session.
+
+    When project_root is provided (or when working inside a project), the plan lives
+    in ``<project_root>/.coderai/plans/<session_id>.md`` so it is inside the workspace.
+    Otherwise falls back to ``~/.coderai/plans/<session_id>.md``.
+    """
+    if project_root:
+        base = Path(project_root) / ".coderai" / "plans"
+    else:
+        base = PLANS_DIR
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return base / f"{session_id}.md"
 
 
-def read_plan_file(session_id: str) -> str | None:
+def read_plan_file(session_id: str, project_root: str | Path | None = None) -> str | None:
     """Read the plan file content for the given session, or None if not found."""
-    path = get_plan_file_path(session_id)
+    path = get_plan_file_path(session_id, project_root=project_root)
     if path.exists():
         return path.read_text(encoding="utf-8")
     return None

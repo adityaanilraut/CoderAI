@@ -99,6 +99,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Resume the most recent session for the current project directory.",
     )
     parser.add_argument(
+        "--list-sessions",
+        action="store_true",
+        default=False,
+        dest="list_sessions",
+        help="List available saved sessions for the current project and exit.",
+    )
+    parser.add_argument(
         "--preset",
         dest="preset",
         choices=list(TOOL_PRESETS),
@@ -157,6 +164,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Save configuration to user global settings (~/.coderai)",
     )
     parser.add_argument("--plan", action="store_true", help="start session in Plan Mode")
+    parser.add_argument(
+        "--trust-project",
+        dest="trust_project",
+        action="store_true",
+        default=None,
+        help="Trust this project: allow project .env, MCP server commands, hooks, "
+        "and statusline commands. Non-interactive runs default to untrusted; "
+        "or set CODERAI_TRUST_PROJECT=1.",
+    )
+    parser.add_argument(
+        "--no-trust-project",
+        dest="trust_project",
+        action="store_false",
+        help="Force untrusted mode for this project.",
+    )
     # run-mode flags
     parser.add_argument(
         "--continue",

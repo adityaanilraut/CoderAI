@@ -13,12 +13,35 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import pathlib
 import shutil
 import threading
 import uuid
 from typing import Any
 from collections.abc import Callable
+
+logger = logging.getLogger(__name__)
+
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _track_background_task(
+    task: asyncio.Task[Any], task_name: str = "background_task"
+) -> asyncio.Task[Any]:
+    """Retain strong reference to fire-and-forget task and log unexpected exceptions."""
+    _BACKGROUND_TASKS.add(task)
+
+    def _on_done(t: asyncio.Task[Any]) -> None:
+        _BACKGROUND_TASKS.discard(t)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                logger.warning("Background task %s failed with exception: %s", task_name, exc)
+
+    task.add_done_callback(_on_done)
+    return task
+
 
 from coderai.utils.logging import log_openai_chat_completion_debug
 from coderai.utils.common.file_history import GitFileHistory
@@ -71,6 +94,11 @@ from coderai.tools.legacy.types import (
     ToolExecutionHooks,
     ToolResult,
 )
+
+
+class SessionInterrupted(Exception):
+    """Raised when an active session activation is interrupted by the user or cancelled."""
+
 
 MAX_ITERATIONS = 80_000
 MAX_SESSION_ENTRIES = 50
@@ -192,15 +220,15 @@ class SessionManager:
         )
         self._repeat_reminders: dict[str, RepeatToolReminder] = {}
         self._pending_dmails: dict[str, tuple[str, int]] = {}
-        # Subsystems: Jobs, Schedule, Agents
-        from coderai.background.manager import JobStore
-        from coderai.schedule import ScheduleManager
-        from coderai.subagents.core import AgentRegistry
+        # Subsystems: Jobs, Schedule, Agents (WF-A7: single ownership)
+        from coderai.background.manager import get_job_store
+        from coderai.schedule import get_schedule_manager
+        from coderai.subagents.core import get_agent_registry
 
-        self.job_store = JobStore()
+        self.job_store = get_job_store()
         sched_storage = str(self._storage()["project_dir"] / "schedule.json")
-        self.schedule_manager = ScheduleManager(sched_storage)
-        self.agent_registry = AgentRegistry()
+        self.schedule_manager = get_schedule_manager(sched_storage)
+        self.agent_registry = get_agent_registry()
 
         # YOLO/AFK approval mode: yolo auto-approves all, afk auto-dismisses questions
         self._yolo_mode: bool = False
@@ -248,6 +276,7 @@ class SessionManager:
         self._turn_counters: dict[str, int] = {}
         self._step_counters: dict[str, int] = {}
         self._seq_counters: dict[str, int] = {}
+        self._checkpoint_counters: dict[str, int] = {}
         self._turn_step_synced: set[str] = set()
         # Bounded stat-keyed cache of deserialized messages: avoids a full
         # JSONL re-read/parse on every list_session_messages call in a turn.
@@ -373,7 +402,10 @@ class SessionManager:
 
                     try:
                         loop = _asyncio.get_running_loop()
-                        loop.create_task(soul.notify_afk_changed(enabled))
+                        _track_background_task(
+                            loop.create_task(soul.notify_afk_changed(enabled)),
+                            "notify_afk_changed",
+                        )
                     except RuntimeError:
                         pass
                 except Exception:
@@ -456,17 +488,35 @@ class SessionManager:
             self._souls[key] = soul
         return soul
 
+    def set_plan_mode(self, session_id: str, enabled: bool) -> bool:
+        """Single source of truth for plan mode: updates entry, SessionState, and soul together."""
+        target = self.resolve_session_id(session_id) or session_id
+        now = _now()
+        self._update_entry(
+            target,
+            lambda e: {**e, "planMode": bool(enabled), "updateTime": now},
+        )
+        try:
+            state = self.get_session_state(target)
+            if state is not None:
+                state.plan_mode = bool(enabled)
+                self._save_session_state(target)
+        except Exception:
+            pass
+        try:
+            soul = self.get_soul(target)
+            if soul is not None:
+                if enabled:
+                    soul.schedule_plan_activation_reminder()
+        except Exception:
+            pass
+        return bool(enabled)
+
     def sync_session_state_from_entry(self, session_id: str) -> None:
         """Mirror index entry (title/planMode) into persisted state."""
         target = self.resolve_session_id(session_id) or session_id
-        try:
-            state = self.get_session_state(target)
-            entry = self._get_entry(target) or {}
-            if entry.get("planMode") != state.plan_mode:
-                state.plan_mode = bool(entry.get("planMode"))
-            self._save_session_state(target)
-        except Exception:
-            pass
+        entry = self._get_entry(target) or {}
+        self.set_plan_mode(target, bool(entry.get("planMode")))
 
     def get_diff(self, session_id: str | None = None, from_checkpoint: str | None = None) -> str:
         sid = session_id or self._active_session_id
@@ -683,7 +733,7 @@ class SessionManager:
     def _deserialize_message(self, d: dict[str, Any], session_id: str) -> SessionMessage | None:
         return _deserialize_message_fn(d, session_id)
 
-    def resolve_session_id(self, session_id: str | None) -> str | None:
+    def resolve_session_id(self, session_id: str | None, *, fuzzy: bool = False) -> str | None:
         """Resolve a session ID, short prefix, or checkpoint hash to canonical full session ID."""
         if not session_id or not isinstance(session_id, str):
             return None
@@ -700,6 +750,9 @@ class SessionManager:
             eid = entry.get("id", "")
             if eid == sid:
                 return eid
+
+        if not fuzzy:
+            return None
 
         # 2. Case-insensitive prefix match by session ID (unambiguous only)
         sid_lower = sid.lower()
@@ -895,18 +948,24 @@ class SessionManager:
     def maybe_notify_task_completion(self, session_id: str, started_at_ms: int) -> None:
         _maybe_notify_task_completion_fn(self, session_id, started_at_ms)
 
-    def _create_empty_session(self, plan_mode: bool = False) -> str:
-        session_id = uuid.uuid4().hex
+    def _build_index_entry(
+        self,
+        session_id: str,
+        summary: str,
+        *,
+        status: str = "pending",
+        plan_mode: bool = False,
+    ) -> dict[str, Any]:
+        """Build a canonical index entry for session storage (AL-B8)."""
         now = _now()
-        index = self._load_index()
-        entry: dict[str, Any] = {
+        return {
             "id": session_id,
-            "summary": "New Session",
+            "summary": summary,
             "assistantReply": None,
             "assistantThinking": None,
             "assistantRefusal": None,
             "toolCalls": None,
-            "status": "ready",
+            "status": status,
             "failReason": None,
             "usage": None,
             "usagePerModel": None,
@@ -916,11 +975,22 @@ class SessionManager:
             "updateTime": now,
             "planMode": plan_mode,
         }
+
+    def _record_index_entry(self, entry: dict[str, Any]) -> None:
+        """Insert entry into session index, sorted by updateTime, capped to MAX_SESSION_ENTRIES."""
+        index = self._load_index()
         index["entries"].append(entry)
         index["entries"] = sorted(
             index["entries"], key=lambda e: e.get("updateTime", ""), reverse=True
         )[:MAX_SESSION_ENTRIES]
         self._save_index(index)
+
+    def _create_empty_session(self, plan_mode: bool = False) -> str:
+        session_id = uuid.uuid4().hex
+        entry = self._build_index_entry(
+            session_id, "New Session", status="ready", plan_mode=plan_mode
+        )
+        self._record_index_entry(entry)
         self.file_history.ensure_session(session_id)
         self._active_session_id = session_id
         try:
@@ -950,18 +1020,22 @@ class SessionManager:
     def context_checkpoint_count(self, session_id: str) -> int:
         """How many context checkpoints exist (next id, and D-Mail bound)."""
         target = self.resolve_session_id(session_id) or session_id
-        count = 0
-        try:
-            rows = self.session_store.read_rows(target)
-        except Exception:
-            return 0
-        for row in rows:
-            if row.get("role") != "_checkpoint":
-                continue
-            checkpoint_id = row.get("id")
-            if isinstance(checkpoint_id, int):
-                count = max(count, checkpoint_id + 1)
-        return count
+        with self._seq_lock:
+            if target in self._checkpoint_counters:
+                return self._checkpoint_counters[target]
+            count = 0
+            try:
+                rows = self.session_store.read_rows(target)
+                for row in rows:
+                    if row.get("role") != "_checkpoint":
+                        continue
+                    checkpoint_id = row.get("id")
+                    if isinstance(checkpoint_id, int):
+                        count = max(count, checkpoint_id + 1)
+            except Exception:
+                pass
+            self._checkpoint_counters[target] = count
+            return count
 
     def checkpoint_context(self, session_id: str) -> int:
         """Append a context checkpoint marker and return its id.
@@ -970,10 +1044,12 @@ class SessionManager:
         marker and every row written after it.
         """
         target = self.resolve_session_id(session_id) or session_id
-        checkpoint_id = self.context_checkpoint_count(target)
-        self.session_store.append_row(target, {"role": "_checkpoint", "id": checkpoint_id})
-        self._invalidate_messages_cache(target)
-        return checkpoint_id
+        with self._seq_lock:
+            checkpoint_id = self.context_checkpoint_count(target)
+            self._checkpoint_counters[target] = checkpoint_id + 1
+            self.session_store.append_row(target, {"role": "_checkpoint", "id": checkpoint_id})
+            self._invalidate_messages_cache(target)
+            return checkpoint_id
 
     async def revert_context_to(self, session_id: str, checkpoint_id: int) -> None:
         """Rotate the session log and keep only rows before ``checkpoint_id``."""
@@ -996,6 +1072,8 @@ class SessionManager:
         path.replace(rotated)
         self.session_store.replace_rows(target, rows[:cut])
         self._invalidate_messages_cache(target)
+        with self._seq_lock:
+            self._checkpoint_counters[target] = checkpoint_id
         estimated = estimate_text_tokens(self.list_session_messages(target))
         self._update_entry(
             target,
@@ -1063,30 +1141,8 @@ class SessionManager:
             ralph_iterations = 0
         self._repeat_reminders.pop(session_id, None)
         summary = (user_prompt or "[Image Prompt]")[:100]
-        now = _now()
-        index = self._load_index()
-        entry: dict[str, Any] = {
-            "id": session_id,
-            "summary": summary,
-            "assistantReply": None,
-            "assistantThinking": None,
-            "assistantRefusal": None,
-            "toolCalls": None,
-            "status": "pending",
-            "failReason": None,
-            "usage": None,
-            "usagePerModel": None,
-            "activeTokens": 0,
-            "processes": {},
-            "createTime": now,
-            "updateTime": now,
-            "planMode": plan_mode,
-        }
-        index["entries"].append(entry)
-        index["entries"] = sorted(
-            index["entries"], key=lambda e: e.get("updateTime", ""), reverse=True
-        )[:MAX_SESSION_ENTRIES]
-        self._save_index(index)
+        entry = self._build_index_entry(session_id, summary, status="pending", plan_mode=plan_mode)
+        self._record_index_entry(entry)
 
         # File history session checkpoint. The branch is brand-new (fresh uuid),
         # so its manifest is empty and a tracked-files record would be a no-op
@@ -1181,30 +1237,10 @@ class SessionManager:
         """
         session_id = uuid.uuid4().hex
         self._repeat_reminders.pop(session_id, None)
-        now = _now()
-        index = self._load_index()
-        entry: dict[str, Any] = {
-            "id": session_id,
-            "summary": "[Flow session]",
-            "assistantReply": None,
-            "assistantThinking": None,
-            "assistantRefusal": None,
-            "toolCalls": None,
-            "status": "pending",
-            "failReason": None,
-            "usage": None,
-            "usagePerModel": None,
-            "activeTokens": 0,
-            "processes": {},
-            "createTime": now,
-            "updateTime": now,
-            "planMode": plan_mode,
-        }
-        index["entries"].append(entry)
-        index["entries"] = sorted(
-            index["entries"], key=lambda e: e.get("updateTime", ""), reverse=True
-        )[:MAX_SESSION_ENTRIES]
-        self._save_index(index)
+        entry = self._build_index_entry(
+            session_id, "[Flow session]", status="pending", plan_mode=plan_mode
+        )
+        self._record_index_entry(entry)
 
         self.file_history.ensure_session(session_id)
 
@@ -1379,8 +1415,8 @@ class SessionManager:
                 if await maybe_run_ralph(self, session_id, str(user_prompt)):
                     self._active_session_id = session_id
                     return
-            except Exception:
-                pass
+            except Exception as ralph_err:
+                logger.warning("maybe_run_ralph failed for session %s: %s", session_id, ralph_err)
             if session_id in self._repeat_reminders:
                 self._repeat_reminders[session_id].reset()
             self.file_history.ensure_session(session_id)
@@ -1910,15 +1946,9 @@ class SessionManager:
 
                     result_meta = result.get("metadata") if isinstance(result, dict) else None
                     if isinstance(result_meta, dict) and result_meta.get("exitPlanMode"):
-                        self._update_entry(
-                            session_id,
-                            lambda e: {**e, "planMode": False, "updateTime": _now()},
-                        )
+                        self.set_plan_mode(session_id, False)
                     if isinstance(result_meta, dict) and result_meta.get("enterPlanMode"):
-                        self._update_entry(
-                            session_id,
-                            lambda e: {**e, "planMode": True, "updateTime": _now()},
-                        )
+                        self.set_plan_mode(session_id, True)
 
                     tool_fn = self.message_converter.find_tool_function(tool_calls, exec_tc_id)
                     if not tool_fn:
@@ -2032,23 +2062,32 @@ class SessionManager:
         base_url = settings.get("baseURL")
         reasoning_effort = settings.get("reasoningEffort") or "max"
 
+        def _build_request_for_model(target_model: str, req_base: dict[str, Any]) -> dict[str, Any]:
+            req: dict[str, Any] = {
+                "model": target_model,
+                "messages": list(req_base.get("messages", [])),
+            }
+            if req_base.get("tools"):
+                req["tools"] = req_base["tools"]
+            if req_base.get("temperature") is not None:
+                req["temperature"] = req_base["temperature"]
+            eff_reasoning = self.get_reasoning_effort() or reasoning_effort
+            req.update(
+                build_thinking_request_options(
+                    thinking_enabled,
+                    base_url=base_url,
+                    reasoning_effort=eff_reasoning,
+                    model=target_model,
+                    has_tools=bool(req.get("tools")),
+                )
+            )
+            if not req.get("tools"):
+                req.pop("tools", None)
+            return req
+
         for model_idx, current_model in enumerate(fallback_chain):
             attempted_models.append(current_model)
-            current_request = dict(request)
-            current_request["model"] = current_model
-
-            if current_model != primary_model:
-                current_request.update(
-                    build_thinking_request_options(
-                        thinking_enabled,
-                        base_url=base_url,
-                        reasoning_effort=reasoning_effort,
-                        model=current_model,
-                        has_tools=bool(current_request.get("tools")),
-                    )
-                )
-                if not current_request.get("tools"):
-                    current_request.pop("tools", None)
+            current_request = _build_request_for_model(current_model, request)
 
             retries_for_model = (
                 DEFAULT_MAX_RETRIES if len(fallback_chain) == 1 else min(2, DEFAULT_MAX_RETRIES)
@@ -2056,9 +2095,11 @@ class SessionManager:
 
             for attempt in range(retries_for_model + 1):
                 if self.is_interrupted(session_id):
-                    raise asyncio.CancelledError()
+                    raise SessionInterrupted("Session was interrupted")
                 try:
-                    response = await self._create_completion(client, current_request)
+                    response = await self._create_completion(
+                        client, current_request, session_id=session_id
+                    )
                 except Exception as err:
                     last_error = err
                     code = classify_llm_failure(err)
@@ -2071,7 +2112,27 @@ class SessionManager:
                     fallback_reasons.append(
                         f"{current_model} (attempt {attempt + 1}): {code} ({err})"
                     )
-                    if code == "CONTEXT_OVERFLOW" or attempt >= retries_for_model:
+                    if code == "CONTEXT_OVERFLOW":
+                        # Compact and retry on the current model, do not move to next model
+                        try:
+                            await self._compact_session(session_id, trigger="overflow")
+                            from coderai.soul.session.log import derive_messages
+
+                            refreshed_messages = self.list_session_messages(session_id)
+                            current_request["messages"] = (
+                                self.message_converter.convert_session_messages(
+                                    derive_messages(refreshed_messages),
+                                    current_model,
+                                    thinking_enabled=thinking_enabled,
+                                )
+                            )
+                            continue
+                        except Exception as comp_err:
+                            fallback_reasons.append(
+                                f"{current_model} compaction failed: {comp_err}"
+                            )
+                            break
+                    if attempt >= retries_for_model:
                         break
 
                     # Honor a provider Retry-After (seconds or HTTP-date); an
@@ -2111,10 +2172,16 @@ class SessionManager:
         )
 
     async def _create_completion(
-        self, client: Any, request: dict[str, Any], *, emit_stream: bool = True
+        self,
+        client: Any,
+        request: dict[str, Any],
+        *,
+        emit_stream: bool = True,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         on_chunk = self.on_stream_chunk if emit_stream else None
         on_thinking = self.on_thinking_chunk if emit_stream else None
+        is_cancelled = (lambda: self.is_interrupted(session_id)) if session_id else None
         result = await asyncio.to_thread(
             _call_stream_or_sync,
             client,
@@ -2122,6 +2189,7 @@ class SessionManager:
             on_chunk,
             self.on_llm_stream_progress,
             on_thinking,
+            is_cancelled,
         )
         if self.get_resolved_settings().get("debugLogEnabled"):
             log_openai_chat_completion_debug(
@@ -2161,21 +2229,23 @@ class SessionManager:
             get_emitter().compaction_begin()
         except Exception:
             pass
-        res = await self.compaction_engine.compact_if_needed(session_id, trigger=trigger)
-        if not res:
-            # Forward custom_instruction if engine supports it
-            try:
-                res = await self.compaction_engine.compact_now(
-                    session_id, trigger=trigger, custom_instruction=custom_instruction
-                )  # type: ignore[call-arg]
-            except TypeError:
-                res = await self.compaction_engine.compact_now(session_id, trigger=trigger)
         try:
-            from coderai.wire.emitter import get_emitter
+            res = await self.compaction_engine.compact_if_needed(session_id, trigger=trigger)
+            if not res:
+                # Forward custom_instruction if engine supports it
+                try:
+                    res = await self.compaction_engine.compact_now(
+                        session_id, trigger=trigger, custom_instruction=custom_instruction
+                    )  # type: ignore[call-arg]
+                except TypeError:
+                    res = await self.compaction_engine.compact_now(session_id, trigger=trigger)
+        finally:
+            try:
+                from coderai.wire.emitter import get_emitter
 
-            get_emitter().compaction_end()
-        except Exception:
-            pass
+                get_emitter().compaction_end()
+            except Exception:
+                pass
         if res:
             now = _now()
             self._update_entry(
@@ -2199,6 +2269,12 @@ class SessionManager:
                 )
             except Exception:
                 pass
+            try:
+                soul = self.get_soul(session_id)
+                if soul is not None and hasattr(soul, "notify_compacted"):
+                    await soul.notify_compacted()
+            except Exception:
+                pass
 
     async def compact_session(
         self, session_id: str, trigger: str = "manual", custom_instruction: str | None = None
@@ -2213,6 +2289,8 @@ class SessionManager:
     def delete_session(self, session_id: str) -> bool:
         """Remove session messages and entry from index."""
         target_id = self.resolve_session_id(session_id) or session_id
+        with self._seq_lock:
+            self._checkpoint_counters.pop(target_id, None)
         index = self._load_index()
         initial_len = len(index.get("entries", []))
         index["entries"] = [e for e in index.get("entries", []) if e.get("id") != target_id]
@@ -2425,7 +2503,9 @@ class SessionManager:
                 return
         except Exception:
             pass
-        self._mcp_load_task = loop.create_task(self._background_mcp_load())
+        self._mcp_load_task = _track_background_task(
+            loop.create_task(self._background_mcp_load()), "background_mcp_load"
+        )
 
     async def _background_mcp_load(self) -> None:
         try:

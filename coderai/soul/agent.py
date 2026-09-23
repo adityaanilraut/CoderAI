@@ -29,6 +29,92 @@ class BuiltinSystemPromptArgs:
     CODERAI_OS: str = ""
     CODERAI_SHELL: str = ""
 
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "CODERAI_NOW": str(self.CODERAI_NOW or ""),
+            "CODERAI_WORK_DIR": str(self.CODERAI_WORK_DIR or ""),
+            "CODERAI_WORK_DIR_LS": str(self.CODERAI_WORK_DIR_LS or ""),
+            "CODERAI_AGENTS_MD": str(self.CODERAI_AGENTS_MD or ""),
+            "CODERAI_SKILLS": str(self.CODERAI_SKILLS or ""),
+            "CODERAI_ADDITIONAL_DIRS_INFO": str(self.CODERAI_ADDITIONAL_DIRS_INFO or ""),
+            "CODERAI_OS": str(self.CODERAI_OS or ""),
+            "CODERAI_SHELL": str(self.CODERAI_SHELL or ""),
+        }
+
+    @classmethod
+    def populate(
+        cls,
+        project_root: pathlib.Path | str | None = None,
+        additional_dirs: list[str] | None = None,
+    ) -> BuiltinSystemPromptArgs:
+        import datetime
+        import os
+        import platform
+
+        root_path = pathlib.Path(
+            project_root or os.environ.get("CODERAI_PROJECT_ROOT") or pathlib.Path.cwd()
+        ).resolve()
+
+        ls_lines: list[str] = []
+        try:
+            ignore_names = {
+                ".git",
+                ".venv",
+                "__pycache__",
+                "node_modules",
+                ".pytest_cache",
+                ".coderai",
+            }
+            entries = []
+            for p in sorted(root_path.iterdir()):
+                if p.name in ignore_names:
+                    continue
+                entries.append(p)
+                if p.is_dir():
+                    try:
+                        for sub_p in sorted(p.iterdir()):
+                            if sub_p.name in ignore_names:
+                                continue
+                            entries.append(sub_p)
+                    except OSError:
+                        pass
+            total = len(entries)
+            shown = entries[:50]
+            for e in shown:
+                rel = e.relative_to(root_path)
+                suffix = "/" if e.is_dir() else ""
+                ls_lines.append(f"{rel}{suffix}")
+            if total > 50:
+                ls_lines.append(f"... and {total - 50} more")
+        except OSError:
+            pass
+        work_dir_ls = "\n".join(ls_lines) if ls_lines else "."
+
+        current_os = platform.system()
+        default_shell = os.environ.get("SHELL") or (
+            "/bin/bash" if current_os != "Windows" else "cmd.exe"
+        )
+
+        from coderai.prompt import load_agent_instructions, render_skill_catalog
+
+        agents_md = load_agent_instructions(str(root_path)) or ""
+        skills_text = render_skill_catalog(project_root=str(root_path)) or ""
+
+        add_info = ""
+        if additional_dirs:
+            add_info = "\n".join(f"- {d}" for d in additional_dirs)
+
+        return cls(
+            CODERAI_NOW=datetime.datetime.now().astimezone().isoformat(),
+            CODERAI_WORK_DIR=str(root_path),
+            CODERAI_WORK_DIR_LS=work_dir_ls,
+            CODERAI_AGENTS_MD=agents_md,
+            CODERAI_SKILLS=skills_text,
+            CODERAI_ADDITIONAL_DIRS_INFO=add_info,
+            CODERAI_OS=current_os,
+            CODERAI_SHELL=default_shell,
+        )
+
 
 class SessionSoul(SoulView):
     """Adapter exposing soul state for injections and subagent builders."""
@@ -108,8 +194,10 @@ class SessionSoul(SoulView):
         try:
             root = self._manager.project_root
         except Exception:
-            return None
-        return str(pathlib.Path(root) / ".coderai" / "plans" / f"{self._session_id}.md")
+            root = None
+        from coderai.tools.plan.heroes import get_plan_file_path
+
+        return str(get_plan_file_path(self._session_id, project_root=root))
 
     def read_current_plan(self) -> str | None:
         """Current plan content, or None when no plan file exists."""

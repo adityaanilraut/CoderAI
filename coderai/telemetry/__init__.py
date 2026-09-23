@@ -30,6 +30,13 @@ _client_info: tuple[str, str | None] | None = None
 _session_started_sessions: set[str] = set()
 _sink: Any | None = None
 _disabled: bool = False
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _track_background_task(task: asyncio.Task[Any]) -> None:
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
 
 _trace_id_var: ContextVar[str | None] = ContextVar("coderai_telemetry_trace_id", default=None)
 
@@ -97,7 +104,8 @@ def track_session_started_once(
 
     if _sink is not None:
         with suppress(Exception):
-            asyncio.get_running_loop().create_task(_sink.flush())
+            t = asyncio.get_running_loop().create_task(_sink.flush())
+            _track_background_task(t)
 
 
 def disable() -> None:
@@ -191,7 +199,8 @@ class TransportSink:
         except RuntimeError:
             asyncio.run(self._transport.send(batch))
             return
-        loop.create_task(self._transport.send(batch))
+        t = loop.create_task(self._transport.send(batch))
+        _track_background_task(t)
 
 
 def telemetry_requested(settings: dict[str, Any] | None) -> bool:

@@ -17,8 +17,8 @@ from collections.abc import Callable
 
 import requests
 
-from coderai.utils.subprocess_env import kill_process_tree
-from coderai.network.security import check_outbound_url
+from coderai.utils.subprocess_env import kill_process_tree, scrub_subprocess_env
+from coderai.network.security import check_outbound_url, is_same_origin
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,11 @@ class StdioMcpTransport(McpTransport):
             raise RuntimeError(f"Stdio MCP server '{self.server_name}' has no command specified.")
 
         spawn_spec = create_mcp_spawn_spec(self.command, self.args)
-        merged_env = dict(os.environ)
+        # Stdio servers are spawned from config (possibly project scope);
+        # never hand them ambient secrets. Per-server `env` is explicit and kept.
+        merged_env = scrub_subprocess_env(
+            dict(os.environ), preserve_keys=set((self.env or {}).keys())
+        )
         if self.env:
             merged_env.update(self.env)
 
@@ -182,13 +186,26 @@ class StdioMcpTransport(McpTransport):
             self._proc = None
 
     def send(self, message: dict[str, Any]) -> None:
-        if self._proc and self._proc.stdin and not self._disconnected:
+        if self._disconnected or not self._proc or not self._proc.stdin:
+            raise RuntimeError(f"MCP server '{self.server_name}' is not connected.")
+        line = json.dumps(message) + "\n"
+
+        def _do_write() -> None:
             try:
-                line = json.dumps(message) + "\n"
-                self._proc.stdin.write(line)
-                self._proc.stdin.flush()
-            except Exception:
-                pass
+                if self._proc and self._proc.stdin and not self._disconnected:
+                    self._proc.stdin.write(line)
+                    self._proc.stdin.flush()
+            except Exception as exc:
+                if not self._disconnected:
+                    self._disconnected = True
+                    if self.on_disconnect:
+                        self.on_disconnect(f"MCP server '{self.server_name}' write failed: {exc}")
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _do_write)
+        except RuntimeError:
+            _do_write()
 
     async def _read_loop(self) -> None:
         if not self._proc or not self._proc.stdout:
@@ -308,11 +325,11 @@ class SseMcpTransport(McpTransport):
         # Wait for endpoint discovery event or timeout
         try:
             await asyncio.wait_for(endpoint_ready.wait(), timeout=timeout_s)
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as err:
             await self.disconnect()
             raise RuntimeError(
                 f"Timeout waiting for SSE endpoint from '{self.server_name}' at {self.url}"
-            )
+            ) from err
 
         if self._connect_error is not None:
             await self.disconnect()
@@ -332,9 +349,31 @@ class SseMcpTransport(McpTransport):
                 base_parts = urllib.parse.urlsplit(self.url)
                 self._post_endpoint = f"{base_parts.scheme}://{base_parts.netloc}{post_url}"
             elif post_url.startswith("http://") or post_url.startswith("https://"):
-                self._post_endpoint = post_url
+                # IN-A4: the server must not redirect our bearer token to
+                # another origin. Reject cross-origin endpoints (fail closed)
+                # and re-run the SSRF check on the accepted one.
+                if not is_same_origin(self.url, post_url):
+                    logger.warning(
+                        "Rejecting cross-origin SSE endpoint for '%s': %s",
+                        self.server_name,
+                        post_url,
+                    )
+                    self._post_endpoint = self.url
+                else:
+                    check_outbound_url(post_url, self.policy)
+                    self._post_endpoint = post_url
             else:
-                self._post_endpoint = urllib.parse.urljoin(self.url, post_url)
+                joined = urllib.parse.urljoin(self.url, post_url)
+                if not is_same_origin(self.url, joined):
+                    logger.warning(
+                        "Rejecting cross-origin SSE endpoint for '%s': %s",
+                        self.server_name,
+                        post_url,
+                    )
+                    self._post_endpoint = self.url
+                else:
+                    check_outbound_url(joined, self.policy)
+                    self._post_endpoint = joined
 
             if not endpoint_ready.is_set() and self._loop:
                 self._loop.call_soon_threadsafe(endpoint_ready.set)
@@ -405,6 +444,12 @@ class StreamableHttpMcpTransport(McpTransport):
         self._session: requests.Session | None = None
         self._disconnected = False
         self._connected = False
+        self.last_http_status: int | None = None
+        self.mcp_session_id: str | None = None
+
+    @property
+    def session_id(self) -> str | None:
+        return self.mcp_session_id
 
     def is_connected(self) -> bool:
         return self._connected and not self._disconnected
@@ -416,21 +461,46 @@ class StreamableHttpMcpTransport(McpTransport):
         self._session.headers.setdefault("Accept", "application/json, text/event-stream")
         self._disconnected = False
         self._connected = True
+        self.last_http_status = None
         _ = timeout_s
 
     def send(self, message: dict[str, Any]) -> None:
         if self._disconnected or not self._session:
-            return
+            raise RuntimeError(f"MCP server '{self.server_name}' is not connected.")
+
+        msg_id = message.get("id")
 
         def _do_post() -> None:
             try:
                 assert self._session is not None
+                headers = {"Content-Type": "application/json"}
+                if self.mcp_session_id:
+                    headers["Mcp-Session-Id"] = self.mcp_session_id
                 resp = self._session.post(
                     self.url,
                     json=message,
                     timeout=30.0,
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                 )
+                self.last_http_status = resp.status_code
+                sess_id = resp.headers.get("Mcp-Session-Id")
+                if sess_id:
+                    self.mcp_session_id = sess_id
+
+                if resp.status_code >= 400:
+                    if msg_id is not None and self.on_message:
+                        self.on_message(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": msg_id,
+                                "error": {
+                                    "code": resp.status_code,
+                                    "message": f"HTTP {resp.status_code}: {resp.text[:500]}",
+                                },
+                            }
+                        )
+                    return
+
                 ctype = (resp.headers.get("content-type") or "").lower()
                 if "text/event-stream" in ctype:
                     data_buffer: list[str] = []
@@ -455,12 +525,35 @@ class StreamableHttpMcpTransport(McpTransport):
                     return
                 try:
                     parsed = resp.json()
-                except Exception:
+                except Exception as json_err:
+                    if msg_id is not None and self.on_message:
+                        self.on_message(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": msg_id,
+                                "error": {
+                                    "code": -32700,
+                                    "message": f"Parse error: {json_err}",
+                                },
+                            }
+                        )
                     return
                 if isinstance(parsed, dict) and self.on_message:
                     self.on_message(parsed)
-            except Exception:
-                pass
+            except Exception as exc:
+                if msg_id is not None and self.on_message:
+                    self.on_message(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": msg_id,
+                            "error": {
+                                "code": -32603,
+                                "message": f"Transport error: {exc}",
+                            },
+                        }
+                    )
+                if not self._disconnected and self.on_disconnect:
+                    self.on_disconnect(f"HTTP transport POST failed: {exc}")
 
         threading.Thread(target=_do_post, daemon=True).start()
 

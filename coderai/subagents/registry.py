@@ -93,6 +93,9 @@ def parse_markdown_agent_spec(file_path: Path) -> SubagentTypeDefinition | None:
     else:
         mode = "general"
 
+    raw_model = meta.get("model")
+    model = str(raw_model).strip() if raw_model else None
+
     raw_exclude = meta.get("exclude_tools")
     if raw_exclude is None:
         exclude_tools: tuple[str, ...] = ()
@@ -118,6 +121,7 @@ def parse_markdown_agent_spec(file_path: Path) -> SubagentTypeDefinition | None:
         supports_background=supports_background,
         system_prompt=body,
         mode=mode,
+        model=model,
         source=f"custom:{file_path.name}",
         source_path=file_path.resolve(),
     )
@@ -204,8 +208,9 @@ def _load_definitions(project_root: str | None = None) -> dict[str, SubagentType
                 when_to_use=spec.when_to_use if spec else "",
                 allowed_tools=tuple(spec.allowed_tools) if spec and spec.allowed_tools else None,
                 exclude_tools=tuple(spec.exclude_tools) if spec else (),
-                system_prompt=sys_prompt or None,
+                system_prompt=sys_prompt,
                 mode=mode,
+                model=getattr(spec, "model", None) if spec else None,
                 source="builtin",
             )
     except Exception as exc:
@@ -216,8 +221,28 @@ def _load_definitions(project_root: str | None = None) -> dict[str, SubagentType
     for name, defn in custom.items():
         if name not in defs:
             defs[name] = defn
+        else:
+            logger.warning(
+                "Discovered custom agent %r at %s is shadowed by builtin subagent definition.",
+                name,
+                defn.source_path,
+            )
 
     return defs
+
+
+def format_subagent_types_description(project_root: str | None = None) -> str:
+    """Format a dynamic description of all available subagent types for tool definitions."""
+    defs = list_subagent_types(project_root)
+    items: list[str] = []
+    for d in defs:
+        desc = d.when_to_use or d.description
+        items.append(f"{d.name} ({desc})" if desc else d.name)
+    return (
+        "Builtin and discovered agent flavors: " + ", ".join(items)
+        if items
+        else "coder, explore, plan."
+    )
 
 
 def list_subagent_types(project_root: str | None = None) -> list[SubagentTypeDefinition]:

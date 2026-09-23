@@ -70,24 +70,30 @@ def classify_llm_failure(error: Any) -> str | None:
         or "too many requests" in combined
     ):
         return "RATE_LIMIT"
-    if (isinstance(status, int) and 500 <= status <= 599) or any(
-        tok in combined
-        for tok in (
-            "500",
-            "502",
-            "503",
-            "504",
-            "internal server error",
-            "service unavailable",
-            "bad gateway",
-            "gateway timeout",
-            "server_error",
+    if status == 408 or "timeout" in combined or "timed out" in combined:
+        return "TIMEOUT"
+    if (
+        status in (409, 529)
+        or (isinstance(status, int) and 500 <= status <= 599)
+        or any(
+            tok in combined
+            for tok in (
+                "500",
+                "502",
+                "503",
+                "504",
+                "529",
+                "overloaded",
+                "internal server error",
+                "service unavailable",
+                "bad gateway",
+                "gateway timeout",
+                "server_error",
+            )
         )
     ):
         return "SERVER"
 
-    if "timeout" in combined or "timed out" in combined:
-        return "TIMEOUT"
     if any(
         token in combined
         for token in ("connection", "transport", "fetch failed", "connecterror", "apiconnection")

@@ -211,6 +211,9 @@ class SubAgentSpec:
         None  # Builtin or custom role (coder|explore|plan|architect|code-reviewer...)
     )
     system_prompt: str | None = None
+    model: str | None = None
+    exclude_tools: list[str] | None = None
+    when_to_use: str | None = None
     sandbox_mode: str | None = None
     plan_mode: bool = False
     on_before_file_mutation: Any | None = None
@@ -241,6 +244,13 @@ class SubAgentSpec:
                         if mode == "allowlist":
                             self.allowed_tools = list(tools)
 
+                    if self.model is None and getattr(defn, "model", None):
+                        self.model = defn.model
+                    if self.exclude_tools is None and getattr(defn, "exclude_tools", None):
+                        self.exclude_tools = list(defn.exclude_tools)
+                    if self.when_to_use is None and getattr(defn, "when_to_use", None):
+                        self.when_to_use = defn.when_to_use
+
                     if self.mode is None:
                         self.mode = defn.mode or "read_only"
                     elif self.mode == "read_only":
@@ -257,3 +267,119 @@ class SubAgentSpec:
 
         if self.mode is None:
             self.mode = "read_only"
+
+
+def build_spec(
+    context: Any,
+    args: dict[str, Any] | None = None,
+    *,
+    description: str | None = None,
+    prompt: str | None = None,
+    mode: str | None = None,
+    subagent_type: str | None = None,
+    continuable: bool = False,
+    depth: int | None = None,
+    seed_messages: list[dict[str, Any]] | None = None,
+    **overrides: Any,
+) -> SubAgentSpec:
+    """Build a SubAgentSpec using orchestration.resolve_subagent_defaults.
+
+    Unifies spec construction across all spawn paths (subagent, subagent_fork,
+    Task, and spawn_teammate) so that CODERAI_MAX_SUBAGENT_DEPTH,
+    CODERAI_SUBAGENT_TIMEOUT_SECONDS, and CODERAI_SUBAGENT_MAX_ITERATIONS take effect.
+    """
+    from coderai.orchestration import resolve_subagent_defaults
+
+    args = args or {}
+    settings = None
+    if hasattr(context, "session_manager") and context.session_manager:
+        settings = getattr(context.session_manager, "get_resolved_settings", lambda: None)()
+    elif hasattr(context, "settings") and isinstance(context.settings, dict):
+        settings = context.settings
+    defaults = resolve_subagent_defaults(settings)
+
+    desc = (description or args.get("description", "") or "").strip()
+    pr = (prompt or args.get("prompt", "") or "").strip()
+
+    # Mode resolution
+    resolved_mode = mode or args.get("mode")
+    if resolved_mode is not None:
+        resolved_mode = str(resolved_mode).strip().lower()
+        if resolved_mode not in ("read_only", "general"):
+            resolved_mode = "read_only"
+
+    # Timeout resolution
+    timeout_raw = args.get("timeout_seconds")
+    if timeout_raw is not None:
+        try:
+            timeout_s = float(timeout_raw)
+        except (ValueError, TypeError):
+            timeout_s = defaults["timeout_seconds"]
+    else:
+        timeout_s = defaults["timeout_seconds"]
+
+    # Max depth resolution
+    max_depth = defaults["max_depth"]
+
+    # Max iterations resolution
+    max_iter_raw = args.get("max_iterations")
+    if max_iter_raw is not None:
+        try:
+            max_iterations = int(max_iter_raw)
+        except (ValueError, TypeError):
+            max_iterations = defaults["max_iterations"]
+    else:
+        max_iterations = defaults["max_iterations"]
+
+    # Depth resolution
+    if depth is None:
+        from coderai.subagents.core import get_agent_registry
+
+        d = 0
+        session_id = getattr(context, "session_id", None)
+        if session_id:
+            for handle in get_agent_registry().list():
+                if getattr(handle, "run_session_id", None) == session_id:
+                    d = handle.depth + 1
+                    break
+        depth = d
+
+    # Numeric budgets
+    def _parse_opt_int(v: Any) -> int | None:
+        if v is None:
+            return None
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return None
+
+    token_budget = _parse_opt_int(args.get("token_budget"))
+    max_tokens = _parse_opt_int(args.get("max_tokens"))
+    resolved_type = (subagent_type or args.get("subagent_type") or "").strip().lower() or None
+
+    raw_ctx = args.get("context")
+    extra_context = raw_ctx.strip() if isinstance(raw_ctx, str) and raw_ctx.strip() else None
+
+    spec_kwargs: dict[str, Any] = {
+        "description": desc,
+        "prompt": pr,
+        "mode": resolved_mode,
+        "subagent_type": resolved_type,
+        "depth": depth,
+        "max_depth": max_depth,
+        "timeout_seconds": timeout_s,
+        "max_iterations": max_iterations,
+        "token_budget": token_budget,
+        "max_tokens": max_tokens,
+        "continuable": continuable,
+        "parent_session_id": getattr(context, "session_id", None),
+        "extra_context": extra_context,
+        "seed_messages": seed_messages,
+        "sandbox_mode": getattr(context, "sandbox_mode", None),
+        "plan_mode": getattr(context, "plan_mode", False),
+        "on_before_file_mutation": getattr(context, "on_before_file_mutation", None),
+        "on_after_file_mutation": getattr(context, "on_after_file_mutation", None),
+        "session_manager": getattr(context, "session_manager", None),
+    }
+    spec_kwargs.update(overrides)
+    return SubAgentSpec(**spec_kwargs)

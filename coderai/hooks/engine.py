@@ -24,7 +24,19 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HOOK_TIMEOUT_SECONDS = 10.0
+from coderai.hooks.config import DEFAULT_HOOK_TIMEOUT_SECONDS
+
+MAX_HOOK_TIMEOUT_SECONDS = 60.0
+
+
+def clamp_hook_timeout(timeout_s: float | None) -> float:
+    try:
+        val = float(timeout_s) if timeout_s is not None else DEFAULT_HOOK_TIMEOUT_SECONDS
+    except (ValueError, TypeError):
+        val = DEFAULT_HOOK_TIMEOUT_SECONDS
+    return min(max(val, 0.1), MAX_HOOK_TIMEOUT_SECONDS)
+
+
 from coderai.hooks.config import (
     HookOutput,
     MergedHookOutcome,
@@ -36,16 +48,11 @@ from coderai.hooks.events import HOOK_POINT_ALIASES, HookPoint, normalize_hook_p
 
 
 def _scrubbed_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    import re as _re
+    from coderai.utils.subprocess_env import scrub_subprocess_env
 
-    pat = _re.compile(r"KEY|PASSWORD|SECRET|TOKEN", _re.I)
-    src = base if base is not None else os.environ
-    out: dict[str, str] = {}
-    for k, v in src.items():
-        if pat.search(k) or k.upper().startswith("CODERAI_"):
-            continue
-        out[k] = v
-    return out
+    src = base if base is not None else dict(os.environ)
+    out = scrub_subprocess_env(src)
+    return {k: v for k, v in out.items() if not k.upper().startswith("CODERAI_")}
 
 
 def execute_hook_command(
@@ -73,6 +80,7 @@ def execute_hook_command(
         attributes={"command": command, "point": point_name},
     )
 
+    timeout_s = clamp_hook_timeout(timeout_s)
     start_time = time.time()
     try:
         proc = subprocess.run(
@@ -84,6 +92,7 @@ def execute_hook_command(
             cwd=project_root,
             shell=True,
             env=run_env,
+            start_new_session=True,
         )
         elapsed_ms = (time.time() - start_time) * 1000.0
         stdout = (proc.stdout or "").strip()
@@ -125,9 +134,12 @@ def _decode_hook_output(
                 extra_attributes={"duration_ms": elapsed_ms},
             )
             collector.increment_counter("hook_errors", 1.0)
+        # Claude-compatible: exit code 2 is the explicit blocking/denial code;
+        # other non-zero exit codes are logged as errors but fail open (decision="none").
+        decision = "deny" if returncode == 2 else "none"
         return HookOutput(
-            decision="deny",
-            reason=f"Hook command exited with non-zero status {returncode}: {stderr or stdout}",
+            decision=decision,
+            reason=f"Hook command exited with status {returncode}: {stderr or stdout}",
             exit_code=returncode,
             duration_ms=elapsed_ms,
             raw_stdout=stdout,
@@ -152,7 +164,11 @@ def _decode_hook_output(
     try:
         parsed = json.loads(stdout)
         if isinstance(parsed, dict):
-            decision_raw = str(parsed.get("decision", "none")).lower()
+            hook_specific = parsed.get("hookSpecificOutput")
+            hook_output: dict[str, Any] = hook_specific if isinstance(hook_specific, dict) else {}
+            decision_raw = str(
+                parsed.get("decision") or hook_output.get("permissionDecision") or "none"
+            ).lower()
             decision = (
                 "deny"
                 if decision_raw in ("deny", "block", "reject")
@@ -177,7 +193,7 @@ def _decode_hook_output(
 
             return HookOutput(
                 decision=decision,
-                reason=parsed.get("reason"),
+                reason=parsed.get("reason") or hook_output.get("permissionDecisionReason"),
                 continue_run=continue_run,
                 stop_reason=parsed.get("stopReason") or parsed.get("stop_reason"),
                 additional_context=list(add_ctx),
@@ -229,6 +245,7 @@ async def execute_hook_command_async(
         attributes={"command": command, "point": point_name},
     )
 
+    timeout_s = clamp_hook_timeout(timeout_s)
     start_time = time.time()
     try:
         proc = await asyncio.create_subprocess_shell(
@@ -238,6 +255,7 @@ async def execute_hook_command_async(
             stderr=asyncio.subprocess.PIPE,
             cwd=project_root,
             env=run_env,
+            start_new_session=True,
         )
         input_data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
         try:
@@ -245,9 +263,18 @@ async def execute_hook_command_async(
                 proc.communicate(input=input_data),
                 timeout=timeout_s,
             )
-        except (asyncio.TimeoutError, TimeoutError):
+        except (asyncio.TimeoutError, TimeoutError, asyncio.CancelledError):
             try:
-                proc.kill()
+                import os as _os
+                import signal as _sig
+
+                if hasattr(_os, "killpg"):
+                    try:
+                        _os.killpg(_os.getpgid(proc.pid), _sig.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    proc.kill()
                 await proc.wait()
             except Exception:
                 pass

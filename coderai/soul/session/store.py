@@ -26,11 +26,12 @@ class JsonlSessionStore:
     # Orphaned atomic-write temp files match this suffix shape.
     _ORPHAN_TMP_SUFFIX = ".tmp-"
 
-    def __init__(self, project_root: str, *, max_entries: int = 50) -> None:
+    def __init__(self, project_root: str, *, max_entries: int = 50, cleanup: bool = True) -> None:
         self.project_root = str(pathlib.Path(project_root).resolve())
         self.max_entries = max_entries
         self.project_dir, self.index_path = self._resolve_storage()
-        self.cleanup_orphan_tmps()
+        if cleanup:
+            self.cleanup_orphan_tmps()
 
     def cleanup_orphan_tmps(self) -> int:
         """Remove leftover atomic-write temp files; returns the count removed."""
@@ -52,9 +53,9 @@ class JsonlSessionStore:
 
     def _resolve_storage(self) -> tuple[pathlib.Path, pathlib.Path]:
         local_dir = pathlib.Path(self.project_root) / ".coderai" / "sessions"
-        global_dir = (
-            pathlib.Path.home() / ".coderai" / "projects" / get_project_code(self.project_root)
-        )
+        from coderai.share import get_share_dir
+
+        global_dir = get_share_dir() / "projects" / get_project_code(self.project_root)
         try:
             if (
                 not (local_dir / "sessions-index.json").exists()

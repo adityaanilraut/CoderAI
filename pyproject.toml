@@ -28,7 +28,9 @@ dependencies = [
     "prompt-toolkit>=3.0.52",
     "pydantic>=2.0",
     "tomlkit>=0.12.0",
-    # loguru is optional: log.py falls back to stdlib logging when absent.
+    "certifi>=2024.0.0",
+    "tenacity>=8.0.0",
+    # loguru is required (also pulled in by kosong).
     # Core engine deps (kosong 0.56.x, pykaos 0.9.x,
     # fastmcp-slim 3.2.x, agent-client-protocol 0.8.x).
     # NOTE: ranges are capped at next-minor/major to avoid silent breaking
@@ -50,6 +52,11 @@ media = [
     # Import via `pip install coderai-agent[media]`.
     "pillow>=10",
     "pyperclip>=1.8",
+]
+jev = [
+    # Jev System-One triage/gate for /review (optional: without it every non-doc
+    # file is reviewed and every comment shown). `pip install coderai-agent[jev]`.
+    "typesafe-sdk>=0.7.1,<0.8",
 ]
 dev = [
     "pytest>=8.0",
@@ -82,7 +89,7 @@ coderai = [
     "vendor/rg",
     "vendor/rg-*",
     "vendor/rg.exe",
-    "prompts/*.md",
+    "prompt/templates/*.md",
     "tools/*/*.md",
     "skills/*/SKILL.md",
     "skills/*/references/*.md",

@@ -33,13 +33,13 @@ ANTHROPIC_THINKING_BUDGETS: dict[str, int] = {
 
 
 def normalize_reasoning_effort(reasoning_effort: str | None) -> str:
-    """Canonicalize effort to off|minimal|low|medium|high|xhigh|max. Unknown values become max."""
+    """Canonicalize effort to off|minimal|low|medium|high|xhigh|max|auto|adaptive."""
     if not reasoning_effort:
         return "max"
     raw = str(reasoning_effort).strip().lower()
     if raw in _OFF_ALIASES:
         return "off"
-    if raw in ("minimal", "low", "medium", "high", "xhigh", "max"):
+    if raw in ("auto", "adaptive", "minimal", "low", "medium", "high", "xhigh", "max"):
         return raw
     return "max"
 
@@ -83,7 +83,7 @@ def build_thinking_request_options(
         or "astra" in m
         or "luna" in m
         or "terra" in m
-        or "sol" in m
+        or ("sol" in m and "solar" not in m)
     )
     is_openai_reasoning = is_gpt or m.startswith(
         ("o1", "o3", "o4", "deepseek-reasoner", "deepseek-r1")
@@ -103,16 +103,17 @@ def build_thinking_request_options(
         # Astra rejects "none"; coerce off->low (already handled above, belt & braces).
         if "astra" in m and effort == "off":
             return {"reasoning_effort": "low"}
+        effective_effort = "low" if effort == "minimal" else effort
         if is_gpt:
             # GPT-5.6/6 wire supports none/low/medium/high/xhigh/max.
-            openai_effort = effort if effort in _OPENAI_EFFORTS else "high"
+            openai_effort = effective_effort if effective_effort in _OPENAI_EFFORTS else "high"
             # Internal "off" maps to wire "none" for Sol/Luna.
             if openai_effort == "off":
                 openai_effort = "none"
             return {"reasoning_effort": openai_effort}
         # Legacy o-series / DeepSeek-reasoner wire: low/medium/high/none only.
         legacy_efforts = {"none", "low", "medium", "high"}
-        openai_effort = effort if effort in legacy_efforts else "high"
+        openai_effort = effective_effort if effective_effort in legacy_efforts else "high"
         if openai_effort == "off":
             openai_effort = "none"
         return {"reasoning_effort": openai_effort}

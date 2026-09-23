@@ -181,7 +181,7 @@ def supports_multimodal(model: str, mode: str = "default") -> bool:
         return True
     if m in NON_MULTIMODAL_MODELS:
         return False
-    return m not in NON_MULTIMODAL_MODELS
+    return False
 
 
 def is_fast_model(model: str) -> bool:
@@ -189,7 +189,8 @@ def is_fast_model(model: str) -> bool:
     m = model.strip().lower()
     if is_jev_model(m):
         return True
-    return m in FAST_MODELS or any(sub in m for sub in ("mini", "flash", "lite", "luna"))
+    has_mini = "mini" in m and "gemini" not in m
+    return m in FAST_MODELS or has_mini or any(sub in m for sub in ("flash", "lite", "luna"))
 
 
 def get_model_badges(model: str) -> list[str]:

@@ -8,6 +8,7 @@ import pathlib
 import uuid
 from typing import Any
 
+from coderai.config import DEFAULT_MODEL
 from coderai.tools.legacy.types import ToolResult, as_str
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -84,7 +85,7 @@ def handle_understand_image_tool(args: dict[str, Any], context: Any) -> ToolResu
         model = (
             client_info.get("model")
             if isinstance(client_info, dict) and client_info.get("model")
-            else (getattr(context, "model", None) or "gpt-6-luna")
+            else (getattr(context, "model", None) or DEFAULT_MODEL)
         )
 
         # First attempt: Use the OpenAI-compatible client with multimodal message format

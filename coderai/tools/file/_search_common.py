@@ -221,8 +221,9 @@ def _prefer_python_backend() -> bool:
 
 
 def _session_workdir(context: ToolExecutionContext | Any) -> str:
-    project_root = getattr(context, "project_root", None) or os.getcwd()
-    return str(pathlib.Path(project_root).resolve())
+    from coderai.tools.file.utils import get_effective_workdir
+
+    return get_effective_workdir(context)
 
 
 def _session_id(context: ToolExecutionContext | Any) -> str:

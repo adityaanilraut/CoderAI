@@ -10,13 +10,14 @@ import re
 from typing import Any
 
 from coderai.utils.path import is_binary_buffer, read_text_file_with_metadata
-from coderai.state import (
+from coderai.file_snippets import (
     create_full_file_snippet,
     create_snippet,
     is_absolute_file_path,
     mark_file_read,
     normalize_file_path,
 )
+from coderai.tools.file.utils import get_effective_workdir
 from coderai.tools.legacy.types import (
     ToolExecutionFollowUpMessage,
     ToolResult,
@@ -463,10 +464,9 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
 
     if isinstance(context, dict):
         session_id = context.get("session_id") or "default"
-        project_root = context.get("project_root") or os.getcwd()
     else:
         session_id = getattr(context, "session_id", None) or "default"
-        project_root = getattr(context, "project_root", None) or os.getcwd()
+    project_root = get_effective_workdir(context)
 
     if not is_absolute_file_path(file_path):
         if file_path.startswith("../") or file_path.startswith("..\\"):

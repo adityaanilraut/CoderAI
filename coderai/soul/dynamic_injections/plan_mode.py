@@ -24,7 +24,7 @@ _TURN_INTERVAL = 5
 _FULL_EVERY_N = 5
 
 
-def plan_full_reminder(plan_file: str | None, plan_exists: bool = False) -> str:
+def plan_full_reminder(plan_file: str | None, plan_exists: bool = False, afk: bool = False) -> str:
     lines = [
         "Plan mode is active. You MUST NOT make any edits "
         "(with the exception of the plan file below), run non-readonly tools, "
@@ -50,21 +50,34 @@ def plan_full_reminder(plan_file: str | None, plan_exists: bool = False) -> str:
         "2. Design — converge on the best approach with trade-offs",
         "3. Review — re-read key files to verify understanding",
         "4. Write Plan — write the plan file with write/edit",
-        "5. Exit — call exit_plan_mode for user approval",
+        "5. Exit — call exit_plan_mode(summary=...) for user approval",
         "",
-        "Your turn must end with either AskUserQuestion (clarifications) "
-        "or exit_plan_mode (plan approval). Never ask about plan approval via text.",
     ]
+    if afk:
+        lines.append(
+            "In AFK mode (non-interactive), do not use AskUserQuestion. Make best decisions autonomously and call exit_plan_mode(summary=...) when the plan is ready."
+        )
+    else:
+        lines.append(
+            "Your turn must end with either AskUserQuestion (clarifications) "
+            "or exit_plan_mode (plan approval with summary). Never ask about plan approval via plain text."
+        )
     return "\n".join(lines)
 
 
-def plan_sparse_reminder(plan_file: str | None = None) -> str:
+def plan_sparse_reminder(plan_file: str | None = None, afk: bool = False) -> str:
     parts = ["Plan mode still active (see full instructions earlier)."]
     parts.append(f"Read-only except plan file ({plan_file})." if plan_file else "Read-only.")
-    parts.append(
-        "Modify the plan file with write/edit. "
-        "End turns with AskUserQuestion (clarifications) or exit_plan_mode (approval)."
-    )
+    if afk:
+        parts.append(
+            "Modify the plan file with write/edit. "
+            "End turns with exit_plan_mode(summary=...) for approval."
+        )
+    else:
+        parts.append(
+            "Modify the plan file with write/edit. "
+            "End turns with AskUserQuestion (clarifications) or exit_plan_mode(summary=...) for approval."
+        )
     return " ".join(parts)
 
 
@@ -132,6 +145,7 @@ class PlanModeInjectionProvider(DynamicInjectionProvider):
 
         plan_file = soul.get_plan_file_path()
         plan_exists = bool(plan_file and _pl.Path(plan_file).is_file())
+        is_afk = bool(getattr(soul, "is_afk", False))
 
         if soul.consume_pending_plan_activation_injection():
             self._inject_count = 1
@@ -142,7 +156,11 @@ class PlanModeInjectionProvider(DynamicInjectionProvider):
                         content=plan_reentry_reminder(plan_file),
                     )
                 ]
-            return [DynamicInjection(type="plan_mode", content=plan_full_reminder(plan_file))]
+            return [
+                DynamicInjection(
+                    type="plan_mode", content=plan_full_reminder(plan_file, afk=is_afk)
+                )
+            ]
 
         turns, found = self._turns_since_reminder(history)
         if not found:
@@ -150,7 +168,7 @@ class PlanModeInjectionProvider(DynamicInjectionProvider):
             return [
                 DynamicInjection(
                     type="plan_mode",
-                    content=plan_full_reminder(plan_file, plan_exists),
+                    content=plan_full_reminder(plan_file, plan_exists, afk=is_afk),
                 )
             ]
         if turns < _TURN_INTERVAL:
@@ -158,9 +176,9 @@ class PlanModeInjectionProvider(DynamicInjectionProvider):
         self._inject_count += 1
         is_full = self._inject_count % _FULL_EVERY_N == 1
         content = (
-            plan_full_reminder(plan_file, plan_exists)
+            plan_full_reminder(plan_file, plan_exists, afk=is_afk)
             if is_full
-            else plan_sparse_reminder(plan_file)
+            else plan_sparse_reminder(plan_file, afk=is_afk)
         )
         return [DynamicInjection(type="plan_mode", content=content)]
 

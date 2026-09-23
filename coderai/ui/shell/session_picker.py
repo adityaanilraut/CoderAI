@@ -7,6 +7,7 @@ import sys
 from typing import Any
 
 from rich.live import Live
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -235,7 +236,7 @@ def select_with_arrows(
     if not sys.stdin.isatty():
         if console is not None and _RICH and Panel is not None:
             body_lines = [
-                f"  {num:2}. {disp_title} [dim]— {desc}[/]"
+                f"  {num:2}. {disp_title} [dim]— {escape(desc)}[/]"
                 for num, (_, disp_title, desc) in enumerate(items, 1)
             ]
             if allow_custom:
@@ -284,7 +285,8 @@ def select_with_arrows(
 
         body_lines = []
         if cur_query:
-            body_lines.append(f"[dim cyan]Filter:[/] [bold yellow]{cur_query}[/]\n")
+            # UI-A3: typed filter text is untrusted; never render as markup.
+            body_lines.append(f"[dim cyan]Filter:[/] [bold yellow]{escape(cur_query)}[/]\n")
 
         for disp_num, item_idx in enumerate(filtered_indices, 1):
             key_name, disp_title, desc = items[item_idx]
@@ -292,7 +294,10 @@ def select_with_arrows(
             prefix = "[bold cyan]❯[/]" if is_sel else " "
             num_tag = f"[bold cyan]{disp_num:2}.[/]" if is_sel else f"[dim]{disp_num:2}.[/]"
             title_text = f"[bold cyan]{disp_title}[/]" if is_sel else f"[white]{disp_title}[/]"
-            desc_text = f" [dim]— {desc}[/]" if desc else ""
+            # UI-A3: item descriptions (session summaries, role docs, prompt
+            # snippets) are untrusted; callers must escape data merged into
+            # titles at construction.
+            desc_text = f" [dim]— {escape(desc)}[/]" if desc else ""
             body_lines.append(f"  {prefix} {num_tag} {title_text}{desc_text}")
 
         if allow_custom:
@@ -581,7 +586,7 @@ def select_model_interactive(console: Any | None, current_model: str) -> str:
     for idx, (name, desc, category) in enumerate(all_models):
         badges = get_model_badges(name)
         badges_str = " ".join(f"[{b}]" for b in badges)
-        items.append((name, f"{name:<26} {badges_str}", f"[{category}] {desc}"))
+        items.append((name, f"{escape(name):<26} {badges_str}", f"[{escape(category)}] {desc}"))
         if name == current_model:
             default_idx = idx
 
@@ -692,7 +697,11 @@ def select_agent_role_interactive(
     for d in discovered:
         mode_label = f"[{d.mode}]" if d.mode else ""
         roles.append(
-            (d.name, f"{d.name} {mode_label}", d.description or f"Specialized {d.name} role")
+            (
+                d.name,
+                f"{escape(d.name)} {mode_label}",
+                d.description or f"Specialized {d.name} role",
+            )
         )
 
     items: list[tuple[str, str, str]] = []
@@ -969,7 +978,13 @@ def select_undo_interactive(
             prompt_snip = t.get("prompt", "")[:50]
             ckpt = (t.get("checkpoint_hash") or "—")[:10]
             has_code = "✓ code backup" if t.get("can_restore_code") else "conv only"
-            items.append((str(idx), f"Turn #{idx}: {prompt_snip}", f"ckpt: {ckpt} [{has_code}]"))
+            items.append(
+                (
+                    str(idx),
+                    f"Turn #{idx}: {escape(prompt_snip)}",
+                    f"ckpt: {escape(ckpt)} [{has_code}]",
+                )
+            )
 
         res = select_with_arrows(
             console,

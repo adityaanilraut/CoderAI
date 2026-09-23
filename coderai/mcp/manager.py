@@ -263,7 +263,10 @@ class McpManager:
         for name in removed_names:
             client = next((c for c in self.clients if c.server_name == name), None)
             if client:
-                await client.disconnect()
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
             self.clients = [c for c in self.clients if c.server_name != name]
             self.tools = [t for t in self.tools if t.server_name != name]
             self.prompts = [p for p in self.prompts if p.get("server_name") != name]
@@ -468,7 +471,13 @@ class McpManager:
             )
             return
 
-        # Filter out disconnected clients for this server
+        # Disconnect and filter out existing clients for this server
+        for c in list(self.clients):
+            if c.server_name == name:
+                try:
+                    await c.disconnect()
+                except Exception:
+                    pass
         self.clients = [c for c in self.clients if c.server_name != name and c.is_connected()]
         self.tools = [t for t in self.tools if t.server_name != name]
         self.prompts = [p for p in self.prompts if p.get("server_name") != name]
@@ -748,7 +757,10 @@ class McpManager:
     async def disconnect(self) -> None:
         self.disposed = True
         for client in self.clients:
-            await client.disconnect()
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
         self.clients.clear()
         self.tools.clear()
         self.prompts.clear()

@@ -14,7 +14,7 @@ from coderai.utils.path import (
     read_text_file_with_metadata,
 )
 from coderai.utils.common.validate import ValidationResult, execute_validated_tool
-from coderai.state import (
+from coderai.file_snippets import (
     FileState,
     get_file_state,
     is_absolute_file_path,
@@ -26,6 +26,7 @@ from coderai.tools.legacy.types import ToolResult, as_str
 from coderai.tools.file.utils import (
     check_file_write_access,
     context_value,
+    get_effective_workdir,
     write_file_with_callbacks,
 )
 
@@ -81,14 +82,9 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
 
     def run(validated_args: dict[str, Any], ctx: Any) -> ToolResult:
         raw_fp = as_str(validated_args.get("file_path"))
-        iso_val = context_value(ctx, "isolated_cwd")
-        isolated_cwd = (
-            str(iso_val)
-            if isinstance(iso_val, (str, pathlib.Path)) and "MagicMock" not in str(type(iso_val))
-            else None
-        )
-        if isolated_cwd and not is_absolute_file_path(raw_fp):
-            file_path = normalize_file_path(str(pathlib.Path(isolated_cwd) / raw_fp))
+        if not is_absolute_file_path(raw_fp):
+            effective_workdir = get_effective_workdir(ctx)
+            file_path = normalize_file_path(str(pathlib.Path(effective_workdir) / raw_fp))
         else:
             file_path = normalize_file_path(raw_fp)
 

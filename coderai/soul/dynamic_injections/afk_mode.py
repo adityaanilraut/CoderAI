@@ -43,11 +43,15 @@ class AfkModeInjectionProvider(DynamicInjectionProvider):
 
     def __init__(self) -> None:
         self._injected = False
+        self._pending_disabled = False
 
     async def get_injections(
         self, history: list[dict[str, Any]], soul: SoulView
     ) -> list[DynamicInjection]:
         _ = history
+        if self._pending_disabled:
+            self._pending_disabled = False
+            return [DynamicInjection(type=AFK_INJECTION_TYPE, content=AFK_DISABLED_REMINDER)]
         if not soul.is_afk or soul.is_subagent or self._injected:
             return []
         self._injected = True
@@ -55,9 +59,13 @@ class AfkModeInjectionProvider(DynamicInjectionProvider):
 
     async def on_context_compacted(self) -> None:
         self._injected = False
+        self._pending_disabled = False
 
     async def on_afk_changed(self, enabled: bool) -> None:
-        _ = enabled
+        if not enabled and self._injected:
+            self._pending_disabled = True
+        else:
+            self._pending_disabled = False
         self._injected = False
 
 

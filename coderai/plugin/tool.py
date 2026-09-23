@@ -22,9 +22,10 @@ PLUGIN_TOOL_TIMEOUT_S = 120.0
 
 
 def _clean_env() -> dict[str, str]:
-    """Subprocess env without secret-bearing variables (``get_clean_env``)."""
-    scrub = ("KEY", "PASSWORD", "SECRET", "TOKEN")
-    return {k: v for k, v in os.environ.items() if not any(marker in k.upper() for marker in scrub)}
+    """Subprocess env without secret-bearing variables."""
+    from coderai.utils.subprocess_env import scrub_subprocess_env
+
+    return scrub_subprocess_env(dict(os.environ))
 
 
 def iter_plugin_tools(

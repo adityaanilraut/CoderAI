@@ -111,11 +111,15 @@ class CustomScriptSearchProvider(WebSearchProvider):
         timeout_seconds: float = 15.0,
     ) -> WebSearchResult:
         try:
+            from coderai.utils.subprocess_env import scrub_subprocess_env
+
             proc = subprocess.run(
                 [self.script_path, query],
                 capture_output=True,
                 text=True,
                 timeout=timeout_seconds,
+                # Custom scripts come from user config; never hand them secrets.
+                env=scrub_subprocess_env(dict(os.environ)),
             )
             stdout = proc.stdout.strip()
             if proc.returncode == 0 and stdout:

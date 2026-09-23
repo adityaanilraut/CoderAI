@@ -58,17 +58,46 @@ def is_binary_buffer(buf: bytes, sample_size: int = 8192, threshold: float = 0.3
     return (non_text / len(sample)) > threshold
 
 
+def get_per_line_endings(text: str) -> list[str]:
+    """Extract line ending of each line in order (\r\n, \n, or empty string)."""
+    endings: list[str] = []
+    pos = 0
+    while pos < len(text):
+        nl = text.find("\n", pos)
+        if nl == -1:
+            endings.append("")
+            break
+        if nl > 0 and text[nl - 1] == "\r":
+            endings.append("\r\n")
+        else:
+            endings.append("\n")
+        pos = nl + 1
+    return endings
+
+
 def read_text_file_with_metadata(path: str) -> dict[str, Any]:
     p = pathlib.Path(path)
     raw = p.read_bytes()
+    is_binary = is_binary_buffer(raw)
     enc = detect_encoding(raw)
-    text = raw.decode("utf-16-le" if enc == "utf16le" else "utf-8", errors="replace")
+    codec = "utf-16-le" if enc == "utf16le" else "utf-8"
+    decoded_strict = True
+    try:
+        raw.decode(codec, errors="strict")
+    except UnicodeDecodeError:
+        decoded_strict = False
+    text = raw.decode(codec, errors="replace")
+    has_replacement = "\ufffd" in text or not decoded_strict
     content = normalize_content(text)
     return {
         "content": content,
+        "raw_content": text,
         "encoding": enc,
         "lineEndings": detect_line_endings(text),
+        "line_endings_list": get_per_line_endings(text),
         "timestamp": int(p.stat().st_mtime * 1000),
+        "is_binary": is_binary,
+        "has_replacement_characters": has_replacement,
     }
 
 
@@ -186,10 +215,27 @@ def with_file_lock(
 
 
 def write_text_file(
-    path: str, content: str, encoding: str = "utf8", line_endings: str = "LF"
+    path: str,
+    content: str,
+    encoding: str = "utf8",
+    line_endings: str | list[str] = "LF",
 ) -> int:
     norm = normalize_content(content)
-    to_write = norm.replace("\n", "\r\n") if line_endings == "CRLF" else norm
+    if isinstance(line_endings, (list, tuple)):
+        lines = norm.split("\n")
+        reconstructed: list[str] = []
+        default_ending = "\r\n" if any(e == "\r\n" for e in line_endings) else "\n"
+        for i, line in enumerate(lines):
+            if i < len(line_endings):
+                ending = line_endings[i]
+            else:
+                ending = default_ending if i < len(lines) - 1 else ""
+            reconstructed.append(line + ending)
+        to_write = "".join(reconstructed)
+    elif line_endings == "CRLF":
+        to_write = norm.replace("\n", "\r\n")
+    else:
+        to_write = norm
     return write_file_atomic(path, to_write, encoding=encoding)
 
 

@@ -303,19 +303,7 @@ def make_tool_result(
 # Convenience aliases matching event naming
 make_user_event = make_user_message
 make_assistant_event = make_assistant_message
-make_tool_call_event = make_tool_call
 make_tool_result_event = make_tool_result
-
-
-# ---- Request header ----
-
-
-def make_request_header(
-    seq: int,
-    header: dict[str, Any],
-    reason: str = "initial",
-) -> SessionEvent:
-    return make_event(seq, REQUEST_HEADER, {"header": header, "reason": reason})
 
 
 # ---- Compaction ----

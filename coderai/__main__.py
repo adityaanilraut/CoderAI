@@ -1,6 +1,6 @@
 """Entry for `python -m coderai`."""
 
-from coderai.ui.shell.app import main
+from coderai.cli.__main__ import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

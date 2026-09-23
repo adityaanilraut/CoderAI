@@ -116,7 +116,9 @@ def test_undo_empty_targets_reports_no_crash() -> None:
     assert not mgr.undo.called
 
 
-def test_agents_roles_delegates_and_tree_lists_live_runs(capsys: pytest.CaptureFixture[str]) -> None:
+def test_agents_roles_delegates_and_tree_lists_live_runs(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """'/agents roles' lists roles; '/agents tree' prints the live tree."""
     mgr = MagicMock()
     mgr.project_root = "."

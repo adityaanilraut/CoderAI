@@ -123,4 +123,3 @@ async def do_update(*, print: bool = True, check_only: bool = False) -> UpdateRe
             logger.exception("Failed to execute upgrade:")
             _print(f"[red]Upgrade execution error: {e}[/red]")
             return UpdateResult.FAILED
-
