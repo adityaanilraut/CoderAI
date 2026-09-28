@@ -29,32 +29,18 @@ def create_mcp_spawn_spec(
     command: str, args: list[str] | None = None, platform: str = sys.platform
 ) -> dict[str, Any]:
     args = args or []
-    if platform != "win32":
-        return {
-            "command": command,
-            "args": args,
-            "shell": False,
-        }
-
-    # Windows command escaping
-    def quote_windows_arg(arg: str) -> str:
-        if not arg:
-            return '""'
-        if not CMD_METACHARS_PATTERN.search(arg):
-            return arg
-        escaped = arg.replace('"', '\\"')
-        return f'"{escaped}"'
-
-    quoted_cmd = quote_windows_arg(command) if CMD_METACHARS_PATTERN.search(command) else command
-    quoted_args = [quote_windows_arg(a) for a in args]
-    cmd_line = f"{quoted_cmd} {' '.join(quoted_args)}".strip()
-
-    return {
-        "command": cmd_line,
-        "args": [],
-        "shell": True,
-        "windowsHide": True,
+    # Always spawn with an argv list and shell=False, including on Windows,
+    # so server commands from config cannot inject shell metacharacters.
+    # subprocess handles Windows quoting for list argv.
+    _ = platform
+    spec: dict[str, Any] = {
+        "command": command,
+        "args": args,
+        "shell": False,
     }
+    if sys.platform == "win32":
+        spec["windowsHide"] = True
+    return spec
 
 
 class McpTransport(ABC):
@@ -147,10 +133,7 @@ class StdioMcpTransport(McpTransport):
         else:
             kwargs["start_new_session"] = True
 
-        if spawn_spec["shell"]:
-            self._proc = subprocess.Popen(spawn_spec["command"], shell=True, **kwargs)
-        else:
-            self._proc = subprocess.Popen([spawn_spec["command"], *spawn_spec["args"]], **kwargs)
+        self._proc = subprocess.Popen([spawn_spec["command"], *spawn_spec["args"]], **kwargs)
 
         self._disconnected = False
         self._reader_task = asyncio.create_task(self._read_loop())

@@ -268,11 +268,11 @@ def cmd_schedule(ctx: ShellContext, args: str) -> SlashAction:
     return SlashAction.HANDLED
 
 
-@registry.command(name="agent", aliases=["role", "roles"])
+@registry.command(name="agent", aliases=["role", "roles"], subcommands=("roles", "switch", "list"))
 def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
     """View or switch active agent role."""
     arg_clean = args.strip()
-    if not arg_clean:
+    if not arg_clean or arg_clean.lower() == "switch":
         from coderai.ui.shell.session_picker import select_agent_role_interactive
 
         current_role = (
@@ -314,10 +314,10 @@ def cmd_agent(ctx: ShellContext, args: str) -> SlashAction:
             rt.add_column("Active", width=8)
             rt.add_column("Description", style="white")
             for b in bundled:
-                active_mark = "[bold green]● YES[/]" if b == cur_role else "[dim]○[/]"
+                active_mark = "[bold green]● YES[/]" if b == cur_role else "[dim]○ off[/]"
                 rt.add_row(b, "bundled", "primary", active_mark, f"Bundled {b} agent specification")
             for d in discovered:
-                active_mark = "[bold green]● YES[/]" if d.name == cur_role else "[dim]○[/]"
+                active_mark = "[bold green]● YES[/]" if d.name == cur_role else "[dim]○ off[/]"
                 rt.add_row(
                     escape(d.name), "discovered", escape(d.mode), active_mark, escape(d.description)
                 )
@@ -636,7 +636,7 @@ def cmd_theme(ctx: ShellContext, args: str) -> SlashAction:
     return SlashAction.HANDLED
 
 
-@registry.command(aliases=["raw"])
+@registry.command(aliases=["raw"], subcommands=("full", "summary", "lite", "normal", "on", "off"))
 def cmd_thinking(ctx: ShellContext, args: str) -> SlashAction:
     """Toggle reasoning trace display."""
     arg = args.strip().lower()
@@ -651,7 +651,7 @@ def cmd_thinking(ctx: ShellContext, args: str) -> SlashAction:
         mode_str = "Full expanded" if ctx.thinking_expanded else "Concise summary"
         msg = f"Switched to {mode_str}."
     else:
-        _emit(ctx, "Usage: /thinking [full|summary|on|off]")
+        _emit(ctx, "Usage: /thinking [full|summary|lite|normal|on|off]")
         return SlashAction.HANDLED
     if ctx.console is not None:
         ctx.console.print(f"[bold magenta]Reasoning traces:[/] {msg}")
@@ -779,7 +779,7 @@ async def cmd_continue(ctx: ShellContext, args: str, drain_fn: Any = None) -> Sl
     return SlashAction.HANDLED
 
 
-@registry.command
+@registry.command(subcommands=("on", "off", "view", "clear", "apply", "reset"))
 def cmd_plan(ctx: ShellContext, args: str) -> SlashAction:
     """Toggle or apply Plan Mode."""
     sub = args.strip().lower()
@@ -821,7 +821,7 @@ def cmd_plan(ctx: ShellContext, args: str) -> SlashAction:
     elif not sub:
         ctx.active_plan_mode = not ctx.active_plan_mode
     else:
-        print("Usage: /plan [on|off|view|apply|reset]")
+        print("Usage: /plan [on|off|view|clear|apply|reset]")
         return SlashAction.HANDLED
 
     if ctx.ptk_session is not None and hasattr(ctx.ptk_session, "set_plan_mode"):
@@ -908,7 +908,9 @@ def cmd_model(ctx: ShellContext, args: str) -> SlashAction:
     return SlashAction.HANDLED
 
 
-@registry.command(aliases=["reasoning"])
+@registry.command(
+    aliases=["reasoning"], subcommands=("off", "low", "medium", "high", "xhigh", "max")
+)
 def cmd_effort(ctx: ShellContext, args: str) -> SlashAction:
     """Select reasoning effort."""
     from coderai.config import VALID_REASONING_EFFORTS
@@ -1071,15 +1073,26 @@ def _sync_auto_approve_context(ctx: ShellContext) -> None:
         ctx.yes = bool(getattr(mgr, "yolo", False) or getattr(mgr, "afk", False))
 
 
+def _parse_on_off(args: str) -> bool | None:
+    """Parse an explicit on/off argument; None means 'toggle'."""
+    low = (args or "").strip().lower()
+    if low in ("on", "enable", "enabled", "1", "true", "yes"):
+        return True
+    if low in ("off", "disable", "disabled", "0", "false", "no"):
+        return False
+    return None
+
+
 @registry.command
 def cmd_yolo(ctx: ShellContext, args: str) -> SlashAction:
-    """Toggle YOLO auto-approve all actions."""
+    """Toggle YOLO auto-approve all actions (`/yolo [on|off]`)."""
     mgr = ctx.mgr
+    want = _parse_on_off(args)
     if hasattr(mgr, "set_yolo") and hasattr(mgr, "is_yolo"):
-        mgr.set_yolo(not bool(mgr.is_yolo()))
+        mgr.set_yolo(bool(want) if want is not None else not bool(mgr.is_yolo()))
         enabled = bool(mgr.is_yolo())
     else:
-        enabled = not bool(getattr(mgr, "yolo", False))
+        enabled = bool(want) if want is not None else not bool(getattr(mgr, "yolo", False))
         mgr.yolo = enabled
     _sync_auto_approve_context(ctx)
     if enabled:
@@ -1097,13 +1110,14 @@ def cmd_yolo(ctx: ShellContext, args: str) -> SlashAction:
 
 @registry.command
 def cmd_afk(ctx: ShellContext, args: str) -> SlashAction:
-    """Toggle AFK auto-dismiss questions & approvals."""
+    """Toggle AFK auto-dismiss questions & approvals (`/afk [on|off]`)."""
     mgr = ctx.mgr
+    want = _parse_on_off(args)
     if hasattr(mgr, "set_afk") and hasattr(mgr, "is_afk"):
-        mgr.set_afk(not bool(mgr.is_afk()))
+        mgr.set_afk(bool(want) if want is not None else not bool(mgr.is_afk()))
         enabled = bool(mgr.is_afk())
     else:
-        enabled = not bool(getattr(mgr, "afk", False))
+        enabled = bool(want) if want is not None else not bool(getattr(mgr, "afk", False))
         mgr.afk = enabled
     _sync_auto_approve_context(ctx)
     if enabled:
@@ -1528,7 +1542,25 @@ async def dispatch_slash_command(
             await drain_fn(ctx.mgr, s_id, ctx.yes)
         return SlashAction.HANDLED
 
-    # Check direct skill alias (e.g. /my-skill)
+    # Direct skill alias (e.g. /my-skill) — but never let it mask a typo of
+    # a known command; suggest the close match instead.
+    import difflib as _difflib
+
+    from coderai.ui.shell.slash import COMMAND_ALIASES as _COMMAND_ALIASES
+    from coderai.ui.shell.slash import COMMAND_CATALOG as _COMMAND_CATALOG
+
+    _known_triggers = list(_COMMAND_CATALOG) + list(_COMMAND_ALIASES)
+    try:
+        _known_triggers += [trig for trig, _ in registry.iter_command_entries()]
+    except Exception:
+        pass
+    _close = _difflib.get_close_matches(cmd_name, _known_triggers, n=1, cutoff=0.6)
+    if _close:
+        print(
+            f"Unknown command: /{cmd_name} "
+            f"(did you mean '/{_close[0]}'?). Type /help for available commands."
+        )
+        return SlashAction.HANDLED
     if _queue_skill(ctx.mgr, ctx.console, cmd_name, ctx.pending_skills, quiet_unknown=True):
         if ctx.session_id:
             ctx.mgr.inject_skills(ctx.session_id, ctx.pending_skills)

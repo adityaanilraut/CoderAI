@@ -15,7 +15,7 @@ CoderAI is an enterprise-grade AI software engineering CLI and agentic execution
 - **Autonomous Swarms (`coderai/teams/`)**: Decentralized multi-agent swarm coordination featuring `TeamManager`, DAG-validated `TeamTaskBoard`, priority actor mailboxes (`ActorChannel` / `AsyncMailbox`), and synchronization barriers (`wait_agent`).
 - **Tool Platform (`coderai/tools/`, `coderai/tools/legacy/`)**: Sandboxed tool execution with dry-run verification, approval workflows (`YOLO` and `AFK` modes), AST-based code transforms, ripgrep search, and git working tree isolation.
 - **Agent Control Protocol (`coderai/acp/`)**: In-process JSON-RPC server implementing the ACP protocol with session creation, resume, fork (`fork_session`), and extensible method dispatch (`ext_method`).
-- **JEV System-One AI Model (`coderai/jev/`, `coderai/triage/`)**: Non-autoregressive "System One" AI model providing ultra-fast single-shot triage, diff screening, confidence calibration, LRU caching, and fail-safe fallback to System-Two autoregressive reasoning.
+- **JEV System-One AI Model (`coderai/jev/`, `coderai/triage/`)**: Non-autoregressive Kahneman "System One" AI model providing ultra-fast (~0.5s) single-shot triage, diff screening, confidence calibration, LRU caching, and fail-safe fallback to System-Two autoregressive reasoning. Powers the 3-Tier Compound Review Harness evaluated on the Martian Code Review Benchmark (achieving Rank 5 worldwide, 58.2% Precision, and shielding developers from 38+ false-positive hallucinations).
 
 ---
 

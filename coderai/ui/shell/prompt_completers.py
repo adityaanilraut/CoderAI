@@ -199,7 +199,13 @@ class SlashCommandCompleter(Completer):
                 from coderai.ui.shell.session_picker import CURATED_MODELS
 
                 for m in CURATED_MODELS:
-                    candidates.append((m["id"], f"{m['name']} — {m['desc']}"))
+                    if isinstance(m, dict):
+                        candidates.append(
+                            (m["id"], f"{m.get('name', m['id'])} — {m.get('desc', '')}")
+                        )
+                    else:
+                        mid, mdesc, _mcat = m
+                        candidates.append((mid, f"{mid} — {mdesc}"))
             elif lead_cmd in ("/effort", "/reasoning"):
                 for tier in ("off", "low", "medium", "high", "xhigh", "max"):
                     candidates.append((tier, f"Reasoning effort: {tier}"))
@@ -265,6 +271,7 @@ class SlashCommandCompleter(Completer):
             elif lead_cmd in ("/help", "/?"):
                 for cmd_name in self._command_lookup:
                     candidates.append((cmd_name, f"Help on /{cmd_name}"))
+                candidates.append(("shortcuts", "Keyboard shortcuts & controls"))
 
             if candidates:
                 matching_names = fuzzy_filter(arg_typed, [c[0] for c in candidates], limit=20)
@@ -519,6 +526,10 @@ class FileMentionCompleter(Completer):
         at_idx = text_before.rfind("@")
         if at_idx == -1:
             return
+        if at_idx > 0:
+            prev = text_before[at_idx - 1]
+            if prev.isalnum() or prev in (".", "-", "_", "`", "'", '"', ":", "@", "#", "~"):
+                return
         token = text_before[at_idx + 1 :]
         if " " in token or "\n" in token:
             return

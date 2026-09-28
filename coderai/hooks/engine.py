@@ -134,9 +134,10 @@ def _decode_hook_output(
                 extra_attributes={"duration_ms": elapsed_ms},
             )
             collector.increment_counter("hook_errors", 1.0)
-        # Claude-compatible: exit code 2 is the explicit blocking/denial code;
-        # other non-zero exit codes are logged as errors but fail open (decision="none").
-        decision = "deny" if returncode == 2 else "none"
+        # Fail closed: any non-zero exit blocks. Exit code 2 is the explicit
+        # denial code; other non-zero codes are hook errors and must not
+        # silently allow the action.
+        decision = "deny"
         return HookOutput(
             decision=decision,
             reason=f"Hook command exited with status {returncode}: {stderr or stdout}",

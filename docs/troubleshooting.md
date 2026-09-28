@@ -92,6 +92,26 @@ restores files, not conversation. To recover *conversation* after a crash,
 `--resume`/`--last` replays the persisted event stream; compaction markers
 (`CompactionBegin`/`CompactionEnd`) survive the round trip.
 
+## JEV System-One & `/review` Troubleshooting
+
+### JEV is not screening or gating comments
+- **Check API Key**: Verify that `TYPESAFE_API_KEY` is exported in your environment, present in `.env`, or configured via `coderai setup`.
+- **Verify Dependency**: If running from source, ensure TypeSafe SDK is installed: `pip install -e '.[jev]'`.
+- **Standalone Fallback**: If `TYPESAFE_API_KEY` is absent, `/review` operates normally in standalone System 2 mode (all non-doc changed files are reviewed directly by the primary LLM).
+
+### Legitimate comments being suppressed
+- **Calibrated Thresholds**: Tier 3 suppresses comments where `is_actionable_bug < 0.40`, `will_developer_accept < 0.50`, or `is_speculative_or_nit > 0.65`.
+- **Tuning**: If reviewing unusual or niche codebases where edge-case warnings are desired:
+  ```bash
+  export CODERAI_JEV_GATE_THRESHOLD=0.30
+  export CODERAI_JEV_SPECULATIVE_THRESHOLD=0.75
+  ```
+- **Localization & Docs**: Dialect and translation errors in `.properties`, `.adoc`, and `.md` files are automatically bypassed from Tier 3 gating to protect recall on non-executable files.
+
+### Network latency or API timeouts
+- **Graceful Degradation**: Jev requests carry a strict timeout (`CODERAI_JEV_TIMEOUT_MS`, default 10000ms). If a request times out or encounters a network failure, CoderAI fails open—candidate comments pass through to the developer without halting the review.
+- **Cache Inspection**: Repeated runs against unchanged commits benefit from the in-memory LRU cache (`CODERAI_JEV_CACHE_SIZE=1024`).
+
 ## Still stuck?
 
 1. `coderai --setup --status` — credentials sane?
@@ -101,3 +121,4 @@ restores files, not conversation. To recover *conversation* after a crash,
    `coderai --print -p "..."`.
 5. File an issue with: `/doctor` output, `--setup --status` (redact keys),
    and the minimal `--print` reproducer.
+

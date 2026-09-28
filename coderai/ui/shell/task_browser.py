@@ -75,13 +75,23 @@ def run_task_browser(console: Any, mgr: Any, session_id: str | None) -> None:
     store = getattr(mgr, "job_store", None)
 
     def _render():
+        import shutil as _shutil
+
+        try:
+            term_cols = _shutil.get_terminal_size(fallback=(80, 24)).columns
+        except Exception:
+            term_cols = 80
+        # Split the terminal across the three panes instead of fixed
+        # 38+34 cols, which overflowed narrow terminals and starved preview.
+        left_w = max(20, min(38, term_cols // 3))
+        detail_w = max(20, min(34, term_cols // 4))
         jobs = _collect_jobs(mgr, session_id, active_only)
-        left = Table(title="Tasks", border_style="cyan", width=38)
-        left.add_column("#", width=3)
-        left.add_column("Status", width=9)
-        left.add_column("Label")
+        left = Table(title="Tasks", border_style="cyan", width=left_w)
+        left.add_column("#", width=3, no_wrap=True)
+        left.add_column("Status", width=9, no_wrap=True)
+        left.add_column("Label", overflow="fold")
         for i, j in enumerate(jobs[:20]):
-            marker = ">" if i == idx else " "
+            marker = "❯" if i == idx else " "
             status = str(getattr(j, "status", "?")).upper()
             left.add_row(
                 f"{marker}{i}",
@@ -90,9 +100,9 @@ def run_task_browser(console: Any, mgr: Any, session_id: str | None) -> None:
             )
         if jobs and 0 <= idx < len(jobs):
             job = jobs[idx]
-            detail = Table(title="Detail", border_style="green", width=34)
-            detail.add_column("K", width=10)
-            detail.add_column("V")
+            detail = Table(title="Detail", border_style="green", width=detail_w)
+            detail.add_column("K", width=10, no_wrap=True)
+            detail.add_column("V", overflow="fold")
             for k, v in _job_detail(job):
                 detail.add_row(k, v)
             preview = Panel(

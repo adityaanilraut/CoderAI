@@ -79,6 +79,21 @@ def error_callout(console: Any | None, title: str, detail: str, hint: str = "") 
         print(f"Error: {title} — {detail} {hint}".strip())
 
 
+def _cli_error(title: str, detail: str, hint: str = "") -> int:
+    """Report a CLI usage error via error_callout on TTYs, stderr otherwise."""
+    try:
+        if sys.stdout.isatty():
+            error_callout(None, title, detail, hint)
+        else:
+            msg = f"Error: {title} — {detail}"
+            if hint:
+                msg += f" ({hint})"
+            print(msg, file=sys.stderr)
+    except Exception:
+        print(f"Error: {title} — {detail} {hint}".strip(), file=sys.stderr)
+    return 1
+
+
 def _clear_task_cancellation() -> None:
     """Clear any pending task cancellation counter in Python 3.11+ asyncio."""
     try:
@@ -194,9 +209,9 @@ def _render_markdown(text: str) -> None:
 # pipes, and non-TTY — but now also understands ANSI arrow sequences plus
 # typed "up"/"down" words, and Enter confirms the highlighted option.
 
-_ARROW_UP_TOKENS = frozenset({"up", "\x1b[a", "\x1boa", "\x1b[1;2a", "\x1b[1;5a", "k"})
-_ARROW_DOWN_TOKENS = frozenset({"down", "\x1b[b", "\x1bob", "\x1b[1;2b", "\x1b[1;5b", "j"})
-_ARROW_LEFT_TOKENS = frozenset({"left", "\x1b[d", "\x1bod", "h", "prev", "p"})
+_ARROW_UP_TOKENS = frozenset({"up", "\x1b[a", "\x1boa", "\x1b[1;2a", "\x1b[1;5a"})
+_ARROW_DOWN_TOKENS = frozenset({"down", "\x1b[b", "\x1bob", "\x1b[1;2b", "\x1b[1;5b"})
+_ARROW_LEFT_TOKENS = frozenset({"left", "\x1b[d", "\x1bod", "prev"})
 _ARROW_RIGHT_TOKENS = frozenset({"right", "\x1b[c", "\x1boc", "next", "tab"})
 _ARROW_ESC_TOKENS = frozenset({"esc", "escape", "\x1b", "q"})
 
@@ -277,9 +292,9 @@ def _prompt_permissions(
                 _STREAM_STATE.set_approval_panel(panel)
                 has_always_panel = any(v == "approve_for_session" for _, v in panel.options)
                 if has_always_panel:
-                    prompt_str = "  Allow? [y/a/n/e/d] (1/2/3/4): "
+                    prompt_str = f"  Allow? [y/a/n/e/d] (1-{len(panel.options)}): "
                 else:
-                    prompt_str = "  Allow? [y/n/e/d] (1/2/3): "
+                    prompt_str = f"  Allow? [y/n/e/d] (1-{len(panel.options)}): "
 
                 def _show_panel_pager() -> None:
                     live = getattr(_STREAM_STATE, "_live_ref", None)
@@ -433,10 +448,10 @@ def _prompt_permissions(
                                 key = _read_menu_key()
                                 if not key:
                                     break  # not a real TTY after all -> input() fallback
-                                if key in ("UP", "k", "K"):
+                                if key == "UP":
                                     panel.move_up()
                                     continue
-                                if key in ("DOWN", "j", "J"):
+                                if key == "DOWN":
                                     panel.move_down()
                                     continue
                                 if key == "ENTER":
@@ -664,7 +679,7 @@ def _prompt_permissions(
                 options.append(("diff", "d", "View diff preview"))
                 extra_keys.append("d")
             extra_str = f"/{'/'.join(extra_keys)}" if extra_keys else ""
-            prompt_str = f"  Allow? [y/a/n{extra_str}] (1/2/3): "
+            prompt_str = f"  Allow? [y/a/n{extra_str}] (1-{len(options)}): "
         else:
             options.append(("deny", "n", "No (deny action)"))
             extra_keys = []
@@ -675,7 +690,7 @@ def _prompt_permissions(
                 options.append(("diff", "d", "View diff preview"))
                 extra_keys.append("d")
             extra_str = f"/{'/'.join(extra_keys)}" if extra_keys else ""
-            prompt_str = f"  Allow? [y/n{extra_str}] [1/2]: "
+            prompt_str = f"  Allow? [y/n{extra_str}] (1-{len(options)}): "
 
         if console is not None and _RICH:
             for _, key, label in options:
@@ -700,6 +715,28 @@ def _prompt_permissions(
             except (EOFError, KeyboardInterrupt):
                 _clear_task_cancellation()
                 raw_choice = "n"
+
+            if raw_choice.isdigit() and 1 <= int(raw_choice) <= len(options):
+                # Positional: digit N selects options[N-1], so edit/diff entries
+                # never shift the y/a/n positions.
+                digit_action = options[int(raw_choice) - 1][0]
+                if digit_action == "allow":
+                    replies.append({"toolCallId": tool_call_id, "permission": "allow"})
+                    break
+                if digit_action == "always":
+                    replies.append({"toolCallId": tool_call_id, "permission": "allow"})
+                    if always_target:
+                        always_allows.append(always_target)
+                    break
+                if digit_action == "deny":
+                    replies.append({"toolCallId": tool_call_id, "permission": "deny"})
+                    break
+                if digit_action == "diff":
+                    raw_choice = "d"
+                elif digit_action == "edit":
+                    raw_choice = "e"
+                else:
+                    continue
 
             if raw_choice in ("d", "diff") and diff_preview and isinstance(diff_preview, str):
                 if console is not None and _RICH:
@@ -726,20 +763,27 @@ def _prompt_permissions(
                     _clear_task_cancellation()
                     continue
 
-            if has_always and always_target and raw_choice in ("a", "always", "2"):
+            if has_always and always_target and raw_choice in ("a", "always"):
                 replies.append({"toolCallId": tool_call_id, "permission": "allow"})
                 always_allows.append(always_target)
                 break
-            elif raw_choice in ("n", "no", "deny", "3") or (raw_choice == "2" and not has_always):
+            elif raw_choice in ("n", "no", "deny"):
                 replies.append({"toolCallId": tool_call_id, "permission": "deny"})
                 break
-            elif raw_choice in ("y", "yes", "1", "allow", ""):
+            elif raw_choice in ("y", "yes", "allow", ""):
                 replies.append({"toolCallId": tool_call_id, "permission": "allow"})
                 break
             else:
                 # Fail-closed: unknown input reprompts, never auto-approves.
                 print(
-                    "  Invalid choice — type y (allow once), a (always), n (deny), e (edit), d (diff)."
+                    "  Invalid choice — type y (allow once), a (always), n (deny)"
+                    + (", e (edit)" if command else "")
+                    + (
+                        ", d (diff)"
+                        if isinstance(diff_preview, str) and diff_preview.strip()
+                        else ""
+                    )
+                    + f", or 1-{len(options)}."
                 )
                 continue
 
@@ -818,16 +862,16 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                             key = _read_menu_key()
                             if not key:
                                 break  # not a real TTY after all -> input() fallback
-                            if key in ("UP", "k", "K"):
+                            if key == "UP":
                                 panel.move_up()
                                 continue
-                            if key in ("DOWN", "j", "J"):
+                            if key == "DOWN":
                                 panel.move_down()
                                 continue
-                            if key in ("LEFT", "h", "H", "p", "P") and len(questions) > 1:
+                            if key == "LEFT" and len(questions) > 1:
                                 panel.prev_tab()
                                 continue
-                            if key in ("RIGHT", "TAB", "l", "L") and len(questions) > 1:
+                            if key in ("RIGHT", "TAB") and len(questions) > 1:
                                 panel.next_tab()
                                 continue
                             if key in (" ", "SPACE"):
@@ -1841,10 +1885,18 @@ async def _run_interactive(
     # Graceful SIGINT: first Ctrl+C interrupts current task, second exits
     sigint_count: list[int] = [0]
 
+    _sigint_reset_handle: Any = None
+
     def _async_sigint() -> None:
-        nonlocal current_cancellable_task
-        if current_cancellable_task is not None and not current_cancellable_task.done():
-            current_cancellable_task.cancel()
+        nonlocal current_cancellable_task, active_turn_task, _sigint_reset_handle
+        # Prefer the turn task: slash/BTW helpers only set one of the two
+        # trackers, so cancelling `current_cancellable_task` alone misses a
+        # running turn (Ctrl-C then falls through to "press again to exit").
+        target = active_turn_task
+        if target is None or target.done():
+            target = current_cancellable_task
+        if target is not None and not target.done():
+            target.cancel()
             sigint_count[0] = 0
             if console is not None and _RICH:
                 try:
@@ -1870,7 +1922,14 @@ async def _run_interactive(
 
         try:
             loop = asyncio.get_running_loop()
-            loop.call_later(2.0, lambda: sigint_count.__setitem__(0, 0))
+            # Track the reset timer so REPL exit can cancel it — otherwise
+            # the callback outlives the REPL and fires on a closed loop.
+            if _sigint_reset_handle is not None:
+                try:
+                    _sigint_reset_handle.cancel()
+                except Exception:
+                    pass
+            _sigint_reset_handle = loop.call_later(2.0, lambda: sigint_count.__setitem__(0, 0))
         except Exception:
             pass
 
@@ -2242,15 +2301,14 @@ async def _run_interactive(
                     )
                 else:
                     print(f"  Attached files: {', '.join(attached_files)}")
-            # For history flood guard, FileHistory would have stored raw; we replace last entry with display_command if collapsed
+            # History flood guard: FileHistory already stored the raw paste;
+            # rewrite the file so the last entry holds the collapsed display
+            # token instead of the full pasted blob.
             if display_command != raw:
                 try:
-                    from coderai.ui.shell.prompt import _get_history_file
+                    from coderai.ui.shell.prompt import _rewrite_last_history_entry
 
-                    hist = _get_history_file(mgr.project_root)
-                    if hist.exists():
-                        # ponytail: append display token instead of large paste — best effort, not atomic
-                        pass
+                    _rewrite_last_history_entry(mgr.project_root, display_command)
                 except Exception:
                     pass
 
@@ -2463,6 +2521,12 @@ async def _run_interactive(
                 _remove_sigint()
             except Exception:
                 pass
+        if _sigint_reset_handle is not None:
+            try:
+                _sigint_reset_handle.cancel()
+            except Exception:
+                pass
+            _sigint_reset_handle = None
         # SessionEnd + Notification hooks fire on REPL exit.
         try:
             from coderai.hooks.runner import run_notification, run_session_end
@@ -2674,10 +2738,11 @@ def main(argv: list[str] | None = None) -> int:
 
             os.environ["CODERAI_MCP_CONFIG_JSON"] = _json.dumps({"mcpServers": _cli_servers})
     if getattr(args, "agent", None) and getattr(args, "agent_file", None):
-        print(
-            "Cannot use --agent together with --agent-file. Use one or the other.", file=sys.stderr
+        return _cli_error(
+            "Conflicting agents",
+            "Cannot use --agent together with --agent-file.",
+            "Use one or the other.",
         )
-        return 1
     if getattr(args, "agent", None):
         os.environ["CODERAI_AGENT"] = str(args.agent)
         os.environ.pop("CODERAI_AGENT_FILE", None)
@@ -2691,8 +2756,11 @@ def main(argv: list[str] | None = None) -> int:
 
             _resolve_cli_agent(_agent_target, project_root=pathlib.Path(project_root))
         except Exception as exc:
-            print(f"Invalid agent specification {_agent_target!r}: {exc}", file=sys.stderr)
-            return 1
+            return _cli_error(
+                "Invalid agent specification",
+                f"{_agent_target!r}: {exc}",
+                "Check the agent name or file path.",
+            )
 
     # Check mutual exclusions & argument validity
     has_positional = bool(args.prompt)
@@ -2763,11 +2831,11 @@ def main(argv: list[str] | None = None) -> int:
         return run_setup_cli(args, project_root=project_root)
 
     if has_positional and has_prompt_flag:
-        print(
-            "Cannot use both a positional prompt and the --prompt (-p) flag together",
-            file=sys.stderr,
+        return _cli_error(
+            "Conflicting prompt inputs",
+            "Cannot use both a positional prompt and the --prompt (-p) flag together.",
+            "Use one or the other.",
         )
-        return 1
 
     # --quiet == --print --output-format text --final-message-only.
     # --print implies afk auto-approval for the invocation (no extra flag needed).
@@ -2775,60 +2843,58 @@ def main(argv: list[str] | None = None) -> int:
         args.print_mode = True
         args.output_format = args.output_format or "text"
         args.final_message_only = True
+        print(
+            "coderai: --quiet implies --print --output-format text --final-message-only.",
+            file=sys.stderr,
+        )
     if getattr(args, "final_message_only", False) and not getattr(args, "print_mode", False):
-        print("--final-message-only requires --print.", file=sys.stderr)
-        return 1
+        return _cli_error("Missing --print", "--final-message-only requires --print.")
     if getattr(args, "input_format", None) and not getattr(args, "print_mode", False):
-        print("--input-format requires --print.", file=sys.stderr)
-        return 1
+        return _cli_error("Missing --print", "--input-format requires --print.")
     if getattr(args, "output_format", None) and not getattr(args, "print_mode", False):
-        print("--output-format requires --print.", file=sys.stderr)
-        return 1
+        return _cli_error("Missing --print", "--output-format requires --print.")
     if getattr(args, "wire", False) and getattr(args, "print_mode", False):
-        print("Cannot use --wire together with --print.", file=sys.stderr)
-        return 1
+        return _cli_error(
+            "Conflicting modes",
+            "Cannot use --wire together with --print.",
+            "Use one or the other.",
+        )
     if getattr(args, "continue_session", False) and args.resume is not None:
-        print("Cannot use --continue together with --resume.", file=sys.stderr)
-        return 1
+        return _cli_error("Conflicting sessions", "Cannot use --continue together with --resume.")
     if getattr(args, "continue_session", False) and args.fork is not None:
-        print("Cannot use --continue together with --fork.", file=sys.stderr)
-        return 1
+        return _cli_error("Conflicting sessions", "Cannot use --continue together with --fork.")
     if getattr(args, "continue_session", False) and args.last:
-        print("Cannot use --continue together with --last.", file=sys.stderr)
-        return 1
+        return _cli_error("Conflicting sessions", "Cannot use --continue together with --last.")
 
     if args.last and args.resume is not None:
-        print(
-            "Cannot use --last together with --resume. Use --last to resume the most recent session, or --resume <sessionId> for a specific session.",
-            file=sys.stderr,
+        return _cli_error(
+            "Conflicting sessions",
+            "Cannot use --last together with --resume.",
+            "Use --last for the most recent session, or --resume <sessionId> for a specific one.",
         )
-        return 1
 
     if args.fork is not None and args.resume is not None:
-        print("Cannot use --fork together with --resume.", file=sys.stderr)
-        return 1
+        return _cli_error("Conflicting sessions", "Cannot use --fork together with --resume.")
 
     if args.last and args.fork is not None:
-        print("Cannot use --last together with --fork.", file=sys.stderr)
-        return 1
+        return _cli_error("Conflicting sessions", "Cannot use --last together with --fork.")
 
     if args.resume is True and prompt_value:
-        print(
-            "Cannot use --resume without a session ID together with --prompt.\nUse --resume <sessionId> -p <prompt> to resume a session and send a prompt.",
-            file=sys.stderr,
+        return _cli_error(
+            "Conflicting sessions",
+            "Cannot use --resume without a session ID together with --prompt.",
+            "Use --resume <sessionId> -p <prompt> to resume a session and send a prompt.",
         )
-        return 1
 
     if has_exec and not prompt_value:
-        print("--exec / -x requires a non-empty --prompt / -p value.", file=sys.stderr)
-        return 1
+        return _cli_error("Missing prompt", "--exec / -x requires a non-empty --prompt / -p value.")
 
     if has_exec and args.resume is True:
-        print(
-            "--exec cannot use --resume without a session ID.\nUse --exec --resume <sessionId> --prompt <prompt>.",
-            file=sys.stderr,
+        return _cli_error(
+            "Conflicting sessions",
+            "--exec cannot use --resume without a session ID.",
+            "Use --exec --resume <sessionId> --prompt <prompt>.",
         )
-        return 1
 
     # Explicit presets take precedence; new prompt runs default to core.
     # --permission / --tools-preset / --preset are aliases for the same slot.
@@ -2839,13 +2905,15 @@ def main(argv: list[str] | None = None) -> int:
     ]
     _preset_set = {p for p in _preset_flags if p}
     if len(_preset_set) > 1:
-        print(
-            f"Conflicting presets: {sorted(_preset_set)}. Use only one of --preset/--tools-preset/--permission.",
-            file=sys.stderr,
+        return _cli_error(
+            "Conflicting presets",
+            f"Conflicting presets: {sorted(_preset_set)}.",
+            "Use only one of --preset/--tools-preset/--permission.",
         )
-        return 1
     preset_mode = next((p for p in _preset_flags if p), None)
     if prompt_value and not (args.resume or args.fork or args.last) and not preset_mode:
+        # Silent default would hide the permission boundary: disclose it once.
+        print("coderai: no preset given; defaulting to tool preset 'core'.", file=sys.stderr)
         preset_mode = "core"
 
     async def _main() -> int:

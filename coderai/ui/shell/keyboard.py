@@ -44,8 +44,19 @@ class KeyboardListener:
         self._loop: asyncio.AbstractEventLoop | None = None
 
     async def start(self) -> None:
-        if self._listener is not None:
+        if self._listener is not None and self._listener.is_alive():
             return
+        # Restart support: a previous stop() set the cancel flag and left
+        # stale queued events behind — clear both before spawning a thread.
+        self._cancel_event.clear()
+        self._pause_event.clear()
+        self._paused_event.clear()
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        self._listener = None
         self._loop = asyncio.get_running_loop()
 
         def emit(event: KeyEvent) -> None:
@@ -137,7 +148,9 @@ def _listen_for_keyboard_unix(
         nonlocal raw_enabled
         if not raw_enabled:
             return
-        termios.tcsetattr(fd, termios.TCSAFLUSH, oldterm)
+        # TCSADRAIN (not TCSAFLUSH): TCSAFLUSH discards pending input,
+        # losing keystrokes typed while raw mode was active.
+        termios.tcsetattr(fd, termios.TCSADRAIN, oldterm)
         raw_enabled = False
 
     enable_raw()
@@ -200,7 +213,8 @@ def _listen_for_keyboard_unix(
             elif c == b"6":
                 emit(KeyEvent.NUM_6)
     finally:
-        termios.tcsetattr(fd, termios.TCSAFLUSH, oldterm)
+        # TCSADRAIN (not TCSAFLUSH): preserve input typed during raw mode.
+        termios.tcsetattr(fd, termios.TCSADRAIN, oldterm)
 
 
 def _listen_for_keyboard_windows(

@@ -67,15 +67,15 @@ def launch_notify_script(
         kwargs["start_new_session"] = True
 
     try:
-        # First attempt: directly execute
+        # Only execute a file path; never interpret arbitrary shell command lines.
+        # Untrusted project config must not be able to inject shell metacharacters.
         if os.path.isfile(command_path) and os.access(command_path, os.X_OK):
             subprocess.Popen([command_path], **kwargs)
         elif sys.platform != "win32" and os.path.isfile(command_path):
             # Fall back to /bin/sh so plain shell scripts run without explicit chmod +x
             subprocess.Popen(["/bin/sh", command_path], **kwargs)
         else:
-            # If command_path is a shell command line (e.g. "osascript -e ...")
-            subprocess.Popen(command_path, shell=True, **kwargs)
+            return
     except Exception:
         # Ignore notification execution failures
         pass

@@ -140,3 +140,49 @@ Related run-mode flags:
 
 In-session toggles: `/yolo`, `/afk`, `/plan`. In Plan Mode, mutating scopes
 stay prompt-gated even with `--yolo`.
+
+---
+
+## JEV System-One Configuration
+
+CoderAI incorporates a hybrid **Kahneman System 1 + System 2** compound review harness (`coderai/triage/`, `coderai/jev/`). Jev System-One provides sub-second non-autoregressive diff screening and confidence gating, cutting review false positives and delivering a **+13% precision lift** on the Martian Code Review Benchmark.
+
+### Activation & Credentials
+
+Jev activates automatically when `TYPESAFE_API_KEY` is present in the environment, `.env`, or configured via setup:
+
+```bash
+# In shell environment or .env
+export TYPESAFE_API_KEY="ts-..."
+
+# Or via interactive setup
+coderai setup
+```
+
+To install the optional TypeSafe SDK dependencies:
+```bash
+pip install -e '.[jev]'
+# or
+pip install 'coderai-agent[jev]'
+```
+
+### Environment Variables & Tunables
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `TYPESAFE_API_KEY` | String | None | Authentication key for the TypeSafe Jev System-One API. |
+| `CODERAI_JEV_ENABLED` | Boolean | Auto (`true` if key present) | Master toggle for Jev System-One triage and gating. |
+| `CODERAI_JEV_GATE_THRESHOLD` | Float (`0.0`–`1.0`) | `0.40` | Minimum `is_actionable_bug` probability required to approve a review comment in Tier 3. |
+| `CODERAI_JEV_SPECULATIVE_THRESHOLD` | Float (`0.0`–`1.0`) | `0.65` | Maximum ceiling for `is_speculative_or_nit`. Comments exceeding this are suppressed. |
+| `CODERAI_JEV_ACCEPT_THRESHOLD` | Float (`0.0`–`1.0`) | `0.50` | Minimum `will_developer_accept` probability required to approve a comment. |
+| `CODERAI_JEV_TRIAGE_THRESHOLD` | Float (`0.0`–`1.0`) | `0.35` | Minimum risk score to qualify a diff hunk for deep review in Tier 1. |
+| `CODERAI_JEV_CACHE_SIZE` | Integer | `1024` | Capacity of the thread-safe LRU in-memory query cache. |
+| `CODERAI_JEV_MAX_DIFF_CHARS` | Integer | `12000` | Maximum diff characters sent per file hunk (prevents oversized payloads). |
+| `CODERAI_JEV_TIMEOUT_MS` | Integer | `10000` | Timeout in milliseconds for Jev API calls before falling back to System 2. |
+
+### Secret Path Sanitization
+
+CoderAI enforces zero-egress protection for sensitive credentials. Files matching sensitive path patterns (`.env*`, `*.pem`, `*.key`, `*credential*`, `*secret*`, `*id_rsa*`) are **never** transmitted to the Jev API; they are automatically reviewed by the local System 2 model, and their comments are always shown.
+
+For architectural details, calibration benchmarks, and workflow diagrams, see [docs/jev-system-one.md](jev-system-one.md).
+

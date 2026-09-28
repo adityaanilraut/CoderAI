@@ -73,7 +73,7 @@ _COMMANDS = (
         "Select reasoning effort",
         "Models & Reasoning",
         ("reasoning",),
-        ("max", "high", "medium", "low", "off"),
+        ("off", "low", "medium", "high", "xhigh", "max"),
     ),
     SlashCommand(
         "thinking",
@@ -161,12 +161,12 @@ _COMMANDS = (
         "agent",
         "View or switch active agent role",
         "Models & Reasoning",
-        ("role",),
+        ("role", "roles"),
         ("roles", "switch", "list"),
     ),
     SlashCommand("upgrade", "Check for and install CoderAI updates", "Utilities"),
     SlashCommand("hooks", "Show configured hooks", "Utilities"),
-    SlashCommand("btw", "Side question (BTW modal)", "Utilities"),
+    SlashCommand("btw", "Side question (BTW modal)", "Utilities", ("side",)),
     SlashCommand("help", "Show command help", "Utilities", ("?", "h")),
     SlashCommand("exit", "Exit CoderAI", "Utilities", ("quit",)),
 )
@@ -191,10 +191,22 @@ def resolve_command(name: str) -> SlashCommand | None:
 
 def parse_slash_command(raw: str) -> tuple[str, str]:
     """Return a canonical slash command and its unmodified argument text."""
-    command_text, _, argument = raw.strip().partition(" ")
-    resolved = resolve_command(command_text)
-    canonical = resolved.name if resolved else command_text.lower().lstrip("/")
-    return f"/{canonical}", argument.strip()
+    call = parse_slash_command_call(raw)
+    if call is None:
+        # Lenient fallback so aliases like /? still resolve.
+        command_text, _, argument = raw.strip().partition(" ")
+        resolved = resolve_command(command_text)
+        canonical = resolved.name if resolved else command_text.lower().lstrip("/")
+        return f"/{canonical}", argument.strip()
+    if ":" in call.name:
+        # Preserve suffix case for dynamic /skill:<name> and /flow:<name>.
+        base, _, suffix = call.name.partition(":")
+        resolved = resolve_command(base)
+        canonical_base = resolved.name if resolved else base.lower()
+        return f"/{canonical_base}:{suffix}", call.args.strip()
+    resolved = resolve_command(call.name)
+    canonical = resolved.name if resolved else call.name.lower()
+    return f"/{canonical}", call.args.strip()
 
 
 def completion_entries() -> list[tuple[str, str]]:
@@ -276,7 +288,7 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
     },
     "plan": {
         "title": "Plan Mode",
-        "syntax": "/plan [on|off|apply|reset]",
+        "syntax": "/plan [on|off|view|clear|apply|reset]",
         "summary": "Toggle or manage Plan Mode (strict read-only safety boundary).",
         "description": (
             "Plan Mode enforces a strict read-only boundary where the agent analyzes the codebase "
@@ -285,7 +297,9 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
             "• /plan on     — Turn on Plan Mode\n"
             "• /plan off    — Turn off Plan Mode\n"
             "• /plan apply  — Approve plan, turn off Plan Mode, and begin implementation\n"
-            "• /plan reset  — Reset plan mode state to default"
+            "• /plan view   — Show the recorded plan\n"
+            "• /plan clear   — Clear the recorded plan and exit Plan Mode\n"
+            "• /plan reset  — Reset plan mode state to default (alias of clear)"
         ),
         "examples": ["/plan", "/plan on", "/plan apply", "/plan reset"],
     },
@@ -834,8 +848,11 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
         "Session Management",
         [
             ("/new", "", "Start a fresh session in the workspace"),
-            ("/sessions", "[query]", "Interactive session browser (resume, delete, fork, search)"),
-            ("/resume", "<id>", "Resume a saved session by ID directly"),
+            (
+                "/sessions, /resume",
+                "[query|id]",
+                "Interactive session browser (resume, delete, fork, search)",
+            ),
             ("/fork", "[id]", "Fork current or target session into new branch"),
             ("/delete, /rm", "<id>", "Delete a saved session from workspace"),
             ("/rename", "[title]", "Rename active or specified session summary"),
@@ -848,7 +865,11 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
     (
         "Planning & Safety",
         [
-            ("/plan", "[on|off|apply]", "Toggle Plan Mode (strict read-only safety boundary)"),
+            (
+                "/plan",
+                "[on|off|view|clear|apply|reset]",
+                "Toggle Plan Mode (strict read-only safety boundary)",
+            ),
             ("/undo", "", "Interactive turn & checkpoint rollback (code, conversation, or both)"),
             ("/diff", "", "Show syntax-highlighted diff of changes"),
             (
@@ -875,6 +896,8 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("/setup, /keys", "", "Configure API keys, providers, local endpoints & default model"),
             ("/skills", "", "Explore active and discovered workspace skills"),
             ("/skill", "<name>", "Load a skill into the current session"),
+            ("/skill:<name>", "", "Load a skill directly by colon dispatch"),
+            ("/flow:<name>", "", "Run a flow skill by colon dispatch"),
             ("/agent, /role", "[name]", "View or switch active agent role / persona"),
         ],
     ),
@@ -942,7 +965,6 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
         [
             ("/login", "", "Log in / configure API platform (OAuth or key)"),
             ("/logout", "", "Log out: clear stored credentials"),
-            ("/setup, /keys", "", "Configure API keys, providers, local endpoints & default model"),
         ],
     ),
 ]
@@ -999,7 +1021,7 @@ def _render_contextual_help(cmd_name: str, console: Any | None) -> None:
             panel = Panel(
                 body.strip(),
                 title=f"[bold cyan]CoderAI Help:[/] [bold yellow]/{display_key}[/]",
-                border_style="bright_blue",
+                border_style="cyan",
                 padding=(1, 2),
             )
             console.print()
@@ -1033,15 +1055,31 @@ def _render_contextual_help(cmd_name: str, console: Any | None) -> None:
 
 def _render_rich_overview(console: Any) -> None:
     """Render clean, simple, and modern grouped cheatsheet using borderless grid."""
+    import os as _os
+    import shutil as _shutil
+    import sys as _sys
+
+    # No ANSI on pipes / NO_COLOR: use the plain-text overview instead.
+    if _os.getenv("NO_COLOR") is not None or not _sys.stdout.isatty():
+        _render_plain_overview()
+        return
     console.print()
     console.print("[bold cyan]CoderAI[/] [dim]• Interactive Slash Commands[/]")
     console.print()
 
+    try:
+        term_cols = _shutil.get_terminal_size(fallback=(80, 24)).columns
+    except Exception:
+        term_cols = 80
+    # Scale the command column to the terminal instead of a fixed 34 cols,
+    # which overflowed narrow terminals and wasted wide ones.
+    cmd_width = max(16, min(34, max(20, term_cols // 2 - 4)))
+
     for group_name, commands in HELP_GROUPS:
         console.print(f"[bold cyan]  {group_name}[/]")
         grid = Table.grid(padding=(0, 2))
-        grid.add_column("Command", style="bold green", width=34)
-        grid.add_column("Description", style="white")
+        grid.add_column("Command", style="bold green", width=cmd_width, overflow="fold")
+        grid.add_column("Description", style="white", overflow="fold")
 
         for cmd, arg, desc in commands:
             cmd_text = Text()
@@ -1251,12 +1289,12 @@ def cmd_title(mgr: Any, session_id: str | None, arg: str = "", console: Any = No
     entry = mgr.get_session(session_id) if session_id else None
     if entry is None:
         msg = "No active session."
-    if console is not None:
-        try:
-            # UI-A14: session titles are user/model-written; never markup.
-            console.print(f"[bold cyan]{escape(msg)}[/]")
-        except Exception:
-            print(msg)
+        if console is not None:
+            try:
+                # UI-A14: session titles are user/model-written; never markup.
+                console.print(f"[bold cyan]{escape(msg)}[/]")
+            except Exception:
+                print(msg)
         else:
             print(msg)
         return None
@@ -1453,8 +1491,6 @@ def cmd_logout(console: Any = None, project_root: str = ".", mgr: Any = None) ->
             msg = f"Logged out (removed: {', '.join(removed)})."
         else:
             msg = "Logged out (no stored credentials found)."
-        if cleared_provider:
-            msg += " Managed OAuth provider removed."
         if cleared_provider:
             msg += " Managed OAuth provider removed."
         if console is not None:

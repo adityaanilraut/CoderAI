@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -463,7 +464,7 @@ class SlashCommandMenuControl(UIControl):
             if is_current
             else "class:slash-completion-menu.marker"
         )
-        marker = "› " if is_current else "  "
+        marker = "❯ " if is_current else "  "
 
         fragments: FormattedText = FormattedText()
         fragments.append(("class:slash-completion-menu", " " * left_padding))
@@ -970,10 +971,16 @@ class CoderAICompleter:
         # 1. @file autocomplete anywhere in line
         if "@" in line_buffer:
             at_idx = line_buffer.rfind("@")
+            if at_idx > 0:
+                _prev = line_buffer[at_idx - 1]
+                if _prev.isalnum() or _prev in (".", "-", "_", "`", "'", '"', ":", "@", "#", "~"):
+                    return None
             file_query = line_buffer[at_idx + 1 :]
             if " " not in file_query:
                 matching_files = suggest_workspace_files(file_query, self.project_root, limit=20)
-                options = [f"@{f}" for f in matching_files]
+                # "@" is a readline completer delim, so the word being
+                # replaced starts after it: return the bare path.
+                options = list(matching_files)
                 if state < len(options):
                     return options[state]
                 return None
@@ -993,6 +1000,14 @@ class CoderAICompleter:
 
             lead_cmd = tokens[0].lower()
             arg_prefix = tokens[1] if len(tokens) > 1 else ""
+            if lead_cmd.startswith(("/skill:", "/flow:")):
+                # ":" is a readline delim, so only the suffix is replaced.
+                _base, _, _suffix = lead_cmd.partition(":")
+                skill_names = _get_discovered_skill_names(self.project_root)
+                matching_skills = fuzzy_filter(_suffix, skill_names, limit=15)
+                if state < len(matching_skills):
+                    return matching_skills[state]
+                return None
             command = resolve_command(lead_cmd)
             if command and command.subcommands:
                 matching_subs = fuzzy_filter(arg_prefix, list(command.subcommands))
@@ -1071,8 +1086,12 @@ def get_history_file_path(project_root: str | None = None) -> pathlib.Path:
     return hist_dir / "history"
 
 
+_READLINE_SAVE_REGISTERED = False
+
+
 def setup_readline(project_root: str, get_active_model: Any = None) -> bool:
     """Configure readline for persistent command history and tab completion."""
+    global _READLINE_SAVE_REGISTERED
     try:
         import readline
 
@@ -1094,8 +1113,8 @@ def setup_readline(project_root: str, get_active_model: Any = None) -> bool:
         if callable(set_comp):
             set_comp(completer.complete)
 
-        # Load history
-        hist_file = get_history_file_path()
+        # Load history (same per-workspace path as prompt_toolkit history).
+        hist_file = get_history_file_path(project_root or None)
         read_hist = getattr(readline, "read_history_file", None)
         set_hist_len = getattr(readline, "set_history_length", None)
         if hist_file.is_file() and callable(read_hist):
@@ -1109,14 +1128,18 @@ def setup_readline(project_root: str, get_active_model: Any = None) -> bool:
         # Save history on exit
         write_hist = getattr(readline, "write_history_file", None)
 
-        def _save_history() -> None:
+        def _save_history(hist_path: str = str(hist_file)) -> None:
             if callable(write_hist):
                 try:
-                    write_hist(str(get_history_file_path()))
+                    write_hist(hist_path)
                 except Exception:
                     pass
 
-        atexit.register(_save_history)
+        # Register the exit saver once: repeated REPL setups would stack
+        # duplicate atexit saves (same file written N times on exit).
+        if not _READLINE_SAVE_REGISTERED:
+            atexit.register(_save_history)
+            _READLINE_SAVE_REGISTERED = True
         return True
     except Exception:
         return False
@@ -1459,6 +1482,61 @@ def _get_history_file(project_root: str) -> Path:
         return hist_dir / f"{h}.history"
 
 
+class _PasteSafeFileHistory(FileHistory):
+    """FileHistory that stores the collapsed display token for large pastes.
+
+    prompt_toolkit persists every accepted buffer verbatim, so a pasted
+    blob would flood history (and history recall) with megabytes of text.
+    Large inputs are collapsed via the placeholder manager before storing;
+    the full text stays in the in-memory placeholder cache for the LLM.
+    """
+
+    def store_string(self, string: str) -> None:
+        try:
+            from coderai.ui.shell.placeholders import (
+                normalize_pasted_text,
+                should_placeholderize_pasted_text,
+            )
+
+            normalized = normalize_pasted_text(string)
+            if should_placeholderize_pasted_text(normalized):
+                from coderai.ui.shell.placeholders import get_placeholder_manager
+
+                collapsed = get_placeholder_manager().maybe_placeholderize_pasted_text(normalized)
+                if collapsed != normalized:
+                    super().store_string(collapsed)
+                    return
+        except Exception:
+            pass
+        super().store_string(string)
+
+
+def _rewrite_last_history_entry(project_root: str, replacement: str) -> None:
+    """Replace the most recent history entry with `replacement`.
+
+    Used after a large paste was accepted: prompt_toolkit already appended
+    the raw blob, so the trailing entry is rewritten to the collapsed
+    display token. Best effort; failures are swallowed by the caller.
+    """
+    hist = _get_history_file(project_root)
+    if not hist.exists():
+        return
+    raw = hist.read_bytes().decode("utf-8", errors="replace").split("\n")
+    # FileHistory format: entries separated by `# <timestamp>` lines, each
+    # entry line prefixed with `+`. Drop the last entry block, keep the rest.
+    last_sep = None
+    for i in range(len(raw) - 1, -1, -1):
+        if raw[i].startswith("# "):
+            last_sep = i
+            break
+    if last_sep is None:
+        return
+    import datetime
+
+    entry = [f"# {datetime.datetime.now()}", *(f"+{line}" for line in replacement.split("\n"))]
+    hist.write_text("\n".join([*raw[:last_sep], *entry, ""]), encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # CoderAIPromptSession — main wrapper
 # ---------------------------------------------------------------------------
@@ -1520,14 +1598,15 @@ if HAS_PTK:
                 [self._slash_completer, self._file_completer], deduplicate=True
             )
 
-            # History per-workspace
+            # History per-workspace (paste-safe: huge pastes collapse to
+            # display tokens so history recall never floods the buffer).
             hist_file = _get_history_file(project_root)
             # FileHistory expects file to exist; prompt_toolkit handles creation
             try:
                 hist_file.touch(exist_ok=True)
             except Exception:
                 pass
-            self._history = FileHistory(str(hist_file))
+            self._history = _PasteSafeFileHistory(str(hist_file))
 
             # Key bindings:
             # c-j / escape-enter newline, s-tab plan toggle, c-o external
@@ -1595,45 +1674,81 @@ if HAS_PTK:
                 except Exception:
                     pass
 
+            @kb.add("c-c")
+            def _ctrl_c_clear(event: Any) -> None:  # type: ignore
+                """Ctrl-C: bash-like — clear a non-empty line, cancel if empty.
+
+                Default prompt_toolkit raises KeyboardInterrupt, which drops
+                the line via exception paths and conflates "clear line" with
+                "abort prompt". Clearing in place keeps the prompt alive; an
+                empty buffer exits with "" (cancel) without raising, so
+                Ctrl-C can never submit half-typed text to the turn.
+                """
+                try:
+                    buf = event.current_buffer
+                    if buf.text:
+                        buf.reset()
+                    else:
+                        event.app.exit(result="")
+                except Exception:
+                    pass
+
             @kb.add("c-e")
             def _expand_pager(event: Any) -> None:  # type: ignore
                 """Ctrl-E: no-op in input (handled in approval panel)."""
 
             self._kb = kb
 
-            # Style — clean, modern, unhighlighted completion menu & palette
-            self._style = Style.from_dict(
-                {
-                    # Toolbar
-                    "toolbar": "bg:#1e1e2e #cdd6f4",
-                    "toolbar.model": "bg:#1e1e2e #89dceb bold",
-                    "toolbar.tokens": "bg:#1e1e2e #a6e3a1",
-                    "toolbar.git": "bg:#1e1e2e #cba6f7",
-                    "toolbar.plan": "bg:#1e1e2e #f9e2af bold",
-                    "toolbar.yolo": "bg:#1e1e2e #f9e2af bold",
-                    "toolbar.afk": "bg:#1e1e2e #fab387 bold",
-                    "toolbar.turns": "bg:#1e1e2e #89b4fa",
-                    "toolbar.mcp": "bg:#1e1e2e #94e2d5",
-                    "toolbar.cwd": "bg:#1e1e2e #9399b2",
-                    "toolbar.sep": "bg:#1e1e2e #585b70",
-                    "toolbar.tip": "bg:#1e1e2e #7f849c italic",
-                    # Prompt
-                    "prompt": "bold",
-                    "prompt.plan": "bold yellow",
-                    # Completion menu styling (clean, flat, no text match highlights)
-                    "completion-menu": "bg:#181825 #cdd6f4",
-                    "completion-menu.completion": "bg:#181825 #cdd6f4",
-                    "completion-menu.completion.current": "bg:#313244 #89b4fa bold",
-                    "completion-menu.meta": "bg:#181825 #6c7086",
-                    "completion-menu.meta.completion.current": "bg:#313244 #a6adc8",
-                    "completion-menu.multi-column-meta": "bg:#181825 #6c7086",
-                    "scrollbar.background": "bg:#181825",
-                    "scrollbar.button": "bg:#45475a",
-                    # Remove bright / underlined character highlights from fuzzy completions
-                    "fuzzymatch.inside": "nobold nounderline",
-                    "fuzzymatch.outside": "nobold nounderline",
-                }
-            )
+            # Style — clean, modern, unhighlighted completion menu & palette.
+            # Toolbar entries come from ui/theme.py so /theme dark|light
+            # restyles the bar; hardcoded entries below are fallback only.
+            _style_dict = {
+                # Toolbar (overridden from theme below when available)
+                "toolbar": "bg:#1e1e2e #cdd6f4",
+                "toolbar.model": "bg:#1e1e2e #89dceb bold",
+                "toolbar.tokens": "bg:#1e1e2e #a6e3a1",
+                "toolbar.git": "bg:#1e1e2e #cba6f7",
+                "toolbar.plan": "bg:#1e1e2e #f9e2af bold",
+                "toolbar.yolo": "bg:#1e1e2e #f9e2af bold",
+                "toolbar.afk": "bg:#1e1e2e #fab387 bold",
+                "toolbar.turns": "bg:#1e1e2e #89b4fa",
+                "toolbar.mcp": "bg:#1e1e2e #94e2d5",
+                "toolbar.cwd": "bg:#1e1e2e #9399b2",
+                "toolbar.sep": "bg:#1e1e2e #585b70",
+                "toolbar.tip": "bg:#1e1e2e #7f849c italic",
+                # Prompt
+                "prompt": "bold",
+                "prompt.plan": "bold yellow",
+                # Completion menu styling (clean, flat, no text match highlights)
+                "completion-menu": "bg:#181825 #cdd6f4",
+                "completion-menu.completion": "bg:#181825 #cdd6f4",
+                "completion-menu.completion.current": "bg:#313244 #89b4fa bold",
+                "completion-menu.meta": "bg:#181825 #6c7086",
+                "completion-menu.meta.completion.current": "bg:#313244 #a6adc8",
+                "completion-menu.multi-column-meta": "bg:#181825 #6c7086",
+                "scrollbar.background": "bg:#181825",
+                "scrollbar.button": "bg:#45475a",
+                # Remove bright / underlined character highlights from fuzzy completions
+                "fuzzymatch.inside": "nobold nounderline",
+                "fuzzymatch.outside": "nobold nounderline",
+            }
+            try:
+                from coderai.ui.theme import get_toolbar_colors as _get_toolbar_colors
+
+                _tc = _get_toolbar_colors()
+                _style_dict.update(
+                    {
+                        "toolbar.sep": _tc.separator,
+                        "toolbar.cwd": _tc.cwd,
+                        "toolbar.tip": _tc.tip,
+                        "toolbar.yolo": _tc.yolo_label,
+                        "toolbar.afk": _tc.afk_label,
+                        "toolbar.plan": _tc.plan_label,
+                    }
+                )
+            except Exception:
+                pass
+            self._style = Style.from_dict(_style_dict)
 
             def _toolbar_callback() -> list[tuple[str, str]]:
                 model = self.get_active_model() if self.get_active_model else None
@@ -1768,7 +1883,10 @@ async def read_user_turn_ptk(
     Handles multiline: trailing \\, fences, triple quotes via is_multiline_incomplete.
     """
 
-    if not HAS_PTK or project_root is None or not os.isatty(1):
+    # NOTE: gate on stdin (not stdout fd 1): `cmd | coderai` or piped
+    # input with a tty stdout must take the readline fallback, otherwise
+    # prompt_toolkit blocks waiting on a non-interactive stdin.
+    if not HAS_PTK or project_root is None or not sys.stdin.isatty():
         # Fallback to legacy readline path (no prompt_toolkit)
 
         # run in thread to not block event loop
@@ -1804,7 +1922,14 @@ async def read_user_turn_ptk(
             nxt = await session.prompt_async("... ")
             buf.append(nxt)
         except KeyboardInterrupt:
-            raise
+            # Preserve lines typed so far instead of dropping the turn.
+            try:
+                nxt_partial = session.session.default_buffer.text
+            except Exception:
+                nxt_partial = ""
+            if nxt_partial:
+                buf.append(nxt_partial)
+            break
         except EOFError:
             break
     return normalize_multiline_input("\n".join(buf))
@@ -2047,14 +2172,21 @@ class StatuslineEngine:
         if cached and (now - cached.timestamp) < effective_ttl:
             return cached.value
 
-        env = dict(os.environ)
+        from coderai.utils.subprocess_env import scrub_subprocess_env
+
+        env = scrub_subprocess_env(dict(os.environ))
         env["PAGER"] = "cat"
         env["NO_COLOR"] = "1"
 
         try:
+            import shlex as _shlex
+
+            argv = _shlex.split(command, posix=True)
+            if not argv:
+                return ""
             res = subprocess.run(
-                command,
-                shell=True,
+                argv,
+                shell=False,
                 cwd=project_root,
                 capture_output=True,
                 text=True,
@@ -2336,8 +2468,17 @@ TRIPLE_QUOTE_PATTERN = re.compile(r'"""|\'\'\'')
 
 
 def count_code_fences(text: str) -> int:
-    """Count occurrences of triple-backtick markdown fences in text."""
-    return len(FENCE_PATTERN.findall(text))
+    """Count triple-backtick markdown fence markers in text.
+
+    Indented markers still open/close a fence, and a single line carrying
+    both markers (e.g. ``` code ```) counts twice.
+    """
+    total = 0
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            total += stripped.count("```")
+    return total
 
 
 def count_triple_quotes(text: str) -> int:

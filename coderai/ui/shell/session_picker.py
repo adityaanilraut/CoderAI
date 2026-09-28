@@ -18,6 +18,7 @@ from coderai.utils.common.model_capabilities import (
 )
 from coderai.soul.session.manager import SessionEntry, SessionManager, SessionMessage
 from coderai.skill import list_skills
+from coderai.ui.shell.console import PANEL_BORDER_STYLE
 
 _RICH = True
 
@@ -243,8 +244,8 @@ def select_with_arrows(
                 body_lines.append(f"  {len(items) + 1:2}. Other / Custom (type custom value)")
             panel = Panel(
                 "\n".join(body_lines),
-                title=f"[bold magenta]{title}[/]",
-                border_style="magenta",
+                title=f"[bold cyan]{title}[/]",
+                border_style=PANEL_BORDER_STYLE,
                 padding=(0, 1),
             )
             console.print(panel)
@@ -322,8 +323,8 @@ def select_with_arrows(
         if Panel is not None:
             return Panel(
                 "\n".join(body_lines) + f"\n\n{footer}",
-                title=f"[bold magenta]{title}[/]",
-                border_style="magenta",
+                title=f"[bold cyan]{title}[/]",
+                border_style=PANEL_BORDER_STYLE,
                 padding=(0, 1),
             )
         return "\n".join(body_lines) + f"\n\n{footer}"
@@ -446,11 +447,11 @@ def select_with_arrows(
         print(f"\n--- {title} ---")
         for disp_num, item_idx in enumerate(filtered_indices, 1):
             key_name, disp_title, desc = items[item_idx]
-            marker = "❯" if item_idx == selected_idx else " "
-            print(f" {marker} {disp_num:2}. {disp_title} — {desc}")
+            marker = ">" if item_idx == selected_idx else " "
+            print(f" {marker} {disp_num:2}. {disp_title} - {desc}")
         if allow_custom:
             custom_num = len(filtered_indices) + 1
-            marker = "❯" if selected_idx == len(items) else " "
+            marker = ">" if selected_idx == len(items) else " "
             print(f" {marker} {custom_num:2}. Other / Custom (type custom value)")
         if filter_query:
             print(
@@ -823,13 +824,13 @@ def select_session_interactive(console: Any | None, sessions: list[SessionEntry]
         title = f"Saved Sessions — Page {current_page + 1}/{total_pages} (Total: {total_sessions}){filter_tag}"
 
         if console is not None and _RICH and Table is not None:
-            table = Table(title=title, border_style="blue")
-            table.add_column("#", style="bold cyan", width=4)
-            table.add_column("Session ID", style="bold white", width=16)
-            table.add_column("Status", style="yellow", width=12)
-            table.add_column("Plan", style="magenta", width=6)
-            table.add_column("Tokens", style="green", width=10)
-            table.add_column("Summary", style="white")
+            table = Table(title=title, border_style=PANEL_BORDER_STYLE)
+            table.add_column("#", style="bold cyan", no_wrap=True)
+            table.add_column("Session ID", style="bold white", no_wrap=True)
+            table.add_column("Status", style="yellow", no_wrap=True)
+            table.add_column("Plan", style="magenta", no_wrap=True)
+            table.add_column("Tokens", style="green", no_wrap=True)
+            table.add_column("Summary", style="white", overflow="fold")
 
             for page_rel_idx, s in enumerate(page_items, 1):
                 abs_idx = start_idx + page_rel_idx
@@ -1078,7 +1079,9 @@ def render_mcp_prompts(console: Any | None, mgr: SessionManager) -> None:
         return
 
     if console is not None and _RICH and Table is not None:
-        table = Table(title=f"Discovered MCP Prompts ({len(prompts)})", border_style="magenta")
+        table = Table(
+            title=f"Discovered MCP Prompts ({len(prompts)})", border_style=PANEL_BORDER_STYLE
+        )
         table.add_column("Server", style="dim cyan", width=16)
         table.add_column("Prompt Name", style="bold magenta", width=24)
         table.add_column("Description", style="white")

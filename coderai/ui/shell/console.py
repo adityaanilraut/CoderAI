@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import pydoc
 import re
+import sys
 
 from rich.console import Console, PagerContext, RenderableType
 from rich.pager import Pager
@@ -76,8 +77,29 @@ class _CoderAIConsole(Console):
         return super().pager(pager=pager, styles=styles, links=links)
 
 
-# Global console — use this everywhere
-console = _CoderAIConsole(highlight=False, theme=NEUTRAL_MARKDOWN_THEME)
+# Unified panel chrome: every shell panel uses this border style so help,
+# picker, task browser, and BTW modal look like one UI.
+PANEL_BORDER_STYLE = "cyan"
+
+
+def no_color_enabled() -> bool:
+    """True when output must be plain text (NO_COLOR set or stdout is a pipe)."""
+    if os.getenv("NO_COLOR") is not None:
+        return True
+    try:
+        return not sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+# Global console — use this everywhere.
+# no_color strips markup styles when NO_COLOR is set; Rich already drops
+# color on pipes, and the explicit flag covers redirected-but-tty edge cases.
+console = _CoderAIConsole(
+    highlight=False,
+    theme=NEUTRAL_MARKDOWN_THEME,
+    no_color=os.getenv("NO_COLOR") is not None,
+)
 
 # Matches OSC 8 hyperlink open/close markers: ESC ] 8 ; params ; uri ST (ST = ESC \ or BEL)
 _OSC8_RE = re.compile(r"\x1b\]8;[^\x07\x1b]*(?:\x1b\\|\x07)")
@@ -93,12 +115,14 @@ def render_to_ansi(renderable: RenderableType, *, columns: int) -> str:
 
     width = max(20, columns)
     buf = StringIO()
+    plain = no_color_enabled()
     temp = Console(
         file=buf,
-        force_terminal=True,
+        force_terminal=not plain,
         width=width,
         theme=NEUTRAL_MARKDOWN_THEME,
         highlight=False,
+        no_color=plain,
     )
     temp.print(renderable, end="")
     result = buf.getvalue()

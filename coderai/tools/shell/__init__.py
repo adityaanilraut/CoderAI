@@ -275,10 +275,10 @@ def _strip_marker(output: str, marker: str) -> tuple[str, str | None]:
 
 
 def _join_output(stdout: str, stderr: str) -> str:
-    trimmed_stdout = stdout or ""
-    trimmed_stderr = stderr or ""
+    trimmed_stdout = (stdout or "").strip()
+    trimmed_stderr = (stderr or "").strip()
     if trimmed_stdout and trimmed_stderr:
-        return f"{trimmed_stdout}\n{trimmed_stderr}"
+        return f"{trimmed_stdout}\n[stderr]\n{trimmed_stderr}"
     return trimmed_stdout or trimmed_stderr
 
 
@@ -309,7 +309,14 @@ def _sandbox_wrap(
 def _truncate_output(output: str) -> tuple[str, bool]:
     if len(output) <= MAX_OUTPUT_CHARS:
         return output, False
-    return output[:MAX_OUTPUT_CHARS], True
+    keep = MAX_OUTPUT_CHARS - 64
+    head_len = (keep * 3) // 4
+    tail_len = keep - head_len
+    dropped = len(output) - keep
+    return (
+        f"{output[:head_len]}\n... [truncated {dropped} characters] ...\n{output[-tail_len:]}",
+        True,
+    )
 
 
 def _build_error_message(
@@ -478,13 +485,15 @@ def _execute_persistent_bash(
     else:
         truncated_text, is_truncated = _truncate_output(cleaned_body)
 
-    ok = (exit_code == 0 or exit_code is None) and not timed_out
+    ok = exit_code == 0 and not timed_out
     error_msg = None
     if not ok:
         if timed_out:
             error_msg = "Command timed out in persistent bash session."
-        elif exit_code is not None and exit_code != 0:
+        elif exit_code is not None:
             error_msg = f"Command failed with exit code {exit_code}."
+        else:
+            error_msg = "Command finished with an unknown exit code in persistent bash session."
 
     metadata: dict[str, Any] = {
         "exitCode": exit_code,

@@ -791,6 +791,11 @@ def run_setup_cli(args: Any, project_root: str = ".") -> int:
     key = getattr(args, "setup_key", None)
     model = getattr(args, "setup_model", None)
     base_url = getattr(args, "setup_base_url", None)
+    if getattr(args, "setup_project", False) and getattr(args, "setup_global", False):
+        console.print(
+            "[bold red]✗ Conflicting scopes:[/] --project and --global cannot be used together."
+        )
+        return 1
     scope = "project" if getattr(args, "setup_project", False) else "user"
     do_test = getattr(args, "setup_test", False)
     do_status = getattr(args, "setup_status", False)
@@ -857,6 +862,12 @@ def run_setup_cli(args: Any, project_root: str = ".") -> int:
         console.print(f"[bold green]✓ Set active model to {model} ({scope}).[/]")
         return 0
 
-    # Otherwise launch interactive wizard
+    # Otherwise launch interactive wizard (requires a TTY; never block on pipes).
+    if not sys.stdin.isatty():
+        console.print(
+            "[bold red]✗ Setup wizard requires an interactive terminal.[/] "
+            "Use --provider/--key, --base-url, --setup-model, --status, or --test instead."
+        )
+        return 1
     run_setup_wizard(console, project_root=project_root)
     return 0

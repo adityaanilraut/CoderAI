@@ -45,8 +45,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompt",
         "-p",
-        "--command",
-        "-c",
         dest="prompt_flag",
         type=str,
         help="Submit a prompt on launch",
@@ -199,7 +197,8 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="print_mode",
         action="store_true",
         default=False,
-        help="Run non-interactively (implies afk for this invocation).",
+        help="Run non-interactively (implies afk auto-dismissal and auto-approval "
+        "of tool calls for this invocation; Plan Mode still prompts for mutations).",
     )
     parser.add_argument(
         "--quiet",

@@ -736,7 +736,9 @@ def resolve_current_settings(
                 user.get("debugLogEnabled"),
             )
         ),
-        "notify": first(system_env.get("NOTIFY"), project.get("notify"), user.get("notify"))
+        # Project-level notify is ignored: an untrusted checkout must not be able
+        # to name an executable that runs on task completion.
+        "notify": first(system_env.get("NOTIFY"), user.get("notify"))
         or None,
         "webSearchTool": (
             first(

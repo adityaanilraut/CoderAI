@@ -6,23 +6,11 @@ All file snippet models and tracking functions have been moved to
 
 from __future__ import annotations
 
-from coderai.file_snippets import *  # noqa: F403
 from coderai.file_snippets import (
     FileSnippet,
     FileState,
     SessionStateManager,
-    _counters,
-    _default_manager,
-    _file_states,
-    _full_counters,
-    _rebuild_candidates,
-    _rebuild_edit,
-    _rebuild_read,
-    _rebuild_write,
     _refresh_rebuilt_file_state,
-    _set_file_version,
-    _snippets,
-    _versions,
     clear_session_state,
     create_full_file_snippet,
     create_snippet,
@@ -61,16 +49,4 @@ __all__ = [
     "record_file_state",
     "restore_snippet",
     "was_file_read",
-    "_refresh_rebuilt_file_state",
-    "_set_file_version",
-    "_default_manager",
-    "_file_states",
-    "_snippets",
-    "_counters",
-    "_full_counters",
-    "_versions",
-    "_rebuild_candidates",
-    "_rebuild_edit",
-    "_rebuild_read",
-    "_rebuild_write",
 ]

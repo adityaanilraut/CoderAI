@@ -32,8 +32,14 @@ def open_external_editor(initial_text: str = "") -> str:
         temp_path = tf.name
 
     try:
-        # Run editor in foreground
-        ret = subprocess.run(f"{editor} {shlex.quote(temp_path)}", shell=True)
+        # Split $EDITOR/$VISUAL without a shell so metacharacters cannot inject.
+        try:
+            argv = shlex.split(editor, posix=os.name != "nt")
+        except ValueError:
+            return ""
+        if not argv:
+            return ""
+        ret = subprocess.run([*argv, temp_path], shell=False)
         if ret.returncode == 0 and os.path.exists(temp_path):
             with open(temp_path, "r", encoding="utf-8") as f:
                 content = f.read()

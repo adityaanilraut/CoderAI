@@ -75,8 +75,11 @@ class TerminalSession:
         self._unread_buffer: list[str] = []
         self.max_buffer_chars = DEFAULT_MAX_BUFFER_CHARS
 
-        # Prepare environment
-        run_env = os.environ.copy()
+        # Prepare environment without ambient secrets; explicit per-terminal
+        # env is kept.
+        from coderai.utils.subprocess_env import scrub_subprocess_env
+
+        run_env = scrub_subprocess_env(dict(os.environ), preserve_keys=set((env or {}).keys()))
         if env:
             run_env.update(env)
         run_env["TERM"] = "xterm-256color"

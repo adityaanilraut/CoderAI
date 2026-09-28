@@ -825,8 +825,12 @@ class LiveThinkingStreamer:
         # internal reasoning into the live view and pushed the line past the
         # terminal width, which wrapped and left stacked spinner lines behind.
         visible = f"  {frame} Reasoning{bullet} {elapsed_str}"
-        if len(visible) > term_width:
-            visible = visible[: max(0, term_width - 3)] + "..."
+        try:
+            from rich.cells import cell_len as _cell_len
+        except Exception:
+            _cell_len = len  # type: ignore[assignment]
+        if _cell_len(visible) > term_width:
+            visible = _truncate_to_display_width(visible, term_width)
             line = f"\r\x1b[2K{visible}"
         else:
             line = (
@@ -835,12 +839,13 @@ class LiveThinkingStreamer:
                 f" \x1b[36m{elapsed_str}\x1b[0m"
             )
         # Pad to overwrite any previously rendered longer line.
-        pad = max(0, self._last_line_len - len(visible))
+        # All lengths are display-cell widths so CJK frames stay aligned.
+        pad = max(0, self._last_line_len - _cell_len(visible))
         if pad:
             line += " " * pad + f"\x1b[{pad}D"
         sys.stdout.write(line)
         sys.stdout.flush()
-        self._last_line_len = len(visible)
+        self._last_line_len = _cell_len(visible)
 
     def finalize(self, console: Any | None = None, expanded: bool = False) -> str:
         if not self.is_active or not self.thinking_chunks:
@@ -1492,11 +1497,20 @@ from coderai.cli.elapsed import bullet_frame_for, format_progress_bar
 
 
 def _install_sigwinch(handler) -> None:  # type: ignore[no-untyped-def]
+    # NOTE: chain (don't clobber) the previous SIGWINCH handler — Rich Live,
+    # prompt_toolkit, and other spinners each install their own, and a plain
+    # signal.signal() overwrite breaks resize reflow for everyone else.
     try:
+        previous = signal.getsignal(getattr(signal, "SIGWINCH", 0))
 
         def _wrapped(*args: Any) -> None:
             try:
                 handler(*args)
+            except Exception:
+                pass
+            try:
+                if callable(previous):
+                    previous(*args)
             except Exception:
                 pass
 
@@ -1848,12 +1862,8 @@ class MarkdownStreamRenderer:
                 if self._live:
                     self._live.refresh()
 
-            sigwinch = getattr(signal, "SIGWINCH", None)
-            if sigwinch is not None:
-                try:
-                    signal.signal(sigwinch, _on_sigwinch)
-                except Exception:
-                    pass
+            # Chain via helper so an existing SIGWINCH handler survives.
+            _install_sigwinch(_on_sigwinch)
         except Exception:
             self._live = None
 

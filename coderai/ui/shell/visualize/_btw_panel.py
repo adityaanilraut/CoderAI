@@ -29,17 +29,44 @@ _BTW_MAX_VISIBLE_LINES = 20
 _BTW_SHORT_ANSWER_LINES = 3
 
 
+def _truncate_cells(text: str, max_cells: int) -> str:
+    """Truncate to a display-cell budget (CJK-safe); pad with spaces."""
+    try:
+        from rich.cells import cell_len
+    except Exception:
+        return text.ljust(max_cells)[:max_cells]
+    width = 0
+    chars: list[str] = []
+    for ch in text:
+        w = cell_len(ch)
+        if width + w > max_cells:
+            break
+        chars.append(ch)
+        width += w
+    return "".join(chars) + " " * max(0, max_cells - width)
+
+
 def _build_bordered_line(text: str, reference_line: str, columns: int) -> str:
+    import os as _os
+    import sys as _sys
+
+    inner = max(0, columns - 4)
+    fitted = _truncate_cells(text, inner)
+    try:
+        piped = not _sys.stdout.isatty()
+    except Exception:
+        piped = True
+    if _os.getenv("NO_COLOR") is not None or piped:
+        return f"  {fitted.strip()}"
     left_m = _LEFT_BORDER_RE.match(reference_line)
     right_m = _RIGHT_BORDER_RE.search(reference_line)
     if not left_m or not right_m:
-        return f"  {text}"
+        return f"  {fitted.strip()}"
     left = left_m.group(1)
     right = right_m.group(1)
-    inner = max(0, columns - 4)
     dim = "\x1b[2m"
     reset = "\x1b[0m"
-    return f"{left}{dim}{text.ljust(inner)[:inner]}{reset}{right}"
+    return f"{left}{dim}{fitted}{reset}{right}"
 
 
 class BtwPanel:
@@ -102,37 +129,24 @@ class BtwPanel:
         parts.append(q_text)
         parts.append(Text("─" * max(1, columns - 6), style="grey50"))
         if self._is_loading:
-            if self._streaming_text and Markdown is not None:
-                try:
-                    parts.append(Markdown(self._streaming_text))
-                except Exception:
+            if self._streaming_text:
+                if Markdown is not None:
+                    try:
+                        parts.append(Markdown(self._streaming_text))
+                    except Exception:
+                        parts.append(Text(self._streaming_text))
+                else:
                     parts.append(Text(self._streaming_text))
-                parts.append(Text(""))
-                parts.append(self._spinner)
-            elif self._streaming_text:
-                parts.append(Text(self._streaming_text))
-                parts.append(Text(""))
-                parts.append(self._spinner)
+                parts.append(Text("Composing...", style="yellow italic"))
             else:
-                parts.append(self._spinner)
+                parts.append(Spinner("dots", text=Text("Thinking...", style="yellow italic")))
         elif self._error:
             parts.append(Text(self._error, style="red"))
             parts.append(Text(""))
-        # Question full text if long
-        if len(self.question) > 40:
-            parts.append(Text(f"Q: {self.question}", style="cyan"))
-            parts.append(Text("─" * min(columns - 4, 60), style="dim"))
-        # Answer
-        if self._is_loading:
-            if not self._response:
-                spinner = Spinner("dots", text=Text("Thinking...", style="yellow italic"))
-                parts.append(spinner)
-            else:
-                try:
-                    parts.append(Markdown(self._response))
-                except Exception:
-                    parts.append(Text(self._response))
-                parts.append(Text("Composing...", style="yellow italic"))
+        # Answer (loading and error states are fully rendered above;
+        # this also avoids re-adding "No response received." after an error).
+        if self._is_loading or self._error:
+            pass
         elif self._response:
             try:
                 parts.append(Markdown(self._response))

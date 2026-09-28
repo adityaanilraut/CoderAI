@@ -47,14 +47,27 @@ def parse_git_url(target: str) -> tuple[str, str | None, str | None]:
 
 
 def _extract_zip_to_plugin(zip_path: Path, tmp: Path) -> Path:
-    """Extract a zip into tmp, guarding against path traversal; return plugin dir."""
+    """Extract a zip into tmp, guarding against traversal and symlinks; return plugin dir."""
     import zipfile
 
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
-            for member in zf.namelist():
-                if not (tmp / member).resolve().is_relative_to(tmp.resolve()):
+            for info in zf.infolist():
+                member = info.filename
+                if not member or member.startswith("/") or ".." in Path(member).parts:
                     raise PluginError(f"zip contains unsafe path: {member}")
+                # Zip-slip via symlink: a stored symlink extracts as a link
+                # whose target can point outside tmp and is followed later.
+                if info.is_dir():
+                    continue
+                is_link = (info.external_attr >> 16) & 0o170000 == 0o120000
+                if is_link:
+                    raise PluginError(f"zip contains symlink: {member}")
+                target = (tmp / member).resolve()
+                if not target.is_relative_to(tmp.resolve()):
+                    raise PluginError(f"zip contains unsafe path: {member}")
+                if info.file_size > 50 * 1024 * 1024:
+                    raise PluginError(f"zip member too large: {member}")
             zf.extractall(tmp)
     except zipfile.BadZipFile as exc:
         raise PluginError(f"invalid zip archive: {exc}") from exc
@@ -70,6 +83,9 @@ def _resolve_source(target: str) -> tuple[Path, Path | None]:
 
     parsed = urlparse(target)
     if parsed.scheme in ("http", "https") and parsed.path.lower().endswith(".zip"):
+        from coderai.network.security import check_outbound_url
+
+        check_outbound_url(target)
         tmp = Path(tempfile.mkdtemp(prefix="coderai-plugin-"))
         zip_path = tmp / "_download.zip"
         print(f"Downloading {target}...")

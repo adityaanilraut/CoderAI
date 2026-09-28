@@ -469,11 +469,15 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
     project_root = get_effective_workdir(context)
 
     if not is_absolute_file_path(file_path):
-        if file_path.startswith("../") or file_path.startswith("..\\"):
+        # Clamp joined paths inside the project root; a literal "../" prefix
+        # check alone misses "subdir/../../" escapes.
+        joined = os.path.normpath(os.path.join(project_root, file_path))
+        root = os.path.normpath(project_root)
+        if joined != root and not joined.startswith(root + os.sep):
             return ToolResult(
                 ok=False,
                 name="read",
-                error="file_path must be an absolute path.",
+                error="file_path escapes the project root.",
             )
 
         suffix = _normalize_relative_suffix(file_path)
@@ -492,6 +496,13 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
             )
 
         resolved_path = os.path.normpath(os.path.join(project_root, file_path))
+        _root = os.path.normpath(project_root)
+        if resolved_path != _root and not resolved_path.startswith(_root + os.sep):
+            return ToolResult(
+                ok=False,
+                name="read",
+                error="file_path escapes the project root.",
+            )
         if not os.path.exists(resolved_path):
             if len(matches) > 0:
                 return ToolResult(
