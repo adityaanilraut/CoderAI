@@ -34,7 +34,7 @@ from prompt_toolkit.data_structures import Point
 from prompt_toolkit.formatted_text import AnyFormattedText, FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
-from prompt_toolkit.styles import Style
+from prompt_toolkit.styles import DynamicStyle, Style
 from prompt_toolkit.layout.containers import (
     ConditionalContainer,
     DynamicContainer,
@@ -1145,7 +1145,6 @@ def setup_readline(project_root: str, get_active_model: Any = None) -> bool:
         return False
 
 
-# --- from coderai/cli/file_mention.py ---
 """Workspace file mention parser and context expansion (@file)."""
 
 
@@ -1384,19 +1383,20 @@ def get_bottom_toolbar_tokens(
 ) -> list[tuple[str, str]]:
     """Return prompt_toolkit FormattedText for bottom toolbar."""
     global _tip_index, _tip_last_rotate
-    toolbar_tokens: list[tuple[str, str]] = []
+    segments: list[tuple[str, str]] = []
 
-    # Active Model badge
+    def add(style: str, text: str) -> None:
+        if text:
+            segments.append((style, text))
+
+    # One separator between segments. Wrapping each badge in spaces used to
+    # produce "  ·  " gaps and made the bar look unevenly padded.
     if active_model:
-        toolbar_tokens.append(("class:toolbar.model", f" {active_model} "))
-        toolbar_tokens.append(("class:toolbar.sep", " · "))
+        add("class:toolbar.model", active_model)
 
-    # Active Agent Role badge
     if active_agent and active_agent != "default":
-        toolbar_tokens.append(("class:toolbar.git", f" role: {active_agent} "))
-        toolbar_tokens.append(("class:toolbar.sep", " · "))
+        add("class:toolbar.role", f"role: {active_agent}")
 
-    # Token Usage / Context Window %
     if active_model and tokens > 0:
         try:
             _, _, pct = compute_token_gauge(tokens, active_model)
@@ -1405,13 +1405,10 @@ def get_bottom_toolbar_tokens(
                 tok_str = f"{tokens / 1000:.1f}k ({pct_str})"
             else:
                 tok_str = f"{tokens} ({pct_str})"
-            toolbar_tokens.append(("class:toolbar.tokens", f" {tok_str} "))
-            toolbar_tokens.append(("class:toolbar.sep", " · "))
+            add("class:toolbar.tokens", tok_str)
         except Exception:
-            toolbar_tokens.append(("class:toolbar.tokens", f" {tokens:,} tok "))
-            toolbar_tokens.append(("class:toolbar.sep", " · "))
+            add("class:toolbar.tokens", f"{tokens:,} tok")
 
-    # Git badge (delegates to centralized statusline caching)
     try:
         branch, dirty, ahead, behind = get_git_detailed_status(project_root)
         if branch:
@@ -1423,49 +1420,39 @@ def get_bottom_toolbar_tokens(
                     badge = _truncate_left(badge, 22)
             else:
                 badge = badge[:22]
-            toolbar_tokens.append(("class:toolbar.git", f" {badge} "))
-            toolbar_tokens.append(("class:toolbar.sep", " · "))
+            add("class:toolbar.git", badge)
     except Exception:
         pass
 
-    # Plan / mode
     if plan_mode:
-        toolbar_tokens.append(("class:toolbar.plan", " plan: ON "))
-        toolbar_tokens.append(("class:toolbar.sep", " · "))
-
+        add("class:toolbar.plan", "plan: ON")
     if yolo:
-        toolbar_tokens.append(("class:toolbar.yolo", " yolo "))
-        toolbar_tokens.append(("class:toolbar.sep", " · "))
+        add("class:toolbar.yolo", "yolo")
     if afk:
-        toolbar_tokens.append(("class:toolbar.afk", " afk "))
-        toolbar_tokens.append(("class:toolbar.sep", " · "))
-
-    # Turns count
+        add("class:toolbar.afk", "afk")
     if turns > 0:
-        toolbar_tokens.append(("class:toolbar.turns", f" turns: {turns} "))
-        toolbar_tokens.append(("class:toolbar.sep", " · "))
-
-    # MCP count
+        add("class:toolbar.turns", f"turns: {turns}")
     if mcp_count > 0:
-        toolbar_tokens.append(("class:toolbar.mcp", f" mcp: {mcp_count} "))
-        toolbar_tokens.append(("class:toolbar.sep", " · "))
+        add("class:toolbar.mcp", f"mcp: {mcp_count}")
 
-    # CWD (26 cols left-truncate)
     cwd = _shorten_cwd(project_root)
-    cwd_disp = _truncate_left(cwd, 26)
-    toolbar_tokens.append(("class:toolbar.cwd", f" {cwd_disp} "))
+    add("class:toolbar.cwd", _truncate_left(cwd, 26))
 
-    # Tip rotation 30s
     now = time.monotonic()
     if now - _tip_last_rotate > 30:
         _tip_index = (_tip_index + 1) % len(_TIPS)
         _tip_last_rotate = now
-    tip = _TIPS[_tip_index]
-    toolbar_tokens.append(("class:toolbar.sep", " · "))
-    toolbar_tokens.append(("class:toolbar.tip", f" {tip} "))
+    add("class:toolbar.tip", _TIPS[_tip_index])
     if extra_info:
-        toolbar_tokens.append(("class:toolbar.sep", " · "))
-        toolbar_tokens.append(("", f" {extra_info} "))
+        add("class:toolbar.extra", extra_info)
+
+    if not segments:
+        return []
+    toolbar_tokens: list[tuple[str, str]] = [("class:toolbar", " ")]
+    for index, (style, text) in enumerate(segments):
+        if index:
+            toolbar_tokens.append(("class:toolbar.sep", " · "))
+        toolbar_tokens.append((style, text))
     return toolbar_tokens
 
 
@@ -1699,56 +1686,23 @@ if HAS_PTK:
 
             self._kb = kb
 
-            # Style — clean, modern, unhighlighted completion menu & palette.
-            # Toolbar entries come from ui/theme.py so /theme dark|light
-            # restyles the bar; hardcoded entries below are fallback only.
-            _style_dict = {
-                # Toolbar (overridden from theme below when available)
-                "toolbar": "bg:#1e1e2e #cdd6f4",
-                "toolbar.model": "bg:#1e1e2e #89dceb bold",
-                "toolbar.tokens": "bg:#1e1e2e #a6e3a1",
-                "toolbar.git": "bg:#1e1e2e #cba6f7",
-                "toolbar.plan": "bg:#1e1e2e #f9e2af bold",
-                "toolbar.yolo": "bg:#1e1e2e #f9e2af bold",
-                "toolbar.afk": "bg:#1e1e2e #fab387 bold",
-                "toolbar.turns": "bg:#1e1e2e #89b4fa",
-                "toolbar.mcp": "bg:#1e1e2e #94e2d5",
-                "toolbar.cwd": "bg:#1e1e2e #9399b2",
-                "toolbar.sep": "bg:#1e1e2e #585b70",
-                "toolbar.tip": "bg:#1e1e2e #7f849c italic",
-                # Prompt
-                "prompt": "bold",
-                "prompt.plan": "bold yellow",
-                # Completion menu styling (clean, flat, no text match highlights)
-                "completion-menu": "bg:#181825 #cdd6f4",
-                "completion-menu.completion": "bg:#181825 #cdd6f4",
-                "completion-menu.completion.current": "bg:#313244 #89b4fa bold",
-                "completion-menu.meta": "bg:#181825 #6c7086",
-                "completion-menu.meta.completion.current": "bg:#313244 #a6adc8",
-                "completion-menu.multi-column-meta": "bg:#181825 #6c7086",
-                "scrollbar.background": "bg:#181825",
-                "scrollbar.button": "bg:#45475a",
-                # Remove bright / underlined character highlights from fuzzy completions
-                "fuzzymatch.inside": "nobold nounderline",
-                "fuzzymatch.outside": "nobold nounderline",
-            }
-            try:
-                from coderai.ui.theme import get_toolbar_colors as _get_toolbar_colors
+            # Style is resolved on each draw so /theme dark|light repaints the
+            # bar and the completion menu together. Every toolbar class shares
+            # one background; a partial override used to punch holes in the strip.
+            def _session_style() -> Style:
+                try:
+                    from coderai.ui.theme import get_prompt_session_styles
 
-                _tc = _get_toolbar_colors()
-                _style_dict.update(
-                    {
-                        "toolbar.sep": _tc.separator,
-                        "toolbar.cwd": _tc.cwd,
-                        "toolbar.tip": _tc.tip,
-                        "toolbar.yolo": _tc.yolo_label,
-                        "toolbar.afk": _tc.afk_label,
-                        "toolbar.plan": _tc.plan_label,
-                    }
-                )
-            except Exception:
-                pass
-            self._style = Style.from_dict(_style_dict)
+                    return Style.from_dict(get_prompt_session_styles())
+                except Exception:
+                    return Style.from_dict(
+                        {
+                            "toolbar": "bg:#1e1e2e #cdd6f4",
+                            "prompt": "bold",
+                        }
+                    )
+
+            self._style = DynamicStyle(_session_style)
 
             def _toolbar_callback() -> list[tuple[str, str]]:
                 model = self.get_active_model() if self.get_active_model else None
@@ -1922,14 +1876,8 @@ async def read_user_turn_ptk(
             nxt = await session.prompt_async("... ")
             buf.append(nxt)
         except KeyboardInterrupt:
-            # Preserve lines typed so far instead of dropping the turn.
-            try:
-                nxt_partial = session.session.default_buffer.text
-            except Exception:
-                nxt_partial = ""
-            if nxt_partial:
-                buf.append(nxt_partial)
-            break
+            # Cancel the turn: interrupted input must never submit a partial command.
+            raise
         except EOFError:
             break
     return normalize_multiline_input("\n".join(buf))
@@ -1939,7 +1887,6 @@ def is_ptk_available() -> bool:
     return HAS_PTK
 
 
-# --- from coderai/cli/status_bar.py ---
 """Dynamic status line and prompt bar for interactive REPL."""
 
 
@@ -1993,7 +1940,6 @@ def render_status_bar(
     )
 
 
-# --- from coderai/cli/statusline.py ---
 """Pluggable statusline engine
 
 Supports:
@@ -2460,7 +2406,6 @@ def render_statusline(
     )
 
 
-# --- from coderai/cli/input_engine.py (buffering half) ---
 FENCE_PATTERN = re.compile(r"^```", re.MULTILINE)
 
 

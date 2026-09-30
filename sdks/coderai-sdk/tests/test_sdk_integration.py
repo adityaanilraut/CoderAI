@@ -7,7 +7,7 @@ turn, so no LLM credentials or network access are required.
 
 Run from the repo root:
 
-    CODERAI_SDK_INTEGRATION=1 /usr/local/bin/python3 -m pytest \\
+    CODERAI_SDK_INTEGRATION=1 .venv/bin/python -m pytest \\
         sdks/coderai-sdk/tests/test_sdk_integration.py -p no:cacheprovider -q
 """
 

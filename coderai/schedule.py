@@ -9,6 +9,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any
+from weakref import WeakValueDictionary
 from zoneinfo import ZoneInfo
 
 from coderai.utils.io import atomic_json_write
@@ -77,11 +78,16 @@ class ScheduleManager:
     """Manages scheduled timers and recurring reminders."""
 
     def __init__(self, storage_path: str | None = None) -> None:
-        self.storage_path = storage_path
+        self._storage_path = str(pathlib.Path(storage_path).resolve()) if storage_path else None
         self._schedules: dict[str, ScheduleRecord] = {}
         self._next_id = 1
         self._lock = threading.RLock()  # ponytail: RLock to allow re-entrant _generate_id inside create(); per-schedule locks if contention matters
         self._load()
+
+    @property
+    def storage_path(self) -> str | None:
+        """The persistence identity cannot change while managers hold this store."""
+        return self._storage_path
 
     def create(
         self,
@@ -186,11 +192,13 @@ class ScheduleManager:
                     active.append(rec)
             return sorted(active, key=lambda x: x.created_at)
 
-    def delete(self, schedule_id: str) -> bool:
+    def delete(self, schedule_id: str, session_id: str | None = None) -> bool:
         """Delete / cancel a schedule by id."""
         with self._lock:
             if schedule_id in self._schedules:
                 rec = self._schedules[schedule_id]
+                if session_id is not None and rec.session_id != session_id:
+                    return False
                 rec.state = "deleted"
                 del self._schedules[schedule_id]
                 self._save()
@@ -307,13 +315,21 @@ class ScheduleManager:
 
 
 _default_schedule_manager: ScheduleManager | None = None
+_schedule_managers: WeakValueDictionary[str, ScheduleManager] = WeakValueDictionary()
+_schedule_managers_lock = threading.Lock()
 
 
 def get_schedule_manager(storage_path: str | None = None) -> ScheduleManager:
+    """Share a store only for the same canonical project persistence path."""
     global _default_schedule_manager
-    if _default_schedule_manager is None:
-        _default_schedule_manager = ScheduleManager(storage_path=storage_path)
-    elif storage_path is not None and _default_schedule_manager.storage_path != storage_path:
-        _default_schedule_manager.storage_path = storage_path
-        _default_schedule_manager._load()
-    return _default_schedule_manager
+    with _schedule_managers_lock:
+        if storage_path is None:
+            if _default_schedule_manager is None:
+                _default_schedule_manager = ScheduleManager()
+            return _default_schedule_manager
+        identity = str(pathlib.Path(storage_path).resolve())
+        manager = _schedule_managers.get(identity)
+        if manager is None:
+            manager = ScheduleManager(identity)
+            _schedule_managers[identity] = manager
+        return manager

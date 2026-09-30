@@ -487,9 +487,11 @@ def _close_persistent_bash_session(session_id: str) -> None:
         from coderai.terminal.manager import get_terminal_manager
 
         mgr = get_terminal_manager()
-        term = mgr.get_session(f"persistent_bash_{session_id}")
+        term = mgr.get_session(f"persistent_bash_{session_id}", owner_session_id=session_id)
         if term is not None:
-            mgr.close_session(term.session_id)
+            mgr.close_session(
+                term.session_id, owner_session_id=session_id, workspace_root=term.workspace_root
+            )
     except Exception:
         pass
 

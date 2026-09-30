@@ -303,7 +303,10 @@ async def test_engine_interrupts_in_flight_turn_on_cancel():
         cancel.set()
 
     canceller = asyncio.create_task(_cancel_soon())
-    await _collect(engine, "second", cancel)
+    from coderai.soul import RunCancelled
+
+    with pytest.raises(RunCancelled):
+        await _collect(engine, "second", cancel)
     await canceller
 
     assert manager.interrupted == ["s1"]

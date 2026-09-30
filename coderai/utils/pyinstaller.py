@@ -7,8 +7,6 @@ build time, never at runtime.
 
 from __future__ import annotations
 
-import pathlib
-
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 #: Every first-party subpackage with dynamically imported modules (tool
@@ -144,19 +142,5 @@ excludes: list[str] = [
 ]
 
 
-def _vendor_binaries() -> list[tuple[str, str]]:
-    """Locate vendored native binaries (``rg``) for the ``binaries`` slot.
-
-    Binaries must not ride in ``datas``: PyInstaller only preserves the
-    executable bit for entries in ``binaries``.
-    """
-    found: list[tuple[str, str]] = []
-    vendor_dir = pathlib.Path(__file__).resolve().parents[1] / "vendor"
-    for pattern in ("rg", "rg-*", "rg.exe"):
-        for path in sorted(vendor_dir.glob(pattern)):
-            if path.is_file():
-                found.append((str(path), "."))
-    return found
-
-
-binaries: list[tuple[str, str]] = _vendor_binaries()
+# Universal fallback avoids bundling a native executable for the wrong host.
+binaries: list[tuple[str, str]] = []

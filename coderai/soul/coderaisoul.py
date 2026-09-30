@@ -365,14 +365,22 @@ class AgentLoop:
                 if pending_info.get("toolCalls"):
                     last_message = pending_info.get("message")
                     tool_calls = pending_info.get("toolCalls") or []
-                    message_permissions = (
-                        (last_message.meta or {}).get("askPermissions") if last_message else None
-                    )
+                    stored_meta = (last_message.meta or {}) if last_message else {}
+                    permission_rows = {
+                        row["toolCallId"]: dict(row) for row in stored_meta.get("permissions") or []
+                    }
+                    for request in stored_meta.get("askPermissions") or []:
+                        call_id = request["toolCallId"]
+                        permission_rows[call_id] = {**permission_rows.get(call_id, {}), **request}
+                    message_permissions = list(permission_rows.values())
                     waiting = await manager._append_tool_messages(
                         session_id,
                         tool_calls,
                         permission_replies=permission_replies,
                         message_permissions=message_permissions,
+                        pre_tool_outcomes=(
+                            (last_message.meta or {}).get("preToolHooks") if last_message else None
+                        ),
                     )
                     permission_replies = None
 
@@ -395,10 +403,11 @@ class AgentLoop:
                         return
                     if await self._rewind_dmail():
                         continue
-                    if getattr(waiting, "stop_reason", None) == "tool_call_repeat":
-                        if self._consume_steers():
+                    stop_reason = getattr(waiting, "stop_reason", None)
+                    if stop_reason in ("tool_call_repeat", "hook"):
+                        if stop_reason == "tool_call_repeat" and self._consume_steers():
                             continue
-                        self.emit_turn_end("tool_call_repeat")
+                        self.emit_turn_end(stop_reason)
                         manager._update_entry(
                             session_id,
                             lambda entry: {
@@ -627,6 +636,11 @@ class AgentLoop:
                 is_plan = bool(current_entry.get("planMode"))
                 forced_scopes = PLAN_MODE_FORCE_ASK_SCOPES if is_plan else None
                 custom_paths = settings.get("skillScanPaths") or []
+                from coderai.tools.legacy.authorization import prepare_pre_tool_outcomes
+
+                pre_tool_outcomes = prepare_pre_tool_outcomes(
+                    session_id, manager.project_root, tool_calls or [], settings
+                )
                 permission_plan = (
                     compute_tool_call_permissions(
                         session_id=session_id,
@@ -638,6 +652,8 @@ class AgentLoop:
                             manager.project_root, custom_scan_paths=custom_paths
                         ),
                         resolve_snippet_path=resolve_snippet_file_path,
+                        pre_tool_outcomes=pre_tool_outcomes,
+                        session_approval_store=manager.session_approval_store,
                     )
                     if tool_calls
                     else None
@@ -654,6 +670,7 @@ class AgentLoop:
                         **(assistant_message.meta or {}),
                         "permissions": permission_plan["permissions"],
                         "askPermissions": permission_plan.get("askPermissions"),
+                        "preToolHooks": pre_tool_outcomes,
                     }
 
                 async def _commit_assistant() -> None:
@@ -696,6 +713,7 @@ class AgentLoop:
                         message_permissions=(
                             permission_plan.get("permissions") if permission_plan else None
                         ),
+                        pre_tool_outcomes=pre_tool_outcomes,
                     )
 
                 if manager.is_interrupted(session_id):
@@ -706,12 +724,13 @@ class AgentLoop:
                 if await self._rewind_dmail():
                     self.emit_step_end()
                     continue
-                if getattr(waiting_for_user, "stop_reason", None) == "tool_call_repeat":
-                    if self._consume_steers():
+                stop_reason = getattr(waiting_for_user, "stop_reason", None)
+                if stop_reason in ("tool_call_repeat", "hook"):
+                    if stop_reason == "tool_call_repeat" and self._consume_steers():
                         self.emit_step_end()
                         continue
                     self.emit_step_end()
-                    self.emit_turn_end("tool_call_repeat")
+                    self.emit_turn_end(stop_reason)
                     manager._update_entry(
                         session_id,
                         lambda entry: {

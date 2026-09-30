@@ -1,4 +1,4 @@
-"""Process-global wire emitter.
+"""Session-scoped wire emission with a legacy process-wide fallback.
 
 The core publishes lifecycle events here; UIs subscribe via ``get_emitter()``
 or attach a session ``Wire``. When no session wire is attached, messages are
@@ -9,14 +9,33 @@ from __future__ import annotations
 
 import threading
 import uuid
+from concurrent.futures import Future
 from collections import deque
-from typing import Any
+from contextvars import ContextVar, Token
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import asyncio
+    from coderai.wire import Wire, WireUISide
+    from coderai.wire.types import WireMessage
 
 _emitter_lock = threading.Lock()
 _emitter: WireEmitter | None = None
+_current_emitter: ContextVar[WireEmitter | None] = ContextVar("coderai_wire_emitter", default=None)
+
+
+def bind_emitter(emitter: WireEmitter) -> Token[WireEmitter | None]:
+    return _current_emitter.set(emitter)
+
+
+def reset_emitter(token: Token[WireEmitter | None]) -> None:
+    _current_emitter.reset(token)
 
 
 def get_emitter() -> WireEmitter:
+    current = _current_emitter.get()
+    if current is not None:
+        return current
     global _emitter
     with _emitter_lock:
         if _emitter is None:
@@ -24,12 +43,9 @@ def get_emitter() -> WireEmitter:
         return _emitter
 
 
-def wire_send(msg: Any) -> None:
+def wire_send(msg: WireMessage) -> None:
     """Publish a wire message from anywhere in the core."""
-    try:
-        get_emitter().send(msg)
-    except Exception:
-        pass
+    get_emitter().send(msg)
 
 
 class WireEmitter:
@@ -39,12 +55,16 @@ class WireEmitter:
         from coderai.wire import Wire
 
         self._local = Wire()
-        self._buffer: deque[Any] = deque(maxlen=buffer_size)
-        self._session_wire: Any | None = None
+        self._buffer: deque[WireMessage] = deque(maxlen=buffer_size)
+        self._session_wire: Wire | None = None
         self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._tool_results: set[str] = set()
+        self._event_counts: dict[type, int] = {}
+        self._closed = False
 
     # -- session attachment -------------------------------------------------
-    def attach_session_wire(self, wire: Any | None) -> None:
+    def attach_session_wire(self, wire: Wire | None) -> None:
         with self._lock:
             self._session_wire = wire
 
@@ -52,39 +72,98 @@ class WireEmitter:
         with self._lock:
             self._session_wire = None
 
-    # -- publish -------------------------------------------------------------
-    def send(self, msg: Any) -> None:
+    def close(self) -> None:
+        """Release subscriptions and retained session events on disposal."""
         with self._lock:
-            self._buffer.append(msg)
-            session_wire = self._session_wire
+            self._closed = True
         try:
-            self._local.soul_side.send(msg)
-        except Exception:
-            pass
+            self._local.shutdown(immediate=True)
+        finally:
+            with self._lock:
+                self._session_wire = None
+                self._buffer.clear()
+                self._tool_results.clear()
+                self._event_counts.clear()
+            self._loop = None
+
+    # -- publish -------------------------------------------------------------
+    def send(self, msg: WireMessage) -> None:
+        import asyncio
+
+        with self._lock:
+            if self._closed:
+                return
+            loop = self._loop
+
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if loop is not None and loop.is_running() and current_loop is not loop:
+            # Provider streaming runs in asyncio.to_thread. Asyncio queues
+            # must be published from their owning loop, including failures.
+            sent: Future[None] = Future()
+
+            def publish() -> None:
+                try:
+                    self._send(msg)
+                except BaseException as exc:
+                    sent.set_exception(exc)
+                else:
+                    sent.set_result(None)
+
+            loop.call_soon_threadsafe(publish)
+            sent.result()
+            return
+        self._send(msg)
+
+    def _send(self, msg: WireMessage) -> None:
+        from coderai.wire.types import ToolResult, TurnBegin
+
+        with self._lock:
+            if self._closed:
+                return
+            if isinstance(msg, TurnBegin):
+                self._tool_results.clear()
+            elif isinstance(msg, ToolResult):
+                self._tool_results.add(msg.tool_call_id)
+            self._buffer.append(msg)
+            self._event_counts[type(msg)] = self._event_counts.get(type(msg), 0) + 1
+            session_wire = self._session_wire
+        self._local.soul_side.send(msg)
         if session_wire is not None:
-            try:
-                session_wire.soul_side.send(msg)
-            except Exception:
-                pass
+            session_wire.soul_side.send(msg)
+
+    def has_tool_result(self, tool_call_id: str) -> bool:
+        with self._lock:
+            return tool_call_id in self._tool_results
+
+    def event_count(self, event_type: type) -> int:
+        with self._lock:
+            return self._event_counts.get(event_type, 0)
 
     def flush(self) -> None:
-        try:
-            self._local.soul_side.flush()
-        except Exception:
-            pass
+        self._local.soul_side.flush()
         with self._lock:
             session_wire = self._session_wire
         if session_wire is not None:
-            try:
-                session_wire.soul_side.flush()
-            except Exception:
-                pass
+            session_wire.soul_side.flush()
 
     # -- subscribe ------------------------------------------------------------
-    def ui_side(self, *, merge: bool) -> Any:
-        return self._local.ui_side(merge=merge)
+    def ui_side(self, *, merge: bool, replay: bool = True) -> WireUISide:
+        import asyncio
 
-    def buffered(self) -> list[Any]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Event stream is closed")
+
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        return self._local.ui_side(merge=merge, replay=replay)
+
+    def buffered(self) -> list[WireMessage]:
         with self._lock:
             return list(self._buffer)
 

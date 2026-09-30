@@ -25,6 +25,7 @@ class ApprovalSource:
     id: str
     agent_id: str | None = None
     subagent_type: str | None = None
+    session_id: str | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -34,6 +35,7 @@ class ApprovalRequestRecord:
     action: str
     description: str
     source: ApprovalSource
+    session_id: str | None = None
     sender: str = ""
     display: list[Any] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
@@ -42,6 +44,7 @@ class ApprovalRequestRecord:
     response: ApprovalResponseKind | None = None
     feedback: str = ""
     approved_via_session_cache: bool = False
+    session_grant_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

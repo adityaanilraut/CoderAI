@@ -349,8 +349,9 @@ async def test_execute_task_uses_subagent_manager(monkeypatch):
     seen: dict[str, object] = {}
 
     class _FakeRunner:
-        def __init__(self, project_root, create_openai_client):
+        def __init__(self, project_root, create_openai_client, get_resolved_settings=None):
             seen["project_root"] = project_root
+            seen["get_resolved_settings"] = get_resolved_settings
 
         async def spawn_subagent(self, spec):
             seen["spec"] = spec

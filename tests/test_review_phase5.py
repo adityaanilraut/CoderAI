@@ -1,6 +1,6 @@
 """Phase 5 agent loop and session correctness regression tests.
 
-Covers every Phase 5 item from PLAN.md:
+Regression coverage:
 - AL-A1: Compaction trigger and region selection on derive_messages, stable IDs for summary rows.
 - AL-A3: Compaction request tool_choice="none" or no tools, aborts on empty summary, uses retrying completion.
 - AL-A4: AgentLoop.run re-raises CancelledError after bookkeeping, SessionInterrupted for user interrupts.

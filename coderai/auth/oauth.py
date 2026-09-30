@@ -490,8 +490,12 @@ class OAuthManager:
         self._keys = list(oauth_keys or [])
         for key in self._keys:
             token = load_token(key)
-            if token is not None and token.access_token:
+            if token is not None and token.access_token and token.expires_at > time.time():
                 self._access_tokens[key] = token.access_token
+
+    def add_key(self, key: str) -> None:
+        if key not in self._keys:
+            self._keys.append(key)
 
     @classmethod
     def from_typed_config(cls, typed: Any) -> OAuthManager:
@@ -520,15 +524,17 @@ class OAuthManager:
         shadows a configured static fallback.
         """
         if oauth_key:
-            token = self._access_tokens.get(oauth_key)
-            if token is None:
-                persisted = load_token(oauth_key)
-                if persisted is not None and persisted.access_token:
-                    if self._tombstone(oauth_key, persisted.refresh_token) is None:
-                        self._access_tokens[oauth_key] = persisted.access_token
-                        token = persisted.access_token
-            if token:
-                return token
+            self.add_key(oauth_key)
+            persisted = load_token(oauth_key)
+            if (
+                persisted is not None
+                and persisted.access_token
+                and persisted.expires_at > time.time()
+                and self._tombstone(oauth_key, persisted.refresh_token) is None
+            ):
+                self._access_tokens[oauth_key] = persisted.access_token
+                return persisted.access_token
+            self._access_tokens.pop(oauth_key, None)
         return api_key
 
     def _tombstone(self, key: str, refresh_token: str | None) -> _RejectedRefreshState | None:
@@ -544,14 +550,17 @@ class OAuthManager:
         state = self._tombstone(key, refresh_token)
         return state is None or time.time() >= state.retry_after
 
-    async def ensure_fresh(self, *, force: bool = False) -> None:
+    async def ensure_fresh(
+        self, *, force: bool = False, oauth_keys: list[str] | None = None
+    ) -> None:
         """Refresh cached tokens near expiry (startup / on-demand)."""
-        for key in self._keys:
+        for key in self._keys if oauth_keys is None else oauth_keys:
             token = load_token(key)
             if token is None or not token.refresh_token:
                 continue
             state = self._tombstone(key, token.refresh_token)
             if state is not None and time.time() < state.retry_after and not force:
+                self._access_tokens.pop(key, None)
                 continue
             if not force and not token.needs_refresh:
                 self._access_tokens[key] = token.access_token
@@ -565,9 +574,15 @@ class OAuthManager:
                 lock = CrossProcessLock(key)
                 acquired = await lock.acquire_with_retry()
                 try:
+                    if not acquired:
+                        raise OAuthError("Timed out waiting for credential refresh lock.")
                     if acquired:
                         locked = load_token(key)
-                        if locked is not None and locked.refresh_token != current.refresh_token:
+                        if (
+                            locked is not None
+                            and not locked.needs_refresh
+                            and (not force or locked.refresh_token != current.refresh_token)
+                        ):
                             _REJECTED_REFRESH_TOKENS.pop(key, None)
                             self._access_tokens[key] = locked.access_token
                             continue

@@ -7,7 +7,7 @@ official builds from forks or dirty installs.
 
 Resolution order for the SHA:
 1. ``CODERAI_BUILD_SHA`` environment variable (dev / CI override).
-2. ``git rev-parse HEAD`` in the repository (truncated to 12 chars).
+2. ``git rev-parse HEAD`` in the repository (full source commit SHA).
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ def _detect_sha() -> str:
             timeout=2,
         )
         if result.returncode == 0:
-            return result.stdout.strip()[:12]
+            return result.stdout.strip()
     except Exception:
         pass
 
@@ -101,7 +101,7 @@ def main() -> int:
     build_id = _assemble(remote, sha)
 
     target = _resolve_project_root() / "coderai" / "_build_info.py"
-    target.write_text(f'BUILD_SHA = "{build_id}"\n', encoding="utf-8")
+    target.write_text(f"BUILD_SHA = {build_id!r}\n", encoding="utf-8")
     print(f"Injected build_sha={build_id!r} into {target}")
     return 0
 

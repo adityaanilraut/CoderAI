@@ -112,13 +112,19 @@ class SubAgentManager:
         get_resolved_settings: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.project_root = str(pathlib.Path(project_root).resolve())
+        from coderai.llm import create_oauth_manager
+
+        self.oauth_manager = create_oauth_manager(self.project_root)
         if create_openai_client is None:
             from coderai.llm import create_openai_client as _default_create_client
 
-            self.create_openai_client = lambda: _default_create_client(self.project_root)
+            self.create_openai_client = lambda: _default_create_client(
+                self.project_root, oauth=self.oauth_manager
+            )
         else:
             self.create_openai_client = create_openai_client
         self.get_resolved_settings = get_resolved_settings or (lambda: {})
+        self._inherits_permission_settings = get_resolved_settings is not None
         self.message_converter = OpenAIMessageConverter()
         self._active_controllers: dict[str, asyncio.Event] = {}
 
@@ -160,6 +166,17 @@ class SubAgentManager:
         )
         if event is not None:
             event.set()
+        from coderai.subagents.core import get_agent_registry
+
+        for handle in get_agent_registry().list():
+            if handle.run_session_id != session_id or (
+                handle.spec is not None and handle.spec.continuable
+            ):
+                continue
+            # A one-shot run has no parked inbox to preserve: wake the actual
+            # invocation even while it waits inside a tool or provider call.
+            if handle.task is not None and not handle.task.done():
+                handle.task.cancel()
 
     def cancel_all(self) -> None:
         """Cancel all running sub-agents globally."""
@@ -181,6 +198,8 @@ class SubAgentManager:
         )
         from coderai.subagents.core import AgentHandle, get_agent_registry
 
+        if spec.root_agent_id is None:
+            spec.root_agent_id = spec.agent_id or spec.task_id
         handle = AgentHandle(
             id=spec.task_id,
             parent_session_id=spec.parent_session_id or "",
@@ -191,8 +210,14 @@ class SubAgentManager:
             parent_agent_id=spec.parent_agent_id,
             root_agent_id=spec.root_agent_id,
             spec=spec,
+            manager=self,
+            task=asyncio.current_task(),
         )
         get_agent_registry().register(handle)
+        if spec.parent_agent_id:
+            parent_handle = get_agent_registry().get(spec.parent_agent_id)
+            if parent_handle is not None and handle.id not in parent_handle.children_ids:
+                parent_handle.children_ids.append(handle.id)
 
         effective_max_depth = spec.max_depth if spec.max_depth is not None else MAX_SUBAGENT_DEPTH
         quota_ok, _quota_err = check_subagent_depth_quota(spec.depth, effective_max_depth)
@@ -207,7 +232,23 @@ class SubAgentManager:
                 local=local,
                 parent_session_id=spec.parent_session_id,
             )
-        result = await self._spawn_subagent_inner(spec, session_id)
+        # Provider calls run in threads that inherit task context. Give the
+        # child its own emission channel instead of leaking child output into
+        # the parent's turn; start/end notices above/below remain parent-facing.
+        from coderai.wire.emitter import WireEmitter, bind_emitter, reset_emitter
+
+        child_emitter = WireEmitter()
+        emitter_token = bind_emitter(child_emitter)
+        try:
+            result = await self._spawn_subagent_inner(spec, session_id)
+        finally:
+            # The invoking task may keep working after this child settles;
+            # retaining it would let later registry cleanup cancel its owner.
+            handle.task = None
+            try:
+                child_emitter.close()
+            finally:
+                reset_emitter(emitter_token)
         handle.result = result
         handle.status = result.status
         if quota_ok:
@@ -684,7 +725,12 @@ class SubAgentManager:
         ``state["messages"]`` for the next turn.
         """
         events = lifecycle_events if lifecycle_events is not None else []
+        from coderai.llm import ensure_oauth_fresh, prepare_oauth_request
+
         client_info = self.create_openai_client()
+        if client_info.get("oauthKey"):
+            await ensure_oauth_fresh(oauth=self.oauth_manager, oauth_keys=[client_info["oauthKey"]])
+            client_info = self.create_openai_client()
         client = client_info.get("client")
         model = str(spec.model or client_info.get("model") or "gpt-6-luna")
         base_url = client_info.get("baseURL")
@@ -849,6 +895,7 @@ class SubAgentManager:
                 if abort_event.is_set():
                     break
                 try:
+                    await prepare_oauth_request(client, oauth=self.oauth_manager)
                     response = await asyncio.to_thread(_call_llm_sync, client, request)
                     break
                 except (asyncio.CancelledError, TimeoutError):
@@ -1024,7 +1071,38 @@ class SubAgentManager:
                 tdef = get_tool_registry().get_tool(fn_name)
                 is_mutating = bool(tdef and tdef.is_mutating)
 
-                if spec.exclude_tools and is_tool_allowed(
+                # A child inherits the parent's scope policy as well as its
+                # filesystem sandbox. Unapproved asks remain fail-closed.
+                inherited_permissions = self.get_resolved_settings().get("permissions")
+                permission_decision = "allow"
+                if self._inherits_permission_settings or inherited_permissions:
+                    from coderai.soul.approval import (
+                        PLAN_MODE_FORCE_ASK_SCOPES,
+                        compute_tool_call_permissions,
+                    )
+
+                    permission_plan = compute_tool_call_permissions(
+                        session_id=session_id,
+                        project_root=effective_root,
+                        tool_calls=[tc],
+                        settings=inherited_permissions,
+                        force_ask_scopes=PLAN_MODE_FORCE_ASK_SCOPES if spec.plan_mode else None,
+                    )
+                    permission_decision = permission_plan["permissions"][0]["permission"]
+
+                if permission_decision != "allow":
+                    tool_result_content = json.dumps(
+                        {
+                            "ok": False,
+                            "name": fn_name,
+                            "error": (
+                                "PermissionDenied: Parent permission policy requires approval."
+                                if permission_decision == "ask"
+                                else "PermissionDenied: Parent permission policy denies this tool call."
+                            ),
+                        }
+                    )
+                elif spec.exclude_tools and is_tool_allowed(
                     fn_name, "allowlist", tuple(spec.exclude_tools)
                 ):
                     tool_result_content = json.dumps(
@@ -1101,6 +1179,11 @@ class SubAgentManager:
                         )
                     else:
                         hooks = ToolExecutionHooks(
+                            on_process_start=spec.on_process_start,
+                            on_process_exit=spec.on_process_exit,
+                            on_process_stdout=spec.on_process_stdout,
+                            on_process_timeout_control=spec.on_process_timeout_control,
+                            on_background_process_complete=spec.on_background_process_complete,
                             should_stop=lambda: abort_event.is_set(),
                             isolated_cwd=self._resolve_subagent_cwd(spec, session_id),
                             dry_run=spec.dry_run,
@@ -1127,6 +1210,11 @@ class SubAgentManager:
                             )
                 else:
                     hooks = ToolExecutionHooks(
+                        on_process_start=spec.on_process_start,
+                        on_process_exit=spec.on_process_exit,
+                        on_process_stdout=spec.on_process_stdout,
+                        on_process_timeout_control=spec.on_process_timeout_control,
+                        on_background_process_complete=spec.on_background_process_complete,
                         should_stop=lambda: abort_event.is_set(),
                         isolated_cwd=self._resolve_subagent_cwd(spec, session_id),
                         dry_run=spec.dry_run,
@@ -1201,7 +1289,10 @@ class SubAgentManager:
                 continue
 
             # Limit sub-agent recursion
-            if name in ("Task", "subagent", "subagent_fork") and spec.depth >= MAX_SUBAGENT_DEPTH:
+            if (
+                name in ("Task", "subagent", "subagent_fork", "spawn_teammate")
+                and spec.depth + 1 >= spec.max_depth
+            ):
                 continue
 
             # Exclude tools check

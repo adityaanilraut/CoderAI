@@ -15,8 +15,13 @@ import asyncio
 import contextlib
 import json
 import uuid
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Coroutine
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from coderai.soul.session.manager import SessionManager
+    from coderai.wire import WireUISide
+    from coderai.wire.emitter import WireEmitter
 
 from kosong.message import ContentPart, ImageURLPart, TextPart
 
@@ -101,7 +106,7 @@ class SessionManagerEngine:
 
     def __init__(
         self,
-        manager: Any,
+        manager: SessionManager,
         *,
         config: Any = None,
         session: Any = None,
@@ -114,10 +119,17 @@ class SessionManagerEngine:
         self._plan_mode = plan_mode
         self._skills = skills
         self._engine_session_id: str | None = None
+        from coderai.wire.emitter import WireEmitter
+
+        self._fallback_emitter = WireEmitter()
+        self._running = False
+        self._active_task: asyncio.Task | None = None
+        self._active_receiver: asyncio.Task | None = None
+        self._run_task: asyncio.Task | None = None
 
     # -- accessors consumed by acp/server.py + acp/session.py ---------------
     @property
-    def manager(self) -> Any:
+    def manager(self) -> SessionManager:
         return self._manager
 
     @property
@@ -182,6 +194,14 @@ class SessionManagerEngine:
             return
         with contextlib.suppress(Exception):
             self._manager.interrupt_session(self._engine_session_id)
+        if self._active_task is not None:
+            self._active_task.cancel()
+
+    def _event_emitter(self) -> WireEmitter:
+        getter = getattr(self._manager, "get_event_emitter", None)
+        if callable(getter) and self._engine_session_id is not None:
+            return getter(self._engine_session_id)
+        return self._fallback_emitter
 
     # -- turn driving --------------------------------------------------------
     async def run(
@@ -191,12 +211,20 @@ class SessionManagerEngine:
 
         Runs the prompt and yields wire messages until the turn settles.
         """
-        from coderai.wire.emitter import get_emitter
+        from coderai.wire.emitter import bind_emitter, reset_emitter
+        from coderai.soul import RunCancelled
 
-        ui_side = get_emitter().ui_side(merge=False)
-        # Subscribing replays emitter history; drop it so a turn only streams
-        # the messages it actually produces.
-        ui_side.drain_nowait()
+        if self._running:
+            raise RuntimeError("Session already has an active turn")
+        if cancel_event.is_set():
+            raise RunCancelled()
+        self._running = True
+        new_session = self._engine_session_id is None
+        if new_session and callable(getattr(self._manager, "get_event_emitter", None)):
+            self._engine_session_id = uuid.uuid4().hex
+        emitter = self._event_emitter()
+        token = bind_emitter(emitter)
+        ui_side = emitter.ui_side(merge=False, replay=False)
 
         async def _watch_cancel() -> None:
             try:
@@ -204,16 +232,24 @@ class SessionManagerEngine:
             except asyncio.CancelledError:
                 return
             self.interrupt()
+            # Permission/question waits belong to this turn too.
+            if self._run_task is not None:
+                self._run_task.cancel()
 
+        self._run_task = asyncio.current_task()
         cancel_task = asyncio.create_task(_watch_cancel())
+        pending_requests: list[Any] = []
         try:
             text, content_params = build_acp_prompt(user_input)
             async for message in self._drive(
-                self._start_turn(text, content_params or None), ui_side
+                self._start_turn(text, content_params or None, new_session=new_session), ui_side
             ):
                 yield message
 
             while True:
+                session_id = self._engine_session_id
+                if session_id is None:
+                    return
                 status = self._classify() if not cancel_event.is_set() else _END_TURN
                 if status == _END_TURN:
                     return
@@ -221,12 +257,17 @@ class SessionManagerEngine:
                     items = self._pending_approvals()
                     if not items:
                         return
+                    entry = self._manager.get_session(session_id)
                     requests = [self._approval_request(item) for item in items]
+                    if getattr(entry, "plan_mode", False):
+                        for request in requests:
+                            request.allow_session_approve = False
+                    pending_requests.extend(requests)
                     for request in requests:
                         yield request
                     replies = await self._collect_permission_replies(requests, items)
                     async for message in self._drive(
-                        self._manager.respond_permissions(self._engine_session_id, replies),
+                        self._manager.respond_permissions(session_id, replies),
                         ui_side,
                     ):
                         yield message
@@ -235,27 +276,55 @@ class SessionManagerEngine:
                     questions = self._collect_questions()
                     if not questions:
                         return
-                    request = self._question_request(questions)
-                    yield request
+                    question_request = self._question_request(questions)
+                    pending_requests.append(question_request)
+                    yield question_request
                     try:
-                        answers = await request.wait()
+                        answers = await question_request.wait()
                     except Exception:
                         answers = {}
                     answers = dict(answers) if isinstance(answers, dict) else {}
                     prompt = self._format_answers(questions, answers)
                     async for message in self._drive(
-                        self._manager.reply_session(self._engine_session_id, user_prompt=prompt),
+                        self._manager.reply_session(session_id, user_prompt=prompt),
                         ui_side,
                     ):
                         yield message
                     continue
                 return
+        except asyncio.CancelledError:
+            if cancel_event.is_set():
+                raise RunCancelled() from None
+            self.interrupt()
+            raise
         finally:
+            for request in pending_requests:
+                with contextlib.suppress(Exception):
+                    request.resolve("reject" if isinstance(request, ApprovalRequest) else {})
             cancel_task.cancel()
             with contextlib.suppress(BaseException):
                 await cancel_task
+            for task in (self._active_task, self._active_receiver):
+                if task is not None and not task.done():
+                    task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await task
+            self._active_task = self._active_receiver = None
+            ui_side.close()
+            reset_emitter(token)
+            self._run_task = None
+            self._running = False
+            with contextlib.suppress(Exception):
+                if (
+                    new_session
+                    and self._engine_session_id is not None
+                    and self._manager.get_session(self._engine_session_id) is None
+                ):
+                    self._engine_session_id = None
 
-    async def _drive(self, coro: Any, ui_side: Any) -> AsyncIterator[Any]:
+    async def _drive(
+        self, coro: Coroutine[Any, Any, Any], ui_side: WireUISide
+    ) -> AsyncIterator[WireMessage]:
         """Run ``coro`` to completion while streaming its emitter messages.
 
         The driven coroutine publishes synchronously, so once it is done every
@@ -263,13 +332,16 @@ class SessionManagerEngine:
         and then draining is therefore race-free.
         """
         task = asyncio.create_task(coro)
+        self._active_task = task
         getter = asyncio.create_task(ui_side.receive())
+        self._active_receiver = getter
         try:
             while True:
                 done, _ = await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
                 if getter in done:
                     yield getter.result()
                     getter = asyncio.create_task(ui_side.receive())
+                    self._active_receiver = getter
                     continue
                 break
         finally:
@@ -278,8 +350,12 @@ class SessionManagerEngine:
                 await getter
             if not task.done():
                 task.cancel()
-                with contextlib.suppress(BaseException):
-                    await task
+            # Observe the producer even when receiving failed first and it
+            # already settled; otherwise its exception becomes an orphan.
+            with contextlib.suppress(BaseException):
+                await task
+            self._active_task = None
+            self._active_receiver = None
         while True:
             message = ui_side.try_receive_nowait()
             if message is None:
@@ -288,14 +364,24 @@ class SessionManagerEngine:
         await task
 
     async def _start_turn(
-        self, text: str, content_params: list[dict[str, Any]] | None = None
+        self,
+        text: str,
+        content_params: list[dict[str, Any]] | None = None,
+        *,
+        new_session: bool = False,
     ) -> None:
-        if self._engine_session_id is None:
+        if new_session or self._engine_session_id is None:
+            identity = (
+                {"session_id": self._engine_session_id}
+                if callable(getattr(self._manager, "get_event_emitter", None))
+                else {}
+            )
             self._engine_session_id = await self._manager.create_session(
                 text or "",
                 plan_mode=self._plan_mode,
                 skills=self._skills,
                 content_params=content_params,
+                **identity,
             )
         else:
             await self._manager.reply_session(
@@ -335,6 +421,8 @@ class SessionManagerEngine:
 
     # -- pause bridging (mirrors WireServer) ---------------------------------
     def _pending_approvals(self) -> list[dict[str, Any]]:
+        if self._engine_session_id is None:
+            return []
         entry = self._manager.get_session(self._engine_session_id)
         items = list(getattr(entry, "ask_permissions", None) or [])
         return [item for item in items if isinstance(item, dict)]
@@ -348,6 +436,7 @@ class SessionManagerEngine:
             action=str(item.get("name", "")),
             description=str(item.get("description", "") or item.get("command", "")),
             display=list(item.get("display") or []),
+            allow_session_approve=not bool(item.get("requiresExplicitApproval")),
         )
 
     async def _collect_permission_replies(
@@ -361,15 +450,20 @@ class SessionManagerEngine:
                 response = "reject"
             tool_call_id = item.get("toolCallId")
             if response in _APPROVE_RESPONSES:
-                replies.append({"toolCallId": tool_call_id, "permission": "allow"})
+                reply = {"toolCallId": tool_call_id, "permission": "allow"}
+                if response == "approve_for_session":
+                    reply["decision"] = response
+                replies.append(reply)
             else:
-                reply: dict[str, Any] = {"toolCallId": tool_call_id, "permission": "deny"}
+                reply = {"toolCallId": tool_call_id, "permission": "deny"}
                 if request.feedback:
                     reply["feedback"] = request.feedback
                 replies.append(reply)
         return replies
 
     def _collect_questions(self) -> list[dict[str, Any]]:
+        if self._engine_session_id is None:
+            return []
         try:
             messages = self._manager.list_session_messages(self._engine_session_id)
         except Exception:

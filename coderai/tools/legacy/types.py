@@ -1,8 +1,9 @@
-""""""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import json
+from pathlib import Path
 from typing import Any, Literal
 from collections.abc import Callable
 
@@ -102,6 +103,58 @@ class BackgroundProcessCompletion:
     shell_path: str = ""
 
 
+def tool_arguments_digest(args: dict[str, Any]) -> str:
+    """Bind runtime authorization to all arguments, not a model's description."""
+    return hashlib.sha256(
+        json.dumps(args, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def tool_call_binding(session_id: str, project_root: str, call: dict[str, Any]) -> dict[str, str]:
+    """Identity persisted by the runtime before presenting an approval request."""
+    from coderai.soul.approval import parse_tool_arguments
+
+    args = parse_tool_arguments(call["function"]["arguments"])
+    return {
+        "toolCallId": call["id"],
+        "tool_name": call["function"]["name"],
+        "session_id": session_id,
+        "project_root": str(Path(project_root).resolve()),
+        "args_digest": tool_arguments_digest(args if isinstance(args, dict) else {}),
+    }
+
+
+def matches_tool_call_binding(record: dict[str, Any], binding: dict[str, str]) -> bool:
+    return all(record.get(key) == value for key, value in binding.items())
+
+
+@dataclass(frozen=True)
+class ToolCallAuthorization:
+    """Trusted, invocation-scoped authorization; never read from tool arguments."""
+
+    session_id: str
+    tool_call_id: str
+    tool_name: str
+    project_root: str
+    args_digest: str
+    sandbox_mode: str | None = None
+    hook_approved: bool = False
+    hook_outcome: dict[str, Any] | None = None
+    isolated_cwd: str | None = None
+
+    def matches(self, context: Any, args: dict[str, Any]) -> bool:
+        get = context.get if isinstance(context, dict) else lambda k: getattr(context, k, None)
+        call = get("tool_call") or {}
+        return (
+            self.session_id == get("session_id")
+            and self.tool_call_id == call.get("id")
+            and self.tool_name == (call.get("function") or {}).get("name")
+            and self.project_root == str(Path(get("project_root") or "").resolve())
+            and self.args_digest == tool_arguments_digest(args)
+            and self.isolated_cwd == get("isolated_cwd")
+        )
+
+
 @dataclass
 class ToolExecutionContext:
     """Runtime context handed to a tool implementation with deferral and lifecycle hooks."""
@@ -132,6 +185,7 @@ class ToolExecutionContext:
     plan_mode: bool = False
     session_manager: Any = None
     allowed_tools: list[str] | tuple[str, ...] | None = None
+    authorization: ToolCallAuthorization | None = None
     deferred_contexts: list[ToolExecutionFollowUpMessage | dict[str, Any]] = field(
         default_factory=list
     )
@@ -186,6 +240,7 @@ class ToolExecutionHooks:
     plan_mode: bool = False
     session_manager: Any = None
     allowed_tools: list[str] | tuple[str, ...] | None = None
+    authorizations: dict[str, ToolCallAuthorization] = field(default_factory=dict)
 
 
 TOOL_ABORTED_BEFORE_DISPATCH = "TOOL_ABORTED_BEFORE_DISPATCH"

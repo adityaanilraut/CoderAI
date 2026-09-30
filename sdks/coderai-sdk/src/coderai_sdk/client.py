@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
-from typing import Any, Union
+import json
+from collections.abc import AsyncIterator, Callable
+from typing import Any, Protocol, Union
 
 from coderai_sdk.models import ChatMessage, TurnResult
 
@@ -41,6 +42,21 @@ _TOOL_RESULT_NAMES = {"ToolResult", "ToolResultPart"}
 _VALID_DECISIONS = ("approve", "approve_for_session", "reject")
 
 
+class Engine(Protocol):
+    """Minimum in-process engine boundary; normalized events may be objects or dicts."""
+
+    @property
+    def session_id(self) -> str | None: ...
+
+    def run(self, user_input: list[Any], cancel_event: asyncio.Event) -> AsyncIterator[Any]: ...
+
+    def bind_session(self, session_id: str) -> None: ...
+
+    def interrupt(self) -> None: ...
+
+    def set_model(self, model: str) -> None: ...
+
+
 class CoderAIClient:
     """Drive one CoderAI session headlessly.
 
@@ -57,7 +73,7 @@ class CoderAIClient:
     def __init__(
         self,
         *,
-        engine: Any = None,
+        engine: Engine | None = None,
         permission_policy: PermissionPolicy = DENY_ALL,
         question_handler: QuestionHandler | None = None,
         on_event: EventCallback | None = None,
@@ -94,7 +110,7 @@ class CoderAIClient:
 
     # -- accessors --------------------------------------------------------
     @property
-    def engine(self) -> Any:
+    def engine(self) -> Engine | None:
         return self._engine
 
     @property
@@ -143,7 +159,7 @@ class CoderAIClient:
         return result
 
     # -- internals --------------------------------------------------------
-    def _require_engine(self) -> Any:
+    def _require_engine(self) -> Engine:
         if self._engine is None:
             raise RuntimeError("No engine bound; use CoderAIClient.create() or engine=...")
         return self._engine
@@ -166,34 +182,79 @@ class CoderAIClient:
         if self._is_question(message):
             self._resolve_questions(message)
             return
+        # Wire transports use envelopes; the in-process engine uses concrete
+        # objects. Keep both on the same normalization path, even without the
+        # optional engine package installed.
         name = type(message).__name__
+        if isinstance(message, dict):
+            name = str(message.get("type", ""))
+            message = message.get("payload", message)
         if name in _THINK_NAMES:
-            text = getattr(message, "think", None) or getattr(message, "text", "")
+            text = self._field(message, "think") or self._field(message, "text", "")
             if text:
                 result.thinking += str(text)
             return
-        if name in _TEXT_NAMES or isinstance(getattr(message, "text", None), str):
-            text = str(getattr(message, "text", "") or "")
+        if name in _TEXT_NAMES or isinstance(self._field(message, "text"), str):
+            text = str(self._field(message, "text", "") or "")
             if text:
                 result.messages.append(ChatMessage(role="assistant", content=text))
                 result.text += text
             return
         if name in _TOOL_CALL_NAMES:
-            result.tool_calls.append(self._tool_call_info(message))
+            arguments_part = self._field(message, "arguments_part")
+            if arguments_part is not None:
+                if result.tool_calls:
+                    result.tool_calls[-1]["arguments"] += str(arguments_part)
+            else:
+                result.tool_calls.append(self._tool_call_info(message))
             return
         if name in _TOOL_RESULT_NAMES:
-            output = getattr(message, "output", "") or getattr(message, "content", "")
-            result.messages.append(ChatMessage(role="tool", content=str(output)))
+            value = self._field(message, "return_value", message)
+            output = self._field(value, "output", self._field(value, "content", ""))
+            error = self._field(value, "error", "") or ""
+            is_error = bool(self._field(value, "is_error", bool(error)))
+            if is_error and not error:
+                error = self._field(value, "message", "") or ""
+            call_id = str(self._field(message, "tool_call_id", ""))
+            result.tool_results.append(
+                {
+                    "tool_call_id": call_id,
+                    "output": output,
+                    "error": str(error),
+                    "is_error": is_error,
+                }
+            )
+            result.messages.append(
+                ChatMessage(
+                    role="tool",
+                    content=self._output_text(output),
+                    tool_call_id=call_id,
+                    error=str(error),
+                )
+            )
             return
+
+    @staticmethod
+    def _field(value: Any, key: str, default: Any = None) -> Any:
+        return value.get(key, default) if isinstance(value, dict) else getattr(value, key, default)
+
+    @classmethod
+    def _output_text(cls, output: Any) -> str:
+        if isinstance(output, str):
+            return output
+        if isinstance(output, (list, tuple)):
+            return "".join(str(cls._field(part, "text", "")) for part in output)
+        return "" if output is None else str(output)
 
     @staticmethod
     def _is_approval(message: Any) -> bool:
         try:
             from coderai.wire.types import ApprovalRequest
         except ImportError:
-            ApprovalRequest = None  # type: ignore[assignment]
-        if ApprovalRequest is not None and isinstance(message, ApprovalRequest):
-            return True
+            pass
+        else:
+            if isinstance(message, ApprovalRequest):
+                return True
         return type(message).__name__ in _APPROVAL_NAMES
 
     @staticmethod
@@ -201,16 +262,26 @@ class CoderAIClient:
         try:
             from coderai.wire.types import QuestionRequest
         except ImportError:
-            QuestionRequest = None  # type: ignore[assignment]
-        if QuestionRequest is not None and isinstance(message, QuestionRequest):
-            return True
+            pass
+        else:
+            if isinstance(message, QuestionRequest):
+                return True
         return type(message).__name__ in _QUESTION_NAMES
 
     @staticmethod
     def _tool_call_info(message: Any) -> dict[str, Any]:
-        call_id = getattr(message, "id", "") or getattr(message, "tool_call_id", "")
-        name = getattr(message, "name", "") or getattr(message, "function", "")
-        return {"id": str(call_id), "name": str(name)}
+        field = CoderAIClient._field
+        call_id = field(message, "id", "") or field(message, "tool_call_id", "")
+        function = field(message, "function")
+        name = field(function, "name", "") if function is not None else field(message, "name", "")
+        arguments = (
+            field(function, "arguments", "")
+            if function is not None
+            else field(message, "arguments", "")
+        )
+        if isinstance(arguments, dict):
+            arguments = json.dumps(arguments, ensure_ascii=False)
+        return {"id": str(call_id), "name": str(name), "arguments": arguments or ""}
 
     def _resolve_permission(self, request: Any) -> None:
         policy = self._permission_policy

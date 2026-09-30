@@ -13,7 +13,6 @@ async def handle_spawn_teammate_tool(
     args: dict[str, Any], context: ToolExecutionContext
 ) -> ToolResult:
     """Spawn a dedicated role-based teammate in the multi-agent swarm."""
-    del context
     name = as_str(args.get("name", "")).strip()
     role = as_str(args.get("role", "")).strip()
 
@@ -37,6 +36,9 @@ async def handle_spawn_teammate_tool(
         system_prompt=system_prompt,
         mode=mode,
         allowed_tools=allowed_tools,
+        project_root=context.project_root,
+        parent_session_id=context.session_id,
+        execution_context=context,
     )
 
     out = teammate.to_dict()

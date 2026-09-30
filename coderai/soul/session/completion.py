@@ -18,13 +18,13 @@ from coderai.soul.approval import resolve_snippet_file_path
 
 
 def normalize_tool_calls(raw: Any) -> list[dict[str, Any]] | None:
-    """Convert heterogeneous tool call objects/dicts into a uniform list of dictionaries."""
+    """Normalize model calls with unique identities before permission planning."""
     if not raw:
         return None
     result: list[dict[str, Any]] = []
     for tc in raw:
         if isinstance(tc, dict):
-            tc_id = tc.get("id") or uuid.uuid4().hex
+            tc_id = tc.get("id")
             func = tc.get("function") or {}
             result.append(
                 {
@@ -37,7 +37,7 @@ def normalize_tool_calls(raw: Any) -> list[dict[str, Any]] | None:
                 }
             )
         else:
-            tc_id = getattr(tc, "id", "") or uuid.uuid4().hex
+            tc_id = getattr(tc, "id", None)
             result.append(
                 {
                     "id": tc_id,
@@ -48,6 +48,18 @@ def normalize_tool_calls(raw: Any) -> list[dict[str, Any]] | None:
                     },
                 }
             )
+    # Reserve original IDs before generating replacements, including IDs on
+    # later calls, so one approval can never address two model invocations.
+    reserved_ids = {call["id"] for call in result if isinstance(call["id"], str) and call["id"]}
+    seen_ids: set[str] = set()
+    for call in result:
+        call_id = call["id"]
+        if not isinstance(call_id, str) or not call_id or call_id in seen_ids:
+            call_id = uuid.uuid4().hex
+            while call_id in reserved_ids or call_id in seen_ids:
+                call_id = uuid.uuid4().hex
+            call["id"] = call_id
+        seen_ids.add(call_id)
     return result or None
 
 

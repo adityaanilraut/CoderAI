@@ -1,30 +1,23 @@
-# Pre-commit hooks mirroring the CI gate (.github/workflows/ci.yml / `make check`).
-# One-time setup:  pip install pre-commit && pre-commit install
-# Run against everything:  pre-commit run --all-files
+# Uses the same project environment, tool versions and full scopes as make/CI.
+# Setup: .venv/bin/python -m pip install pre-commit && pre-commit install
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.11
-    hooks:
-      # Lint (check-only, matching `make lint` — no autofix so it fails like CI).
-      - id: ruff
-        files: ^(coderai|tests|scripts)/
-      # Format check + apply.
-      - id: ruff-format
-        files: ^(coderai|tests|scripts)/
-
-  # mypy runs over the whole package because the per-module strict config needs
-  # the full import graph, so it ignores the changed-file list and runs the same
-  # target as CI (`make typecheck`). Keep it self-contained so the hook does not
-  # depend on an activated development environment or a `python` shell alias.
   - repo: local
     hooks:
-      - id: mypy
-        name: mypy (strict per-module)
-        entry: mypy coderai/
-        language: python
-        additional_dependencies:
-          - mypy==2.1.0
-          - types-PyYAML==6.0.12.20260518
-          - types-requests==2.33.0.20260518
-        types: [python]
+      - id: coderai-lint
+        name: Ruff lint (shared full scope)
+        entry: .venv/bin/python scripts/verification.py lint
+        language: system
         pass_filenames: false
+        always_run: true
+      - id: coderai-format
+        name: Ruff format (check only, shared full scope)
+        entry: .venv/bin/python scripts/verification.py format-check
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: coderai-types
+        name: Mypy and suppression budget (engine and SDK)
+        entry: .venv/bin/python scripts/verification.py typecheck
+        language: system
+        pass_filenames: false
+        always_run: true

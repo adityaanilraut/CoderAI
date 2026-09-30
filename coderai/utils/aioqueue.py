@@ -17,52 +17,41 @@ else:
     class QueueShutDown(Exception):
         """Raised when operating on a shut down queue."""
 
-    class _Shutdown:
-        """Sentinel for queue shutdown."""
-
-    _SHUTDOWN = _Shutdown()
-
     class Queue(asyncio.Queue[Any], Generic[T]):
         """Asyncio Queue with shutdown support for Python < 3.13."""
 
-        def __init__(self) -> None:
-            super().__init__()
+        def __init__(self, maxsize: int = 0) -> None:
+            super().__init__(maxsize=maxsize)
             self._shutdown = False
 
         def shutdown(self, immediate: bool = False) -> None:
-            if self._shutdown:
+            if self._shutdown and not immediate:
                 return
             self._shutdown = True
             if immediate:
-                self._queue.clear()
-
-            getters = list(getattr(self, "_getters", []))
-            count = max(1, len(getters))
-            self._enqueue_shutdown(count)
-
-        def _enqueue_shutdown(self, count: int) -> None:
-            for _ in range(count):
-                try:
-                    super().put_nowait(_SHUTDOWN)
-                except asyncio.QueueFull:
-                    self._queue.clear()
-                    super().put_nowait(_SHUTDOWN)
+                while self._queue:
+                    self._get()
+                    if self._unfinished_tasks > 0:
+                        self._unfinished_tasks -= 1
+                if self._unfinished_tasks == 0:
+                    self._finished.set()
+            # Inserting a sentinel into a full bounded queue would discard
+            # live messages on graceful close. Wake operations explicitly.
+            for waiters in (self._getters, self._putters):
+                while waiters:
+                    waiter = waiters.popleft()
+                    if not waiter.done():
+                        waiter.set_exception(QueueShutDown())
 
         async def get(self) -> T:
             if self._shutdown and self.empty():
                 raise QueueShutDown
-            item = await super().get()
-            if isinstance(item, _Shutdown):
-                raise QueueShutDown
-            return item
+            return await super().get()
 
         def get_nowait(self) -> T:
             if self._shutdown and self.empty():
                 raise QueueShutDown
-            item = super().get_nowait()
-            if isinstance(item, _Shutdown):
-                raise QueueShutDown
-            return item
+            return super().get_nowait()
 
         async def put(self, item: T) -> None:
             if self._shutdown:

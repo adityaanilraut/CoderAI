@@ -1,5 +1,3 @@
-""""""
-
 from __future__ import annotations
 
 THINKING_CAPABLE_MODELS = {

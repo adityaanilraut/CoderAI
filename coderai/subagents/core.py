@@ -261,7 +261,15 @@ class AgentRegistry:
 
     def evict(self, agent_id: str) -> bool:
         """Remove handle from registry."""
-        return self._agents.pop(agent_id, None) is not None
+        handle = self._agents.pop(agent_id, None)
+        if handle is None:
+            return False
+        parent = self._agents.get(handle.parent_agent_id) if handle.parent_agent_id else None
+        if parent is not None:
+            parent.children_ids[:] = [
+                child_id for child_id in parent.children_ids if child_id != agent_id
+            ]
+        return True
 
     def evict_terminal(self) -> builtins.list[str]:
         """Evict handles that are finished and whose tasks are completed."""
@@ -272,7 +280,7 @@ class AgentRegistry:
             and (h.task is None or h.task.done())
         ]
         for aid in to_evict:
-            self._agents.pop(aid, None)
+            self.evict(aid)
         return to_evict
 
 
@@ -283,7 +291,6 @@ def get_agent_registry() -> AgentRegistry:
     return _registry
 
 
-# --- module helpers (from coderai/core/subagent.py) ---
 import uuid
 
 from coderai.utils.common.usage import extract_usage_dict

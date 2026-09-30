@@ -18,7 +18,10 @@ import pathlib
 import shutil
 import threading
 import uuid
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from coderai.wire.emitter import WireEmitter
 from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
@@ -183,12 +186,25 @@ class SessionManager:
         on_llm_stream_progress: Callable[[dict[str, Any]], None] | None = None,
         non_interactive: bool = False,
         max_iterations: int = MAX_ITERATIONS,
+        oauth_manager: Any | None = None,
     ) -> None:
         self.project_root = str(pathlib.Path(project_root).resolve())
         self.create_openai_client = create_openai_client
+        from coderai.llm import create_oauth_manager
+
+        self.oauth_manager = (
+            oauth_manager if oauth_manager is not None else create_oauth_manager(self.project_root)
+        )
         self.get_resolved_settings = get_resolved_settings
         self.render_markdown = render_markdown or (lambda t: t)
-        self.on_assistant_message = on_assistant_message or (lambda m, c: None)
+        self._assistant_callback = on_assistant_message
+        self._event_emitters: dict[str, WireEmitter] = {}
+        self._streamed_content: dict[str, dict[str, str]] = {}
+        self._running_sessions: set[str] = set()
+        self._turn_tasks: dict[str, asyncio.Task] = {}
+        self._owned_session_ids: set[str] = set()
+        self._deleted_session_ids: set[str] = set()
+        self.on_assistant_message = self._publish_assistant_message
         self.on_user_message = on_user_message
         self.on_session_entry_updated = on_session_entry_updated
         self.on_stream_chunk = on_stream_chunk
@@ -239,6 +255,9 @@ class SessionManager:
         from coderai.approval_runtime import ApprovalRuntime
 
         self.approval_runtime = ApprovalRuntime()
+        from coderai.approval_runtime.session_grants import SessionApprovalStore
+
+        self.session_approval_store = SessionApprovalStore()
         # Session-level wire hub (approval/notifications fan-out)
         # + persistent notification manager (llm/wire/shell sinks).
         from coderai.wire.root_hub import RootWireHub
@@ -585,6 +604,8 @@ class SessionManager:
 
     def _append_message(self, message: SessionMessage) -> None:
         """Append one legacy-compatible message row to the session log."""
+        if message.session_id in self._deleted_session_ids:
+            return
         self.session_store.append_row(message.session_id, self._serialize_message(message))
         self._invalidate_messages_cache(message.session_id)
 
@@ -672,6 +693,8 @@ class SessionManager:
         The write and the seq-counter advance happen under one lock so the
         persisted ``seq`` order always matches the mint order.
         """
+        if session_id in self._deleted_session_ids:
+            return
         with self._seq_lock:
             self.session_store.append_row(session_id, event.to_dict())
             current = self._seq_counters.get(session_id, 0)
@@ -1009,7 +1032,7 @@ class SessionManager:
 
     def steer_session(self, session_id: str, text: str) -> None:
         if not hasattr(self, "_steer_queues"):
-            self._steer_queues = {}
+            self._steer_queues: dict[str, list[str]] = {}
         self._steer_queues.setdefault(session_id, []).append(text)
 
     def pop_steers(self, session_id: str) -> list[str]:
@@ -1075,14 +1098,11 @@ class SessionManager:
         with self._seq_lock:
             self._checkpoint_counters[target] = checkpoint_id
         estimated = estimate_text_tokens(self.list_session_messages(target))
-        self._update_entry(
-            target,
-            lambda entry, tokens=estimated: {
-                **entry,
-                "activeTokens": tokens,
-                "updateTime": _now(),
-            },
-        )
+
+        def update_tokens(entry: dict[str, Any]) -> dict[str, Any]:
+            return {**entry, "activeTokens": estimated, "updateTime": _now()}
+
+        self._update_entry(target, update_tokens)
 
     def stage_dmail(self, session_id: str, message: str, checkpoint_id: int) -> None:
         """Validate and hold one D-Mail until the turn loop rewinds."""
@@ -1120,14 +1140,94 @@ class SessionManager:
             plan_mode=plan_mode,
         )
 
+    def get_event_emitter(self, session_id: str) -> WireEmitter:
+        """The event stream belongs to a conversation, never to the process."""
+        if getattr(self, "_events_closed", False) or session_id in self._deleted_session_ids:
+            raise RuntimeError("SessionManager event stream is closed")
+        from coderai.wire.emitter import WireEmitter
+
+        if session_id not in self._event_emitters:
+            self._event_emitters[session_id] = WireEmitter()
+        return self._event_emitters[session_id]
+
+    def _publish_assistant_message(self, message: SessionMessage, committed: bool) -> None:
+        if (
+            getattr(self, "_disposed", False)
+            or getattr(self, "_events_closed", False)
+            or message.session_id in self._deleted_session_ids
+        ):
+            return
+        from coderai.wire.types import TextPart, ThinkPart, ToolCall
+        from kosong.tooling import ToolResult, ToolReturnValue
+
+        emitter = self.get_event_emitter(message.session_id)
+        counts = {
+            kind: emitter.event_count(kind) for kind in (TextPart, ThinkPart, ToolCall, ToolResult)
+        }
+        if self._assistant_callback is not None:
+            self._assistant_callback(message, committed)
+        streamed = self._streamed_content.get(message.session_id, {})
+        if message.role == "assistant":
+            for kind, value, key in (
+                (ThinkPart, message.thinking, "thinking"),
+                (TextPart, message.content, "text"),
+            ):
+                if not value or emitter.event_count(kind) != counts[kind]:
+                    continue
+                prefix = streamed.get(key, "")
+                text = value[len(prefix) :] if prefix and value.startswith(prefix) else value
+                if text:
+                    emitter.send(kind(text=text))
+            if emitter.event_count(ToolCall) == counts[ToolCall]:
+                for call in message.tool_calls or []:
+                    emitter.send(ToolCall.model_validate(call))
+            self._streamed_content.pop(message.session_id, None)
+        elif (
+            message.role == "tool"
+            and message.tool_call_id
+            and not emitter.has_tool_result(message.tool_call_id)
+        ):
+            try:
+                result = json.loads(message.content)
+            except (ValueError, TypeError):
+                result = None
+            if isinstance(result, dict) and "ok" in result:
+                error = str(result.get("error") or "")
+                output = result.get("output") or error
+                if not isinstance(output, str):
+                    output = json.dumps(output, ensure_ascii=False)
+                tool_value = ToolReturnValue(
+                    is_error=not bool(result["ok"]), output=output, message=error, display=[]
+                )
+            else:
+                tool_value = ToolReturnValue(
+                    is_error=False, output=message.content, message="", display=[]
+                )
+            emitter.send(ToolResult(tool_call_id=message.tool_call_id, return_value=tool_value))
+
     async def create_session(
         self,
         user_prompt: str,
         plan_mode: bool = False,
         skills: list[str] | None = None,
         content_params: list[dict[str, Any]] | None = None,
+        *,
+        session_id: str | None = None,
     ) -> str:
-        session_id = uuid.uuid4().hex
+        if session_id is not None:
+            import re
+
+            if (
+                not isinstance(session_id, str)
+                or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id) is None
+            ):
+                raise ValueError("Invalid session identity")
+        session_id = session_id or uuid.uuid4().hex
+        if session_id in self._deleted_session_ids or getattr(self, "_events_closed", False):
+            raise RuntimeError("Session identity or runtime is closed")
+        if self._get_entry(session_id) is not None:
+            raise ValueError("Session already exists")
+        self._owned_session_ids.add(session_id)
         # When max_ralph_iterations != 0, turn the prompt into an
         # automated repeat loop instead of a single turn (checked up front so
         # the prompt is not appended twice).
@@ -1301,6 +1401,53 @@ class SessionManager:
             )
         return False
 
+    def _record_session_approval_replies(
+        self, session_id: str, entry: dict[str, Any], replies: list[dict[str, Any]]
+    ) -> None:
+        """Record only grants for the current, runtime-bound pending requests."""
+        from collections import Counter
+
+        from coderai.soul.approval import parse_tool_call_for_permissions
+        from coderai.tools.legacy.types import matches_tool_call_binding, tool_call_binding
+
+        current = self._get_entry(session_id) or entry
+        if (
+            current.get("status") != "ask_permission"
+            or current.get("planMode")
+            or getattr(self, "_events_closed", False)
+            or session_id in self._deleted_session_ids
+        ):
+            return
+        calls = [
+            call
+            for raw in current.get("toolCalls") or []
+            if (call := parse_tool_call_for_permissions(raw))
+        ]
+        counts = Counter(call["id"] for call in calls)
+        reply_counts = Counter(reply.get("toolCallId") for reply in replies)
+        for reply in replies:
+            call_id = reply.get("toolCallId")
+            if (
+                reply.get("permission") != "allow"
+                or reply.get("decision") != "approve_for_session"
+                or counts[call_id] != 1
+                or reply_counts[call_id] != 1
+            ):
+                continue
+            request = next(
+                (
+                    item
+                    for item in current.get("askPermissions") or []
+                    if item.get("toolCallId") == call_id
+                ),
+                None,
+            )
+            call = next(call for call in calls if call["id"] == call_id)
+            if request and matches_tool_call_binding(
+                request, tool_call_binding(session_id, self.project_root, call)
+            ):
+                self.session_approval_store.grant(request)
+
     async def reply_session(
         self,
         session_id: str,
@@ -1310,6 +1457,8 @@ class SessionManager:
         skills: list[str] | None = None,
         content_params: list[dict[str, Any]] | None = None,
     ) -> None:
+        if session_id in self._running_sessions:
+            raise RuntimeError("Session already has an active turn")
         entry = self._get_entry(session_id)
         if not entry:
             await self.create_session(
@@ -1317,6 +1466,7 @@ class SessionManager:
                 plan_mode=bool(plan_mode),
                 skills=skills,
                 content_params=content_params,
+                session_id=session_id,
             )
             return
 
@@ -1360,6 +1510,7 @@ class SessionManager:
         is_continue = self.is_continue_prompt(user_prompt)
 
         if permission_replies is not None:
+            self._record_session_approval_replies(session_id, entry, permission_replies)
             # If user provided a message alongside permission replies, queue it as deferred prompt
             deferred_prompt = user_prompt if (user_prompt and not is_continue) else None
             await self._activate(
@@ -1567,6 +1718,7 @@ class SessionManager:
         deferred_prompt: str | None = None,
     ) -> None:
         from coderai.soul.coderaisoul import AgentLoop
+        from coderai.wire.emitter import bind_emitter, reset_emitter
         from coderai.subagents.core import (
             register_session_notice_sink,
             unregister_session_notice_sink,
@@ -1587,16 +1739,40 @@ class SessionManager:
             except Exception:
                 pass
 
+        if session_id in self._running_sessions:
+            raise RuntimeError("Session already has an active turn")
+        self._owned_session_ids.add(session_id)
+        self._running_sessions.add(session_id)
+        task = asyncio.current_task()
+        if task is not None:
+            self._turn_tasks[session_id] = task
+        token = bind_emitter(self.get_event_emitter(session_id))
         register_session_notice_sink(session_id, _notice_sink)
         try:
+            from coderai.llm import ensure_oauth_fresh
+
+            await ensure_oauth_fresh(
+                oauth=self.oauth_manager,
+                model=self.get_active_model(),
+                project_root=self.project_root,
+            )
             await self._deliver_llm_notifications(session_id)
             await self._await_mcp_ready()
             await AgentLoop(self, session_id).run(
                 permission_replies=permission_replies,
                 deferred_prompt=deferred_prompt,
             )
+        except asyncio.CancelledError:
+            self._update_entry(
+                session_id,
+                lambda entry: {**entry, "status": "interrupted", "failReason": "interrupted"},
+            )
+            raise
         finally:
             unregister_session_notice_sink(session_id)
+            reset_emitter(token)
+            self._running_sessions.discard(session_id)
+            self._turn_tasks.pop(session_id, None)
 
     def notify(
         self,
@@ -1611,6 +1787,7 @@ class SessionManager:
         targets: list[str] | None = None,
         dedupe_key: str | None = None,
         payload: dict[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> Any:
         """Publish a notification."""
         from coderai.notifications import NotificationEvent, to_wire_notification
@@ -1618,6 +1795,24 @@ class SessionManager:
         manager = getattr(self, "notification_manager", None)
         if manager is None:
             return None
+        from coderai.wire.emitter import get_emitter
+
+        current_emitter = get_emitter()
+        if session_id is None:
+            session_id = next(
+                (
+                    sid
+                    for sid, emitter in self._event_emitters.items()
+                    if emitter is current_emitter
+                ),
+                None,
+            )
+        event_payload = dict(payload or {})
+        # Conversation ownership comes from runtime context or its caller,
+        # never from arbitrary display payload supplied with the notice.
+        event_payload.pop("sessionId", None)
+        if session_id:
+            event_payload["sessionId"] = session_id
         event = NotificationEvent(
             id=manager.new_id(),
             category=category,
@@ -1629,13 +1824,16 @@ class SessionManager:
             severity=severity,
             targets=list(targets) if targets else ["llm", "wire", "shell"],
             dedupe_key=dedupe_key,
-            payload=dict(payload or {}),
+            payload=event_payload,
         )
         view = manager.publish(event)
         try:
-            from coderai.wire.emitter import get_emitter
-
-            get_emitter().send(to_wire_notification(view))
+            if "wire" in view.event.targets:
+                message = to_wire_notification(view)
+                if session_id and session_id in self._running_sessions:
+                    self.get_event_emitter(session_id).send(message)
+                else:
+                    self.root_wire_hub.publish_nowait(message, session_id=session_id)
         except Exception:
             pass
         return view
@@ -1695,7 +1893,9 @@ class SessionManager:
             )
 
         try:
-            await manager.deliver_pending("llm", on_notification=_handle, limit=TURN_DELIVER_LIMIT)
+            await manager.deliver_pending(
+                "llm", on_notification=_handle, limit=TURN_DELIVER_LIMIT, session_id=session_id
+            )
         except Exception:
             pass
 
@@ -1705,9 +1905,11 @@ class SessionManager:
         tool_calls: list[Any],
         permission_replies: list[dict[str, Any]] | None = None,
         message_permissions: list[dict[str, Any]] | None = None,
+        pre_tool_outcomes: dict[str, dict[str, Any]] | None = None,
     ) -> ToolDispatchResult:
         waiting = False
         force_stop = False
+        force_stop_reason = "tool_call_repeat"
         ctrl = self.session_controllers.get(session_id)
         if not tool_calls:
             return ToolDispatchResult(waiting=False)
@@ -1770,7 +1972,15 @@ class SessionManager:
 
             blocked = build_permission_tool_execution(tc, permission_replies, message_permissions)
 
-            if blocked:
+            from coderai.tools.legacy.types import matches_tool_call_binding, tool_call_binding
+
+            snapshot = (pre_tool_outcomes or {}).get(tc["id"]) or {}
+            hook_stop = matches_tool_call_binding(
+                snapshot, tool_call_binding(session_id, self.project_root, tc)
+            ) and (snapshot.get("outcome") or {}).get("stop")
+            if hook_stop:
+                kind = "barrier"
+            elif blocked:
                 kind = "blocked"
             else:
                 tool_def = (
@@ -1923,6 +2133,17 @@ class SessionManager:
                     allowed_tools=self.get_resolved_settings().get("allowedTools"),
                 )
 
+                from coderai.tools.legacy.authorization import build_tool_authorizations
+
+                hooks.authorizations = build_tool_authorizations(
+                    session_id,
+                    self.project_root,
+                    chunk_tcs,
+                    permission_replies,
+                    message_permissions,
+                    pre_tool_outcomes,
+                )
+
                 is_parallel = chunk_kind == "parallel" and len(chunk_tcs) > 1
                 executions = await self.tool_executor.execute_tool_calls(
                     session_id, chunk_tcs, hooks=hooks, parallel=is_parallel
@@ -1943,6 +2164,8 @@ class SessionManager:
                     if result.get("forceStopTurn") is True:
                         force_stop = True
                         should_conclude_turn = True
+                        if (result.get("metadata") or {}).get("hookStop"):
+                            force_stop_reason = "hook"
 
                     result_meta = result.get("metadata") if isinstance(result, dict) else None
                     if isinstance(result_meta, dict) and result_meta.get("exitPlanMode"):
@@ -2030,7 +2253,7 @@ class SessionManager:
 
         return ToolDispatchResult(
             waiting=waiting,
-            stop_reason="tool_call_repeat" if force_stop else None,
+            stop_reason=force_stop_reason if force_stop else None,
         )
 
     async def _create_completion_with_retry(
@@ -2179,9 +2402,40 @@ class SessionManager:
         emit_stream: bool = True,
         session_id: str | None = None,
     ) -> dict[str, Any]:
+        from coderai.llm import prepare_oauth_request
+
+        await prepare_oauth_request(client, oauth=self.oauth_manager)
         on_chunk = self.on_stream_chunk if emit_stream else None
         on_thinking = self.on_thinking_chunk if emit_stream else None
-        is_cancelled = (lambda: self.is_interrupted(session_id)) if session_id else None
+        controller = self.session_controllers.get(session_id) if session_id else None
+        is_cancelled = (
+            (lambda: bool(controller and controller.is_set()) or self.is_interrupted(session_id))
+            if session_id
+            else None
+        )
+        if emit_stream and session_id:
+            from coderai.wire.types import TextPart, ThinkPart
+
+            emitter = self.get_event_emitter(session_id)
+            streamed = {"text": "", "thinking": ""}
+            self._streamed_content[session_id] = streamed
+
+            def publish_chunk(text: str, kind: type, key: str, callback: Any) -> None:
+                if is_cancelled and is_cancelled():
+                    return
+                before = emitter.event_count(kind)
+                if callback is not None:
+                    callback(text)
+                if emitter.event_count(kind) == before:
+                    emitter.send(kind(text=text))
+                streamed[key] += text
+
+            def on_chunk(text: str) -> None:
+                publish_chunk(text, TextPart, "text", self.on_stream_chunk)
+
+            def on_thinking(text: str) -> None:
+                publish_chunk(text, ThinkPart, "thinking", self.on_thinking_chunk)
+
         result = await asyncio.to_thread(
             _call_stream_or_sync,
             client,
@@ -2296,6 +2550,21 @@ class SessionManager:
         index["entries"] = [e for e in index.get("entries", []) if e.get("id") != target_id]
         if len(index["entries"]) == initial_len:
             return False
+
+        self._deleted_session_ids.add(target_id)
+        self.session_approval_store.clear(target_id)
+        self.approval_runtime.clear_session_grants(target_id)
+        # Stop processes while their owner entry still contains the PIDs.
+        self.cancel_owned_resources({target_id})
+        emitter = self._event_emitters.pop(target_id, None)
+        if emitter is not None:
+            emitter.close()
+        self._streamed_content.pop(target_id, None)
+        self._owned_session_ids.discard(target_id)
+        self._session_states.pop(target_id, None)
+        self._souls.pop(target_id, None)
+        if self._active_session_id == target_id:
+            self._active_session_id = None
 
         self._save_index(index)
         msg_file = self._messages_path(target_id)
@@ -2421,7 +2690,7 @@ class SessionManager:
             running = pending is not None and not pending.done()
         except Exception:
             running = False
-        if running:
+        if running and pending is not None:
             import asyncio as _asyncio
 
             if pending is not _asyncio.current_task():
@@ -2578,38 +2847,123 @@ class SessionManager:
         except Exception:
             pass
 
+    def _owned_root_session_ids(self) -> set[str]:
+        # Loading persisted state/logs for inspection does not claim ownership.
+        session_ids = set(self._owned_session_ids) | set(self.session_controllers)
+        if self._active_session_id:
+            session_ids.add(self._active_session_id)
+        return session_ids
+
+    def owned_agent_handles(self, root_session_ids: set[str] | None = None) -> list[Any]:
+        """Select children by session/agent ancestry before touching shared registries."""
+        registry = getattr(self, "agent_registry", None)
+        if registry is None:
+            return []
+        session_ids = (
+            set(root_session_ids)
+            if root_session_ids is not None
+            else self._owned_root_session_ids()
+        )
+        selected: dict[str, Any] = {}
+        pending = list(session_ids)
+        while pending:
+            for child in registry.list(parent_session_id=pending.pop()):
+                selected[child.id] = child
+                child_id = getattr(child, "run_session_id", None)
+                if child_id and child_id not in session_ids:
+                    session_ids.add(child_id)
+                    pending.append(child_id)
+        # Some continuable descendants use agent IDs rather than run-session IDs.
+        for child in list(selected.values()):
+            for descendant in registry.list_descendants(child.id):
+                selected[descendant.id] = descendant
+        return list(selected.values())
+
+    def owned_session_ids(self, root_session_ids: set[str] | None = None) -> set[str]:
+        sessions = (
+            set(root_session_ids)
+            if root_session_ids is not None
+            else self._owned_root_session_ids()
+        )
+        sessions.update(
+            h.run_session_id for h in self.owned_agent_handles(root_session_ids) if h.run_session_id
+        )
+        return sessions
+
+    def cancel_owned_resources(
+        self, root_session_ids: set[str] | None = None
+    ) -> list[asyncio.Task[Any]]:
+        """Cancel only this manager's resources; return tasks for async draining."""
+        handles = self.owned_agent_handles(root_session_ids)
+        sessions = self.owned_session_ids(root_session_ids)
+        tasks: list[asyncio.Task[Any]] = []
+        for session_id, controller in self.session_controllers.items():
+            if session_id in sessions:
+                controller.set()
+        try:
+            current_task = asyncio.current_task()
+        except RuntimeError:
+            current_task = None
+        for session_id, task in getattr(self, "_turn_tasks", {}).items():
+            if session_id in sessions and task is not current_task and not task.done():
+                task.cancel()
+                tasks.append(task)
+        for handle in handles:
+            task = handle.task
+            self.agent_registry.kill(handle.id)
+            if task is not None and not task.done():
+                tasks.append(task)
+            if task is None or task.done():
+                self.agent_registry.evict(handle.id)
+            else:
+                task.add_done_callback(lambda _done, aid=handle.id: self.agent_registry.evict(aid))
+        from coderai.teams.manager import get_team_manager
+
+        tasks.extend(get_team_manager().cancel_owned_teammates(sessions, self.project_root))
+        from coderai.spill import cleanup_spill_session
+
+        for session_id in sessions:
+            self.job_store.kill_all(session_id, reason="SessionManager closed")
+            cleanup_spill_session(session_id)
+            self.kill_live_processes(session_id)
+        self.close_owned_terminals(sessions)
+        return list(dict.fromkeys(tasks))
+
+    def close_event_streams(self) -> None:
+        """Release per-session replay and wake consumers when this runtime closes."""
+        self._events_closed = True
+        self.session_approval_store.clear()
+        self.approval_runtime.clear_session_grants()
+        for emitter in self._event_emitters.values():
+            emitter.close()
+        self._event_emitters.clear()
+        self._streamed_content.clear()
+        self.root_wire_hub.shutdown()
+
+    def close_owned_terminals(self, session_ids: set[str] | None = None) -> None:
+        """Release terminals for sessions used by this manager only."""
+        from coderai.terminal import manager as terminal_module
+
+        terminal_manager = terminal_module._default_terminal_manager
+        if terminal_manager is None:
+            return
+        for session_id in session_ids if session_ids is not None else self.owned_session_ids():
+            terminal_manager.close_owned(session_id, workspace_root=self.project_root)
+
     def dispose(self) -> None:
         """Best-effort sync dispose. Prefer ``close_session_manager`` from an async context."""
+        if getattr(self, "_disposed", False):
+            return
+        self._disposed = True
         try:
             unregister_session_manager(self)
         except Exception:
             pass
-        for event in self.session_controllers.values():
-            try:
-                event.set()
-            except Exception:
-                pass
         try:
-            self.kill_live_processes()
+            self.cancel_owned_resources()
         except Exception:
-            pass
-        try:
-            if hasattr(self, "job_store"):
-                self.job_store.kill_all(reason="SessionManager disposed")
-        except Exception:
-            pass
-        try:
-            from coderai.terminal.manager import get_terminal_manager
-
-            get_terminal_manager().close_all()
-        except Exception:
-            pass
-        try:
-            from coderai.sandbox import cleanup_seatbelt_profiles
-
-            cleanup_seatbelt_profiles()
-        except Exception:
-            pass
+            logger.warning("Failed to close owned session resources", exc_info=True)
+        self.close_event_streams()
         try:
             asyncio.get_running_loop()
         except RuntimeError:

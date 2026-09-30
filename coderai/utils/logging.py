@@ -1,5 +1,3 @@
-""""""
-
 from __future__ import annotations
 
 import contextlib
@@ -39,10 +37,6 @@ def log_openai_chat_completion_debug(entry: dict) -> None:
         _chmod_owner_only(path)
     except (OSError, TypeError, ValueError):
         pass
-
-
-# --- from coderai/core/common/error_logger.py ---
-""""""
 
 
 from coderai.share import get_share_dir

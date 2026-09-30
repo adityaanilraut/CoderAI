@@ -3,7 +3,7 @@
 This is the *typed* config layer: ``providers`` / ``models`` / ``services`` /
 ``loop_control`` / ``hooks`` validated with pydantic, loaded from
 ``~/.coderai/config.toml`` (JSON also accepted). It coexists with the legacy
-dict-based ``settings.py`` (``settings.json`` + ``CODERAI_*`` env) — migration
+dict-based ``coderai.config`` (``settings.json`` + ``CODERAI_*`` env) — migration
 copies legacy keys forward; ``TypedConfig`` is authoritative for the new
 provider/model vocabulary (``llm_types``).
 """

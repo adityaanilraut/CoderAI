@@ -42,7 +42,6 @@ from coderai.ui.shell.visualize._blocks import render_tool_card
 from coderai.ui.shell import render_welcome_screen
 from coderai.soul.approval import (
     PLAN_MODE_FORCE_ASK_SCOPES,
-    append_project_permission_allows,
 )
 from coderai.soul.session.manager import SessionManager, SessionMessage
 from coderai.skill import list_skills, load_skill
@@ -164,6 +163,7 @@ ALWAYS_ALLOWED_SCOPES = {
     "mutate-git-log",
     "network",
     "mcp",
+    "unknown",
 }
 
 _THINKING_EXPANDED: bool = False
@@ -270,12 +270,14 @@ def _prompt_permissions(
         # In Plan Mode, mutating scopes are strictly forced to prompt even with --yes
         is_forced_plan_scope = plan_mode and any(s in PLAN_MODE_FORCE_ASK_SCOPES for s in scopes)
 
-        if yes and not is_forced_plan_scope:
+        if yes and not is_forced_plan_scope and not req.get("requiresExplicitApproval"):
             replies.append({"toolCallId": tool_call_id, "permission": "allow"})
             continue
 
         always_target = next((s for s in scopes if s in ALWAYS_ALLOWED_SCOPES), None)
-        has_always = bool(always_target and not plan_mode)
+        has_always = bool(
+            always_target and not plan_mode and not req.get("requiresExplicitApproval")
+        )
 
         # Phase4: try ApprovalRequestPanel when TTY+Rich, else fallback (keeps tests green when isatty==False)
         use_panel = bool(console is not None and _RICH and sys.stdin.isatty())
@@ -338,7 +340,7 @@ def _prompt_permissions(
                     elif panel.get_selected_response() == "approve_for_session":
                         replies.append({"toolCallId": tool_call_id, "permission": "allow"})
                         if always_target:
-                            always_allows.append(always_target)
+                            replies[-1]["decision"] = "approve_for_session"
                     elif panel.get_selected_response() == "approve":
                         replies.append({"toolCallId": tool_call_id, "permission": "allow"})
                     else:
@@ -476,7 +478,7 @@ def _prompt_permissions(
                                         {"toolCallId": tool_call_id, "permission": "allow"}
                                     )
                                     if always_target:
-                                        always_allows.append(always_target)
+                                        replies[-1]["decision"] = "approve_for_session"
                                     break
                                 if key in ("n", "N"):
                                     # prompt_feedback=False -> no input(), safe inside Live.
@@ -572,7 +574,7 @@ def _prompt_permissions(
                     if has_always_panel and raw_choice in ("a", "always"):
                         replies.append({"toolCallId": tool_call_id, "permission": "allow"})
                         if always_target:
-                            always_allows.append(always_target)
+                            replies[-1]["decision"] = "approve_for_session"
                         break
                     if raw_choice in ("n", "no", "deny"):
                         _deny_with_optional_feedback(prompt_feedback=False)
@@ -669,7 +671,7 @@ def _prompt_permissions(
         # Granular [y/n/a] style prompt — numeric aliases 1/2/3 kept for compat
         options: list[tuple[str, str, str]] = [("allow", "y", "Yes (allow once)")]
         if has_always and always_target:
-            options.append(("always", "a", f"Yes, always allow {describe_scope(always_target)}"))
+            options.append(("always", "a", "Yes, approve this action for this session"))
             options.append(("deny", "n", "No (deny action)"))
             extra_keys = []
             if command:
@@ -726,7 +728,7 @@ def _prompt_permissions(
                 if digit_action == "always":
                     replies.append({"toolCallId": tool_call_id, "permission": "allow"})
                     if always_target:
-                        always_allows.append(always_target)
+                        replies[-1]["decision"] = "approve_for_session"
                     break
                 if digit_action == "deny":
                     replies.append({"toolCallId": tool_call_id, "permission": "deny"})
@@ -765,7 +767,7 @@ def _prompt_permissions(
 
             if has_always and always_target and raw_choice in ("a", "always"):
                 replies.append({"toolCallId": tool_call_id, "permission": "allow"})
-                always_allows.append(always_target)
+                replies[-1]["decision"] = "approve_for_session"
                 break
             elif raw_choice in ("n", "no", "deny"):
                 replies.append({"toolCallId": tool_call_id, "permission": "deny"})
@@ -1656,14 +1658,12 @@ async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes:
         if entry.status == "ask_permission":
             _STREAM_STATE.stop_spinner()
             _STREAM_STATE.ensure_newline()
-            replies, always = await asyncio.to_thread(
+            replies, _ = await asyncio.to_thread(
                 _prompt_permissions,
                 entry.ask_permissions or [],
                 auto,
                 plan_mode=bool(entry.plan_mode),
             )
-            if always:
-                append_project_permission_allows(mgr.project_root, always)
             _STREAM_STATE.reset()
             await mgr.reply_session(session_id, None, permission_replies=replies)
             continue
@@ -2598,9 +2598,7 @@ async def _run_once(
         if output_format == "stream-json":
             # Emit buffered wire events as JSON lines on stdout.
             try:
-                from coderai.wire.emitter import get_emitter
-
-                for envelope in await get_emitter().drain_to_stream_json():
+                for envelope in await mgr.get_event_emitter(session_id).drain_to_stream_json():
                     print(json.dumps(envelope, ensure_ascii=False), flush=True)
             except Exception:
                 pass

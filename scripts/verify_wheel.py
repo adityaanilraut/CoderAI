@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import email
 import json
 import os
@@ -12,6 +13,7 @@ import re
 import subprocess
 import tarfile
 import tempfile
+import tomllib
 import venv
 import zipfile
 
@@ -33,7 +35,6 @@ def _source_members(pattern: str) -> tuple[str, ...]:
 
 RUNTIME_MEMBERS = _source_members("*.py")
 BUNDLED_MEMBERS = (
-    "coderai/vendor/rg",
     *_source_members("SKILL.md"),
     *_source_members("references/*.md"),
     # Mirrors [tool.setuptools.package-data] in pyproject.toml: prompt,
@@ -84,20 +85,37 @@ def _verify_metadata(
         raise SystemExit(f"{label} distribution name is {name!r}, expected {DIST_NAME!r}")
     if expected_version is not None and version != expected_version:
         raise SystemExit(f"{label} version {version!r} does not match {expected_version!r}")
-    if message.get("Requires-Python") not in (">=3.10", ">=3.12"):
-        raise SystemExit(f"{label} must declare Requires-Python: >=3.10 or >=3.12")
+    if message.get("Requires-Python") != ">=3.12":
+        raise SystemExit(f"{label} must declare Requires-Python: >=3.12")
     return version
 
 
-def _verify_wheel_archive(wheel: Path, *, expected_version: str | None) -> str:
+def _verify_stamp(raw: bytes, expected_sha: str, *, label: str) -> str:
+    build_id = None
+    for node in ast.parse(raw.decode("utf-8")).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "BUILD_SHA" for target in node.targets
+        ):
+            build_id = ast.literal_eval(node.value)
+    if not isinstance(build_id, str) or build_id.rsplit("@", 1)[-1] != expected_sha:
+        raise SystemExit(f"{label} build identity {build_id!r} does not match {expected_sha!r}")
+    return build_id
+
+
+def _verify_wheel_archive(
+    wheel: Path, *, expected_version: str | None, expected_sha: str | None = None
+) -> str:
     with zipfile.ZipFile(wheel) as archive:
         members = set(archive.namelist())
         missing = sorted((set(RUNTIME_MEMBERS) | set(BUNDLED_MEMBERS)) - members)
         if missing:
             raise SystemExit("Wheel is missing runtime files: " + ", ".join(missing))
-        rg_mode = archive.getinfo("coderai/vendor/rg").external_attr >> 16
-        if os.name != "nt" and not rg_mode & 0o111:
-            raise SystemExit("Bundled coderai/vendor/rg is not executable in the wheel")
+        if any(name.startswith("coderai/vendor/rg") for name in members):
+            raise SystemExit("Universal wheel must not contain platform-specific rg assets")
+        if expected_sha is not None:
+            if "coderai/_build_info.py" not in members:
+                raise SystemExit("Wheel is missing build source identity")
+            _verify_stamp(archive.read("coderai/_build_info.py"), expected_sha, label="Wheel")
         metadata_names = [name for name in members if name.endswith(".dist-info/METADATA")]
         entry_names = [name for name in members if name.endswith(".dist-info/entry_points.txt")]
         if len(metadata_names) != 1 or len(entry_names) != 1:
@@ -114,7 +132,7 @@ def _verify_wheel_archive(wheel: Path, *, expected_version: str | None) -> str:
     return _verify_metadata(metadata, label="Wheel", expected_version=expected_version)
 
 
-def _verify_sdist(sdist: Path, *, wheel_version: str) -> None:
+def _verify_sdist(sdist: Path, *, wheel_version: str, expected_sha: str | None = None) -> None:
     with tarfile.open(sdist, mode="r:gz") as archive:
         members = {member.name for member in archive.getmembers()}
         roots = {name.split("/", 1)[0] for name in members}
@@ -127,12 +145,21 @@ def _verify_sdist(sdist: Path, *, wheel_version: str) -> None:
             "SECURITY.md",
             "MANIFEST.in",
             "pyproject.toml",
+            "scripts/verify_wheel.py",
+            "scripts/audit_dependencies.py",
+            "docs/security/dependency-audit-policy.json",
             *RUNTIME_MEMBERS,
             *BUNDLED_MEMBERS,
         }
         missing = sorted(f"{root}/{name}" for name in required if f"{root}/{name}" not in members)
         if missing:
             raise SystemExit("Sdist is missing release files: " + ", ".join(missing))
+        if expected_sha is not None:
+            stamp_name = f"{root}/coderai/_build_info.py"
+            stamp = archive.extractfile(stamp_name) if stamp_name in members else None
+            if stamp is None:
+                raise SystemExit("Sdist is missing build source identity")
+            _verify_stamp(stamp.read(), expected_sha, label="Sdist")
         pkg_info = archive.extractfile(f"{root}/PKG-INFO")
         if pkg_info is None:
             raise SystemExit("Sdist is missing PKG-INFO")
@@ -182,6 +209,11 @@ def _core_probe() -> str:
 import importlib.metadata
 import importlib.resources
 import sys
+from pathlib import Path
+import coderai
+
+assert Path(coderai.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()), coderai.__file__
+print("installed-package=" + str(Path(coderai.__file__).resolve()))
 
 from coderai._version import __version__
 from coderai.soul.session.manager import SessionManager
@@ -195,9 +227,39 @@ tools = get_tool_registry().to_openai_schemas()
 tool_names = {t['function']['name'] for t in tools}
 assert {'bash', 'read', 'write', 'edit', 'AskUserQuestion', 'UpdatePlan', 'WebSearch'} <= tool_names
 package_root = importlib.resources.files('coderai')
-assert package_root.joinpath('vendor/rg').is_file()
+assert not package_root.joinpath('vendor/rg').is_file()
 assert package_root.joinpath('skills/coderai-self-refer/SKILL.md').is_file()
 print('core-probe-ok')
+"""
+
+
+def _search_probe() -> str:
+    return """
+import os
+from pathlib import Path
+from coderai.tools.file.grep import handle_grep_tool
+from coderai.tools.file.glob import handle_glob_tool
+from coderai.tools.legacy.types import ToolExecutionContext
+from coderai.tools.file._search_common import resolve_rg_path
+
+Path('src').mkdir(exist_ok=True)
+Path('src/match.py').write_text('zero\\nwheel NEEDLE value\\nend\\n', encoding='utf-8')
+Path('src/other.txt').write_text('unrelated\\n', encoding='utf-8')
+ctx = ToolExecutionContext(session_id='wheel-search', project_root=str(Path.cwd()))
+auto_backend = 'ripgrep' if resolve_rg_path() else 'python'
+for backend in ('auto', 'python', 'auto_without_rg'):
+    os.environ['CODERAI_SEARCH_BACKEND'] = backend
+    if backend == 'auto_without_rg':
+        os.environ['PATH'] = ''
+        assert resolve_rg_path() is None
+    grep = handle_grep_tool({'pattern': 'needle', 'include': '*.py', 'ignore_case': True}, ctx)
+    assert grep.ok, grep
+    assert grep.metadata['matches'] == [{'path': 'src/match.py', 'lineNumber': 2, 'line': 'wheel NEEDLE value'}], grep
+    glob = handle_glob_tool({'pattern': '**/*.py'}, ctx)
+    assert glob.ok and glob.metadata['paths'] == ['src/match.py'], glob
+    empty = handle_grep_tool({'pattern': 'absent'}, ctx)
+    assert empty.ok and empty.metadata['count'] == 0, empty
+print('search-probe-ok;auto=' + auto_backend + ';forced=python;no-rg=python')
 """
 
 
@@ -207,6 +269,9 @@ def _verify_installed(
     expected_version: str,
     install_dependencies: bool,
     system_site_packages: bool,
+    expected_sha: str | None = None,
+    audit: bool = False,
+    audit_report: Path | None = None,
 ) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="coderai-wheel-smoke-") as temporary:
         root = Path(temporary)
@@ -221,7 +286,24 @@ def _verify_installed(
             system_site_packages=system_site_packages,
         ).create(environment)
         python = _venv_python(environment)
-        install = [os.fspath(python), "-m", "pip", "install", "--disable-pip-version-check"]
+        if audit:
+            dev = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())["project"][
+                "optional-dependencies"
+            ]["dev"]
+            audit_requirement = next(item for item in dev if item.startswith("pip-audit=="))
+            _run_checked(
+                [str(python), "-m", "pip", "install", audit_requirement],
+                cwd=empty_project,
+                env=os.environ.copy(),
+            )
+        install = [
+            os.fspath(python),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--force-reinstall",
+        ]
         if not install_dependencies:
             install.append("--no-deps")
         target = os.fspath(wheel)
@@ -232,6 +314,9 @@ def _verify_installed(
         child_environment["HOME"] = os.fspath(empty_home)
         child_environment["USERPROFILE"] = os.fspath(empty_home)
         child_environment.pop("PYTHONPATH", None)
+        child_environment.pop("CODERAI_BUILD_SHA", None)
+        child_environment.pop("CODERAI_SEARCH_BACKEND", None)
+        child_environment.pop("CODERAI_RG_PATH", None)
         child_environment["PYTHONNOUSERSITE"] = "1"
 
         executable = _venv_script(environment, "coderai")
@@ -248,12 +333,57 @@ def _verify_installed(
         )
         assert "core-probe-ok" in probe_res.stdout
 
-        return {"installation": "ok", "probe": "ok"}
+        search = _run_checked(
+            [os.fspath(python), "-I", "-c", _search_probe()],
+            cwd=empty_project,
+            env=child_environment,
+        )
+        build_identity = _run_checked(
+            [
+                os.fspath(python),
+                "-I",
+                "-c",
+                "from coderai.constant import get_build_sha; print(get_build_sha())",
+            ],
+            cwd=empty_project,
+            env=child_environment,
+        ).stdout.strip()
+        if expected_sha is not None and build_identity.rsplit("@", 1)[-1] != expected_sha:
+            raise SystemExit(
+                f"Installed build identity {build_identity!r} does not match {expected_sha!r}"
+            )
+        audit_evidence = None
+        if audit:
+            audit_output = (audit_report or root / "dependency-audit.json").resolve()
+            print("Installed-wheel core, CLI, search and source identity probes passed", flush=True)
+            _run_checked(
+                [
+                    str(python),
+                    str(REPO_ROOT / "scripts/audit_dependencies.py"),
+                    "--output",
+                    str(audit_output),
+                ],
+                cwd=empty_project,
+                env=child_environment,
+            )
+            audit_evidence = json.loads(audit_output.read_text())
+            _run_checked(
+                [str(python), "-m", "pip", "check"], cwd=empty_project, env=child_environment
+            )
+        return {
+            "dependency_audit": audit_evidence,
+            "installation": "ok",
+            "probe": "ok",
+            "search": search.stdout.strip(),
+            "build_identity": build_identity,
+            "installed_package": probe_res.stdout.strip().splitlines()[0],
+        }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("wheel", help="Wheel path, or directory containing one wheel and sdist")
+    parser.add_argument("--expected-sha", help="Require the exact full source SHA in all artifacts")
     parser.add_argument(
         "--expected-version",
         help="Require wheel, sdist, and installed runtime to use this exact version",
@@ -273,12 +403,26 @@ def main() -> int:
         action="store_true",
         help="Check wheel and adjacent sdist without creating an installation environment",
     )
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="Audit this exact installed dependency graph; block on findings/errors",
+    )
+    parser.add_argument(
+        "--audit-report",
+        type=Path,
+        help="Preserve resolved graph/audit evidence even when the audit blocks",
+    )
     args = parser.parse_args()
+    if args.audit and (args.no_deps or args.system_site_packages or args.archive_only):
+        parser.error("--audit requires a clean installation with dependencies")
 
     wheel, sdist = _resolve_archives(args.wheel)
-    wheel_version = _verify_wheel_archive(wheel, expected_version=args.expected_version)
+    wheel_version = _verify_wheel_archive(
+        wheel, expected_version=args.expected_version, expected_sha=args.expected_sha
+    )
     if sdist is not None:
-        _verify_sdist(sdist, wheel_version=wheel_version)
+        _verify_sdist(sdist, wheel_version=wheel_version, expected_sha=args.expected_sha)
     if args.archive_only:
         print(
             json.dumps(
@@ -287,6 +431,7 @@ def main() -> int:
                     "sdist": sdist.name if sdist else None,
                     "version": wheel_version,
                     "archive": "ok",
+                    "expected_sha": args.expected_sha,
                 },
                 indent=2,
                 sort_keys=True,
@@ -298,6 +443,9 @@ def main() -> int:
         expected_version=wheel_version,
         install_dependencies=not args.no_deps,
         system_site_packages=args.system_site_packages,
+        expected_sha=args.expected_sha,
+        audit=args.audit,
+        audit_report=args.audit_report,
     )
     print(
         json.dumps(

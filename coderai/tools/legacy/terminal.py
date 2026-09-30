@@ -15,6 +15,19 @@ DEFAULT_SEND_TIMEOUT_S = 30.0
 DEFAULT_READ_TIMEOUT_S = 2.0
 
 
+def _context_value(context: Any, name: str, default: Any = None) -> Any:
+    return (
+        context.get(name, default) if isinstance(context, dict) else getattr(context, name, default)
+    )
+
+
+def _terminal_scope(context: Any) -> dict[str, str]:
+    return {
+        "owner_session_id": str(_context_value(context, "session_id", "") or ""),
+        "workspace_root": str(_context_value(context, "project_root", ".") or "."),
+    }
+
+
 def handle_terminal_open_tool(args: dict[str, Any], context: Any) -> ToolResult:
     """Open a persistent interactive terminal session."""
     shell_type = as_str(args.get("type", "bash")).strip() or "bash"
@@ -30,6 +43,11 @@ def handle_terminal_open_tool(args: dict[str, Any], context: Any) -> ToolResult:
         isolated_cwd = context.get("isolated_cwd", isolated_cwd)
     if not isinstance(isolated_cwd, str) or not isolated_cwd.strip():
         isolated_cwd = None
+    scope = _terminal_scope(context)
+    if not scope["owner_session_id"]:
+        return ToolResult(
+            ok=False, name="terminal_open", error="Terminal owner session is required."
+        )
 
     if not cwd:
         cwd = project_root
@@ -54,6 +72,8 @@ def handle_terminal_open_tool(args: dict[str, Any], context: Any) -> ToolResult:
             cwd=cwd,
             sandbox_mode=sandbox_mode,
             workspace_root=str(project_root),
+            owner_session_id=scope["owner_session_id"],
+            execution_root=isolated_cwd,
         )
         # Give the shell a moment to emit initial prompt
         initial_output = term.read_available(timeout_s=0.2)
@@ -98,7 +118,7 @@ def handle_terminal_send_tool(args: dict[str, Any], context: Any) -> ToolResult:
         )
 
     mgr = get_terminal_manager()
-    term = mgr.get_session(session_id)
+    term = mgr.get_session(session_id, **_terminal_scope(context))
     if not term:
         return ToolResult(
             ok=False,
@@ -117,7 +137,7 @@ def handle_terminal_send_tool(args: dict[str, Any], context: Any) -> ToolResult:
         term.send(text, submit=submit)
 
         if run_in_background:
-            sess_id = str(getattr(context, "session_id", "default") or "default")
+            sess_id = _terminal_scope(context)["owner_session_id"]
             job_id = f"job_pty_{int(time.time() * 1000)}"
             store = get_job_store()
             try:
@@ -197,7 +217,7 @@ def handle_terminal_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
         )
 
     mgr = get_terminal_manager()
-    term = mgr.get_session(session_id)
+    term = mgr.get_session(session_id, **_terminal_scope(context))
     if not term:
         return ToolResult(
             ok=False,
@@ -233,7 +253,7 @@ def handle_terminal_signal_tool(args: dict[str, Any], context: Any) -> ToolResul
         )
 
     mgr = get_terminal_manager()
-    term = mgr.get_session(session_id)
+    term = mgr.get_session(session_id, **_terminal_scope(context))
     if not term:
         return ToolResult(
             ok=False,
@@ -275,7 +295,7 @@ def handle_terminal_close_tool(args: dict[str, Any], context: Any) -> ToolResult
         )
 
     mgr = get_terminal_manager()
-    closed = mgr.close_session(session_id)
+    closed = mgr.close_session(session_id, **_terminal_scope(context))
     if not closed:
         return ToolResult(
             ok=False,
@@ -293,7 +313,7 @@ def handle_terminal_close_tool(args: dict[str, Any], context: Any) -> ToolResult
 def handle_terminal_list_tool(args: dict[str, Any], context: Any) -> ToolResult:
     """List all open persistent terminal sessions."""
     mgr = get_terminal_manager()
-    sessions = mgr.list_sessions()
+    sessions = mgr.list_sessions(**_terminal_scope(context))
     out = [s.to_dict() for s in sessions]
     return ToolResult(
         ok=True,

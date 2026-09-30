@@ -1,4 +1,4 @@
-"""First-class grep tool backed by bundled ripgrep.
+"""First-class grep tool backed by ripgrep or portable Python search.
 
 Search surface (`output_mode`, context windows, `head_limit` /
 `offset` pagination, sensitive-file filtering) on top of CoderAI's `--json`
@@ -304,6 +304,30 @@ def parse_grep_matches(stdout: str) -> list[GrepMatch]:
     return matches
 
 
+# Common rg type aliases usable without native assets. Unknown aliases must not
+# silently widen the search; callers can use include globs for other languages.
+_PYTHON_TYPE_GLOBS = {
+    "py": "*.{py,pyi}",
+    "js": "*.{js,jsx,mjs,cjs}",
+    "ts": "*.{ts,tsx,mts,cts}",
+    "rust": "*.rs",
+    "go": "*.go",
+    "java": "*.java",
+    "c": "*.{c,h}",
+    "cpp": "*.{cpp,cc,cxx,h,hpp,hxx}",
+    "json": "*.json",
+    "md": "*.{md,markdown}",
+    "yaml": "*.{yaml,yml}",
+    "toml": "*.toml",
+    "html": "*.{html,htm}",
+    "css": "*.css",
+    "sh": "*.{sh,bash,zsh}",
+    "txt": "*.txt",
+    "xml": "*.xml",
+    "sql": "*.sql",
+}
+
+
 def _python_grep(
     pattern: str,
     workdir: str,
@@ -314,9 +338,20 @@ def _python_grep(
     ignore_case: bool = False,
     before_context: int = 0,
     after_context: int = 0,
+    file_type: str | None = None,
+    multiline: bool = False,
 ) -> list[GrepMatch]:
+    type_glob = _PYTHON_TYPE_GLOBS.get(file_type) if file_type else None
+    if file_type and type_glob is None:
+        raise SearchError(
+            f"Python search does not support type {file_type!r}; use include or install ripgrep",
+            "SEARCH_UNSUPPORTED_OPTION",
+        )
     try:
-        regex = re.compile(pattern, re.IGNORECASE if ignore_case else 0)
+        flags = re.IGNORECASE if ignore_case else 0
+        if multiline:
+            flags |= re.MULTILINE
+        regex = re.compile(pattern, flags)
     except re.error as exc:
         raise SearchError(f"grep pattern rejected: {exc}", "SEARCH_INVALID_PATTERN") from exc
     target = pathlib.Path(search_path or workdir)
@@ -339,6 +374,8 @@ def _python_grep(
         rel = to_workdir_relative(str(path), workdir).replace("\\", "/")
         if include is not None and not _matches_glob(rel, include):
             continue
+        if type_glob is not None and not _matches_glob(rel, type_glob):
+            continue
         try:
             info = path.stat()
             if info.st_size > 2 * 1024 * 1024:
@@ -351,7 +388,15 @@ def _python_grep(
         if "\0" in text[:4096]:
             continue
         lines = text.splitlines()
-        hits = [bool(regex.search(line)) for line in lines]
+        if multiline:
+            hits = [False] * len(lines)
+            for match in regex.finditer(text):
+                start_line = text.count("\n", 0, match.start())
+                end_line = text.count("\n", 0, max(match.start(), match.end() - 1))
+                for line_index in range(start_line, min(end_line + 1, len(lines))):
+                    hits[line_index] = True
+        else:
+            hits = [bool(regex.search(line)) for line in lines]
         if not any(hits):
             continue
         wanted = [False] * len(lines)
@@ -549,36 +594,54 @@ def handle_grep_tool(args: dict[str, Any], context: ToolExecutionContext | Any) 
                 ignore_case=parsed["ignore_case"],
                 before_context=before_context,
                 after_context=after_context,
+                file_type=parsed.get("file_type"),
+                multiline=parsed["multiline"],
             )
         else:
-            run = run_ripgrep(
-                build_grep_command(
+            try:
+                run = run_ripgrep(
+                    build_grep_command(
+                        pattern,
+                        path,
+                        include,
+                        ignore_case=parsed["ignore_case"],
+                        file_type=parsed.get("file_type"),
+                        multiline=parsed["multiline"],
+                        include_ignored=parsed["include_ignored"],
+                        before_context=parsed.get("before_context"),
+                        after_context=parsed.get("after_context"),
+                        context=parsed.get("context"),
+                    ),
+                    workdir,
+                    tool_name="grep",
+                )
+                if run.no_matches:
+                    matches = []
+                else:
+                    matches = [
+                        GrepMatch(
+                            path=to_workdir_relative(raw.path, run.workdir),
+                            line_number=raw.line_number,
+                            line=raw.line,
+                            is_context=raw.is_context,
+                        )
+                        for raw in parse_grep_matches(run.stdout)
+                    ]
+            except SearchError as err:
+                if err.code != "SEARCH_UNAVAILABLE":
+                    raise
+                matches = _python_grep(
                     pattern,
+                    workdir,
                     path,
                     include,
+                    SEARCH_TIMEOUT_MS,
                     ignore_case=parsed["ignore_case"],
+                    before_context=before_context,
+                    after_context=after_context,
                     file_type=parsed.get("file_type"),
                     multiline=parsed["multiline"],
-                    include_ignored=parsed["include_ignored"],
-                    before_context=parsed.get("before_context"),
-                    after_context=parsed.get("after_context"),
-                    context=parsed.get("context"),
-                ),
-                workdir,
-                tool_name="grep",
-            )
-            if run.no_matches:
-                matches = []
-            else:
-                matches = [
-                    GrepMatch(
-                        path=to_workdir_relative(raw.path, run.workdir),
-                        line_number=raw.line_number,
-                        line=raw.line,
-                        is_context=raw.is_context,
-                    )
-                    for raw in parse_grep_matches(run.stdout)
-                ]
+                )
     except SearchError as err:
         return _search_error_result("grep", err)
 

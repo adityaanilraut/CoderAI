@@ -28,7 +28,10 @@
 ## Overview
 <a id="key-features"></a>
 
-**CoderAI** is an autonomous terminal AI software engineering platform, agentic execution engine, and multi-agent swarm designed for high reliability, deterministic tool execution, token efficiency, and developer velocity. It couples a headless core engine (`coderai.core`), a rich interactive terminal interface (`coderai.cli`), and a hybrid **Kahneman System 1 (Jev / TypeSafe) + System 2 (CoderAI Deep Review)** compound reasoning harness for ultra-fast, high-precision code review.
+**CoderAI** is an autonomous terminal AI software engineering platform, agentic execution engine, and multi-agent swarm designed for high reliability, deterministic tool execution, token efficiency, and developer velocity. It couples a session runtime (`coderai.soul.session.manager`), a terminal interface (`coderai.ui.shell`), and a hybrid **Kahneman System 1 (Jev / TypeSafe) + System 2 (CoderAI Deep Review)** compound reasoning harness for ultra-fast, high-precision code review.
+
+See [Runtime architecture](docs/architecture.md) for execution boundaries and
+[Verification](docs/verification.md) for the shared checks and release gates.
 
 - 🎯 **Snippet-Anchored Editing**: Precise, hash-anchored edits with real-time staleness detection to eliminate hallucinated overwrites.
 - 🔄 **Bounded Agent Loop**: Deterministic turn execution with loop guards, repeat reminders, and token compaction.
@@ -97,7 +100,7 @@ cai --version
 ### Install with Development Dependencies
 
 ```bash
-pip install -e ".[dev]"
+.venv/bin/python -m pip install -e ".[dev,jev]" -e sdks/coderai-sdk
 ```
 
 ---
@@ -255,8 +258,8 @@ CoderAI supports dynamic discovery of specialized markdown agent specifications 
 | Role / Spec | Type | Mode | Description |
 |---|---|---|---|
 | `default` | Bundled | Primary | Full software engineering tool suite. |
-| `okabe` | Bundled | Extended | Experimental persona with advanced toolsets. |
-| `architect` | Discovered | General | Systems architect designing components, interfaces, and boundary layers. |
+| `okabe` | Bundled | Extended | Meticulous senior engineer with a focused tool set; inherits bundled subagents. |
+| `architect` | Discovered | Read-Only | Systems architect designing components, interfaces, and boundary layers. |
 | `build-error-resolver` | Discovered | General | Pinpoints root causes of compiler, build, and typecheck errors. |
 | `code-reviewer` | Discovered | Read-Only | Read-only security, correctness, and architecture review. |
 | `planner` | Discovered | Read-Only | Generates actionable implementation plans with phased milestones. |
@@ -447,17 +450,22 @@ make lint
 # Run type checks
 make typecheck
 
-# Run test suite
+# Run main, offline SDK and wire suites (one process per file)
 make test
 
+# Full local/CI verification, including the resolved dependency audit
+make check
+
 # Run offline engine self-check
-python scripts/self_check.py
+.venv/bin/python scripts/self_check.py
 
 # Clean build artifacts
 make clean
 ```
 
 ---
+
+Development commands use `.venv/bin/python` by default. See [the verification contract](docs/verification.md) for check scopes, required Jev/SDK coverage, tool pins and audit policy.
 
 ## Acknowledgements
 

@@ -236,7 +236,6 @@ def completion_entries() -> list[tuple[str, str]]:
     return entries
 
 
-# --- from coderai/cli/help.py ---
 """Clean, modern, and simple slash-command help system for CoderAI CLI."""
 
 
@@ -1022,7 +1021,7 @@ def _render_contextual_help(cmd_name: str, console: Any | None) -> None:
                 body.strip(),
                 title=f"[bold cyan]CoderAI Help:[/] [bold yellow]/{display_key}[/]",
                 border_style="cyan",
-                padding=(1, 2),
+                padding=(0, 1),
             )
             console.print()
             console.print(panel)
@@ -1053,38 +1052,50 @@ def _render_contextual_help(cmd_name: str, console: Any | None) -> None:
             _render_plain_overview()
 
 
+def _help_command_column_width(term_cols: int = 80, *, cap: bool = True) -> int:
+    """Width of the command column, wide enough for the longest entry.
+
+    A hardcoded 30/34-column pad clipped long commands on narrow terminals
+    and left a ragged description column. Plain text keeps the full width so
+    every description starts in the same column; the rich view caps it so the
+    description column still fits.
+    """
+    longest = 0
+    for _, commands in HELP_GROUPS:
+        for cmd, arg, _desc in commands:
+            label = f"{cmd} {arg}".strip() if arg else cmd
+            longest = max(longest, len(label))
+    longest = max(longest, 1)
+    if not cap:
+        return longest
+    return max(18, min(longest, max(18, term_cols // 2)))
+
+
 def _render_rich_overview(console: Any) -> None:
     """Render clean, simple, and modern grouped cheatsheet using borderless grid."""
-    import os as _os
     import shutil as _shutil
-    import sys as _sys
 
-    # No ANSI on pipes / NO_COLOR: use the plain-text overview instead.
-    if _os.getenv("NO_COLOR") is not None or not _sys.stdout.isatty():
-        _render_plain_overview()
-        return
-    console.print()
-    console.print("[bold cyan]CoderAI[/] [dim]• Interactive Slash Commands[/]")
-    console.print()
-
+    width = getattr(console, "width", None) or 80
     try:
-        term_cols = _shutil.get_terminal_size(fallback=(80, 24)).columns
+        if not width or width < 20:
+            width = _shutil.get_terminal_size(fallback=(80, 24)).columns
     except Exception:
-        term_cols = 80
-    # Scale the command column to the terminal instead of a fixed 34 cols,
-    # which overflowed narrow terminals and wasted wide ones.
-    cmd_width = max(16, min(34, max(20, term_cols // 2 - 4)))
+        width = 80
+    cmd_width = _help_command_column_width(width)
+
+    console.print()
+    console.print("[bold cyan]CoderAI[/] [dim]· Interactive Slash Commands[/]")
+    console.print()
 
     for group_name, commands in HELP_GROUPS:
-        console.print(f"[bold cyan]  {group_name}[/]")
-        grid = Table.grid(padding=(0, 2))
-        grid.add_column("Command", style="bold green", width=cmd_width, overflow="fold")
-        grid.add_column("Description", style="white", overflow="fold")
+        console.print(f"[bold cyan]{group_name}[/]")
+        grid = Table.grid(padding=(0, 2), expand=True)
+        grid.add_column(width=2, no_wrap=True)
+        grid.add_column(style="bold green", width=cmd_width, overflow="ellipsis", no_wrap=True)
+        grid.add_column(style="white", overflow="fold", ratio=1)
 
         for cmd, arg, desc in commands:
             cmd_text = Text()
-            cmd_text.append("    ")
-            # Split comma separated aliases
             parts = [p.strip() for p in cmd.split(",")]
             primary = parts[0]
             cmd_text.append(primary, style="bold green")
@@ -1093,35 +1104,33 @@ def _render_rich_overview(console: Any) -> None:
             if arg:
                 cmd_text.append(f" {arg}", style="dim yellow")
 
-            grid.add_row(cmd_text, desc)
+            grid.add_row("", cmd_text, desc)
 
         console.print(grid)
         console.print()
 
     console.print(
-        "[dim]  Shortcuts: [bold cyan]Tab[/] complete • [bold cyan]Ctrl-R[/] history search • [bold cyan]Ctrl-C[/] interrupt • [bold cyan]Ctrl-D[/] exit • [bold cyan]@file.py[:10-30][/] file context[/]"
+        "[dim]Shortcuts: [bold cyan]Tab[/] complete · [bold cyan]Ctrl-R[/] history search · [bold cyan]Ctrl-C[/] interrupt · [bold cyan]Ctrl-D[/] exit · [bold cyan]@file.py[:10-30][/] file context[/]"
     )
     console.print(
-        "[dim]  Type [bold cyan]/help <command>[/] for detailed syntax and examples (e.g. [bold cyan]/help goal[/], [bold cyan]/help plan[/]).[/]\n"
+        "[dim]Type [bold cyan]/help <command>[/] for detailed syntax and examples (e.g. [bold cyan]/help goal[/], [bold cyan]/help plan[/]).[/]\n"
     )
 
 
 def _render_plain_overview() -> None:
     """Render clean plain-text overview fallback."""
+    cmd_width = _help_command_column_width(80, cap=False)
     print("\n--- CoderAI Slash Commands ---")
     for group_name, commands in HELP_GROUPS:
         print(f"\n{group_name}:")
         for cmd, arg, desc in commands:
             full_cmd = f"{cmd} {arg}".strip() if arg else cmd
-            print(f"  {full_cmd:<30} {desc}")
+            print(f"  {full_cmd:<{cmd_width}}  {desc}")
 
     print(
-        "\nShortcuts: Tab complete | Ctrl-R history search | Ctrl-C interrupt | Ctrl-D exit | @file context"
+        "\nShortcuts: Tab complete · Ctrl-R history search · Ctrl-C interrupt · Ctrl-D exit · @file context"
     )
     print("Type /help <command> for detailed syntax and examples (e.g. /help goal, /help plan).\n")
-
-
-# --- from coderai/cli/info_cmds.py (slash half) ---
 
 
 import os

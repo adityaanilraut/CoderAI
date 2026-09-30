@@ -155,6 +155,12 @@ class ActorChannel:
     def get_mailbox(self, agent_id: str) -> AsyncMailbox | None:
         return self._mailboxes.get(agent_id)
 
+    def unregister_mailbox(self, agent_id: str) -> None:
+        mailbox = self._mailboxes.pop(agent_id, None)
+        if mailbox is not None:
+            for topic in list(self._topics):
+                self.unsubscribe(topic, mailbox)
+
     def subscribe(self, topic: str, mailbox: AsyncMailbox) -> None:
         subscribers = self._topics.setdefault(topic, set())
         subscribers.add(mailbox)

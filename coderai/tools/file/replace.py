@@ -835,7 +835,6 @@ def _infer_old_string_not_found_reason_with_llm(
         return None
 
 
-# --- from coderai/core/tools/str_replace_editor.py ---
 """str_replace_editor tool — Anthropic-style custom file editor (view, create, str_replace, insert, undo_edit)."""
 
 

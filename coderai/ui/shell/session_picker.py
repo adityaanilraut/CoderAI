@@ -6,10 +6,12 @@ import os
 import sys
 from typing import Any
 
+from rich.console import Group
 from rich.live import Live
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from coderai.utils.common.model_capabilities import (
     CURATED_MODELS,
@@ -18,7 +20,7 @@ from coderai.utils.common.model_capabilities import (
 )
 from coderai.soul.session.manager import SessionEntry, SessionManager, SessionMessage
 from coderai.skill import list_skills
-from coderai.ui.shell.console import PANEL_BORDER_STYLE
+from coderai.ui.shell.console import PANEL_BORDER_STYLE, PANEL_PADDING, kv_table
 
 _RICH = True
 
@@ -246,7 +248,7 @@ def select_with_arrows(
                 "\n".join(body_lines),
                 title=f"[bold cyan]{title}[/]",
                 border_style=PANEL_BORDER_STYLE,
-                padding=(0, 1),
+                padding=PANEL_PADDING,
             )
             console.print(panel)
         try:
@@ -284,50 +286,62 @@ def select_with_arrows(
         else:
             filtered_indices = list(range(len(items)))
 
-        body_lines = []
+        # Marker and number live in fixed columns so a wrapped description
+        # stays under the title instead of sliding the next row's gutter.
+        grid = Table.grid(expand=True, padding=(0, 1))
+        grid.add_column(width=2, no_wrap=True)
+        grid.add_column(width=4, justify="right", no_wrap=True)
+        grid.add_column(ratio=1, overflow="fold")
+
+        header: list[Any] = []
         if cur_query:
             # UI-A3: typed filter text is untrusted; never render as markup.
-            body_lines.append(f"[dim cyan]Filter:[/] [bold yellow]{escape(cur_query)}[/]\n")
+            header.append(
+                Text.from_markup(f"[dim cyan]Filter:[/] [bold yellow]{escape(cur_query)}[/]")
+            )
+            header.append(Text(""))
 
         for disp_num, item_idx in enumerate(filtered_indices, 1):
-            key_name, disp_title, desc = items[item_idx]
+            _key_name, disp_title, desc = items[item_idx]
             is_sel = item_idx == cur_sel
-            prefix = "[bold cyan]❯[/]" if is_sel else " "
-            num_tag = f"[bold cyan]{disp_num:2}.[/]" if is_sel else f"[dim]{disp_num:2}.[/]"
+            marker = "[bold cyan]❯[/]" if is_sel else " "
+            num_tag = f"[bold cyan]{disp_num}.[/]" if is_sel else f"[dim]{disp_num}.[/]"
             title_text = f"[bold cyan]{disp_title}[/]" if is_sel else f"[white]{disp_title}[/]"
             # UI-A3: item descriptions (session summaries, role docs, prompt
             # snippets) are untrusted; callers must escape data merged into
             # titles at construction.
             desc_text = f" [dim]— {escape(desc)}[/]" if desc else ""
-            body_lines.append(f"  {prefix} {num_tag} {title_text}{desc_text}")
+            grid.add_row(marker, num_tag, f"{title_text}{desc_text}")
 
         if allow_custom:
             custom_num = len(filtered_indices) + 1
             is_sel_custom = cur_sel == len(items)
-            prefix = "[bold cyan]❯[/]" if is_sel_custom else " "
-            num_tag = (
-                f"[bold cyan]{custom_num:2}.[/]" if is_sel_custom else f"[dim]{custom_num:2}.[/]"
-            )
+            marker = "[bold cyan]❯[/]" if is_sel_custom else " "
+            num_tag = f"[bold cyan]{custom_num}.[/]" if is_sel_custom else f"[dim]{custom_num}.[/]"
             title_style = (
                 "[bold cyan]Other / Custom (type custom value)[/]"
                 if is_sel_custom
                 else "[dim italic]Other / Custom (type custom value)[/]"
             )
-            body_lines.append(f"  {prefix} {num_tag} {title_style}")
+            grid.add_row(marker, num_tag, title_style)
 
         if cur_query:
-            footer = f"[dim]↑/↓ or 1-9: navigate • Enter: select • Esc: clear filter ({len(filtered_indices)} matches) • Backspace: delete[/]"
+            footer = (
+                "[dim]↑/↓ or 1-9: navigate · Enter: select · "
+                f"Esc: clear filter ({len(filtered_indices)} matches) · Backspace: delete[/]"
+            )
         else:
-            footer = "[dim]↑/↓ or 1-9: navigate • Type to search • Enter: select • Esc/q: cancel[/]"
+            footer = "[dim]↑/↓ or 1-9: navigate · Type to search · Enter: select · Esc/q: cancel[/]"
 
+        body = Group(*header, grid, Text(""), Text.from_markup(footer))
         if Panel is not None:
             return Panel(
-                "\n".join(body_lines) + f"\n\n{footer}",
+                body,
                 title=f"[bold cyan]{title}[/]",
                 border_style=PANEL_BORDER_STYLE,
-                padding=(0, 1),
+                padding=PANEL_PADDING,
             )
-        return "\n".join(body_lines) + f"\n\n{footer}"
+        return body
 
     def _get_filtered(cur_query: str) -> list[int]:
         if cur_query:
@@ -692,7 +706,11 @@ def select_agent_role_interactive(
     # Bundled roles
     roles: list[tuple[str, str, str]] = [
         ("default", "default (Primary)", "Full software engineering tool suite"),
-        ("okabe", "okabe (Extended)", "Experimental mad-scientist persona with advanced toolsets"),
+        (
+            "okabe",
+            "okabe (Extended)",
+            "Meticulous senior engineer with a focused tool set; inherits bundled subagents",
+        ),
     ]
     # Discovered roles from .coderai/agents/*.md
     for d in discovered:
@@ -824,13 +842,13 @@ def select_session_interactive(console: Any | None, sessions: list[SessionEntry]
         title = f"Saved Sessions — Page {current_page + 1}/{total_pages} (Total: {total_sessions}){filter_tag}"
 
         if console is not None and _RICH and Table is not None:
-            table = Table(title=title, border_style=PANEL_BORDER_STYLE)
-            table.add_column("#", style="bold cyan", no_wrap=True)
-            table.add_column("Session ID", style="bold white", no_wrap=True)
+            table = Table(title=title, border_style=PANEL_BORDER_STYLE, expand=True)
+            table.add_column("#", style="bold cyan", justify="right", no_wrap=True, width=4)
+            table.add_column("Session ID", style="bold white", no_wrap=True, overflow="ellipsis")
             table.add_column("Status", style="yellow", no_wrap=True)
-            table.add_column("Plan", style="magenta", no_wrap=True)
-            table.add_column("Tokens", style="green", no_wrap=True)
-            table.add_column("Summary", style="white", overflow="fold")
+            table.add_column("Plan", style="magenta", justify="center", no_wrap=True, width=4)
+            table.add_column("Tokens", style="green", justify="right", no_wrap=True)
+            table.add_column("Summary", style="white", overflow="fold", ratio=2)
 
             for page_rel_idx, s in enumerate(page_items, 1):
                 abs_idx = start_idx + page_rel_idx
@@ -848,9 +866,9 @@ def select_session_interactive(console: Any | None, sessions: list[SessionEntry]
                 nav_hints.append("[bold cyan]n[/] next page")
             if current_page > 0:
                 nav_hints.append("[bold cyan]p[/] prev page")
-            nav_str = (" • " + " • ".join(nav_hints)) if nav_hints else ""
+            nav_str = (" · " + " · ".join(nav_hints)) if nav_hints else ""
             console.print(
-                f"[dim]Actions: [bold cyan]<num>[/] resume • [bold red]d <num>[/] delete • [bold yellow]f <num>[/] fork • [bold blue]s <query>[/] search{nav_str} • [bold]Enter[/] cancel[/]"
+                f"[dim]Actions: [bold cyan]<num>[/] resume · [bold red]d <num>[/] delete · [bold yellow]f <num>[/] fork · [bold blue]s <query>[/] search{nav_str} · [bold]Enter[/] cancel[/]"
             )
         else:
             print(f"\n--- {title} ---")
@@ -1046,10 +1064,16 @@ def render_skills_interactive(console: Any | None, project_root: str) -> None:
         return
 
     if console is not None and _RICH and Table is not None:
-        table = Table(title=f"Discovered Skills ({len(skills)})", border_style="yellow")
-        table.add_column("Skill Name", style="bold cyan", width=24)
-        table.add_column("Description", style="white")
-        table.add_column("Location", style="dim", width=36)
+        table = Table(
+            title=f"Discovered Skills ({len(skills)})",
+            border_style=PANEL_BORDER_STYLE,
+            expand=True,
+        )
+        table.add_column(
+            "Skill Name", style="bold cyan", ratio=2, overflow="ellipsis", no_wrap=True
+        )
+        table.add_column("Description", style="white", ratio=3, overflow="fold")
+        table.add_column("Location", style="dim", ratio=2, overflow="ellipsis", no_wrap=True)
 
         for sk in skills:
             table.add_row(
@@ -1195,12 +1219,12 @@ def render_mcp_interactive(console: Any | None, mgr: SessionManager) -> None:
 
     if console is not None and _RICH and Table is not None:
         # Server status table
-        table = Table(title="Connected MCP Servers", border_style="green")
-        table.add_column("Server", style="bold cyan", width=18)
-        table.add_column("Status", style="bold green", width=12)
-        table.add_column("Tools", style="white", width=8)
-        table.add_column("Prompts", style="dim", width=8)
-        table.add_column("Resources", style="dim", width=10)
+        table = Table(title="Connected MCP Servers", border_style=PANEL_BORDER_STYLE, expand=True)
+        table.add_column("Server", style="bold cyan", ratio=3, overflow="ellipsis", no_wrap=True)
+        table.add_column("Status", ratio=2, overflow="ellipsis", no_wrap=True)
+        table.add_column("Tools", justify="right", width=7, no_wrap=True)
+        table.add_column("Prompts", justify="right", width=8, no_wrap=True)
+        table.add_column("Resources", justify="right", width=10, no_wrap=True)
 
         for s in statuses:
             status_style = "bold green" if s.status == "ready" else "bold red"
@@ -1252,40 +1276,44 @@ def render_config_interactive(console: Any | None, project_root: str) -> None:
     proj_path = get_project_settings_path(project_root)
 
     if console is not None and _RICH and Panel is not None and Table is not None:
-        table = Table.grid(padding=(0, 2))
-        table.add_column("Key", style="dim cyan", width=22)
-        table.add_column("Value", style="bold white")
-
-        table.add_row("Active Model:", str(settings.get("model", "default")))
-        table.add_row("Base URL:", str(settings.get("baseURL", "default")))
         api_k = settings.get("apiKey")
-        table.add_row(
-            "API Key:", f"[bold green]{mask_api_key(api_k)}[/]" if api_k else "[dim red]Not set[/]"
-        )
         perms = settings.get("permissions") or {}
-        table.add_row("Permission Mode:", str(perms.get("defaultMode", "askAll")))
-        table.add_row("Reasoning Effort:", str(settings.get("reasoningEffort", "max")))
-        table.add_row("Context Window:", f"{settings.get('contextWindow', 262144):,} tokens")
-        table.add_row(
-            "Auto-Compact Window:", f"{settings.get('autoCompactWindow', 131072):,} tokens"
-        )
-
         allows = perms.get("allow") or []
         allows_str = ", ".join(allows) if allows else "none"
-        table.add_row("Allowed Scopes:", f"[bold green]{allows_str}[/]")
-
         mcp_servers = (
             list(settings.get("mcpServers", {}).keys()) if settings.get("mcpServers") else []
         )
-        table.add_row("Configured MCP Servers:", ", ".join(mcp_servers) if mcp_servers else "none")
-        table.add_row("User Config File:", f"[dim]{user_path}[/]")
-        table.add_row("Project Config File:", f"[dim]{proj_path}[/]")
+        table = kv_table(
+            [
+                ("Active Model:", str(settings.get("model", "default"))),
+                ("Base URL:", str(settings.get("baseURL", "default"))),
+                (
+                    "API Key:",
+                    f"[bold green]{mask_api_key(api_k)}[/]" if api_k else "[dim red]Not set[/]",
+                ),
+                ("Permission Mode:", str(perms.get("defaultMode", "askAll"))),
+                ("Reasoning Effort:", str(settings.get("reasoningEffort", "max"))),
+                ("Context Window:", f"{settings.get('contextWindow', 262144):,} tokens"),
+                ("Auto-Compact Window:", f"{settings.get('autoCompactWindow', 131072):,} tokens"),
+                ("Allowed Scopes:", f"[bold green]{allows_str}[/]"),
+                (
+                    "Configured MCP Servers:",
+                    ", ".join(mcp_servers) if mcp_servers else "none",
+                ),
+                ("User Config File:", f"[dim]{user_path}[/]"),
+                ("Project Config File:", f"[dim]{proj_path}[/]"),
+            ]
+        )
 
         panel = Panel(
-            table,
-            title="[bold cyan]CoderAI Active Configuration[/] [dim]• Tip: Run [bold yellow]/setup[/bold yellow] to change keys/models[/dim]",
-            border_style="cyan",
-            padding=(0, 1),
+            Group(
+                table,
+                Text(""),
+                Text("Tip: run /setup to change keys and models.", style="dim"),
+            ),
+            title="[bold cyan]CoderAI Active Configuration[/]",
+            border_style=PANEL_BORDER_STYLE,
+            padding=PANEL_PADDING,
         )
         console.print()
         console.print(panel)
@@ -1375,39 +1403,39 @@ def render_token_breakdown(
     pct_used = (active_tokens / max_context) * 100 if max_context > 0 else 0.0
 
     if console is not None and _RICH and Panel is not None and Table is not None:
-        table = Table.grid(padding=(0, 2))
-        table.add_column("Metric", style="dim cyan", width=22)
-        table.add_column("Tokens / Value", style="bold white")
-
-        table.add_row("Active Model:", f"[bold cyan]{active_model}[/]")
-        table.add_row("Prompt Tokens:", f"{prompt_tokens:,}")
-        table.add_row("Completion Tokens:", f"{completion_tokens:,}")
+        token_rows: list[tuple[str, str]] = [
+            ("Active Model:", f"[bold cyan]{active_model}[/]"),
+            ("Prompt Tokens:", f"{prompt_tokens:,}"),
+            ("Completion Tokens:", f"{completion_tokens:,}"),
+        ]
         if cached_tokens > 0:
             hit_rate = (cached_tokens / prompt_tokens * 100.0) if prompt_tokens > 0 else 0.0
-            table.add_row("Cached Tokens:", f"[green]{cached_tokens:,}[/]")
-            table.add_row("Cache Hit Rate:", f"[bold green]{hit_rate:.1f}%[/]")
-        table.add_row("Total Session Tokens:", f"[bold cyan]{total_tokens:,}[/]")
-        table.add_row(
-            "Active Working Context:",
-            f"[bold green]{active_tokens:,}[/] / {max_context:,} ({pct_used:.1f}%)",
+            token_rows.append(("Cached Tokens:", f"[green]{cached_tokens:,}[/]"))
+            token_rows.append(("Cache Hit Rate:", f"[bold green]{hit_rate:.1f}%[/]"))
+        token_rows.append(("Total Session Tokens:", f"[bold cyan]{total_tokens:,}[/]"))
+        token_rows.append(
+            (
+                "Active Working Context:",
+                f"[bold green]{active_tokens:,}[/] / {max_context:,} ({pct_used:.1f}%)",
+            )
         )
-        table.add_row("Estimated Session Cost:", f"[bold green]${total_cost:.4f} USD[/]")
+        token_rows.append(("Estimated Session Cost:", f"[bold green]${total_cost:.4f} USD[/]"))
 
         if entry.usage_per_model:
-            table.add_row("Usage by Model:", "")
+            token_rows.append(("Usage by Model:", ""))
             for model_name, m_usage in entry.usage_per_model.items():
                 m_total = m_usage.get("total_tokens", 0) if isinstance(m_usage, dict) else 0
                 m_prompt = m_usage.get("prompt_tokens", 0) if isinstance(m_usage, dict) else 0
                 m_comp = m_usage.get("completion_tokens", 0) if isinstance(m_usage, dict) else 0
                 m_cached = m_usage.get("cached_tokens", 0) if isinstance(m_usage, dict) else 0
                 m_cost = estimate_model_cost(model_name, m_prompt, m_comp, m_cached)
-                table.add_row(f"  • {model_name}:", f"{m_total:,} tokens (${m_cost:.4f})")
+                token_rows.append((f"{model_name}:", f"{m_total:,} tokens (${m_cost:.4f})"))
 
         panel = Panel(
-            table,
-            title=f"[bold green]Token Usage & Cost Analytics[/] [dim]({session_id[:12]})[/]",
-            border_style="green",
-            padding=(0, 1),
+            kv_table(token_rows),
+            title=f"[bold cyan]Token Usage & Cost Analytics[/] [dim]({session_id[:12]})[/]",
+            border_style=PANEL_BORDER_STYLE,
+            padding=PANEL_PADDING,
         )
         console.print()
         console.print(panel)

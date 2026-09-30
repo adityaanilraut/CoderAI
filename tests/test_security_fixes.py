@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import subprocess
 import zipfile
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from coderai.cli.plugin import PluginError, _extract_zip_to_plugin
@@ -63,7 +62,7 @@ def test_extract_zip_rejects_symlink(tmp_path):
     with zipfile.ZipFile(zp, "w") as zf:
         info = zipfile.ZipInfo("link")
         info.create_system = 3
-        info.external_attr = (0o120777 << 16)
+        info.external_attr = 0o120777 << 16
         zf.writestr(info, "/etc/passwd")
     out = tmp_path / "out"
     out.mkdir()

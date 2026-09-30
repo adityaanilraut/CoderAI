@@ -145,6 +145,17 @@ class ToolbarColors:
     cwd: str
     bg_tasks: str
     tip: str
+    # Shared bar background plus the fragments that used to be hardcoded in
+    # the prompt session. Every fragment is painted onto `background` so
+    # light/dark switches don't leave holes in the status bar.
+    background: str
+    text: str
+    model: str
+    tokens: str
+    git: str
+    role: str
+    turns: str
+    mcp: str
 
 
 _TOOLBAR_DARK = ToolbarColors(
@@ -156,6 +167,14 @@ _TOOLBAR_DARK = ToolbarColors(
     cwd="fg:#666666",
     bg_tasks="fg:#888888",
     tip="fg:#555555",
+    background="#1e1e2e",
+    text="#cdd6f4",
+    model="bold #89dceb",
+    tokens="#a6e3a1",
+    git="#cba6f7",
+    role="bold #cba6f7",
+    turns="#89b4fa",
+    mcp="#94e2d5",
 )
 
 _TOOLBAR_LIGHT = ToolbarColors(
@@ -167,6 +186,14 @@ _TOOLBAR_LIGHT = ToolbarColors(
     cwd="fg:#6b7280",
     bg_tasks="fg:#4b5563",
     tip="fg:#9ca3af",
+    background="#f1f5f9",
+    text="#1f2937",
+    model="bold #0e7490",
+    tokens="#166534",
+    git="#7c3aed",
+    role="bold #7c3aed",
+    turns="#1d4ed8",
+    mcp="#0f766e",
 )
 
 
@@ -235,6 +262,70 @@ def get_prompt_style() -> PTKStyle:
 
 def get_toolbar_colors() -> ToolbarColors:
     return _TOOLBAR_LIGHT if _active_theme == "light" else _TOOLBAR_DARK
+
+
+def _paint_toolbar(background: str, fragment: str) -> str:
+    """Attach the shared toolbar background to a foreground fragment."""
+    return f"bg:{background} {fragment}"
+
+
+_COMPLETION_DARK = {
+    "prompt": "bold",
+    "prompt.plan": "bold #f9e2af",
+    "completion-menu": "bg:#181825 #cdd6f4",
+    "completion-menu.completion": "bg:#181825 #cdd6f4",
+    "completion-menu.completion.current": "bg:#313244 #89b4fa bold",
+    "completion-menu.meta": "bg:#181825 #6c7086",
+    "completion-menu.meta.completion.current": "bg:#313244 #a6adc8",
+    "completion-menu.multi-column-meta": "bg:#181825 #6c7086",
+    "scrollbar.background": "bg:#181825",
+    "scrollbar.button": "bg:#45475a",
+    "fuzzymatch.inside": "nobold nounderline",
+    "fuzzymatch.outside": "nobold nounderline",
+}
+
+_COMPLETION_LIGHT = {
+    "prompt": "bold",
+    "prompt.plan": "bold #b45309",
+    "completion-menu": "bg:#f8fafc #1f2937",
+    "completion-menu.completion": "bg:#f8fafc #1f2937",
+    "completion-menu.completion.current": "bg:#e0f2fe #0e7490 bold",
+    "completion-menu.meta": "bg:#f8fafc #6b7280",
+    "completion-menu.meta.completion.current": "bg:#e0f2fe #334155",
+    "completion-menu.multi-column-meta": "bg:#f8fafc #6b7280",
+    "scrollbar.background": "bg:#f8fafc",
+    "scrollbar.button": "bg:#cbd5e1",
+    "fuzzymatch.inside": "nobold nounderline",
+    "fuzzymatch.outside": "nobold nounderline",
+}
+
+
+def get_prompt_session_styles() -> dict[str, str]:
+    """Full prompt_toolkit style map for the input session.
+
+    Toolbar fragments all share one background so the status bar stays a
+    single strip in both themes. Completion-menu colors follow the same theme.
+    """
+    colors = get_toolbar_colors()
+    bg = colors.background
+    toolbar = {
+        "toolbar": _paint_toolbar(bg, colors.text),
+        "toolbar.model": _paint_toolbar(bg, colors.model),
+        "toolbar.tokens": _paint_toolbar(bg, colors.tokens),
+        "toolbar.git": _paint_toolbar(bg, colors.git),
+        "toolbar.role": _paint_toolbar(bg, colors.role),
+        "toolbar.plan": _paint_toolbar(bg, colors.plan_label),
+        "toolbar.yolo": _paint_toolbar(bg, colors.yolo_label),
+        "toolbar.afk": _paint_toolbar(bg, colors.afk_label),
+        "toolbar.turns": _paint_toolbar(bg, colors.turns),
+        "toolbar.mcp": _paint_toolbar(bg, colors.mcp),
+        "toolbar.cwd": _paint_toolbar(bg, colors.cwd),
+        "toolbar.sep": _paint_toolbar(bg, colors.separator),
+        "toolbar.tip": _paint_toolbar(bg, colors.tip),
+        "toolbar.extra": _paint_toolbar(bg, colors.text),
+    }
+    menus = _COMPLETION_LIGHT if _active_theme == "light" else _COMPLETION_DARK
+    return {**toolbar, **menus}
 
 
 def get_mcp_prompt_colors() -> MCPPromptColors:

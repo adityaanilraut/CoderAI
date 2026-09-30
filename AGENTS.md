@@ -26,8 +26,8 @@ CoderAI provides both bundled and dynamically discovered agent roles:
 | Role / Spec | Type | Mode | Description |
 |---|---|---|---|
 | `default` | Bundled | Primary | Full software engineering tool suite. |
-| `okabe` | Bundled | Extended | Okabe Rintaro mad scientist persona (configured with focused engineering tools, dropping meta/team tools). |
-| `architect` | Discovered | General | Systems architect designing components, interfaces, and boundary layers. |
+| `okabe` | Bundled | Extended | Meticulous senior engineer with a focused tool set; inherits bundled subagents. |
+| `architect` | Discovered | Read-Only | Systems architect designing components, interfaces, and boundary layers. |
 | `build-error-resolver` | Discovered | General | Pinpoints root causes of compiler, build, and typecheck errors. |
 | `code-reviewer` | Discovered | Read-Only | Read-only security, correctness, and architecture review using `read`, `grep`, `glob`. |
 | `planner` | Discovered | Read-Only | Generates actionable implementation plans with phased milestones. |
@@ -35,7 +35,7 @@ CoderAI provides both bundled and dynamically discovered agent roles:
 | `tdd-guide` | Discovered | General | Test-driven development specialist writing failing reproduction tests first. |
 
 ### Role Tool Policies & Planning
-- **Read-Only Roles**: `code-reviewer`, `planner`, and `security-reviewer` enforce read-only tool access (`read`, `grep`, `glob`). Mutating tools (`write`, `edit`), shell tools (`bash`), and subagent delegation are strictly disallowed.
+- **Read-Only Roles**: `architect`, `code-reviewer`, `planner`, and `security-reviewer` enforce read-only tool access (`read`, `grep`, `glob`). Mutating tools (`write`, `edit`), shell tools (`bash`), and subagent delegation are strictly disallowed.
 - **General Roles**: Discovered and bundled general roles have access to engineering tools per their declared allowlists and mode restrictions.
 - **Authoritative Planning Tools**: `enter_plan_mode` and `exit_plan_mode` are the authoritative plan tools across the runtime, prompts, and dynamic reminders.
 

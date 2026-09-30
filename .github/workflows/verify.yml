@@ -1,0 +1,107 @@
+name: Source verification
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact source commit under test
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    name: Source (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Verify checkout identity
+        env:
+          EXPECTED_SHA: ${{ inputs.source_sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install verification dependencies
+        run: python -m pip install -e ".[dev,jev]" -e sdks/coderai-sdk
+      - name: Shared source, SDK, wire and dependency gates
+        run: python scripts/verification.py check --coverage --report .verification/tests.json
+      - name: Save test and resolved dependency evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-${{ matrix.os }}-${{ matrix.python-version }}
+          path: .verification/
+          if-no-files-found: warn
+
+  security:
+    name: Security regressions and resolved dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e ".[dev,jev]" -e sdks/coderai-sdk
+      - run: python scripts/verification.py test --suite security --report .verification/security.json
+      - run: python scripts/verification.py audit
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-verification
+          path: .verification/
+
+  jev:
+    name: Required real-SDK Jev calibration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e ".[dev,jev]"
+      # JUnit requires at least one passing case and zero skips/errors/failures.
+      - run: python scripts/verification.py test --suite jev --report .verification/jev.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jev-calibration
+          path: .verification/
+
+  windows:
+    name: Windows compatibility (advisory)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev,jev]" -e sdks/coderai-sdk
+      - run: python scripts/verification.py check --report .verification/windows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-compatibility
+          path: .verification/

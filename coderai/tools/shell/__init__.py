@@ -153,8 +153,8 @@ def _effective_sandbox_mode(context: Any, args: dict[str, Any]) -> tuple[Any, To
     """Wire the `sandbox_permissions` escalation arg (fail-closed).
 
     Returns (mode_to_enforce, error_result). An unknown mode, or any escalation
-    to a more permissive mode than the session base without a justification, is
-    denied instead of silently running with session permissions.
+    to a more permissive mode than the session base without both a justification
+    and a runtime grant bound to this exact invocation, is denied.
     """
     from coderai.sandbox import parse_sandbox_mode
 
@@ -179,6 +179,19 @@ def _effective_sandbox_mode(context: Any, args: dict[str, Any]) -> tuple[Any, To
                     f"sandbox_permissions escalation to '{parsed}' requires a "
                     "non-empty justification."
                 ),
+            )
+        from coderai.tools.legacy.types import ToolCallAuthorization
+
+        authorization = _context_value(context, "authorization", None)
+        if (
+            not isinstance(authorization, ToolCallAuthorization)
+            or not authorization.matches(context, args)
+            or authorization.sandbox_mode != parsed
+        ):
+            return base, ToolResult(
+                ok=False,
+                name="bash",
+                error="PermissionDenied: sandbox escalation requires explicit approval for this exact tool call.",
             )
     return parsed, None
 
@@ -376,7 +389,26 @@ def _execute_persistent_bash(
             sandbox_mode = context.get("sandbox_mode", sandbox_mode)
         project_root = context.get("project_root", project_root)
 
-    term = mgr.get_session(session_name)
+    workspace_root = str(pathlib.Path(project_root).resolve())
+    execution_root = str(pathlib.Path(_isolated_root(context) or workspace_root).resolve())
+    from coderai.sandbox import DEFAULT_SANDBOX_MODE
+
+    normalized_mode = (
+        (parse_sandbox_mode(sandbox_mode) or DEFAULT_SANDBOX_MODE) if sandbox_mode else None
+    )
+    term = mgr.get_session(session_name, owner_session_id=session_id)
+    if term is not None and (
+        term.workspace_root != workspace_root
+        or term.execution_root != execution_root
+        or term.sandbox_mode != normalized_mode
+        or not term.is_alive
+    ):
+        # A PTY cannot acquire a different OS sandbox after spawning. Retire
+        # stale policy/root shells before sending any user command.
+        mgr.close_session(
+            term.session_id, owner_session_id=session_id, workspace_root=term.workspace_root
+        )
+        term = None
     if term is None or not term.is_alive:
         try:
             term = mgr.open_session(
@@ -384,7 +416,9 @@ def _execute_persistent_bash(
                 name=session_name,
                 cwd=start_cwd,
                 sandbox_mode=sandbox_mode,
-                workspace_root=str(project_root),
+                workspace_root=workspace_root,
+                execution_root=execution_root,
+                owner_session_id=session_id,
             )
             term.send("stty -echo 2>/dev/null || true; export PS1=''", submit=True)
             time.sleep(0.05)
@@ -1135,7 +1169,6 @@ def _start_background_shell_command(
     )
 
 
-# --- from coderai/core/tools/pwsh.py ---
 """PowerShell / pwsh tool — cross-platform PowerShell execution with timeout and background support."""
 
 

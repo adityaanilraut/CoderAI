@@ -13,6 +13,7 @@ import os
 import pydoc
 import re
 import sys
+from typing import Any
 
 from rich.console import Console, PagerContext, RenderableType
 from rich.pager import Pager
@@ -77,9 +78,28 @@ class _CoderAIConsole(Console):
         return super().pager(pager=pager, styles=styles, links=links)
 
 
-# Unified panel chrome: every shell panel uses this border style so help,
-# picker, task browser, and BTW modal look like one UI.
+# Unified panel chrome: every informational shell panel uses this border
+# and padding so help, picker, welcome, and status cards look like one UI.
+# Approval stays yellow and errors stay red; those are state, not chrome.
 PANEL_BORDER_STYLE = "cyan"
+PANEL_PADDING = (0, 1)
+
+
+def kv_table(rows: list[tuple[str, Any]]) -> Any:
+    """Two-column key/value grid whose label column fits every key.
+
+    Fixed label widths used to clip longer keys ("Configured MCP Servers:",
+    "Active Working Context:") and shove the values out of alignment.
+    """
+    from rich.table import Table
+
+    width = max((len(str(key)) for key, _ in rows), default=0)
+    table = Table.grid(expand=True, padding=(0, 2))
+    table.add_column(style="dim cyan", width=width, no_wrap=True)
+    table.add_column(ratio=1, overflow="fold")
+    for key, value in rows:
+        table.add_row(str(key), value)
+    return table
 
 
 def no_color_enabled() -> bool:

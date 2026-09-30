@@ -7,9 +7,9 @@ from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 
 from coderai.soul.session.manager import SessionManager
+from coderai.ui.shell.console import PANEL_BORDER_STYLE, PANEL_PADDING, kv_table
 from coderai.soul.session.models import SessionEntry
 
 
@@ -106,13 +106,12 @@ def render_exit_summary(console: Any | None, mgr: SessionManager, session_id: st
     checkpoint_str = stats["checkpoint_hash"] or "clean"
     cost_str = f"${stats['estimated_cost']:.4f} USD"
 
-    table = Table.grid(padding=(0, 2))
-    table.add_column("Key", style="dim cyan", width=18)
-    table.add_column("Value", style="bold white")
-    table.add_row("Session ID:", f"[cyan]{stats['session_id']}[/]")
-    table.add_row("Active Model:", f"[bold cyan]{stats['model']}[/]")
-    table.add_row("Conversation Turns:", f"{stats['turns']}")
-    table.add_row("Files Modified:", f"[bold green]{files_str}[/]")
+    rows: list[tuple[str, str]] = [
+        ("Session ID:", f"[cyan]{stats['session_id']}[/]"),
+        ("Active Model:", f"[bold cyan]{stats['model']}[/]"),
+        ("Conversation Turns:", f"{stats['turns']}"),
+        ("Files Modified:", f"[bold green]{files_str}[/]"),
+    ]
     token_usage_str = f"Prompt: {stats['prompt_tokens']:,} | Comp: {stats['completion_tokens']:,} | Total: {stats['total_tokens']:,}"
     if stats.get("cached_tokens", 0) > 0:
         hit_rate = stats.get("cache_hit_rate", 0.0) or (
@@ -121,16 +120,17 @@ def render_exit_summary(console: Any | None, mgr: SessionManager, session_id: st
             else 0.0
         )
         token_usage_str += f" | Cached: {stats['cached_tokens']:,} ({hit_rate:.1f}% hit)"
-    table.add_row("Token Usage:", token_usage_str)
-    table.add_row("Estimated Cost:", f"[bold green]{cost_str}[/]")
-    table.add_row("Active Context:", f"{stats['active_tokens']:,} tokens")
-    table.add_row("Checkpoint Hash:", f"[bold magenta]{checkpoint_str}[/]")
+    rows.append(("Token Usage:", token_usage_str))
+    rows.append(("Estimated Cost:", f"[bold green]{cost_str}[/]"))
+    rows.append(("Active Context:", f"{stats['active_tokens']:,} tokens"))
+    rows.append(("Checkpoint Hash:", f"[bold magenta]{checkpoint_str}[/]"))
+    table = kv_table(rows)
 
     panel = Panel(
         table,
         title="[bold cyan]CoderAI Session Summary[/]",
-        border_style="bright_blue",
-        padding=(0, 1),
+        border_style=PANEL_BORDER_STYLE,
+        padding=PANEL_PADDING,
     )
     active_console.print()
     active_console.print(panel)

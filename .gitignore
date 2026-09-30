@@ -65,3 +65,6 @@ session-export-*.md
 # Scratch files
 scratch.py
 scratch*.py
+
+# Shared verification evidence (CI uploads these as artifacts).
+.verification/

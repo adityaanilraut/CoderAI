@@ -206,13 +206,17 @@ class ACPSession:
             return False
 
     async def prompt(self, prompt: list[ACPContentBlock]) -> acp.PromptResponse:
+        if self._turn_state is not None:
+            raise acp.RequestError.internal_error({"error": "Session already has an active turn"})
         user_input = acp_blocks_to_content_parts(prompt)
         self._turn_state = _TurnState()
         token = _current_turn_id.set(self._turn_state.id)
         kaos_token = set_current_kaos(self._kaos) if self._kaos is not None else None
         terminal_tool_calls_token = _terminal_tool_call_ids.set(set())
+        stream = self._cli.run(user_input, self._turn_state.cancel_event)
+        interrupted = False
         try:
-            async for msg in self._cli.run(user_input, self._turn_state.cancel_event):
+            async for msg in stream:
                 match msg:
                     case TurnBegin():
                         pass
@@ -223,6 +227,7 @@ class ACPSession:
                     case StepBegin():
                         pass
                     case StepInterrupted():
+                        interrupted = True
                         break
                     case StepRetry():
                         pass
@@ -297,17 +302,24 @@ class ACPSession:
         except RunCancelled:
             logger.info("Prompt cancelled by user")
             return acp.PromptResponse(stop_reason="cancelled")
+        except asyncio.CancelledError:
+            if self._turn_state is not None and self._turn_state.cancel_event.is_set():
+                return acp.PromptResponse(stop_reason="cancelled")
+            raise
         except Exception as e:
             logger.exception("Unexpected error during prompt:")
             raise acp.RequestError.internal_error({"error": str(e)}) from e
         finally:
+            close_stream = getattr(stream, "aclose", None)
+            if close_stream is not None:
+                await close_stream()
             self._turn_state = None
             if kaos_token is not None:
                 reset_current_kaos(kaos_token)
             _terminal_tool_call_ids.reset(terminal_tool_calls_token)
             _current_turn_id.reset(token)
             self._persist_engine_binding()
-        return acp.PromptResponse(stop_reason="end_turn")
+        return acp.PromptResponse(stop_reason="cancelled" if interrupted else "end_turn")
 
     async def replay_history(self, wire_file: WireFile) -> None:
         """Replay persisted wire history to an ACP client during session/load."""
@@ -583,10 +595,16 @@ class ACPSession:
                         name="Approve once",
                         kind="allow_once",
                     ),
-                    acp.schema.PermissionOption(
-                        option_id="approve_for_session",
-                        name="Approve for this session",
-                        kind="allow_always",
+                    *(
+                        [
+                            acp.schema.PermissionOption(
+                                option_id="approve_for_session",
+                                name="Approve for this session",
+                                kind="allow_always",
+                            ),
+                        ]
+                        if request.allow_session_approve
+                        else []
                     ),
                     acp.schema.PermissionOption(
                         option_id="reject",

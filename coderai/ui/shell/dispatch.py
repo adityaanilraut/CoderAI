@@ -457,16 +457,29 @@ def cmd_context(ctx: ShellContext, args: str) -> SlashAction:
     model = ctx.mgr.get_active_model()
     max_ctx = get_default_context_window(model)
     pct = (active_tokens / max_ctx * 100) if max_ctx > 0 else 0
-    bar = "■" * int(pct / 10) + "□" * (10 - int(pct / 10))
+    from coderai.ui.shell.console import PANEL_BORDER_STYLE, PANEL_PADDING, kv_table
+    from coderai.ui.shell.prompt import make_mini_bar
+
+    # make_mini_bar clamps past 100%. The old "□" * (10 - filled) raised
+    # when the context window was already over budget.
+    bar = make_mini_bar(pct, width=10)
     if ctx.console is not None:
-        t = Table.grid(padding=(0, 2))
-        t.add_column("Key", style="dim cyan", width=18)
-        t.add_column("Value", style="bold white")
-        t.add_row("Model:", model)
-        t.add_row("Active tokens:", f"{active_tokens:,} / {max_ctx:,} ({pct:.1f}%)")
-        t.add_row("Usage bar:", f"[{bar}] {pct:.0f}%")
-        t.add_row("Session ID:", ctx.session_id[:12] if ctx.session_id else "none")
-        ctx.console.print(Panel(t, title="[bold cyan]Context Window[/]", border_style="blue"))
+        t = kv_table(
+            [
+                ("Model:", model),
+                ("Active tokens:", f"{active_tokens:,} / {max_ctx:,} ({pct:.1f}%)"),
+                ("Usage bar:", f"{bar}  {pct:.0f}%"),
+                ("Session ID:", ctx.session_id[:12] if ctx.session_id else "none"),
+            ]
+        )
+        ctx.console.print(
+            Panel(
+                t,
+                title="[bold cyan]Context Window[/]",
+                border_style=PANEL_BORDER_STYLE,
+                padding=PANEL_PADDING,
+            )
+        )
     else:
         print(f"Context: {active_tokens:,} / {max_ctx:,} ({pct:.1f}%) [{bar}]")
     return SlashAction.HANDLED
@@ -1376,7 +1389,7 @@ def cmd_teams(ctx: ShellContext, args: str) -> SlashAction:
                 )
         ctx.console.print(tt)
 
-        tb = Table(title="Autonomous Swarm — Task Board", border_style="blue")
+        tb = Table(title="Autonomous Swarm — Task Board", border_style="cyan")
         tb.add_column("Task ID", style="bold blue")
         tb.add_column("Title", style="white")
         tb.add_column("Assigned", style="cyan")

@@ -56,6 +56,9 @@ class ApprovalRuntime:
         self._waiter_counts: dict[str, int] = {}
         self._subscribers: dict[str, Callable[[ApprovalEvent], None]] = {}
         self._root_wire_hub: Any | None = None
+        self._session_grants: set[tuple[str, str]] = set()
+        self._closed_sessions: set[str] = set()
+        self._closed = False
 
     def bind_root_wire_hub(self, root_wire_hub: Any) -> None:
         """Attach the session wire hub (approval↔wire bridge)."""
@@ -74,18 +77,35 @@ class ApprovalRuntime:
         sender: str = "",
         display: list[Any] | None = None,
         request_id: str | None = None,
+        session_id: str | None = None,
+        session_grant_key: str | None = None,
     ) -> ApprovalRequestRecord:
         """Register a request and notify subscribers; id is unique."""
+        owner_session_id = session_id or source.session_id
+        if not owner_session_id and source.kind in ("foreground_turn", "turn"):
+            owner_session_id = source.id if source.id and source.id != "default" else None
         record = ApprovalRequestRecord(
             id=request_id or f"apr_{uuid.uuid4().hex[:12]}",
             tool_call_id=tool_call_id,
             action=action,
             description=description,
             source=source,
+            session_id=owner_session_id,
             sender=sender,
             display=list(display or []),
+            session_grant_key=session_grant_key,
         )
         self._requests[record.id] = record
+        if self._closed or owner_session_id in self._closed_sessions:
+            self.cancel(record.id, feedback="approval owner closed")
+            return record
+        if (
+            owner_session_id
+            and session_grant_key
+            and (owner_session_id, session_grant_key) in self._session_grants
+        ):
+            self.resolve(record.id, "approve", approved_via_session_cache=True)
+            return record
         self._publish(ApprovalEvent(kind="request_created", request=record))
         self._publish_wire_request(record)
         return record
@@ -140,11 +160,16 @@ class ApprovalRuntime:
         record = self._requests.get(request_id)
         if record is None or record.status != "pending":
             return record
+        if self._closed or record.session_id in self._closed_sessions:
+            self.cancel(request_id, feedback="approval owner closed")
+            return record
         record.status = "resolved"
         record.response = response
         record.feedback = feedback
         record.approved_via_session_cache = approved_via_session_cache
         record.resolved_at = time.time()
+        if response == "approve_for_session" and record.session_id and record.session_grant_key:
+            self._session_grants.add((record.session_id, record.session_grant_key))
         waiter = self._waiters.pop(request_id, None)
         if waiter is not None and not waiter.done():
             waiter.set_result((response, feedback))
@@ -179,6 +204,19 @@ class ApprovalRuntime:
             ):
                 cancelled += self.cancel(record.id, feedback="source cancelled")
         return cancelled
+
+    def clear_session_grants(self, session_id: str | None = None) -> None:
+        """Forget grants on session deletion or adapter/runtime shutdown."""
+        if session_id is None:
+            self._closed = True
+        else:
+            self._closed_sessions.add(session_id)
+        self._session_grants = {
+            key for key in self._session_grants if session_id is not None and key[0] != session_id
+        }
+        for record in list(self._requests.values()):
+            if session_id is None or record.session_id == session_id:
+                self.cancel(record.id, feedback="approval owner closed")
 
     # -- inspection -----------------------------------------------------
     def list_pending(self) -> list[ApprovalRequestRecord]:
@@ -225,7 +263,9 @@ class ApprovalRuntime:
                     agent_id=record.source.agent_id,
                     subagent_type=record.source.subagent_type,
                     display=list(record.display),
-                )
+                    allow_session_approve=record.session_grant_key is not None,
+                ),
+                session_id=record.session_id,
             )
         except Exception:
             pass
@@ -238,8 +278,10 @@ class ApprovalRuntime:
         try:
             from coderai.wire.types import ApprovalResponse
 
+            record = self._requests.get(request_id)
             self._root_wire_hub.publish_nowait(
-                ApprovalResponse(request_id=request_id, response=response, feedback=feedback)
+                ApprovalResponse(request_id=request_id, response=response, feedback=feedback),
+                session_id=record.session_id if record is not None else None,
             )
         except Exception:
             pass
@@ -249,6 +291,7 @@ class ApprovalRuntime:
         return {
             "id": record.id,
             "toolCallId": record.tool_call_id,
+            "sessionId": record.session_id,
             "sender": record.sender,
             "action": record.action,
             "description": record.description,

@@ -259,7 +259,7 @@ async def test_multiline_ctrl_c_reraises(monkeypatch: pytest.MonkeyPatch) -> Non
     import coderai.ui.shell.prompt as prompt
 
     monkeypatch.setattr(prompt, "HAS_PTK", True)
-    monkeypatch.setattr(prompt.os, "isatty", lambda _fd: True)
+    monkeypatch.setattr(prompt.sys.stdin, "isatty", lambda: True)
     session = _FakePrompt(KeyboardInterrupt())
     with pytest.raises(KeyboardInterrupt):
         await prompt.read_user_turn_ptk("❯ ", project_root="/tmp", session=session)  # type: ignore[arg-type]
@@ -271,7 +271,7 @@ async def test_multiline_eof_keeps_partial_buffer(monkeypatch: pytest.MonkeyPatc
     import coderai.ui.shell.prompt as prompt
 
     monkeypatch.setattr(prompt, "HAS_PTK", True)
-    monkeypatch.setattr(prompt.os, "isatty", lambda _fd: True)
+    monkeypatch.setattr(prompt.sys.stdin, "isatty", lambda: True)
     session = _FakePrompt(EOFError())
     text = await prompt.read_user_turn_ptk("❯ ", project_root="/tmp", session=session)  # type: ignore[arg-type]
     assert "echo hi" in text
@@ -317,7 +317,9 @@ def test_persistent_bash_reads_exit_code_and_cwd(tmp_path: pathlib.Path) -> None
     finally:
         session_working_dirs.pop(session_id, None)
         term_id = f"persistent_bash_{session_id}"
-        get_terminal_manager().close_session(term_id)
+        get_terminal_manager().close_session(
+            term_id, owner_session_id=session_id, workspace_root=str(tmp_path)
+        )
 
 
 def test_typed_global_knobs_reads_mcp_client_timeout() -> None:

@@ -506,6 +506,12 @@ class ACPServer:
             next_cursor=next_cursor,
         )
 
+    async def set_config_option(
+        self, config_id: str, session_id: str, value: str, **kwargs: Any
+    ) -> acp.schema.SetSessionConfigOptionResponse | None:
+        """No configuration options are advertised by this server."""
+        raise acp.RequestError.method_not_found("session/set_config_option")
+
     async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> None:
         if mode_id != "default":
             raise acp.RequestError.invalid_params({"mode_id": "Only default mode is supported"})

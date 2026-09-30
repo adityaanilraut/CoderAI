@@ -35,6 +35,8 @@ ASK_SCOPES = {
     "network",
     "mcp",
     "unknown",
+    "sandbox-escalation",
+    "hook-approval",
 }
 
 BASH_SIDE_EFFECTS = {
@@ -133,7 +135,7 @@ def get_scope_risk_level(scope: str) -> str:
         return "moderate"
     if scope in ("write-out-cwd", "delete-in-cwd", "network"):
         return "high"
-    if scope in ("delete-out-cwd", "mutate-git-log"):
+    if scope in ("delete-out-cwd", "mutate-git-log", "sandbox-escalation"):
         return "critical"
     return "moderate"
 
@@ -643,7 +645,7 @@ def describe_tool_permission_request(
 
     if name == "spawn_teammate":
         tm_name = args.get("name") if isinstance(args.get("name"), str) else "teammate"
-        mode = args.get("mode") if isinstance(args.get("mode"), str) else "general"
+        mode = str(args["mode"]) if isinstance(args.get("mode"), str) else "general"
         scopes = [] if mode == "read_only" else ["write-in-cwd"]
         return {
             "toolCallId": tool_call["id"],
@@ -742,13 +744,13 @@ def evaluate_permission_scopes(
     default_mode = settings.get("defaultMode", "askAll")
     forced = set(force_ask_scopes or [])
 
+    if any(s in deny for s in scopes):
+        return "deny"
     if "unknown" in scopes:
         return "ask"
     if not scopes:
         return "allow"
     known = [s for s in scopes if s != "unknown"]
-    if any(s in deny for s in known):
-        return "deny"
     if any(s in ask for s in known):
         return "ask"
     if any(s in forced for s in known):
@@ -799,6 +801,8 @@ def compute_tool_call_permissions(
     read_permission_exempt_paths: list[str] | None = None,
     resolve_snippet_path: Callable[[str, str], str | None] | None = None,
     ticket_registry: PermissionTicketRegistry | None = None,
+    pre_tool_outcomes: dict[str, dict[str, Any]] | None = None,
+    session_approval_store: Any | None = None,
 ) -> dict[str, Any]:
     """Return {"permissions": [...], "askPermissions": [...]}."""
     settings = settings or DEFAULT_PERMISSION_SETTINGS
@@ -806,9 +810,17 @@ def compute_tool_call_permissions(
     permissions: list[dict[str, Any]] = []
     ask_permissions: list[dict[str, Any]] = []
 
+    from collections import Counter
+
+    counts = Counter(
+        call["id"] for raw in tool_calls if (call := parse_tool_call_for_permissions(raw))
+    )
     for raw in tool_calls:
         tool_call = parse_tool_call_for_permissions(raw)
         if not tool_call:
+            continue
+        if counts[tool_call["id"]] != 1:
+            permissions.append({"toolCallId": tool_call["id"], "permission": "deny", "scopes": []})
             continue
         request = describe_tool_permission_request(
             session_id=session_id,
@@ -820,13 +832,63 @@ def compute_tool_call_permissions(
         decision = evaluate_permission_scopes(
             request["scopes"], settings, force_ask_scopes=force_ask_scopes
         )
+        from coderai.sandbox import DEFAULT_SANDBOX_MODE, parse_sandbox_mode
+
+        args = parse_tool_arguments(tool_call["function"]["arguments"])
+        from coderai.tools.legacy.types import matches_tool_call_binding, tool_call_binding
+
+        binding = tool_call_binding(session_id, project_root, tool_call)
+        rank = {"read-only": 0, "workspace-write": 1, "danger-full-access": 2}
+        base = parse_sandbox_mode(settings.get("sandbox")) or DEFAULT_SANDBOX_MODE
+        requested = parse_sandbox_mode(args.get("sandbox_permissions"))
+        explicit_scopes: list[str] = []
+        if request["name"] == "bash" and requested and rank[requested] > rank[base]:
+            explicit_scopes.append("sandbox-escalation")
+            request["description"] = f"Raise sandbox from {base} to {requested}. " + str(
+                args.get("justification") or ""
+            )
+        snapshot = (pre_tool_outcomes or {}).get(tool_call["id"]) or {}
+        outcome = (
+            snapshot.get("outcome") or {} if matches_tool_call_binding(snapshot, binding) else {}
+        )
+        if (
+            outcome.get("stop")
+            or outcome.get("decision") == "deny"
+            or (outcome.get("updatedInput") is not None and outcome["updatedInput"] != args)
+        ):
+            decision = "deny"
+        elif outcome.get("decision") == "ask":
+            explicit_scopes.append("hook-approval")
+            request["description"] = outcome.get("reason") or "PreToolUse hook requires approval."
+        request["scopes"] = list(dict.fromkeys([*request["scopes"], *explicit_scopes]))
+        if (
+            evaluate_permission_scopes(
+                request["scopes"], settings, force_ask_scopes=force_ask_scopes
+            )
+            == "deny"
+        ):
+            decision = "deny"
+        elif explicit_scopes and decision != "deny":
+            decision = "ask"
+        if (
+            decision == "ask"
+            and not explicit_scopes
+            and not set(force_ask_scopes or []).intersection(request["scopes"])
+            and session_approval_store is not None
+            and session_approval_store.matches(binding, request["scopes"])
+        ):
+            decision = "allow"
         if decision == "ask":
             ask_scopes = get_scopes_requiring_ask(
                 request["scopes"], settings, force_ask_scopes=force_ask_scopes
             )
+            ask_scopes = list(dict.fromkeys([*ask_scopes, *explicit_scopes]))
             target = request.get("command") or request.get("name")
             uncovered_scopes: list[str] = []
             for sc in ask_scopes:
+                if sc in explicit_scopes:
+                    uncovered_scopes.append(sc)
+                    continue
                 if registry.check_and_consume(
                     session_id, request["name"], sc, target=target, consume=True
                 ):
@@ -853,11 +915,14 @@ def compute_tool_call_permissions(
                     {
                         "toolCallId": tool_call["id"],
                         "scopes": uncovered_scopes,
+                        "all_scopes": request["scopes"],
                         "name": request["name"],
                         "command": request["command"],
                         "description": request.get("description", ""),
                         "diff_preview": request.get("diff_preview"),
                         "risk_level": get_request_risk_badge(uncovered_scopes)[0],
+                        "requiresExplicitApproval": bool(explicit_scopes),
+                        **binding,
                     }
                 )
         else:
@@ -889,7 +954,14 @@ def apply_auto_approve_to_permission_plan(
         tool_call_id = item.get("toolCallId")
         ask = ask_by_id.get(tool_call_id)
         scopes = (ask or {}).get("scopes") or []
-        if plan_mode and ask and any(scope in PLAN_MODE_FORCE_ASK_SCOPES for scope in scopes):
+        if item.get("permission") != "ask":
+            new_permissions.append(item)
+            continue
+        if ask and (
+            ask.get("requiresExplicitApproval")
+            or any(scope in {"sandbox-escalation", "hook-approval"} for scope in scopes)
+            or (plan_mode and any(scope in PLAN_MODE_FORCE_ASK_SCOPES for scope in scopes))
+        ):
             new_permissions.append(item)
             remaining_asks.append(ask)
         else:
@@ -905,6 +977,11 @@ def resolve_tool_call_permission(
     permission_overrides: list[dict[str, Any]] | None = None,
     message_permissions: list[dict[str, Any]] | None = None,
 ) -> Decision:
+    if any(
+        item.get("toolCallId") == tool_call_id and item.get("permission") == "deny"
+        for item in message_permissions or []
+    ):
+        return "deny"
     for item in permission_overrides or []:
         if item.get("toolCallId") == tool_call_id and item.get("permission") in ("allow", "deny"):
             return item["permission"]
@@ -960,6 +1037,20 @@ def normalize_ask_permissions(value: Any) -> list[dict[str, Any]] | None:
         scopes = [s for s in (item.get("scopes") or []) if s in ASK_SCOPES]
         result.append(
             {
+                **{
+                    key: item[key]
+                    for key in (
+                        "tool_name",
+                        "session_id",
+                        "project_root",
+                        "args_digest",
+                        "requiresExplicitApproval",
+                        "diff_preview",
+                        "risk_level",
+                        "all_scopes",
+                    )
+                    if key in item
+                },
                 "toolCallId": item["toolCallId"],
                 "scopes": scopes,
                 "name": item["name"],
@@ -1164,10 +1255,31 @@ class Approval:
         wire = get_wire_or_none()
         tool_call = get_current_tool_call_or_none()
         tool_call_id = tool_call.id if tool_call else str(uuid.uuid4())
+        # Lower-level approvals may only reuse an identical action within this
+        # runtime and owner. With no active invocation, keep approval one-shot.
+        from coderai.tools.legacy.types import tool_arguments_digest
+
+        session_grant_key = (
+            tool_arguments_digest(
+                {
+                    "sender": sender,
+                    "action": action,
+                    "description": description,
+                    "tool": tool_call.function.name,
+                    "arguments": parse_tool_arguments(tool_call.function.arguments or "{}"),
+                }
+            )
+            if tool_call
+            and session_id
+            and action not in {"sandbox-escalation", "hook-approval"}
+            and "sandbox_permissions"
+            not in parse_tool_arguments(tool_call.function.arguments or "{}")
+            else None
+        )
         req_id = str(uuid.uuid4())
 
         source = get_current_approval_source_or_none() or ApprovalSource(
-            kind="turn", id=session_id or "default", agent_id=sender or "default"
+            kind="foreground_turn", id=session_id or "default", agent_id=sender or "default"
         )
 
         record = self._runtime.create_request(
@@ -1178,7 +1290,14 @@ class Approval:
             sender=sender,
             display=display,
             request_id=req_id,
+            session_id=session_id,
+            session_grant_key=session_grant_key,
         )
+
+        if record.approved_via_session_cache:
+            return ApprovalResult(True)
+        if record.status == "cancelled":
+            return ApprovalResult(False, feedback=record.feedback)
 
         if wire is not None:
             wire_req = ApprovalRequest(
@@ -1188,6 +1307,7 @@ class Approval:
                 tool_call_id=tool_call_id,
                 sender=sender,
                 display=display or [],
+                allow_session_approve=session_grant_key is not None,
             )
             wire.soul_side.send(wire_req)
 
@@ -1197,10 +1317,15 @@ class Approval:
                 feedback = getattr(wire_req, "feedback", "")
                 self._runtime.resolve(
                     record.id,
-                    "allow" if approved else "reject",
+                    "approve_for_session"
+                    if outcome == "approve_for_session"
+                    else ("approve" if approved else "reject"),
                     feedback=feedback,
                 )
-                return approved, feedback
+                return (
+                    approved and record.status == "resolved" and record.response != "reject",
+                    feedback,
+                )
 
             wire_task = asyncio.create_task(_wire_wait())
             runtime_task = asyncio.create_task(self._runtime.wait_for_response(record.id))
@@ -1220,7 +1345,7 @@ class Approval:
             else:
                 try:
                     response_kind, feedback = runtime_task.result()
-                    approved = response_kind in ("allow", "allow_always")
+                    approved = response_kind in ("approve", "approve_for_session")
                     return ApprovalResult(approved, feedback=feedback)
                 except (ApprovalCancelledError, Exception):
                     return ApprovalResult(False, feedback=record.feedback)
@@ -1228,7 +1353,7 @@ class Approval:
         # Wire is None: route through ApprovalRuntime waiter
         try:
             response_kind, feedback = await self._runtime.wait_for_response(record.id)
-            approved = response_kind in ("allow", "allow_always")
+            approved = response_kind in ("approve", "approve_for_session")
             return ApprovalResult(approved, feedback=feedback)
         except (ApprovalCancelledError, Exception):
             return ApprovalResult(False, feedback=record.feedback)

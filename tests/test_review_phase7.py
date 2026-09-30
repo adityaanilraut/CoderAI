@@ -70,10 +70,10 @@ def test_wf_a7_single_ownership_stores(tmp_path: Path) -> None:
         create_openai_client=lambda: {},
         get_resolved_settings=lambda: {},
     )
-    # SessionManager must hold the exact same global singletons
+    # Jobs/agents share their scoped registries; reminders share only their project store.
     assert mgr.job_store is get_job_store()
     assert mgr.agent_registry is get_agent_registry()
-    assert mgr.schedule_manager is get_schedule_manager()
+    assert mgr.schedule_manager is get_schedule_manager(mgr.schedule_manager.storage_path)
     assert mgr.schedule_manager.storage_path is not None
 
 

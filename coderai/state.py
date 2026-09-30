@@ -10,7 +10,7 @@ from coderai.file_snippets import (
     FileSnippet,
     FileState,
     SessionStateManager,
-    _refresh_rebuilt_file_state,
+    _refresh_rebuilt_file_state as _refresh_rebuilt_file_state,
     clear_session_state,
     create_full_file_snippet,
     create_snippet,

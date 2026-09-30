@@ -6,8 +6,14 @@ import copy
 
 from kosong.message import MergeableMixin
 
-from coderai.utils.aioqueue import Queue, QueueShutDown
-from coderai.utils.broadcast import BroadcastQueue
+from coderai.utils.aioqueue import QueueShutDown
+from coderai.utils.broadcast import (
+    BroadcastQueue,
+    BroadcastQueueOverflow,
+    DEFAULT_HISTORY_LIMIT,
+    DEFAULT_SUBSCRIBER_QUEUE_LIMIT,
+    SubscriptionQueue,
+)
 from coderai.utils.logging import logger
 from coderai.wire.file import WireFile
 from coderai.wire.types import ContentPart, ToolCallPart, WireMessage, is_wire_message
@@ -20,14 +26,21 @@ class Wire:
     A spmc channel for communication between the soul and the UI during a soul run.
     """
 
-    def __init__(self, *, file_backend: WireFile | None = None):
-        self._raw_queue = WireMessageQueue()
-        self._merged_queue = WireMessageQueue()
+    def __init__(
+        self,
+        *,
+        file_backend: WireFile | None = None,
+        history_limit: int = DEFAULT_HISTORY_LIMIT,
+        queue_limit: int = DEFAULT_SUBSCRIBER_QUEUE_LIMIT,
+    ):
+        self._raw_queue = WireMessageQueue(history_limit=history_limit, queue_limit=queue_limit)
+        self._merged_queue = WireMessageQueue(history_limit=history_limit, queue_limit=queue_limit)
 
         self._soul_side = WireSoulSide(self._raw_queue, self._merged_queue)
 
+        self._recorder: _WireRecorder | None
         if file_backend is not None:
-            self._recorder = _WireRecorder(file_backend, self._merged_queue.subscribe())
+            self._recorder = _WireRecorder(file_backend, self._merged_queue.subscribe(replay=False))
         else:
             self._recorder = None
 
@@ -35,7 +48,7 @@ class Wire:
     def soul_side(self) -> WireSoulSide:
         return self._soul_side
 
-    def ui_side(self, *, merge: bool) -> WireUISide:
+    def ui_side(self, *, merge: bool, replay: bool = True) -> WireUISide:
         """
         Create a UI side of the `Wire`.
 
@@ -43,21 +56,28 @@ class Wire:
             merge: Whether to merge `Wire` messages as much as possible.
         """
         if merge:
-            return WireUISide(self._merged_queue.subscribe())
+            return WireUISide(self._merged_queue.subscribe(replay=replay))
         else:
-            return WireUISide(self._raw_queue.subscribe())
+            return WireUISide(self._raw_queue.subscribe(replay=replay))
 
-    def shutdown(self) -> None:
-        self.soul_side.flush()
-        logger.debug("Shutting down wire")
-        self._raw_queue.shutdown()
-        self._merged_queue.shutdown()
+    def shutdown(self, *, immediate: bool = False) -> None:
+        try:
+            if not immediate:
+                self.soul_side.flush()
+        finally:
+            logger.debug("Shutting down wire")
+            self.soul_side._closed = True
+            self.soul_side._merge_buffer = None
+            self._raw_queue.shutdown(immediate=immediate)
+            self._merged_queue.shutdown(immediate=immediate)
 
     async def join(self) -> None:
         if self._recorder is None:
             return
         try:
             await self._recorder.join()
+        except BroadcastQueueOverflow:
+            raise
         except Exception:
             logger.exception("Wire recorder failed to flush:")
 
@@ -71,8 +91,11 @@ class WireSoulSide:
         self._raw_queue = raw_queue
         self._merged_queue = merged_queue
         self._merge_buffer: MergeableMixin | None = None
+        self._closed = False
 
     def send(self, msg: WireMessage) -> None:
+        if self._closed:
+            return
         if not isinstance(msg, ContentPart | ToolCallPart):
             logger.debug("Sending wire message: {msg}", msg=msg)
 
@@ -81,6 +104,9 @@ class WireSoulSide:
             self._raw_queue.publish_nowait(msg)
         except QueueShutDown:
             logger.info("Failed to send raw wire message, queue is shut down: {msg}", msg=msg)
+            self._closed = True
+            self._merge_buffer = None
+            return
 
         # merge and send merged message
         match msg:
@@ -97,6 +123,9 @@ class WireSoulSide:
                 self._send_merged(msg)
 
     def flush(self) -> None:
+        if self._closed:
+            self._merge_buffer = None
+            return
         buffer = self._merge_buffer
         if buffer is None:
             return
@@ -116,8 +145,26 @@ class WireUISide:
     The UI side of a `Wire`.
     """
 
-    def __init__(self, queue: Queue[WireMessage]):
+    def __init__(self, queue: SubscriptionQueue[WireMessage]):
         self._queue = queue
+
+    def close(self) -> None:
+        self._queue.close()
+
+    async def aclose(self) -> None:
+        self.close()
+
+    def __enter__(self) -> WireUISide:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    async def __aenter__(self) -> WireUISide:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        self.close()
 
     async def receive(self) -> WireMessage:
         msg = await self._queue.get()
@@ -129,7 +176,7 @@ class WireUISide:
         """Return the next queued message without blocking, or ``None`` if empty."""
         try:
             return self._queue.get_nowait()
-        except Exception:
+        except (asyncio.QueueEmpty, QueueShutDown):
             return None
 
     def drain_nowait(self) -> int:
@@ -145,21 +192,25 @@ class WireUISide:
 
 
 class _WireRecorder:
-    def __init__(self, wire_file: WireFile, queue: Queue[WireMessage]) -> None:
+    def __init__(self, wire_file: WireFile, queue: SubscriptionQueue[WireMessage]) -> None:
         self._wire_file = wire_file
         self._task = asyncio.create_task(self._consume_loop(queue))
+        self._task.add_done_callback(lambda _: queue.close())
 
     async def join(self) -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await self._task
 
-    async def _consume_loop(self, queue: Queue[WireMessage]) -> None:
-        while True:
-            try:
-                msg = await queue.get()
-                await self._record(msg)
-            except QueueShutDown:
-                break
+    async def _consume_loop(self, queue: SubscriptionQueue[WireMessage]) -> None:
+        try:
+            while True:
+                try:
+                    msg = await queue.get()
+                    await self._record(msg)
+                except QueueShutDown:
+                    break
+        finally:
+            queue.close()
 
     async def _record(self, msg: WireMessage) -> None:
         await self._wire_file.append_message(msg)

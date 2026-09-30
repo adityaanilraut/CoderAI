@@ -1,7 +1,7 @@
 # Shared low-level plumbing for the file discovery tools.
 """Shared ripgrep/workspace search plumbing (`glob` + `grep`).
 
-Single home for the vendored-ripgrep resolver, the subprocess runner, the
+Single home for the validated PATH/explicit ripgrep resolver, the subprocess runner, the
 workspace-relative path helpers, and the Python-fallback file walker, so the
 per-tool modules (`glob.py`, `grep.py`) stay single-responsibility instead of
 sharing one 700-line file.
@@ -15,7 +15,6 @@ import pathlib
 import re
 import shutil
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -42,37 +41,29 @@ class RipgrepRun:
     workdir: str
 
 
-def _vendor_rg_candidates() -> list[pathlib.Path]:
-    # This module lives at coderai/tools/file/; the packaged binary is at coderai/vendor/.
-    vendor = pathlib.Path(__file__).resolve().parent.parent.parent / "vendor"
-    machine = (os.uname().machine if hasattr(os, "uname") else "").lower()
-    plat = sys.platform
-    names = ["rg", f"rg-{plat}", f"rg-{plat}-{machine}"]
-    if plat == "darwin":
-        names.append("rg-darwin-arm64" if "arm" in machine else "rg-darwin-x64")
-    elif plat.startswith("linux"):
-        names.append("rg-linux-arm64" if "arm" in machine or "aarch" in machine else "rg-linux-x64")
-    elif plat == "win32":
-        names.extend(["rg.exe", "rg-win32-x64.exe"])
-    seen: list[pathlib.Path] = []
-    for name in names:
-        path = vendor / name
-        if path not in seen:
-            seen.append(path)
-    return seen
-
-
 def resolve_rg_path() -> str | None:
-    """Resolve packaged rg, then CODERAI_RG_PATH, then PATH. None if unavailable."""
-    env = os.environ.get("CODERAI_RG_PATH", "").strip()
-    if env and os.path.isfile(env) and os.access(env, os.X_OK):
-        return env
-    for candidate in _vendor_rg_candidates():
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    found = shutil.which("rg")
-    if found and os.access(found, os.X_OK):
-        return found
+    """Select a launchable explicit/PATH rg; universal builds use Python otherwise.
+
+    Native assets in older/source installs are deliberately ignored: the generic
+    asset has no platform contract. A successful version probe also rejects a
+    PATH executable for a different OS/architecture before search dispatch.
+    """
+    candidates = [os.environ.get("CODERAI_RG_PATH", "").strip(), shutil.which("rg")]
+    for candidate in candidates:
+        if not candidate or not os.path.isfile(candidate) or not os.access(candidate, os.X_OK):
+            continue
+        try:
+            probe = subprocess.run(
+                [candidate, "--version"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=2,
+                env=_rg_env(),
+            )
+            if probe.returncode == 0 and probe.stdout.startswith(b"ripgrep "):
+                return candidate
+        except (OSError, subprocess.TimeoutExpired):
+            continue
     return None
 
 
@@ -94,7 +85,7 @@ def run_ripgrep(
     if not rg:
         raise SearchError(
             f"{tool_name} could not start its search command (ripgrep binary not found)",
-            "SEARCH_FAILED",
+            "SEARCH_UNAVAILABLE",
         )
     try:
         proc = subprocess.run(
@@ -115,7 +106,7 @@ def run_ripgrep(
     except OSError as exc:
         raise SearchError(
             f"{tool_name} could not start its search command (ripgrep launch failed)",
-            "SEARCH_FAILED",
+            "SEARCH_UNAVAILABLE",
         ) from exc
 
     stdout = (

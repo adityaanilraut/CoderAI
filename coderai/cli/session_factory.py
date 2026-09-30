@@ -75,6 +75,10 @@ def build_session_manager(
 
     def create_client() -> dict[str, Any]:
         active_model = manager.get_active_model() if manager is not None else model
+        if client_factory is create_openai_client and manager is not None:
+            return client_factory(
+                project_root, model_override=active_model, oauth=manager.oauth_manager
+            )
         return client_factory(project_root, model_override=active_model)
 
     manager = SessionManager(
@@ -103,36 +107,10 @@ def build_session_manager(
 
 async def close_session_manager(manager: SessionManager) -> None:
     """Close async resources before disposing the synchronous manager state."""
-    for event in manager.session_controllers.values():
-        event.set()
-
-    agent_tasks = []
-    for handle in manager.agent_registry.list():
-        if handle.task is not None and not handle.task.done():
-            handle.task.cancel()
-            agent_tasks.append(handle.task)
+    agent_tasks = manager.cancel_owned_resources()
     if agent_tasks:
         await asyncio.gather(*agent_tasks, return_exceptions=True)
-
-    for job in list(manager.job_store._jobs.values()):
-        if job.status in ("running", "stopping"):
-            manager.job_store.kill(job.id, job.session_id, reason="CoderAI is shutting down")
-
-    if hasattr(manager, "kill_live_processes"):
-        try:
-            manager.kill_live_processes()
-        except Exception:
-            pass
-    from coderai.terminal import manager as terminal_module
-    from coderai.sandbox import cleanup_seatbelt_profiles
-    from coderai.spill import cleanup_all_spills
-
-    terminal_manager = terminal_module._default_terminal_manager
-    if terminal_manager is not None:
-        terminal_manager.close_all()
-
-    cleanup_seatbelt_profiles()
-    cleanup_all_spills()
+    manager.close_event_streams()
 
     try:
         from coderai.soul.session.approval import unregister_session_manager

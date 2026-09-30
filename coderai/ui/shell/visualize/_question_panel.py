@@ -14,7 +14,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
-from coderai.ui.shell.console import console, render_to_ansi
+from coderai.ui.shell.console import PANEL_BORDER_STYLE, console, render_to_ansi
 from coderai.ui.shell.keyboard import KeyEvent
 from coderai.utils.rich.markdown import Markdown
 from coderai.wire.types import QuestionItem, QuestionOption, QuestionRequest
@@ -174,34 +174,29 @@ class QuestionRequestPanel:
             lines.append(Text(""))
 
         show_inline_input = other_input_text is not None and self.is_other_selected
+        # Same 2-cell gutter as the approval menu, plus a fixed number (or
+        # checkbox) column, so descriptions start under the label text.
+        number_width = len(str(len(self._options)))
 
         for i, (label, description) in enumerate(self._options):
-            num = i + 1
-            is_other = i == len(self._options) - 1
+            selected = i == self._selected_index
+            gutter = "\u2192 " if selected else "  "
             if q.multi_select:
                 checked = "\u2713" if i in self._multi_selected else " "
-                prefix = f"\\[{checked}]"
-                if i == self._selected_index:
-                    option_line = Text.from_markup(f"[cyan]{prefix} {escape(label)}[/cyan]")
-                else:
-                    option_line = Text.from_markup(f"[grey50]{prefix} {escape(label)}[/grey50]")
+                prefix = f"{gutter}[{checked}] "
             else:
-                if i == self._selected_index:
-                    if is_other and show_inline_input:
-                        input_display = escape(other_input_text) if other_input_text else ""
-                        option_line = Text.from_markup(
-                            f"[cyan]\u2192 \\[{num}] {escape(label)}: {input_display}\u2588[/cyan]"
-                        )
-                    else:
-                        option_line = Text.from_markup(
-                            f"[cyan]\u2192 \\[{num}] {escape(label)}[/cyan]"
-                        )
-                else:
-                    option_line = Text.from_markup(f"[grey50]  \\[{num}] {escape(label)}[/grey50]")
+                prefix = f"{gutter}[{str(i + 1).rjust(number_width)}] "
+            style = "cyan" if selected else "grey50"
+            is_other = i == len(self._options) - 1
+            if is_other and show_inline_input and not q.multi_select:
+                typed = other_input_text or ""
+                option_line = Text(f"{prefix}{label}: {typed}\u2588", style=style)
+            else:
+                option_line = Text(f"{prefix}{label}", style=style)
             lines.append(option_line)
 
             if description and not (is_other and show_inline_input):
-                lines.append(Text(f"      {description}", style="dim"))
+                lines.append(Text((" " * len(prefix)) + description, style="dim"))
 
         if show_inline_input:
             lines.append(Text(""))
@@ -227,7 +222,7 @@ class QuestionRequestPanel:
 
         return Panel(
             Group(*lines),
-            border_style="grey50",
+            border_style=PANEL_BORDER_STYLE,
             title="[bold]question[/bold]",
             title_align="left",
             padding=(0, 1),

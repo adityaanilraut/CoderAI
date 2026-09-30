@@ -1,6 +1,6 @@
 """Phase 4 trust-boundary, secrets, and untrusted-output regression tests.
 
-Covers every Phase 4 item from PLAN.md:
+Regression coverage:
 - 4a (IN-A1, IN-A2, IN-A16/IN-B6, IN-A14): workspace trust, atomic 0600
   writes, --key --project warning, config parse warnings.
 - 4b (IN-A5, IN-A4, TL-A9 env, WF-B2 env, IN-A12, IN-A10, TL-A17, TL-A6,
@@ -18,6 +18,7 @@ import json
 import os
 import pathlib
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -277,14 +278,16 @@ def test_setup_key_project_scope_warns(
     home = _isolate_user_dirs(tmp_path, monkeypatch)
     project = tmp_path / "proj"
     project.mkdir()
-    args = MagicMock()
-    args.setup_provider = "openai"
-    args.setup_key = "sk-test-key"
-    args.setup_model = None
-    args.setup_base_url = None
-    args.setup_project = True
-    args.setup_test = False
-    args.setup_status = False
+    args = SimpleNamespace(
+        setup_provider="openai",
+        setup_key="sk-test-key",
+        setup_model=None,
+        setup_base_url=None,
+        setup_project=True,
+        setup_global=False,
+        setup_test=False,
+        setup_status=False,
+    )
     rc = setup_mod.run_setup_cli(args, project_root=str(project))
     assert rc == 0
     err = capsys.readouterr().err

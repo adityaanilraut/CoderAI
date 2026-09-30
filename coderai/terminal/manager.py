@@ -9,6 +9,7 @@ import select
 import signal
 import subprocess
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -56,15 +57,29 @@ class TerminalSession:
         env: dict[str, str] | None = None,
         sandbox_mode: str | None = None,
         workspace_root: str | None = None,
+        owner_session_id: str | None = None,
+        execution_root: str | None = None,
     ) -> None:
         self.session_id = session_id
+        self.owner_session_id = owner_session_id
+        self.workspace_root = str(Path(workspace_root or cwd or os.getcwd()).resolve())
+        self.execution_root = str(Path(execution_root or self.workspace_root).resolve())
+        from coderai.sandbox import DEFAULT_SANDBOX_MODE, parse_sandbox_mode
+
+        # None represents the historical unsandboxed terminal API; do not
+        # confuse it with an explicitly wrapped sandbox when deciding reuse.
+        self.sandbox_mode = (
+            (parse_sandbox_mode(sandbox_mode) or DEFAULT_SANDBOX_MODE) if sandbox_mode else None
+        )
         self.name = name or f"terminal-{session_id}"
         # Central cwd policy: clamp the spawn directory inside the workspace
         # root (fail-closed; arbitrary cwd/Popen outside the root is refused).
         from coderai.sandbox import resolve_exec_cwd
 
         try:
-            self.cwd = resolve_exec_cwd(cwd or os.getcwd(), workspace_root or cwd or os.getcwd())
+            self.cwd = resolve_exec_cwd(
+                cwd or self.execution_root, self.workspace_root, self.execution_root
+            )
         except (ValueError, OSError) as exc:
             raise ValueError(f"Terminal cwd rejected: {exc}") from exc
         self.created_at = time.time()
@@ -98,7 +113,7 @@ class TerminalSession:
             cmd_args, self._sandbox_meta = wrap_sandbox_command(
                 cmd_args,
                 mode=sandbox_mode,
-                workspace_root=workspace_root or self.cwd,
+                workspace_root=self.execution_root,
                 cwd=self.cwd,
             )
 
@@ -341,13 +356,17 @@ class TerminalManager:
         env: dict[str, str] | None = None,
         sandbox_mode: str | None = None,
         workspace_root: str | None = None,
+        owner_session_id: str | None = None,
+        execution_root: str | None = None,
     ) -> TerminalSession:
         """Create and spawn a new persistent terminal session."""
         if cwd is not None or workspace_root is not None:
             from coderai.sandbox import resolve_exec_cwd
 
             try:
-                cwd = resolve_exec_cwd(cwd or workspace_root, workspace_root or cwd)
+                cwd = resolve_exec_cwd(
+                    cwd or execution_root or workspace_root, workspace_root or cwd, execution_root
+                )
             except (ValueError, OSError) as exc:
                 raise ValueError(f"Terminal cwd rejected: {exc}") from exc
         if command is None:
@@ -368,32 +387,80 @@ class TerminalManager:
             env=env,
             sandbox_mode=sandbox_mode,
             workspace_root=workspace_root,
+            owner_session_id=owner_session_id,
+            execution_root=execution_root,
         )
         self._sessions[session_id] = term
         return term
 
-    def get_session(self, session_id: str) -> TerminalSession | None:
-        if session_id in self._sessions:
-            return self._sessions[session_id]
+    @staticmethod
+    def _matches_owner(
+        term: TerminalSession, owner_session_id: str | None, workspace_root: str | None
+    ) -> bool:
+        if term.owner_session_id != owner_session_id:
+            return False
+        return workspace_root is None or term.workspace_root == str(Path(workspace_root).resolve())
+
+    def get_session(
+        self,
+        session_id: str,
+        *,
+        owner_session_id: str | None = None,
+        workspace_root: str | None = None,
+    ) -> TerminalSession | None:
+        term = self._sessions.get(session_id)
+        if term is not None:
+            return term if self._matches_owner(term, owner_session_id, workspace_root) else None
         for term in self._sessions.values():
-            if term.name == session_id:
+            if term.name == session_id and self._matches_owner(
+                term, owner_session_id, workspace_root
+            ):
                 return term
         return None
 
-    def list_sessions(self) -> list[TerminalSessionStatus]:
-        return [s.status() for s in self._sessions.values()]
+    def list_sessions(
+        self,
+        *,
+        owner_session_id: str | None = None,
+        workspace_root: str | None = None,
+    ) -> list[TerminalSessionStatus]:
+        return [
+            s.status()
+            for s in self._sessions.values()
+            if self._matches_owner(s, owner_session_id, workspace_root)
+        ]
 
-    def close_session(self, session_id: str) -> bool:
-        term = self._sessions.pop(session_id, None)
+    def close_session(
+        self,
+        session_id: str,
+        *,
+        owner_session_id: str | None = None,
+        workspace_root: str | None = None,
+    ) -> bool:
+        term = self.get_session(
+            session_id, owner_session_id=owner_session_id, workspace_root=workspace_root
+        )
         if term:
+            self._sessions.pop(term.session_id, None)
             term.close()
             return True
         return False
 
     def close_all(self) -> None:
+        """Process-wide shutdown only; session cleanup must use close_owned."""
         for term in list(self._sessions.values()):
             term.close()
         self._sessions.clear()
+
+    def close_owned(self, owner_session_id: str, *, workspace_root: str) -> None:
+        """Close only terminals created by this session in this workspace."""
+        for term in list(self._sessions.values()):
+            if self._matches_owner(term, owner_session_id, workspace_root):
+                self.close_session(
+                    term.session_id,
+                    owner_session_id=owner_session_id,
+                    workspace_root=workspace_root,
+                )
 
 
 _default_terminal_manager: TerminalManager | None = None

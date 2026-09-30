@@ -10,7 +10,14 @@ specialist roles from your workspace and home directory.
 | Role | Mode | Description |
 |---|---|---|
 | `default` | Primary | Full software engineering tool suite. |
-| `okabe` | Extended | Experimental mad-scientist persona with advanced toolsets. |
+| `okabe` | Extended | Meticulous senior engineer with a focused tool set; inherits bundled subagents. |
+
+Okabe uses the default system prompt with a senior-engineer instruction. Its
+17 tools omit `Think` and team coordination tools from the default role's 24;
+its `coder`, `explore`, and `plan` subagents are inherited. These are separate
+from the discovered `planner` role. Bundled `plan` enforces read-only execution;
+`explore` declares that mode but currently relies on its prompt for tool
+restrictions.
 
 Launch with a bundled role:
 
@@ -35,7 +42,7 @@ This repo ships: `architect`, `build-error-resolver`, `code-reviewer`,
 
 | Role | Mode | Description |
 |---|---|---|
-| `architect` | General | Systems architect for components, interfaces, boundary layers. |
+| `architect` | Read-Only | Systems architect for components, interfaces, boundary layers. |
 | `build-error-resolver` | General | Root-causes compiler, build, and typecheck errors. |
 | `code-reviewer` | Read-Only | Security, correctness, and architecture review. |
 | `planner` | Read-Only | Actionable implementation plans with phased milestones. |
@@ -72,8 +79,13 @@ Fields:
 - `name` — role id used with `--agent <name>` and `/agent`.
 - `description` — one-line summary shown in `/agents roles`.
 - `tools` — tool allow-list for the role (e.g. read-only roles omit
-  `Edit`/`Bash`). Omit to inherit the full suite.
-- Optional: `mode` (`general` vs read-only family), `supports_background`.
+  `Edit`/`Bash`). Omit to inherit the full suite in general mode.
+  Read-only mode always limits execution to `read`, `grep`, and `glob`,
+  including when an allow-list requests shell, web, or delegation tools.
+  Without an explicit mode, a list containing only read/search tools infers
+  read-only mode.
+- Optional: `mode` (`general` vs read-only family), `supports_background`,
+  `exclude_tools`, `model`.
 
 The body after the frontmatter is the system prompt. Keep it task-focused:
 mission, workflow steps, output expectations. See

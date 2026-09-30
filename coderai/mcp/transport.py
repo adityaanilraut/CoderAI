@@ -258,14 +258,16 @@ class SseMcpTransport(McpTransport):
         def _sse_worker() -> None:
             try:
                 assert self._session is not None
-                self._response = self._session.get(self.url, stream=True, timeout=(timeout_s, None))
+                # Redirect destinations have not passed our URL policy and may
+                # receive configured authentication headers. Reject them.
+                self._response = self._session.get(
+                    self.url, stream=True, timeout=(timeout_s, None), allow_redirects=False
+                )
                 response = self._response
                 self.last_http_status = response.status_code
-                if not response.ok:
-                    if not endpoint_ready.is_set():
-                        if self._loop:
-                            self._loop.call_soon_threadsafe(endpoint_ready.set)
-                    return
+                if response.status_code >= 300:
+                    detail = " (redirects are disabled)" if response.status_code < 400 else ""
+                    raise RuntimeError(f"HTTP {response.status_code}{detail}")
 
                 current_event = "message"
                 data_buffer: list[str] = []
@@ -378,19 +380,50 @@ class SseMcpTransport(McpTransport):
         if not self._post_endpoint or self._disconnected or not self._post_session:
             return
 
+        msg_id = message.get("id")
+
         def _do_post() -> None:
             try:
                 assert self._post_session is not None and self._post_endpoint is not None
-                self._post_session.post(self._post_endpoint, json=message, timeout=30.0)
-            except Exception:
-                pass
+                resp = self._post_session.post(
+                    self._post_endpoint, json=message, timeout=30.0, allow_redirects=False
+                )
+                self.last_http_status = resp.status_code
+                if resp.status_code >= 300:
+                    detail = "redirects are disabled" if resp.status_code < 400 else resp.text[:500]
+                    if msg_id is not None and self.on_message:
+                        self.on_message(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": msg_id,
+                                "error": {
+                                    "code": resp.status_code,
+                                    "message": f"HTTP {resp.status_code}: {detail}",
+                                },
+                            }
+                        )
+                    elif self.on_disconnect:
+                        self.on_disconnect(
+                            f"SSE MCP POST failed: HTTP {resp.status_code}: {detail}"
+                        )
+            except Exception as exc:
+                if msg_id is not None and self.on_message:
+                    self.on_message(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": msg_id,
+                            "error": {"code": -32603, "message": f"Transport error: {exc}"},
+                        }
+                    )
+                elif not self._disconnected and self.on_disconnect:
+                    self.on_disconnect(f"SSE MCP POST failed: {exc}")
 
         threading.Thread(target=_do_post, daemon=True).start()
 
     async def disconnect(self) -> None:
         self._disconnected = True
         self._running = False
-        if self._response:
+        if self._response is not None:
             try:
                 self._response.close()
             except Exception:
@@ -464,13 +497,12 @@ class StreamableHttpMcpTransport(McpTransport):
                     json=message,
                     timeout=30.0,
                     headers=headers,
+                    allow_redirects=False,
                 )
                 self.last_http_status = resp.status_code
-                sess_id = resp.headers.get("Mcp-Session-Id")
-                if sess_id:
-                    self.mcp_session_id = sess_id
 
-                if resp.status_code >= 400:
+                if resp.status_code >= 300:
+                    detail = "redirects are disabled" if resp.status_code < 400 else resp.text[:500]
                     if msg_id is not None and self.on_message:
                         self.on_message(
                             {
@@ -478,11 +510,19 @@ class StreamableHttpMcpTransport(McpTransport):
                                 "id": msg_id,
                                 "error": {
                                     "code": resp.status_code,
-                                    "message": f"HTTP {resp.status_code}: {resp.text[:500]}",
+                                    "message": f"HTTP {resp.status_code}: {detail}",
                                 },
                             }
                         )
+                    elif not self._disconnected and self.on_disconnect:
+                        self.on_disconnect(
+                            f"HTTP transport POST failed: HTTP {resp.status_code}: {detail}"
+                        )
                     return
+
+                sess_id = resp.headers.get("Mcp-Session-Id")
+                if sess_id:
+                    self.mcp_session_id = sess_id
 
                 ctype = (resp.headers.get("content-type") or "").lower()
                 if "text/event-stream" in ctype:

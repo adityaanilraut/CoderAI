@@ -1,5 +1,3 @@
-""""""
-
 from __future__ import annotations
 
 import os
@@ -229,7 +227,6 @@ def get_clean_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-# --- from coderai/core/common/process_tree.py ---
 """Process tree management, escalated killing, and secure environment scrubbing."""
 
 
@@ -364,9 +361,6 @@ def escalated_kill_process_tree(
     kill_process_tree(pid, _SIGKILL)
     return not is_process_alive(pid)
 
-
-# --- from coderai/core/common/bash_timeout.py ---
-""""""
 
 DEFAULT_BASH_TIMEOUT_MS = 10 * 60 * 1000
 MIN_BASH_TIMEOUT_MS = 1000

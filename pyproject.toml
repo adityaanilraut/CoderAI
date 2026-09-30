@@ -63,10 +63,11 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=4.0",
     "pytest-benchmark>=4.0",
-    "ruff>=0.1.0",
-    "mypy>=1.0.0",
-    "types-requests>=2.31.0.0",
-    "types-PyYAML>=6.0",
+    "ruff==0.16.8",
+    "mypy==2.3.1",
+    "types-requests==2.33.0.20260906",
+    "types-PyYAML==6.0.12.20260906",
+    "pip-audit==2.10.1",
     # Binary packaging (coderai.spec + scripts/verify_binary.py).
     "pyinstaller>=6.0",
 ]
@@ -86,9 +87,6 @@ include = ["coderai*"]
 [tool.setuptools.package-data]
 coderai = [
     "py.typed",
-    "vendor/rg",
-    "vendor/rg-*",
-    "vendor/rg.exe",
     "prompt/templates/*.md",
     "tools/*/*.md",
     "skills/*/SKILL.md",
@@ -97,6 +95,9 @@ coderai = [
     "agents/*/*.yaml",
     "agents/*/*.md",
 ]
+
+[tool.setuptools.exclude-package-data]
+coderai = ["vendor/rg", "vendor/rg-*", "vendor/rg.exe"]
 
 [tool.setuptools.dynamic]
 version = {attr = "coderai._version.__version__"}
@@ -120,22 +121,32 @@ warn_unused_configs = true
 ignore_missing_imports = true
 exclude = ["tests/"]
 
+# Remaining debt is explicit and budgeted in docs/type-suppression-budget.json.
 [[tool.mypy.overrides]]
 module = [
-    "coderai.acp.*",
-    "coderai.background.*",
+    "coderai.background.agent_runner",
+    "coderai.background.summary",
     "coderai.cli.info",
     "coderai.llm",
-    "coderai.mcp.*",
-    "coderai.soul.*",
+    "coderai.soul.coderaisoul",
+    "coderai.soul.compaction",
+    "coderai.soul.message",
     "coderai.subagents.runner",
-    "coderai.telemetry.*",
-    "coderai.tools.*",
-    "coderai.ui.*",
+    "coderai.tools",
+    "coderai.tools.ask_user",
+    "coderai.tools.background",
+    "coderai.tools.file.replace",
+    "coderai.tools.session.query",
+    "coderai.tools.shell",
+    "coderai.ui.shell.app",
+    "coderai.ui.shell.dispatch",
+    "coderai.ui.shell.placeholders",
+    "coderai.ui.shell.prompt",
+    "coderai.ui.shell.prompt_completers",
+    "coderai.ui.shell.slash",
+    "coderai.ui.shell.visualize._approval_panel",
     "coderai.utils.aioqueue",
     "coderai.utils.media_tags",
-    "coderai.web_providers",
-    "coderai.wire.*",
 ]
 ignore_errors = true
 

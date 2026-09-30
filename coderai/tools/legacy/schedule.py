@@ -5,8 +5,26 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from coderai.schedule import get_schedule_manager
+from coderai.schedule import ScheduleManager, get_schedule_manager
 from coderai.tools.legacy.types import ToolResult, as_str
+
+
+def _context_value(context: Any, key: str) -> Any:
+    return context.get(key) if isinstance(context, dict) else getattr(context, key, None)
+
+
+def _schedule_manager(context: Any) -> ScheduleManager:
+    manager = _context_value(context, "session_manager")
+    scheduler = getattr(manager, "schedule_manager", None)
+    if isinstance(scheduler, ScheduleManager):
+        return scheduler
+    root = _context_value(context, "project_root")
+    if root:
+        from coderai.soul.session.store import JsonlSessionStore
+
+        store = JsonlSessionStore(str(root), cleanup=False)
+        return get_schedule_manager(str(store.project_dir / "schedule.json"))
+    return get_schedule_manager()
 
 
 def handle_schedule_create_tool(args: dict[str, Any], context: Any) -> ToolResult:
@@ -23,8 +41,8 @@ def handle_schedule_create_tool(args: dict[str, Any], context: Any) -> ToolResul
             error="Missing required parameter `prompt`.",
         )
 
-    mgr = get_schedule_manager()
-    session_id = getattr(context, "session_id", None)
+    mgr = _schedule_manager(context)
+    session_id = _context_value(context, "session_id")
     try:
         rec = mgr.create(
             prompt=prompt,
@@ -50,8 +68,8 @@ def handle_schedule_create_tool(args: dict[str, Any], context: Any) -> ToolResul
 
 def handle_schedule_list_tool(args: dict[str, Any], context: Any) -> ToolResult:
     """List all active and overdue session reminders."""
-    mgr = get_schedule_manager()
-    session_id = getattr(context, "session_id", None)
+    mgr = _schedule_manager(context)
+    session_id = _context_value(context, "session_id")
     records = mgr.list_schedules(session_id=session_id)
     out = [r.to_dict() for r in records]
     return ToolResult(
@@ -72,8 +90,8 @@ def handle_schedule_delete_tool(args: dict[str, Any], context: Any) -> ToolResul
             error="Missing required parameter `schedule_id`.",
         )
 
-    mgr = get_schedule_manager()
-    deleted = mgr.delete(schedule_id)
+    mgr = _schedule_manager(context)
+    deleted = mgr.delete(schedule_id, session_id=_context_value(context, "session_id"))
     if not deleted:
         return ToolResult(
             ok=False,

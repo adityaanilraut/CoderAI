@@ -10,7 +10,8 @@ from typing import Any
 import pytest
 
 sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "src"),
+    0,
+    os.path.join(os.path.dirname(__file__), "..", "src"),
 )
 
 from coderai_sdk import ALLOW_ALL, DENY_ALL, ChatMessage, CoderAIClient, SessionInfo, TurnResult
@@ -151,7 +152,7 @@ async def test_question_handler_custom_answers() -> None:
 async def test_tool_calls_recorded() -> None:
     engine = FakeEngine([ToolCallPart(id="c1", name="read"), TextPart(text="ok")])
     result = await CoderAIClient(engine=engine).prompt("read it")
-    assert result.tool_calls == [{"id": "c1", "name": "read"}]
+    assert result.tool_calls == [{"id": "c1", "name": "read", "arguments": ""}]
     assert result.text == "ok"
 
 

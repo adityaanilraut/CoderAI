@@ -738,8 +738,7 @@ def resolve_current_settings(
         ),
         # Project-level notify is ignored: an untrusted checkout must not be able
         # to name an executable that runs on task completion.
-        "notify": first(system_env.get("NOTIFY"), user.get("notify"))
-        or None,
+        "notify": first(system_env.get("NOTIFY"), user.get("notify")) or None,
         "webSearchTool": (
             first(
                 system_env.get("WEB_SEARCH_TOOL"),

@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from coderai.ui.shell.console import PANEL_BORDER_STYLE, PANEL_PADDING
 from coderai.ui.shell.session_picker import select_with_arrows
 from coderai.utils.common.model_capabilities import (
     get_model_badges,
@@ -181,15 +182,18 @@ def render_setup_status_table(console: Any | None, project_root: str = ".") -> N
     if console is not None and _RICH:
         table = Table(
             title="CoderAI Provider & API Key Status",
-            border_style="cyan",
+            border_style=PANEL_BORDER_STYLE,
             header_style="bold cyan",
             expand=True,
+            padding=(0, 1),
         )
-        table.add_column("Provider", style="bold white", width=18)
-        table.add_column("Env Variable", style="dim cyan", width=22)
-        table.add_column("Status / Key", width=24)
-        table.add_column("Endpoint", style="dim", width=36)
-        table.add_column("Default Model", style="yellow")
+        # Ratios instead of fixed widths: 18+22+24+36 overflowed an 80-col
+        # terminal and the endpoint slice didn't match the column.
+        table.add_column("Provider", style="bold white", ratio=3, overflow="fold")
+        table.add_column("Env", style="dim cyan", ratio=2, overflow="ellipsis", no_wrap=True)
+        table.add_column("Status", ratio=3, overflow="fold")
+        table.add_column("Endpoint", style="dim", ratio=3, overflow="ellipsis", no_wrap=True)
+        table.add_column("Model", style="yellow", ratio=2, overflow="ellipsis", no_wrap=True)
 
         for key, p in keys_status.items():
             if p["configured"]:
@@ -208,7 +212,7 @@ def render_setup_status_table(console: Any | None, project_root: str = ".") -> N
                 name_text,
                 p["env_var"],
                 status_text,
-                p["default_base_url"][:35],
+                p["default_base_url"],
                 p["default_model"],
             )
 
@@ -227,8 +231,8 @@ def render_setup_status_table(console: Any | None, project_root: str = ".") -> N
         panel = Panel(
             "\n".join(info_lines),
             title="[bold cyan]Active Configuration Overview[/]",
-            border_style="bright_blue",
-            padding=(0, 1),
+            border_style=PANEL_BORDER_STYLE,
+            padding=PANEL_PADDING,
         )
         console.print(panel)
         console.print()

@@ -77,11 +77,16 @@ class NotificationManager:
                 return True
         return False
 
-    def claim_for_sink(self, sink: str, *, limit: int = DELIVER_LIMIT) -> list[NotificationView]:
+    def claim_for_sink(
+        self, sink: str, *, limit: int = DELIVER_LIMIT, session_id: str | None = None
+    ) -> list[NotificationView]:
         self.recover()
         claimed: list[NotificationView] = []
         now = time.time()
         for view in reversed(self._store.list_views()):
+            owner = view.event.payload.get("sessionId")
+            if session_id is not None and owner and owner != session_id:
+                continue
             sink_state = view.delivery.sinks.get(sink)
             if sink_state is None or sink_state.status != "pending":
                 continue
@@ -100,6 +105,7 @@ class NotificationManager:
         on_notification: Callable[[NotificationView], Awaitable[None] | None],
         limit: int = DELIVER_LIMIT,
         before_claim: Callable[[], object] | None = None,
+        session_id: str | None = None,
     ) -> list[NotificationView]:
         """Claim + handle + ack pending notifications for one sink.
 
@@ -109,7 +115,7 @@ class NotificationManager:
         if before_claim is not None:
             before_claim()
         delivered: list[NotificationView] = []
-        for view in self.claim_for_sink(sink, limit=limit):
+        for view in self.claim_for_sink(sink, limit=limit, session_id=session_id):
             try:
                 result = on_notification(view)
                 if result is not None:

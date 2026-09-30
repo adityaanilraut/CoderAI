@@ -13,6 +13,7 @@ from coderai.teams.concurrency import ConcurrencyConflictError
 from coderai.teams.deadlock import assert_acyclic_dependencies
 from coderai.teams.mailbox import ActorChannel
 from coderai.teams.models import TeamMessage, TeamTask, Teammate
+from coderai.tools.legacy.types import ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +180,7 @@ class TeamManager:
         self.channel = ActorChannel()
         self._teammates: dict[str, Teammate] = {}
         self._active_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._execution_contexts: dict[str, ToolExecutionContext] = {}
 
     def spawn_teammate(
         self,
@@ -191,8 +193,21 @@ class TeamManager:
         project_root: str | None = None,
         parent_session_id: str | None = None,
         depth: int = 0,
+        execution_context: ToolExecutionContext | None = None,
     ) -> Teammate:
         teammate_id = f"tm_{uuid.uuid4().hex[:8]}"
+        if execution_context is not None:
+            from dataclasses import replace
+
+            execution_context = replace(execution_context)
+            owner_root = getattr(execution_context.session_manager, "project_root", None)
+            project_root = str(owner_root or execution_context.project_root)
+            parent_session_id = execution_context.session_id
+            depth = 0
+            for handle in get_agent_registry().list():
+                if handle.run_session_id == parent_session_id:
+                    depth = handle.depth + 1
+                    break
 
         # Resolve markdown role specs if custom prompt not provided. The scan
         # root is clamped to a resolved directory (project root override wins)
@@ -234,6 +249,8 @@ class TeamManager:
             depth=depth,
         )
         self._teammates[teammate_id] = teammate
+        if execution_context is not None:
+            self._execution_contexts[teammate_id] = execution_context
         self.channel.register_mailbox(teammate_id)
 
         if auto_start:
@@ -474,6 +491,17 @@ class TeamManager:
         from coderai.subagents.builder import build_spec
         from coderai.subagents.runner import SubAgentManager
 
+        exec_root = (
+            teammate.project_root or os.environ.get("CODERAI_PROJECT_ROOT") or str(Path.cwd())
+        )
+        context = self._execution_contexts.get(teammate.teammate_id)
+        if context is None:
+            context = ToolExecutionContext(
+                session_id=teammate.parent_session_id or "",
+                project_root=exec_root,
+                create_openai_client=lambda: create_openai_client(exec_root),
+            )
+
         prompt = (
             f"You are teammate {teammate.name} with role '{teammate.role}'.\n"
             f"Task Title: {task.title}\n"
@@ -481,7 +509,7 @@ class TeamManager:
             f"Priority: {task.priority}\n"
         )
         spec = build_spec(
-            context=None,
+            context=context,
             args={
                 "description": task.title,
                 "prompt": prompt,
@@ -491,14 +519,17 @@ class TeamManager:
             allowed_tools=teammate.allowed_tools,
             system_prompt=teammate.system_prompt,
             parent_session_id=teammate.parent_session_id,
-            depth=teammate.depth + 1,
+            project_root=exec_root,
+            depth=(
+                None if teammate.teammate_id in self._execution_contexts else teammate.depth + 1
+            ),
         )
-        exec_root = (
-            teammate.project_root or os.environ.get("CODERAI_PROJECT_ROOT") or str(Path.cwd())
-        )
+        parent_manager = context.session_manager
+        get_settings = getattr(parent_manager, "get_resolved_settings", None)
         runner = SubAgentManager(
             project_root=exec_root,
-            create_openai_client=lambda: create_openai_client(exec_root),
+            create_openai_client=context.create_openai_client,
+            get_resolved_settings=get_settings if callable(get_settings) else None,
         )
         result = await runner.spawn_subagent(spec)
         if result.status == "completed" and result.summary:
@@ -589,6 +620,37 @@ class TeamManager:
                     exc_info=True,
                 )
                 await asyncio.sleep(0.5)
+
+    def cancel_owned_teammates(
+        self, session_ids: set[str], project_root: str
+    ) -> list[asyncio.Task[Any]]:
+        """Stop workers belonging to one manager without disturbing other projects."""
+        from pathlib import Path
+
+        root = str(Path(project_root).resolve())
+        tasks = []
+        for teammate_id, teammate in list(self._teammates.items()):
+            if (
+                teammate is None
+                or teammate.parent_session_id not in session_ids
+                or not teammate.project_root
+                or str(Path(teammate.project_root).resolve()) != root
+            ):
+                continue
+            task = self._active_tasks.get(teammate_id)
+            if task is not None and not task.done():
+                task.cancel()
+                tasks.append(task)
+                task.add_done_callback(
+                    lambda done: done.exception() if not done.cancelled() else None
+                )
+            self._active_tasks.pop(teammate_id, None)
+            contexts = getattr(self, "_execution_contexts", {})
+            contexts.pop(teammate_id, None)
+            self.channel.unregister_mailbox(teammate_id)
+            teammate.status = "interrupted"
+            self._teammates.pop(teammate_id, None)
+        return tasks
 
     def cancel_all_teammates(self) -> None:
         """Cancel and clean up all active teammate worker tasks."""

@@ -16,7 +16,7 @@ git clone https://github.com/adityaanilraut/CoderAI.git
 cd CoderAI
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+.venv/bin/python -m pip install -e ".[dev,jev]" -e sdks/coderai-sdk
 ```
 
 ---
@@ -33,10 +33,14 @@ pip install -e ".[dev]"
 
 Run tests per file using pytest:
 ```bash
-python3 -m pytest tests/test_session_engine.py -p no:cacheprovider --benchmark-disable -q
-python3 -m pytest tests/test_orchestration.py -p no:cacheprovider --benchmark-disable -q
-python3 -m pytest tests/test_subagents.py -p no:cacheprovider --benchmark-disable -q
+.venv/bin/python -m pytest tests/test_session_engine.py -p no:cacheprovider --benchmark-disable -q
+.venv/bin/python -m pytest tests/test_orchestration.py -p no:cacheprovider --benchmark-disable -q
+.venv/bin/python -m pytest tests/test_subagents.py -p no:cacheprovider --benchmark-disable -q
 ```
+
+`make check` runs the shared source, SDK, wire, type, dependency and audit gates.
+Use `make test-jev`, `make test-sdk`, or `make test-e2e` for a focused suite.
+The full [verification contract](docs/verification.md) also documents network-dependent auditing and remaining live-provider gaps.
 
 ---
 

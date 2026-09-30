@@ -172,11 +172,53 @@ class ToolExecutor:
             if parsed:
                 parsed_calls.append(parsed)
 
+        call_ids = [tc["id"] for tc in parsed_calls]
+        if len(set(call_ids)) != len(call_ids):
+            # Direct callers may bypass model-response normalization. Reject
+            # the whole batch before any hook or handler can have side effects.
+            rejected: list[dict[str, Any]] = []
+            for tc in parsed_calls:
+                result = ToolResult(
+                    ok=False,
+                    name=tc["function"]["name"],
+                    error="DuplicateToolCallId: batch contains duplicate tool call IDs; no tools were executed.",
+                )
+                rejected.append(
+                    {
+                        "toolCallId": tc["id"],
+                        "content": self.format_tool_result(result),
+                        "result": _result_as_dict(result),
+                    }
+                )
+            return rejected
+
         should_stop = None
         if hooks:
             should_stop = getattr(hooks, "should_stop", None) or (
                 hooks.get("should_stop") if isinstance(hooks, dict) else None
             )
+
+        if parallel and len(parsed_calls) > 1:
+            from coderai.hooks import HookPoint, load_hook_config, normalize_hook_point
+
+            config = load_hook_config(self.project_root)
+            has_pre_tool_hooks = any(
+                entries and normalize_hook_point(point) == HookPoint.PRE_TOOL_USE.value
+                for point, entries in config.items()
+            )
+            authorizations = (
+                hooks.get("authorizations", {})
+                if isinstance(hooks, dict)
+                else getattr(hooks, "authorizations", {})
+            )
+            has_cached_stop = any(
+                (getattr(authorization, "hook_outcome", None) or {}).get("stop")
+                for authorization in (authorizations or {}).values()
+            )
+            if has_pre_tool_hooks or has_cached_stop:
+                # A hook halt must be observed before sibling handlers start.
+                # Without pre-tool hooks, retain ordinary parallel dispatch.
+                parallel = False
 
         if parallel and len(parsed_calls) > 1:
             # Parallel execution path throttled by semaphore to prevent EMFILE
@@ -216,7 +258,9 @@ class ToolExecutor:
             executions = await asyncio.gather(*tasks, return_exceptions=True)
             res_list: list[dict[str, Any]] = []
             for i, ex in enumerate(executions):
-                if isinstance(ex, Exception):
+                if isinstance(ex, BaseException):
+                    if not isinstance(ex, Exception):
+                        raise ex
                     tc = parsed_calls[i]
                     fn_name = tc.get("function", {}).get("name", "tool")
                     res_list.append(
@@ -252,7 +296,7 @@ class ToolExecutor:
                 }
             )
 
-            if should_stop and should_stop():
+            if result.concludes_turn or (should_stop and should_stop()):
                 break
 
         return executions_list
@@ -438,6 +482,7 @@ class ToolExecutor:
                 if get_hook("allowed_tools") is not None
                 else get_hook("allowedTools")
             ),
+            authorization=(get_hook("authorizations") or {}).get(tool_call.get("id")),
         )
 
     def _pre_execute_deny(
@@ -588,21 +633,56 @@ class ToolExecutor:
 
         from coderai.hooks import HookPoint, run_hook_point
 
-        pre_outcome = run_hook_point(
-            HookPoint.PRE_TOOL_USE,
-            payload={
-                "tool_name": tool_name,
-                "tool_input": args,
-                "session_id": getattr(context, "session_id", "default"),
-            },
-            project_root=getattr(context, "project_root", self.project_root),
-        )
-        if pre_outcome.decision == "deny":
+        authorization = context.authorization
+        if authorization is not None and not authorization.matches(context, args):
+            authorization = None
+        if authorization is not None and authorization.hook_outcome is not None:
+            outcome = authorization.hook_outcome
+        else:
+            outcome = run_hook_point(
+                HookPoint.PRE_TOOL_USE,
+                payload={
+                    "tool_name": tool_name,
+                    "tool_input": args,
+                    "session_id": context.session_id,
+                },
+                project_root=context.project_root,
+            ).to_dict()
+        if outcome.get("stop"):
+            result = ToolResult(
+                ok=False,
+                name=tool_name,
+                error=f"PreToolUseStopped: {outcome.get('stopReason') or outcome.get('reason') or 'halted by a PreToolUse hook.'}",
+                concludes_turn=True,
+                metadata={"hookStop": True},
+            )
+            result._force_stop_turn = True  # type: ignore[attr-defined]
+            return result
+        if outcome.get("decision") == "deny":
             return ToolResult(
                 ok=False,
                 name=tool_name,
-                error=f"PreToolUseDenied: {pre_outcome.reason or 'blocked by a PreToolUse hook.'}",
+                error=f"PreToolUseDenied: {outcome.get('reason') or 'blocked by a PreToolUse hook.'}",
             )
+        if outcome.get("updatedInput") is not None and outcome["updatedInput"] != args:
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error="PreToolUseInputChangeRequiresReplan: hook input changes require a new permission plan before execution.",
+            )
+        if outcome.get("decision") == "ask" and not (
+            authorization is not None and authorization.hook_approved
+        ):
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=f"PreToolUseApprovalRequired: {outcome.get('reason') or 'explicit approval was not granted.'}",
+            )
+        for text in [
+            *(outcome.get("additionalContext") or []),
+            *(outcome.get("systemMessages") or []),
+        ]:
+            context.defer_context(ToolExecutionFollowUpMessage(role="system", content=str(text)))
         return None
 
     async def _run_handler(
@@ -671,28 +751,45 @@ class ToolExecutor:
                     await _lock_stack.enter_async_context(
                         path_lock_mgr.acquire_write_lock(lock_path, effective_workdir)
                     )
-                if timeout_ms and int(timeout_ms) > 0:
-                    invoke_task = asyncio.create_task(_invoke())
-                    try:
-                        res = await asyncio.wait_for(
-                            asyncio.shield(invoke_task),
-                            timeout=int(timeout_ms) / 1000.0,
-                        )
-                    except (TimeoutError, asyncio.TimeoutError):
-                        transferred_stack = _lock_stack.pop_all()
+                timeout_s = int(timeout_ms) / 1000.0 if timeout_ms and int(timeout_ms) > 0 else None
+                invoke_task = asyncio.create_task(_invoke())
+                try:
+                    # Cancelling a waiter cannot stop a to_thread worker. Keep
+                    # its task alive so its path locks cover the actual mutation.
+                    # asyncio.wait also avoids propagating cancellation to it.
+                    done, _ = await asyncio.wait([invoke_task], timeout=timeout_s)
+                    if not done:
+                        raise asyncio.TimeoutError
+                    res = invoke_task.result()
+                except (asyncio.CancelledError, TimeoutError) as exc:
+                    if isinstance(exc, asyncio.CancelledError) and inspect.iscoroutinefunction(
+                        handler
+                    ):
+                        invoke_task.cancel()
+                    transferred_stack = _lock_stack.pop_all()
 
-                        async def _release_when_done(
-                            stack: _contextlib.AsyncExitStack, task: asyncio.Task[Any]
-                        ) -> None:
-                            try:
-                                await asyncio.wait([task])
-                            finally:
-                                await stack.aclose()
+                    async def _release_when_done(
+                        stack: _contextlib.AsyncExitStack, task: asyncio.Task[Any]
+                    ) -> None:
+                        try:
+                            await asyncio.wait([task])
+                            # Observe late failures after the caller has already
+                            # received cancellation or a timeout result.
+                            if not task.cancelled():
+                                task.exception()
+                        finally:
+                            await stack.aclose()
 
-                        asyncio.create_task(_release_when_done(transferred_stack, invoke_task))
-                        raise
-                else:
-                    res = await _invoke()
+                    cleanup_tasks = getattr(self, "_handler_cleanup_tasks", None)
+                    if cleanup_tasks is None:
+                        self._handler_cleanup_tasks: set[asyncio.Task[None]] = set()
+                        cleanup_tasks = self._handler_cleanup_tasks
+                    cleanup_task = asyncio.create_task(
+                        _release_when_done(transferred_stack, invoke_task)
+                    )
+                    cleanup_tasks.add(cleanup_task)
+                    cleanup_task.add_done_callback(cleanup_tasks.discard)
+                    raise
         except (TimeoutError, asyncio.TimeoutError):
             return ToolResult(
                 ok=False,

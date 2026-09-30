@@ -17,6 +17,7 @@ from rich.table import Table
 from rich.text import Text
 
 from coderai._version import __version__
+from coderai.ui.shell.console import PANEL_BORDER_STYLE, PANEL_PADDING
 
 _RICH = True
 
@@ -83,61 +84,68 @@ def render_welcome_screen(
         else:
             console.print(logo)
 
-        # Header Info Table inside Panel — clean 3-row structured grid
-        grid = Table.grid(expand=True, padding=(0, 2))
-        grid.add_column(justify="left", ratio=1)
-        grid.add_column(justify="right", ratio=1)
+        # Four fixed columns so labels share a vertical edge and long
+        # values ellipsize instead of wrapping the row out of alignment.
+        # Label width 12 fits the longest key ("Plan Mode:") at 80 columns.
+        grid = Table.grid(expand=True, padding=(0, 1))
+        grid.add_column(width=12, no_wrap=True, style="dim")
+        grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
+        grid.add_column(width=12, no_wrap=True, style="dim")
+        grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
 
-        # Row 1: Engine & Workspace
-        r1_c1 = Text()
-        r1_c1.append("  Engine: ", style="dim")
-        r1_c1.append(f"v{__version__} ", style="bold")
-        r1_c1.append(f"(Py {py_ver})", style="dim")
-
-        r1_c2 = Text()
-        r1_c2.append("Workspace: ", style="dim")
-        r1_c2.append(f"{workspace_str}", style="bold")
+        workspace = Text(workspace_str, style="bold", no_wrap=True, overflow="ellipsis")
         if branch:
-            r1_c2.append(f" ({branch}{'*' if is_dirty else ''})", style="bold magenta")
-        grid.add_row(r1_c1, r1_c2)
+            workspace.append(f" ({branch}{'*' if is_dirty else ''})", style="bold magenta")
 
-        # Row 2: Model & Status
-        r2_c1 = Text()
-        r2_c1.append("  Model: ", style="dim")
-        r2_c1.append(f"{active_model}", style="bold cyan")
-
-        r2_c2 = Text()
-        r2_c2.append("Status: ", style="dim")
+        status = Text(no_wrap=True, overflow="ellipsis")
         if has_api_key:
-            r2_c2.append("● Connected", style="bold green")
+            status.append("● Connected", style="bold green")
         else:
-            r2_c2.append("○ No API Key (Run /setup)", style="bold yellow")
+            status.append("○ No API Key", style="bold yellow")
+
+        tools = Text(no_wrap=True, overflow="ellipsis")
+        tool_bits: list[str] = []
         if mcp_servers_count > 0:
-            r2_c2.append(f" • MCP ({mcp_servers_count})", style="bold green")
+            tool_bits.append(f"MCP {mcp_servers_count}")
         if skills_count > 0:
-            r2_c2.append(f" • Skills ({skills_count})", style="bold yellow")
-        grid.add_row(r2_c1, r2_c2)
+            tool_bits.append(f"Skills {skills_count}")
+        tools.append(" · ".join(tool_bits) if tool_bits else "—", style="bold")
 
-        # Row 3: Agent, Reasoning & Plan Mode
-        r3_c1 = Text()
-        r3_c1.append("  Agent: ", style="dim")
-        r3_c1.append(
-            f"{active_agent}  ",
-            style="bold magenta" if active_agent != "default" else "bold white",
+        grid.add_row(
+            "Engine:",
+            Text(f"v{__version__} (Py {py_ver})", style="bold", no_wrap=True, overflow="ellipsis"),
+            "Workspace:",
+            workspace,
         )
-        r3_c1.append("•  Reasoning: ", style="dim")
-        r3_c1.append(f"{thinking_str}", style="default")
-
-        r3_c2 = Text()
-        r3_c2.append("Plan Mode: ", style="dim")
-        r3_c2.append(f"{plan_status}", style="bold yellow" if plan_mode else "dim")
-        grid.add_row(r3_c1, r3_c2)
+        grid.add_row(
+            "Model:",
+            Text(active_model, style="bold cyan", no_wrap=True, overflow="ellipsis"),
+            "Status:",
+            status,
+        )
+        grid.add_row(
+            "Agent:",
+            Text(
+                active_agent,
+                style="bold magenta" if active_agent != "default" else "bold",
+                no_wrap=True,
+                overflow="ellipsis",
+            ),
+            "Reasoning:",
+            Text(thinking_str, no_wrap=True, overflow="ellipsis"),
+        )
+        grid.add_row(
+            "Plan Mode:",
+            Text(plan_status, style="bold yellow" if plan_mode else "dim"),
+            "Tools:",
+            tools,
+        )
 
         panel = Panel(
             grid,
-            title="[bold cyan]CoderAI[/] [dim]• Autonomous AI Pair Programming in your Terminal[/]",
-            border_style="bright_blue",
-            padding=(0, 1),
+            title="[bold cyan]CoderAI[/] [dim]· Autonomous AI Pair Programming in your Terminal[/]",
+            border_style=PANEL_BORDER_STYLE,
+            padding=PANEL_PADDING,
         )
         console.print(panel)
 
@@ -167,10 +175,22 @@ def render_welcome_screen(
         print("\n" + str(get_gradient_ascii_logo()))
         branch_str = f" ({branch}{'*' if is_dirty else ''})" if branch else ""
         conn_str = "Connected" if has_api_key else "No API Key (Run /setup)"
+        tool_bits = []
+        if mcp_servers_count > 0:
+            tool_bits.append(f"MCP {mcp_servers_count}")
+        if skills_count > 0:
+            tool_bits.append(f"Skills {skills_count}")
+        tools_str = " · ".join(tool_bits) if tool_bits else "—"
+        label_w = 12
         print(f"CoderAI v{__version__} — AI Pair Programming in your Terminal")
-        print(
-            f"Workspace: {workspace_str}{branch_str} | Model: {active_model} | Status: {conn_str} | Plan: {plan_status}"
-        )
+        print(f"  {'Engine:':<{label_w}} v{__version__} (Py {py_ver})")
+        print(f"  {'Workspace:':<{label_w}} {workspace_str}{branch_str}")
+        print(f"  {'Model:':<{label_w}} {active_model}")
+        print(f"  {'Status:':<{label_w}} {conn_str}")
+        print(f"  {'Agent:':<{label_w}} {active_agent}")
+        print(f"  {'Reasoning:':<{label_w}} {thinking_str}")
+        print(f"  {'Plan Mode:':<{label_w}} {plan_status}")
+        print(f"  {'Tools:':<{label_w}} {tools_str}")
         print(
             "  /setup config · /help · /agent role · /doctor check · /plan mode\n"
             "  @file attach · Tab complete · Ctrl-C stop\n"

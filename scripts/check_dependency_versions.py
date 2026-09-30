@@ -5,13 +5,13 @@ Compares each constrained dependency declared in ``[project] dependencies``
 against the version actually installed in the current environment, catching
 breaking version drifts early (e.g. in CI before the test suite runs).
 
-Deliberately dependency-free (stdlib only, Python 3.10+) so it runs in
+Deliberately dependency-free (stdlib only, Python 3.12+) so it runs in
 minimal CI environments before the package itself is installed.
 
 Usage:
-    python3 scripts/check_dependency_versions.py
-    python3 scripts/check_dependency_versions.py --pyproject pyproject.toml
-    python3 scripts/check_dependency_versions.py --strict  # fail on missing deps
+    .venv/bin/python scripts/check_dependency_versions.py
+    .venv/bin/python scripts/check_dependency_versions.py --pyproject pyproject.toml
+    .venv/bin/python scripts/check_dependency_versions.py --strict  # fail on missing deps
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import re
 import sys
 from importlib import metadata
 from pathlib import Path
+import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PYPROJECT = REPO_ROOT / "pyproject.toml"
@@ -30,8 +31,7 @@ def _extract_dependencies(pyproject_text: str) -> list[str]:
     """Extract the ``[project] dependencies`` string list without a TOML parser.
 
     The project table uses a simple ``dependencies = [...]`` string array, so
-    a targeted scan is sufficient and keeps this script stdlib-only on
-    Python 3.10 (which has no ``tomllib``). Bracket-balanced scanning is used
+    the existing targeted scanner remains useful to callers. Bracket-balanced scanning is used
     so extras such as ``kosong[contrib]==0.56.0`` do not truncate the match.
     """
     start = re.search(r"^\s*dependencies\s*=\s*\[", pyproject_text, re.MULTILINE)
@@ -202,6 +202,9 @@ def main() -> int:
         action="store_true",
         help="Also fail when a declared dependency is not installed at all.",
     )
+    parser.add_argument(
+        "--extras", nargs="*", default=[], help="Also validate installed optional dependency groups"
+    )
     args = parser.parse_args()
 
     try:
@@ -212,6 +215,11 @@ def main() -> int:
 
     try:
         deps = _extract_dependencies(text)
+        optional = tomllib.loads(text)["project"].get("optional-dependencies", {})
+        for extra in args.extras:
+            if extra not in optional:
+                raise ValueError(f"Unknown dependency extra: {extra}")
+            deps.extend(optional[extra])
     except ValueError as exc:
         print(f"error: {exc} in {args.pyproject}", file=sys.stderr)
         return 1

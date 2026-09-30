@@ -2,7 +2,7 @@
 
 **CoderAI** is an autonomous terminal AI software engineering platform, agentic execution engine, and multi-agent swarm designed for high reliability, deterministic tool execution, token efficiency, and developer velocity.
 
-CoderAI couples a headless core runtime (`coderai.core`), a rich interactive terminal interface (`coderai.cli`), and a hybrid **Kahneman System 1 (Jev / TypeSafe) + System 2 (CoderAI Deep Review)** compound reasoning harness for ultra-fast, high-precision code review and autonomous software engineering.
+CoderAI couples a session runtime (`coderai.soul.session.manager`), a terminal interface (`coderai.ui.shell`), and a hybrid **Kahneman System 1 (Jev / TypeSafe) + System 2 (CoderAI Deep Review)** compound reasoning harness for ultra-fast, high-precision code review and autonomous software engineering.
 
 ---
 
@@ -39,6 +39,8 @@ Explore the CoderAI documentation suite:
 
 | Guide / Reference | Description |
 |---|---|
+| [**Runtime Architecture**](architecture.md) | Session ownership, execution boundaries, protocol adapters, and terminal rendering. |
+| [**Verification Contract**](verification.md) | Shared checks, release gates, dependency policy, and measured typing debt. |
 | [**CLI & Slash Commands**](cli.md) | Complete CLI flags, options, keyboard shortcuts, and interactive `/slash` commands. |
 | [**Configuration**](configuration.md) | Configuration hierarchy, provider credentials, LLM endpoints, permission presets, and JEV settings. |
 | [**Agent Roles & Discovery**](agent-roles.md) | Bundled specs (`default`, `okabe`) and dynamic Markdown discovery (`architect`, `tdd-guide`, etc.). |
@@ -82,4 +84,3 @@ Launch with a specialized role or plan mode:
 coderai --agent architect
 coderai --plan
 ```
-

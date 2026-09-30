@@ -20,7 +20,11 @@ import sys
 import uuid
 from typing import Any
 
+from coderai.approval_runtime.models import ApprovalResponseKind
+
 from coderai.utils.aioqueue import Queue, QueueShutDown
+from coderai.utils.broadcast import BroadcastQueueOverflow, DEFAULT_SUBSCRIBER_QUEUE_LIMIT
+from coderai.utils.logging import logger
 from coderai.wire.jsonrpc import ErrorCodes, Statuses
 from coderai.wire.protocol import WIRE_PROTOCOL_VERSION
 from coderai.wire.types import (
@@ -75,10 +79,15 @@ class WireServer:
         _active_wire_server = self
         self._mgr = mgr
         self._session_id = session_id
+        self._reserved_session_id = (
+            uuid.uuid4().hex
+            if session_id is None and callable(getattr(mgr, "get_event_emitter", None))
+            else None
+        )
         self._initialized = False
         self._client_supports_question = False
         self._client_supports_plan_mode = False
-        self._write_queue: Queue[dict[str, Any]] = Queue()
+        self._write_queue: Queue[dict[str, Any]] = Queue(maxsize=DEFAULT_SUBSCRIBER_QUEUE_LIMIT)
         self._pending: dict[str, Any] = {}
         self._turn_task: asyncio.Task | None = None
         self._steers: list[str] = []
@@ -86,6 +95,16 @@ class WireServer:
         self._hub_queue: Any = None
         self._dispatch_tasks: set[asyncio.Task[Any]] = set()
         self._cached_client_info: dict[str, Any] | None = None
+        self._reader_task: asyncio.Task[Any] | None = None
+        from coderai.wire.emitter import WireEmitter
+
+        self._fallback_emitter = WireEmitter()
+
+    def _event_emitter(self) -> Any:
+        getter = getattr(self._mgr, "get_event_emitter", None)
+        if callable(getter) and self._session_id is not None:
+            return getter(self._session_id)
+        return self._fallback_emitter
 
     @staticmethod
     def _write_stdout(line: str) -> None:
@@ -95,12 +114,15 @@ class WireServer:
     # -- serve ------------------------------------------------------------
     async def serve(self) -> int:
         reader_task = asyncio.create_task(self._read_loop())
+        self._reader_task = reader_task
         writer_task = asyncio.create_task(self._write_loop())
         hub = getattr(self._mgr, "root_wire_hub", None)
         hub_task: asyncio.Task | None = None
-        if hub is not None:
-            self._hub_queue = hub.subscribe()
+        hub_owner = self._session_id or self._reserved_session_id
+        if hub is not None and hub_owner is not None:
+            self._hub_queue = hub.subscribe(session_id=hub_owner)
             hub_task = asyncio.create_task(self._hub_loop())
+            hub_task.add_done_callback(lambda _: self._hub_queue.close())
         try:
             await reader_task
         except (KeyboardInterrupt, asyncio.CancelledError):
@@ -117,15 +139,19 @@ class WireServer:
                     await self._turn_task
             if hub_task is not None:
                 hub_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
+                with contextlib.suppress(asyncio.CancelledError, BroadcastQueueOverflow):
                     await hub_task
             if hub is not None and self._hub_queue is not None:
                 try:
                     hub.unsubscribe(self._hub_queue)
                 except Exception:
                     pass
+            # Forwarders may have drained a final request while being cancelled.
+            self._shutdown_requests()
             self._write_queue.shutdown()
             await writer_task
+            self._fallback_emitter.close()
+            self._reader_task = None
             global _active_wire_server
             if _active_wire_server is self:
                 _active_wire_server = None
@@ -154,16 +180,23 @@ class WireServer:
             self._dispatch_tasks.add(task)
 
     async def _write_loop(self) -> None:
-        while True:
-            try:
-                msg = await self._write_queue.get()
-            except QueueShutDown:
-                break
-            try:
-                line = json.dumps(msg, ensure_ascii=False) + "\n"
-                await asyncio.to_thread(self._write_stdout, line)
-            except Exception:
-                break
+        try:
+            while True:
+                try:
+                    msg = await self._write_queue.get()
+                except QueueShutDown:
+                    break
+                try:
+                    line = json.dumps(msg, ensure_ascii=False) + "\n"
+                    await asyncio.to_thread(self._write_stdout, line)
+                except Exception:
+                    logger.exception("Wire output failed; closing connection")
+                    if self._reader_task is not None:
+                        self._reader_task.cancel()
+                    break
+        finally:
+            # A failed writer must wake producers blocked by backpressure.
+            self._write_queue.shutdown(immediate=True)
 
     async def _hub_loop(self) -> None:
         assert self._hub_queue is not None
@@ -171,6 +204,18 @@ class WireServer:
             try:
                 msg = await self._hub_queue.get()
             except asyncio.CancelledError:
+                return
+            except BroadcastQueueOverflow:
+                logger.exception("Wire root stream overflow; closing connection")
+                self._shutdown_requests()
+                if self._session_id is not None:
+                    self._mgr.interrupt_session(self._session_id)
+                if self._turn_task is not None:
+                    self._turn_task.cancel()
+                if self._reader_task is not None:
+                    self._reader_task.cancel()
+                raise
+            except QueueShutDown:
                 return
             except Exception:
                 return
@@ -227,16 +272,17 @@ class WireServer:
             "set_plan_mode": self._handle_set_plan_mode,
             "cancel": self._handle_cancel,
         }[method]
+        handler_response: dict[str, Any] | None
         try:
-            resp = await handler(msg_id, params)
+            handler_response = await handler(msg_id, params)
         except Exception as exc:
-            resp = (
+            handler_response = (
                 _error(msg_id, ErrorCodes.INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
                 if msg_id is not None
                 else None
             )
-        if resp is not None:
-            await self._send(resp)
+        if handler_response is not None:
+            await self._send(handler_response)
 
     # -- handlers -----------------------------------------------------------
     async def _handle_initialize(self, msg_id: Any, params: dict[str, Any]) -> dict[str, Any]:
@@ -310,6 +356,7 @@ class WireServer:
         user_input = params.get("user_input", "")
         if isinstance(user_input, list):
             from kosong.message import (
+                ContentPart as _KContentPart,
                 AudioURLPart,
                 ImageURLPart,
                 Message as _KMsg,
@@ -319,7 +366,7 @@ class WireServer:
             )
             from coderai.soul.message import check_message
 
-            _parts = []
+            _parts: list[_KContentPart] = []
             for item in user_input:
                 if isinstance(item, dict):
                     t = item.get("type")
@@ -334,7 +381,9 @@ class WireServer:
                     elif t == "think":
                         _parts.append(ThinkPart(think=item.get("think") or item.get("text", "")))
             _msg = _KMsg(role="user", content=_parts)
-            active_settings = getattr(self._mgr, "get_resolved_settings", lambda: {})() or {}
+            active_settings: dict[str, Any] = (
+                getattr(self._mgr, "get_resolved_settings", lambda: {})() or {}
+            )
             if self._cached_client_info is None:
                 self._cached_client_info = (
                     getattr(self._mgr, "create_openai_client", lambda: {})() or {}
@@ -357,6 +406,7 @@ class WireServer:
                 )
         text = user_input if isinstance(user_input, str) else json.dumps(user_input)
         self._cancel_event = asyncio.Event()
+        self._turn_task = asyncio.current_task()
         try:
             status = await self._run_turn(text)
         except asyncio.CancelledError:
@@ -380,6 +430,7 @@ class WireServer:
             return _error(msg_id, ErrorCodes.INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
         finally:
             self._cancel_event = None
+            self._turn_task = None
         if status == "cancelled":
             return _success(msg_id, {"status": Statuses.CANCELLED})
         if status == "max_steps":
@@ -404,9 +455,7 @@ class WireServer:
         events = 0
         requests = 0
         try:
-            from coderai.wire.emitter import get_emitter
-
-            for msg in get_emitter().buffered():
+            for msg in self._event_emitter().buffered():
                 if is_request(msg):
                     await self._send(_request(getattr(msg, "id", ""), msg))
                     requests += 1
@@ -449,12 +498,17 @@ class WireServer:
                 self._mgr.interrupt_session(self._session_id)
             if self._cancel_event is not None:
                 self._cancel_event.set()
+            self._shutdown_requests()
+            if self._turn_task is not None:
+                self._turn_task.cancel()
         except Exception:
             pass
         return _success(msg_id, {})
 
     async def _handle_response(self, data: dict[str, Any]) -> None:
         msg_id = data.get("id")
+        if not isinstance(msg_id, str):
+            return
         request = self._pending.pop(msg_id, None)
         if request is None:
             return
@@ -463,9 +517,12 @@ class WireServer:
                 request.resolve("reject")
                 return
             result = data.get("result") or {}
-            response = str(result.get("response", "reject"))
-            if response not in VALID_APPROVAL_RESPONSES:
-                response = "reject"
+            decision = result.get("response", "reject")
+            response: ApprovalResponseKind = "reject"
+            if decision == "approve":
+                response = "approve"
+            elif decision == "approve_for_session":
+                response = "approve_for_session"
             request.resolve(response, str(result.get("feedback", "")))
         elif isinstance(request, QuestionRequest):
             if "error" in data:
@@ -513,10 +570,26 @@ class WireServer:
     async def _run_turn(self, text: str) -> str:
         """Drive one prompt to a stable session state; returns a status string."""
         mgr = self._mgr
+        from coderai.wire.emitter import bind_emitter, reset_emitter
+
+        new_session = self._session_id is None
+        if new_session and callable(getattr(mgr, "get_event_emitter", None)):
+            self._session_id = self._reserved_session_id or uuid.uuid4().hex
+        token = bind_emitter(self._event_emitter())
         forward_task = self._start_event_forwarding()
         try:
-            if self._session_id is None:
-                self._session_id = await mgr.create_session(text)
+            # Enter the forwarder's receive/finally scope before a turn that
+            # can finish synchronously. Cancelling an unstarted asyncio task
+            # skips that scope and would discard the entire queued turn.
+            if forward_task is not None:
+                await asyncio.sleep(0)
+            if new_session:
+                identity = (
+                    {"session_id": self._session_id}
+                    if callable(getattr(mgr, "get_event_emitter", None))
+                    else {}
+                )
+                self._session_id = await mgr.create_session(text, **identity)
             elif text:
                 await mgr.reply_session(self._session_id, text)
             else:
@@ -543,47 +616,73 @@ class WireServer:
                 raise RuntimeError(fail_reason or f"turn failed ({entry_status})")
             return "finished"
         finally:
-            if forward_task is not None:
-                forward_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await forward_task
+            try:
+                if forward_task is not None:
+                    forward_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await forward_task
+            finally:
+                reset_emitter(token)
+                with contextlib.suppress(Exception):
+                    if new_session and mgr.get_session(self._session_id) is None:
+                        self._session_id = None
 
     def _start_event_forwarding(self) -> asyncio.Task | None:
         """Forward live turn events from the process emitter to the client."""
         try:
-            from coderai.wire.emitter import get_emitter
-
-            ui_side = get_emitter().ui_side(merge=False)
-            # Subscribing replays emitter history; drop it so each turn only
-            # forwards the events it actually produces.
-            ui_side.drain_nowait()
+            ui_side = self._event_emitter().ui_side(merge=False, replay=False)
         except Exception:
             return None
 
+        turn_task = asyncio.current_task() if self._streaming else None
+
         async def _forward() -> None:
-            while True:
-                try:
-                    msg = await ui_side.receive()
-                except asyncio.CancelledError:
-                    return
-                except Exception:
-                    return
-                try:
-                    if is_request(msg):
-                        msg_id = getattr(msg, "id", "") or f"ext_{uuid.uuid4().hex[:8]}"
-                        self._pending[msg_id] = msg
-                        if isinstance(msg, QuestionRequest) and not self._client_supports_question:
-                            from coderai.wire.types import QuestionNotSupported
+            stopping = False
+            try:
+                while True:
+                    try:
+                        msg = ui_side.try_receive_nowait() if stopping else await ui_side.receive()
+                        if msg is None:
+                            return
+                    except asyncio.CancelledError:
+                        stopping = True
+                        continue
+                    except BroadcastQueueOverflow:
+                        self._shutdown_requests()
+                        if self._session_id is not None:
+                            self._mgr.interrupt_session(self._session_id)
+                        # A turn may be awaiting a request that never reached
+                        # the client. Wake its owner so it can observe this
+                        # delivery failure rather than waiting indefinitely.
+                        if turn_task is not None:
+                            turn_task.cancel()
+                        raise
+                    except Exception:
+                        return
+                    try:
+                        if is_request(msg):
+                            msg_id = getattr(msg, "id", "") or f"ext_{uuid.uuid4().hex[:8]}"
+                            if (
+                                isinstance(msg, QuestionRequest)
+                                and not self._client_supports_question
+                            ):
+                                from coderai.wire.types import QuestionNotSupported
 
-                            msg.set_exception(QuestionNotSupported())
-                        else:
-                            await self._send(_request(msg_id, msg))
-                    elif is_event(msg):
-                        await self._send(_event(msg))
-                except Exception:
-                    continue
+                                msg.set_exception(QuestionNotSupported())
+                            else:
+                                self._pending[msg_id] = msg
+                                await self._send(_request(msg_id, msg))
+                        elif is_event(msg):
+                            await self._send(_event(msg))
+                    except Exception:
+                        continue
+            finally:
+                ui_side.close()
 
-        return asyncio.create_task(_forward())
+        task = asyncio.create_task(_forward())
+        # An asyncio task cancelled before its first step never enters finally.
+        task.add_done_callback(lambda _: ui_side.close())
+        return task
 
     async def _settle_pauses_async(self) -> str | None:
         """Bridge ask_permission / ask_user_question to wire requests.
@@ -621,6 +720,8 @@ class WireServer:
                 sender=str(item.get("name", "")),
                 action=str(item.get("name", "")),
                 description=str(item.get("description", "") or item.get("command", "")),
+                allow_session_approve=not bool(item.get("requiresExplicitApproval"))
+                and not bool(getattr(mgr.get_session(self._session_id), "plan_mode", False)),
             )
             wire_requests.append(req)
             self._pending[req.id] = req
@@ -635,11 +736,13 @@ class WireServer:
             if response == "approve":
                 replies.append({"toolCallId": item.get("toolCallId"), "permission": "allow"})
             elif response == "approve_for_session":
-                replies.append({"toolCallId": item.get("toolCallId"), "permission": "allow"})
-                try:
-                    self._record_session_allow(item)
-                except Exception:
-                    pass
+                replies.append(
+                    {
+                        "toolCallId": item.get("toolCallId"),
+                        "permission": "allow",
+                        "decision": response,
+                    }
+                )
             else:
                 reply: dict[str, Any] = {
                     "toolCallId": item.get("toolCallId"),
@@ -653,15 +756,6 @@ class WireServer:
         except Exception:
             return False
         return True
-
-    def _record_session_allow(self, item: dict[str, Any]) -> None:
-        """Best-effort session allow (approve_for_session degrades to allow-once).
-
-        Note: the CLI maps "always" to project allows; the wire
-        server has no interactive allowlist UI, so approve_for_session behaves
-        as allow-once here. A persistent session allowlist is follow-up work.
-        """
-        pass
 
     async def _bridge_question(self) -> bool:
         if not self._client_supports_question:

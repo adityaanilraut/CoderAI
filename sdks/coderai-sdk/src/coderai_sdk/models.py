@@ -16,6 +16,9 @@ class ChatMessage:
 
     role: str
     content: str = ""
+    tool_call_id: str | None = None
+    name: str | None = None
+    error: str = ""
 
 
 @dataclass
@@ -36,6 +39,7 @@ class TurnResult:
     thinking: str = ""
     messages: list[ChatMessage] = field(default_factory=list)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_results: list[dict[str, Any]] = field(default_factory=list)
     events: list[Any] = field(default_factory=list)
 
 

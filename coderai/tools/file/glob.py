@@ -1,5 +1,5 @@
 # Split from the former combined search module; grep now lives in coderai/tools/file/grep.py.
-"""First-class glob tool backed by bundled ripgrep.
+"""First-class glob tool backed by ripgrep or portable Python search.
 
 Cap inline results, and spill the complete formatted page when over cap. A Python
 fallback is used when the binary is unavailable so hosts do not require `rg`.
@@ -249,15 +249,22 @@ def handle_glob_tool(args: dict[str, Any], context: ToolExecutionContext | Any) 
         if _prefer_python_backend() or resolve_rg_path() is None:
             paths = _python_glob(pattern, workdir, path, SEARCH_TIMEOUT_MS)
         else:
-            run = run_ripgrep(build_glob_command(pattern, path), workdir, tool_name="glob")
-            if run.no_matches:
-                paths = []
+            try:
+                run = run_ripgrep(build_glob_command(pattern, path), workdir, tool_name="glob")
+            except SearchError as err:
+                if err.code != "SEARCH_UNAVAILABLE":
+                    raise
+                paths = _python_glob(pattern, workdir, path, SEARCH_TIMEOUT_MS)
             else:
-                paths = [
-                    to_workdir_relative(line, run.workdir)
-                    for line in run.stdout.split("\n")
-                    if line
-                ]
+                paths = (
+                    []
+                    if run.no_matches
+                    else [
+                        to_workdir_relative(line, run.workdir)
+                        for line in run.stdout.split("\n")
+                        if line
+                    ]
+                )
     except SearchError as err:
         return _search_error_result("glob", err)
 

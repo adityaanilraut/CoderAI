@@ -11,7 +11,6 @@ from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.key_binding import KeyPressEvent
 from rich.console import Group, RenderableType
 from rich.markup import escape
-from rich.padding import Padding
 from rich.panel import Panel
 from rich.text import Text
 
@@ -111,7 +110,7 @@ class ApprovalRequestPanel:
     ):
         self.request = request
         self.options: list[tuple[str, ApprovalResponse.Kind]] = [("Approve once", "approve")]
-        if allow_session_approve:
+        if allow_session_approve and request.allow_session_approve:
             self.options.append(("Approve for this session", "approve_for_session"))
         self.options.extend(
             [
@@ -239,33 +238,31 @@ class ApprovalRequestPanel:
 
         lines: list[RenderableType] = []
         if content_lines:
-            lines.append(Padding(Group(*content_lines), (0, 0, 0, 1)))
+            lines.append(Group(*content_lines))
 
         # Whether inline feedback input is active
         show_inline_feedback = feedback_text is not None and self.is_feedback_selected
 
-        # Add menu options with number key labels
+        # Options share a 2-cell gutter ("→ " / "  ") and a fixed number width
+        # so the "[" column lines up for every row, including the feedback row.
         if lines:
             lines.append(Text(""))
+        number_width = len(str(len(self.options)))
         for i, (option_text, _) in enumerate(self.options):
-            num = i + 1
+            gutter = "\u2192 " if i == self.selected_index else "  "
+            prefix = f"{gutter}[{str(i + 1).rjust(number_width)}] "
             is_feedback_option = i == self.FEEDBACK_OPTION_INDEX
-            if i == self.selected_index:
-                if is_feedback_option and show_inline_feedback:
-                    input_display = _render_feedback_with_cursor(
-                        feedback_text or "", feedback_cursor
+            style = "cyan" if i == self.selected_index else "grey50"
+            if is_feedback_option and show_inline_feedback and i == self.selected_index:
+                input_display = _render_feedback_with_cursor(feedback_text or "", feedback_cursor)
+                lines.append(
+                    Text.assemble(
+                        Text(f"{prefix}Reject: ", style=style),
+                        input_display,
                     )
-                    lines.append(
-                        Text.assemble(
-                            Text(f"\u2192 [{num}] Reject: "),
-                            input_display,
-                            style="cyan",
-                        )
-                    )
-                else:
-                    lines.append(Text(f"\u2192 [{num}] {option_text}", style="cyan"))
+                )
             else:
-                lines.append(Text(f"  [{num}] {option_text}", style="grey50"))
+                lines.append(Text(f"{prefix}{option_text}", style=style))
 
         # Keyboard hints
         lines.append(Text(""))
@@ -275,7 +272,7 @@ class ApprovalRequestPanel:
             hint = "  ↑/↓ navigate  ↵ confirm  y allow once"
             if any(kind == "approve_for_session" for _, kind in self.options):
                 hint += "  a always"
-            hint += "  n deny  1/2/3 choose"
+            hint += f"  n deny  1-{len(self.options)} choose"
             if self.has_expandable_content:
                 hint += "  d expand"
         else:

@@ -19,7 +19,7 @@ from rich.text import Text
 
 from coderai.ui.shell.console import render_to_ansi
 from coderai.cli.elapsed import format_elapsed
-from rich.markdown import Markdown
+from coderai.utils.rich.markdown import Markdown
 
 
 _LEFT_BORDER_RE = re.compile(r"((?:\x1b\[[^m]*m)*│(?:\x1b\[[^m]*m)* )")
@@ -127,7 +127,9 @@ class BtwPanel:
         q_text.append("Q: ", style="bold cyan")
         q_text.append(self._question)
         parts.append(q_text)
-        parts.append(Text("─" * max(1, columns - 6), style="grey50"))
+        # Panel chrome is 2 border cells + 2 padding cells, so the rule
+        # matches the inner content width instead of stopping short of it.
+        parts.append(Text("─" * max(1, columns - 4), style="grey50"))
         if self._is_loading:
             if self._streaming_text:
                 if Markdown is not None:

@@ -1,7 +1,6 @@
-from __future__ import annotations
+"""Fetch, sanitize, and extract web content for terminal tool execution."""
 
-# --- from coderai/core/network/sanitizer.py (trafilatura-side; placed first: network/__init__ imports these names eagerly, so they must exist before any import below can trigger it) ---
-"""Content Sanitization, HTML-to-Markdown Parsing, Metadata Extraction & Prompt Injection Defense."""
+from __future__ import annotations
 
 
 import html
@@ -378,7 +377,6 @@ def extract_and_sanitize_html(
     )
 
 
-# --- from coderai/core/tools/web_fetch.py ---
 """WebFetch tool — fetch and sanitize online web pages, documentation, and APIs."""
 
 

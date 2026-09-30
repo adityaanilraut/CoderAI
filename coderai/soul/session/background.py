@@ -116,6 +116,7 @@ def add_background_process_completion_message(
             targets=["wire", "shell"],
             dedupe_key=f"bg-{completion.task_id}-{status}",
             payload={"sessionId": session_id, "ok": completion.ok},
+            session_id=session_id,
         )
     except Exception:
         pass

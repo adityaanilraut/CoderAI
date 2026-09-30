@@ -190,7 +190,7 @@ class Heading(TextElement):
 
     def on_enter(self, context: MarkdownContext) -> None:
         self.text = Text()
-        context.enter_style(self.style_name)
+        self.style = context.enter_style(self.style_name)
 
     def __init__(self, tag: str) -> None:
         self.tag = tag
@@ -205,7 +205,7 @@ class Heading(TextElement):
         yield text
         underline_char = "═" if self.tag == "h1" else "─"
         underline = Text(underline_char * width)
-        underline.stylize(self.style_name)
+        underline.stylize(self.style)
         yield underline
 
 
@@ -592,7 +592,17 @@ class MarkdownContext:
             style = style.without_color
         if (
             isinstance(style_name, str)
-            and style_name in {"markdown.code", "markdown.code_block"}
+            and style_name
+            in {
+                "markdown.code",
+                "markdown.code_block",
+                "markdown.h1",
+                "markdown.h2",
+                "markdown.h3",
+                "markdown.h4",
+                "markdown.h5",
+                "markdown.h6",
+            }
             and style._bgcolor is not None
         ):
             style._bgcolor = None

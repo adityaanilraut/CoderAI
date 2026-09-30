@@ -64,7 +64,9 @@ class TerminalBridge:
         return getattr(term, "session_id", None) in self._owned
 
     def _lookup(self, session_id: str) -> Any | None:
-        term = self._manager.get_session(session_id)
+        term = self._manager.get_session(
+            session_id, owner_session_id=self._acp_session_id, workspace_root=self._work_dir
+        )
         if term is not None and not self._own(term):
             return None
         return term
@@ -79,7 +81,7 @@ class TerminalBridge:
         terminals = [
             self._status(term)
             for term_id in sorted(self._owned)
-            if (term := self._manager.get_session(term_id)) is not None
+            if (term := self._lookup(term_id)) is not None
         ]
         return {"terminals": terminals}
 
@@ -96,6 +98,8 @@ class TerminalBridge:
                 name=self._prefix(name or ""),
                 cwd=cwd or self._work_dir,
                 env=dict(env) if isinstance(env, dict) else None,
+                owner_session_id=self._acp_session_id,
+                workspace_root=self._work_dir,
             )
         except Exception as exc:
             logger.warning("ACP terminal open failed: %s", exc)
@@ -169,7 +173,11 @@ class TerminalBridge:
         if term is None:
             return {"error": f"Terminal session `{session_id}` not found."}
         try:
-            closed = self._manager.close_session(term.session_id)
+            closed = self._manager.close_session(
+                term.session_id,
+                owner_session_id=self._acp_session_id,
+                workspace_root=self._work_dir,
+            )
         except Exception as exc:
             return {"error": f"Failed to close terminal `{session_id}`: {exc}"}
         self._owned.discard(term.session_id)

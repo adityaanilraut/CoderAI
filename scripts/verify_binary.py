@@ -29,8 +29,6 @@ EXPECTED_DATA_GLOBS = (
     "tools/*/*.md",
 )
 
-EXPECTED_BINARIES = ("rg", "rg.exe")
-
 
 def _expected_version() -> str:
     """Read the expected version from coderai/_version.py."""
@@ -142,7 +140,7 @@ def _dist_search_roots(binary: Path) -> list[Path]:
 
 
 def check_bundled_data(binary: Path) -> bool:
-    """Verify expected data files + vendored binaries ship with the bundle."""
+    """Verify expected agent, prompt, and skill data files ship with the bundle."""
     roots = [r for r in _dist_search_roots(binary) if r.is_dir()]
     # Single-file build: data lives inside the archive; probe via strings.
     layout_has_data = any(
@@ -165,14 +163,6 @@ def check_bundled_data(binary: Path) -> bool:
         else:
             print(f"  FAIL  bundle missing {pattern}")
             ok = False
-    for name in EXPECTED_BINARIES:
-        candidates = [r / name for r in roots] + [binary.parent / name]
-        if any(c.is_file() for c in candidates):
-            print(f"  OK  bundle ships vendored {name}")
-            break
-    else:
-        # Vendored rg is optional on PATH-equipped hosts; warn only.
-        print("  SKIP  vendored rg not found beside bundle (falls back to PATH)")
     return ok
 
 
@@ -181,7 +171,6 @@ ARCHIVE_MARKERS = (
     "agents/default/agent.yaml",
     "prompt/templates/compact.md",
     "SKILL.md",
-    "vendor/rg",
 )
 
 

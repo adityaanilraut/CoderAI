@@ -13,13 +13,14 @@ from dataclasses import dataclass, field
 import datetime
 from enum import Enum
 import pathlib
-from typing import Any, Literal, Union
+from typing import TypeGuard, Any, Literal, Union
 
 from kosong.message import (
     AudioURLPart as AudioURLPart,
     ContentPart as ContentPart,
     ImageURLPart as ImageURLPart,
     ToolCall as ToolCall,
+    ToolCallPart as ProductionToolCallPart,
     VideoURLPart as VideoURLPart,
 )
 from kosong.tooling import (
@@ -233,6 +234,7 @@ class ApprovalRequest:
     subagent_type: str | None = None
     source_description: str | None = None
     display: list[Any] = field(default_factory=list)
+    allow_session_approve: bool = True
     _future: Any = field(default=None, repr=False, compare=False)
     _feedback: str = field(default="", repr=False, compare=False)
 
@@ -415,6 +417,10 @@ Event = Union[
     PlanDisplay,
     BtwBegin,
     BtwEnd,
+    ContentPart,
+    ToolCall,
+    ProductionToolCallPart,
+    ToolResult,
 ]
 
 Request = Union[ApprovalRequest, ToolCallRequest, QuestionRequest, HookRequest]
@@ -496,7 +502,7 @@ def is_request(msg: Any) -> bool:
     return isinstance(msg, REQUEST_TYPES)
 
 
-def is_wire_message(msg: Any) -> bool:
+def is_wire_message(msg: Any) -> TypeGuard[WireMessage]:
     return is_event(msg) or is_request(msg)
 
 
@@ -515,9 +521,12 @@ class WireMessageEnvelope:
     @classmethod
     def from_wire_message(cls, msg: Any) -> WireMessageEnvelope:
         typename: str | None = None
-        for name, typ in _NAME_TO_TYPE.items():
+        # Several legacy dataclasses share names with kosong models. The
+        # decoder registry keeps one class per name; serialization must still
+        # accept every supported event class, including runtime text deltas.
+        for typ in (*EVENT_TYPES, *REQUEST_TYPES):
             if isinstance(msg, typ):
-                typename = name
+                typename = typ.__name__
                 break
         if typename is None:
             raise ValueError(f"Unknown wire message type: {type(msg)}")
@@ -525,6 +534,8 @@ class WireMessageEnvelope:
 
     def to_wire_message(self) -> Any:
         msg_type = _NAME_TO_TYPE.get(self.type)
+        if self.type == "ToolCallPart" and "arguments_part" not in self.payload:
+            msg_type = ToolCallPart
         if msg_type is None:
             raise ValueError(f"Unknown wire message type: {self.type}")
         return _from_json_dict(msg_type, self.payload)
@@ -570,6 +581,8 @@ def _jsonable(v: Any) -> Any:
 
 
 def _from_json_dict(cls: type, payload: dict[str, Any]) -> Any:
+    if hasattr(cls, "model_validate"):
+        return cls.model_validate(payload)
     if not dataclasses.is_dataclass(cls):
         return payload
     kwargs: dict[str, Any] = {}

@@ -48,7 +48,8 @@ def test_ui_branding_and_welcome_logo_intact() -> None:
     rendered = console.export_text()
     assert "CoderAI" in rendered
     assert "gemini-2.5-flash" in rendered
-    assert "Plan Mode: ON" in rendered
+    assert "Plan Mode:" in rendered
+    assert "ON" in rendered
     assert "/setup" in rendered
 
 

@@ -56,7 +56,6 @@ def handle_update_plan_tool(args: dict[str, Any], context: Any) -> ToolResult:
     )
 
 
-# --- from coderai/core/tools/todo_write.py ---
 """todo_write wraps UpdatePlan with a structured todo list."""
 
 

@@ -1,16 +1,16 @@
 # Makefile for CoderAI
 
 .PHONY: help install dev test test-e2e clean run lint format format-check typecheck quickstart dist check verify-dist \
-	build-sha check-deps telemetry-debug e2e
+	build-sha check-deps telemetry-debug e2e test-sdk test-jev audit
 
-PYTHON ?= python3
+PYTHON ?= .venv/bin/python
 
 help:
 	@echo "CoderAI Development Commands"
 	@echo "============================"
 	@echo "make install       - Install the package"
 	@echo "make dev           - Install in development mode"
-	@echo "make test          - Run test suite + CLI smoke test"
+	@echo "make test          - Run main, SDK and wire suites + CLI smoke"
 	@echo "make test-e2e      - Run async wire protocol E2E suite (tests_e2e/)"
 	@echo "make e2e            - Alias for test-e2e"
 	@echo "make clean         - Clean build artifacts"
@@ -18,7 +18,7 @@ help:
 	@echo "make lint          - Run ruff (required for CI)"
 	@echo "make typecheck     - Run mypy (required for CI)"
 	@echo "make format        - Format code with ruff"
-	@echo "make check         - Check format, lint, types, and tests without modifying files"
+	@echo "make check         - Check source, SDK, wire, types, tests and dependency audit"
 	@echo "make build-sha     - Stamp git SHA into coderai/_build_info.py"
 	@echo "make check-deps    - Verify installed deps match pyproject.toml"
 	@echo "make telemetry-debug - Run local telemetry inspector (http://127.0.0.1:8765)"
@@ -27,39 +27,22 @@ install:
 	$(PYTHON) -m pip install .
 
 dev:
-	$(PYTHON) -m pip install -e ".[dev]"
+	$(PYTHON) -m pip install -e ".[dev,jev]" -e sdks/coderai-sdk
 
 test:
-	@rm -f .coderai_pytest_one.log; \
-	fail=0; \
-	for t in tests/test_*.py; do \
-		printf "%-45s " "$$t"; \
-		if $(PYTHON) -m pytest "$$t" -p no:cacheprovider -q > .coderai_pytest_one.log 2>&1; then \
-			tail -1 .coderai_pytest_one.log; \
-		else \
-			fail=1; tail -5 .coderai_pytest_one.log; \
-		fi; \
-	done; \
-	rm -f .coderai_pytest_one.log; \
-	test "$$fail" = 0
-	@echo ""
-	@echo "Running basic CLI smoke test..."
-	$(PYTHON) -m coderai --version
+	$(PYTHON) scripts/verification.py test --suite all
 
-# Async wire protocol E2E suite (Phase 5 harness). No live LLM calls required.
 test-e2e:
-	@rm -f .coderai_pytest_one.log; \
-	fail=0; \
-	for t in tests_e2e/test_*.py; do \
-		printf "%-45s " "$$t"; \
-		if $(PYTHON) -m pytest "$$t" -p no:cacheprovider -q > .coderai_pytest_one.log 2>&1; then \
-			tail -1 .coderai_pytest_one.log; \
-		else \
-			fail=1; tail -5 .coderai_pytest_one.log; \
-		fi; \
-	done; \
-	rm -f .coderai_pytest_one.log; \
-	test "$$fail" = 0
+	$(PYTHON) scripts/verification.py test --suite wire
+
+test-sdk:
+	$(PYTHON) scripts/verification.py test --suite sdk
+
+test-jev:
+	$(PYTHON) scripts/verification.py test --suite jev
+
+audit:
+	$(PYTHON) scripts/verification.py audit
 
 e2e: test-e2e
 
@@ -82,21 +65,19 @@ run:
 	$(PYTHON) -m coderai
 
 lint:
-	@echo "Running ruff..."
-	$(PYTHON) -m ruff check coderai/ tests/ tests_e2e/ scripts/
+	$(PYTHON) scripts/verification.py lint
 
 typecheck:
-	@echo "Running mypy..."
-	$(PYTHON) -m mypy coderai/
+	$(PYTHON) scripts/verification.py typecheck
 
 format:
-	$(PYTHON) -m ruff format coderai/ tests/ tests_e2e/ scripts/
-	@echo "Code formatted with ruff"
+	$(PYTHON) scripts/verification.py format
 
 format-check:
-	$(PYTHON) -m ruff format --check coderai/ tests/ tests_e2e/ scripts/
+	$(PYTHON) scripts/verification.py format-check
 
-check: format-check lint typecheck test
+check:
+	$(PYTHON) scripts/verification.py check --report .verification/tests.json
 
 # Quick start for new developers
 quickstart: clean dev check-deps test
@@ -120,7 +101,7 @@ build-sha:
 
 # Verify installed runtime deps satisfy pyproject.toml constraints.
 check-deps:
-	$(PYTHON) scripts/check_dependency_versions.py
+	$(PYTHON) scripts/verification.py deps
 
 # Local telemetry inspector: point the transport endpoint here and watch
 # outbound events. See scripts/telemetry_debug_server.py --help.

@@ -5,147 +5,40 @@ on:
     branches: [main, master]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash
-    # Windows is best-effort / non-blocking (matrix.experimental). Primary
-    # support is POSIX (Linux + macOS). See SECURITY.md "Supported platforms".
-    # Promote to blocking (drop experimental) once the Windows runner is green.
-    continue-on-error: ${{ matrix.experimental || false }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python-version: ["3.12"]
-        include:
-          - os: windows-latest
-            python-version: "3.12"
-            experimental: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Ruff Format
-        run: python -m ruff format --check coderai/ tests/ tests_e2e/ scripts/
-
-      - name: Ruff Lint
-        run: python -m ruff check coderai/ tests/ tests_e2e/ scripts/
-
-      - name: Mypy
-        run: python -m mypy coderai/
-
-      - name: Dependency drift check
-        run: python scripts/check_dependency_versions.py
-
-      # RAM rule (AGENTS.md): one pytest process per file, never the whole
-      # suite in a single process. Coverage accumulates via --cov-append and
-      # the coverage gate is enforced once at the end with `coverage report`.
-      - name: Pytest
-        run: |
-          python -c "import glob, os; [os.remove(f) for f in glob.glob('.coverage*') + glob.glob('pytest_one.log')]"
-          fail=0
-          for t in tests/test_*.py; do
-            printf "%-45s " "$t"
-            if python -m pytest "$t" -p no:cacheprovider -q --cov=coderai --cov-append > pytest_one.log 2>&1; then
-              tail -1 pytest_one.log
-            else
-              fail=1
-              tail -5 pytest_one.log
-            fi
-          done
-          python -c "import os; os.remove('pytest_one.log') if os.path.exists('pytest_one.log') else None"
-          python -m coverage report --fail-under=28
-          test "$fail" = 0
-
-      - name: Wire E2E suite
-        run: |
-          python -c "import os; os.remove('pytest_one.log') if os.path.exists('pytest_one.log') else None"
-          fail=0
-          for t in tests_e2e/test_*.py; do
-            printf "%-45s " "$t"
-            if python -m pytest "$t" -q -p no:cacheprovider > pytest_one.log 2>&1; then
-              tail -1 pytest_one.log
-            else
-              fail=1
-              tail -5 pytest_one.log
-            fi
-          done
-          python -c "import os; os.remove('pytest_one.log') if os.path.exists('pytest_one.log') else None"
-          test "$fail" = 0
-
-      - name: CLI smoke test
-        run: coderai --version
-
-  security:
-    name: Security regression suite
-    runs-on: ubuntu-latest
-    # Block promotion if security regressions fail, even though main test job also exercises them.
-    needs: test
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      # Keep a separate status for the security corpus even though the coverage
-      # job also exercises it. Scoped to the single marked file (RAM rule:
-      # no full-collection runs); test_security.py is the only file carrying
-      # the `security` marker.
-      - name: Security tests
-        run: pytest tests/test_security.py -m security -q -p no:cacheprovider
-
-      - name: Dependency audit (pip-audit)
-        continue-on-error: true
-        run: |
-          python -m pip install pip-audit
-          pip-audit -r requirements.lock --desc --strict
+  verification:
+    uses: ./.github/workflows/verify.yml
+    with:
+      source_sha: ${{ github.sha }}
 
   package:
     name: Clean-wheel smoke test
     runs-on: ubuntu-latest
-    needs: [test, security]
+    needs: verification
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-
       - name: Build wheel and sdist
         run: |
-          python -m pip install --upgrade build
+          python -m pip install build
           python scripts/inject_build_sha.py
           python -m build
-
-      - name: Install wheel and probe packaged capabilities from an empty directory
-        run: python scripts/verify_wheel.py dist
+      - name: Probe and audit the installed wheel
+        run: python scripts/verify_wheel.py dist --audit --audit-report .verification/wheel-audit.json --expected-sha "${{ github.sha }}"
+      - name: Preserve installed-wheel audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-wheel-audit
+          path: .verification/

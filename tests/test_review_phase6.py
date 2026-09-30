@@ -177,6 +177,8 @@ def test_terminal_send_completes_when_pty_exits(tmp_path):
 
     mock_term = MagicMock()
     mock_term.pid = 12345
+    mock_term.owner_session_id = "test_pty_sess"
+    mock_term.workspace_root = str(tmp_path.resolve())
     mock_term.is_alive = False
     mock_term.exit_code = 0
     mock_term.send.return_value = None
@@ -187,7 +189,7 @@ def test_terminal_send_completes_when_pty_exits(tmp_path):
         mock_term.is_alive = True
         res = handle_terminal_send_tool(
             {"sessionId": "term1", "text": "exit", "run_in_background": True},
-            {"session_id": "test_pty_sess"},
+            {"session_id": "test_pty_sess", "project_root": str(tmp_path)},
         )
         assert res.ok is True
         job_id = res.metadata["jobId"]

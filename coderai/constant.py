@@ -80,7 +80,7 @@ def get_build_sha() -> str:
             timeout=2,
         )
         if result.returncode == 0:
-            sha = result.stdout.strip()[:12]
+            sha = result.stdout.strip()
     except Exception:
         pass
 

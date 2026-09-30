@@ -1,1 +1,1 @@
-"""Legacy SessionManager runtime (moved out of coderai/core)."""
+"""Session runtime, conversation persistence, and turn lifecycle ownership."""

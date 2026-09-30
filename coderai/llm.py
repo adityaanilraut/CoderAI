@@ -359,7 +359,12 @@ def create_llm(
     api_key_obj = getattr(provider, "api_key", None)
     resolved_api_key = ""
     if oauth and getattr(provider, "oauth", None) and hasattr(oauth, "resolve_api_key"):
-        resolved_api_key = oauth.resolve_api_key(api_key_obj, provider.oauth)
+        static_key = (
+            api_key_obj.get_secret_value()
+            if hasattr(api_key_obj, "get_secret_value")
+            else str(api_key_obj or "")
+        )
+        resolved_api_key = oauth.resolve_api_key(static_key, provider.oauth.key)
     elif api_key_obj is not None:
         resolved_api_key = (
             api_key_obj.get_secret_value()
@@ -623,6 +628,7 @@ def resolve_model_provider_routing(
     explicit_base_url: str | None = None,
     explicit_api_key: str | None = None,
     env: dict[str, str] | None = None,
+    use_oauth: bool = True,
 ) -> tuple[str | None, str | None]:
     """Resolve the appropriate baseURL and API key for the selected model."""
     env = env or {}
@@ -727,11 +733,12 @@ def resolve_model_provider_routing(
         )
         oauth_token = None
         try:
-            from coderai.auth.oauth import KIMI_CODE_OAUTH_KEY, load_token
+            from coderai.auth.oauth import KIMI_CODE_OAUTH_KEY, OAuthManager
 
-            tok = load_token(KIMI_CODE_OAUTH_KEY)
-            if tok and tok.access_token:
-                oauth_token = tok.access_token
+            if use_oauth:
+                oauth_token = OAuthManager([KIMI_CODE_OAUTH_KEY]).resolve_api_key(
+                    "", KIMI_CODE_OAUTH_KEY
+                )
         except Exception:
             pass
 
@@ -955,7 +962,7 @@ _client_pool: dict[str, Any] = {}
 
 
 def create_openai_client(
-    project_root: str = ".", model_override: str | None = None
+    project_root: str = ".", model_override: str | None = None, *, oauth: Any | None = None
 ) -> dict[str, Any]:
     global _client_pool
     from coderai.config import resolve_current_settings
@@ -977,9 +984,7 @@ def create_openai_client(
     tmodel: Any = None
     tprovider: Any = None
     try:
-        from coderai.config import load_typed_config
-
-        typed = load_typed_config()
+        typed = _load_runtime_typed_config(project_root)
         alias = None
         for key, m in typed.models.items():
             if key == active_model or m.model == active_model:
@@ -1020,13 +1025,22 @@ def create_openai_client(
     if current.get("api_key"):
         configured_key = current["api_key"]
 
+    from coderai.auth.oauth import KIMI_CODE_OAUTH_KEY
+
+    if oauth_key is None and "kimi" in active_model.lower():
+        oauth_key = KIMI_CODE_OAUTH_KEY
+    oauth = oauth or create_oauth_manager(project_root)
+    static_key = configured_key or ""
+    _, fallback_key = resolve_model_provider_routing(
+        model=active_model,
+        explicit_base_url=configured_base_url,
+        explicit_api_key=static_key,
+        env=env,
+        use_oauth=False,
+    )
     if oauth_key:
         try:
-            from coderai.auth.oauth import OAuthManager
-
-            resolved_oauth = OAuthManager([oauth_key]).resolve_api_key(
-                configured_key or "", oauth_key
-            )
+            resolved_oauth = oauth.resolve_api_key(configured_key or "", oauth_key)
             if resolved_oauth:
                 configured_key = resolved_oauth
         except Exception:
@@ -1107,7 +1121,7 @@ def create_openai_client(
     if not api_key or base_url == "jev://system-one":
         return base()
 
-    cache_key = f"{api_key}::{base_url}"
+    cache_key = f"{api_key}::{base_url}::{id(oauth) if oauth_key else ''}"
     if cache_key in _client_pool:
         result = base()
         result["client"] = _client_pool[cache_key]
@@ -1121,6 +1135,10 @@ def create_openai_client(
             base_url=base_url or None,
             default_headers=custom_headers,
         )
+        if oauth_key and api_key == oauth.resolve_api_key("", oauth_key):
+            client_instance._coderai_oauth_manager = oauth
+            client_instance._coderai_oauth_key = oauth_key
+            client_instance._coderai_static_api_key = fallback_key or ""
         _client_pool[cache_key] = client_instance
     except Exception:
         client_instance = None
@@ -1136,8 +1154,74 @@ def clear_client_pool() -> None:
     _client_pool.clear()
 
 
-async def ensure_oauth_fresh(*, force: bool = False) -> None:
-    pass
+def _load_runtime_typed_config(project_root: str = ".") -> Any:
+    from coderai.config import load_typed_config, load_typed_config_from_string
+
+    if override_text := os.getenv("CODERAI_CONFIG_STRING"):
+        return load_typed_config_from_string(override_text)
+    if override_file := os.getenv("CODERAI_CONFIG_FILE"):
+        return load_typed_config(Path(override_file).expanduser(), project_root=project_root)
+    return load_typed_config(project_root=project_root)
+
+
+def create_oauth_manager(project_root: str = ".") -> Any:
+    """Create the credential owner retained by a manager/runtime."""
+    from coderai.auth.oauth import KIMI_CODE_OAUTH_KEY, OAuthManager
+
+    try:
+        manager = OAuthManager.from_typed_config(_load_runtime_typed_config(project_root))
+    except Exception:
+        manager = OAuthManager()
+    # Legacy Kimi model routing also supports device-login credentials.
+    manager.add_key(KIMI_CODE_OAUTH_KEY)
+    return manager
+
+
+async def ensure_oauth_fresh(
+    *,
+    force: bool = False,
+    oauth: Any | None = None,
+    model: str | None = None,
+    oauth_keys: list[str] | None = None,
+    project_root: str = ".",
+) -> None:
+    """Refresh before a turn; resolved clients never receive expired tokens."""
+    manager = oauth if oauth is not None else create_oauth_manager(project_root)
+    if model is not None:
+        from coderai.auth.oauth import KIMI_CODE_OAUTH_KEY
+
+        oauth_keys = [KIMI_CODE_OAUTH_KEY] if "kimi" in model.lower() else []
+        try:
+            typed = _load_runtime_typed_config(project_root)
+            for alias, configured_model in typed.models.items():
+                if model in (alias, configured_model.model):
+                    provider = typed.providers[configured_model.provider]
+                    oauth_keys = [provider.oauth.key] if provider.oauth else []
+                    break
+        except Exception:
+            pass
+    await manager.ensure_fresh(force=force, oauth_keys=oauth_keys)
+
+
+async def prepare_oauth_request(client: Any, *, oauth: Any | None = None) -> None:
+    """Refresh and rotate an already-created client before its next request."""
+    # Only inspect explicit metadata: test doubles and proxy clients can
+    # fabricate arbitrary attributes through __getattr__.
+    metadata = getattr(client, "__dict__", {})
+
+    def field(name: str, default: Any = None) -> Any:
+        return metadata.get(name, getattr(type(client), name, default))
+
+    manager = field("_coderai_oauth_manager") or oauth
+    key = field("_coderai_oauth_key")
+    if manager is not None and key:
+        await ensure_oauth_fresh(oauth=manager, oauth_keys=[key])
+        credential = manager.resolve_api_key(field("_coderai_static_api_key", ""), key)
+        if not credential:
+            from coderai.auth.oauth import OAuthUnauthorized
+
+            raise OAuthUnauthorized("OAuth credentials expired or rejected; log in again.")
+        client.api_key = credential
 
 
 def probe_provider_connectivity(

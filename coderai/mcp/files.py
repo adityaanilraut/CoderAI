@@ -2,10 +2,10 @@
 
 Layering (lowest → highest):
   1. ``~/.coderai/mcp.json`` global file
-  2. user + project ``mcpServers`` from settings files (see ``settings.py``)
+  2. user + project ``mcpServers`` from settings files (see ``coderai.config``)
   3. ``--mcp-config-file`` / ``--mcp-config`` CLI overlays (highest wins)
 
-This module owns (1) and (3) parsing so both ``settings.py`` and the CLI
+This module owns (1) and (3) parsing so both ``coderai.config`` and the CLI
 share one validator. No third-party deps: invalid JSON/shapes are tolerated
 with an error string instead of raising.
 """

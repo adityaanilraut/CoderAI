@@ -13,6 +13,7 @@ from typing import Any
 from rich.panel import Panel
 from rich.table import Table
 
+from coderai.ui.shell.console import PANEL_BORDER_STYLE
 from coderai.ui.shell.prompt import get_git_status
 from coderai.llm import resolve_model_provider_routing
 from coderai.skill import list_skills
@@ -288,7 +289,7 @@ def render_doctor(console: Any | None, report: DoctorReport) -> None:
     if console is not None and _RICH and Table is not None and Panel is not None:
         table = Table(
             title="[bold cyan]CoderAI System Doctor Diagnostics[/]",
-            border_style="bright_blue",
+            border_style=PANEL_BORDER_STYLE,
             expand=True,
         )
         table.add_column("Category", style="dim", width=18)

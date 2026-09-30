@@ -1,0 +1,97 @@
+"""Prepare hook decisions and bind explicit runtime grants to one invocation."""
+
+from __future__ import annotations
+
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+from coderai.soul.approval import parse_tool_arguments, parse_tool_call_for_permissions
+from coderai.tools.legacy.types import (
+    ToolCallAuthorization,
+    matches_tool_call_binding,
+    tool_call_binding,
+)
+
+
+def prepare_pre_tool_outcomes(
+    session_id: str,
+    project_root: str,
+    tool_calls: list[Any],
+    settings: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Run hooks before permission planning so an ask can reach the normal UI."""
+    from coderai.hooks import HookPoint, run_hook_point
+
+    snapshots: dict[str, dict[str, Any]] = {}
+    parsed_calls = [call for raw in tool_calls if (call := parse_tool_call_for_permissions(raw))]
+    counts = Counter(call["id"] for call in parsed_calls)
+    for raw in parsed_calls:
+        call = parse_tool_call_for_permissions(raw)
+        if call is None or counts[call["id"]] != 1:
+            continue
+        args = parse_tool_arguments(call["function"]["arguments"])
+        binding = tool_call_binding(session_id, project_root, call)
+        outcome = run_hook_point(
+            HookPoint.PRE_TOOL_USE,
+            payload={
+                "tool_name": call["function"]["name"],
+                "tool_input": args,
+                "session_id": session_id,
+            },
+            project_root=project_root,
+            settings=settings,
+        )
+        snapshots[call["id"]] = {**binding, "outcome": outcome.to_dict()}
+        if outcome.stop:
+            break
+    return snapshots
+
+
+def build_tool_authorizations(
+    session_id: str,
+    project_root: str,
+    tool_calls: list[Any],
+    permission_replies: list[dict[str, Any]] | None,
+    message_permissions: list[dict[str, Any]] | None,
+    pre_tool_outcomes: dict[str, dict[str, Any]] | None,
+) -> dict[str, ToolCallAuthorization]:
+    """Only explicit replies to recorded asks can grant elevated capabilities."""
+    from coderai.sandbox import parse_sandbox_mode
+
+    authorizations: dict[str, ToolCallAuthorization] = {}
+    parsed_calls = [call for raw in tool_calls if (call := parse_tool_call_for_permissions(raw))]
+    counts = Counter(call["id"] for call in parsed_calls)
+    for raw in parsed_calls:
+        call = parse_tool_call_for_permissions(raw)
+        if call is None or counts[call["id"]] != 1:
+            continue
+        args = parse_tool_arguments(call["function"]["arguments"])
+        binding = tool_call_binding(session_id, project_root, call)
+        snapshot = (pre_tool_outcomes or {}).get(call["id"]) or {}
+        outcome = snapshot.get("outcome") if matches_tool_call_binding(snapshot, binding) else None
+        request = next(
+            (p for p in message_permissions or [] if p.get("toolCallId") == call["id"]), {}
+        )
+        reply = next((p for p in permission_replies or [] if p.get("toolCallId") == call["id"]), {})
+        approved = (
+            reply.get("permission") == "allow"
+            and request.get("permission") != "deny"
+            and matches_tool_call_binding(request, binding)
+        )
+        scopes = request.get("scopes") or []
+        authorizations[call["id"]] = ToolCallAuthorization(
+            session_id=session_id,
+            tool_call_id=call["id"],
+            tool_name=call["function"]["name"],
+            project_root=str(Path(project_root).resolve()),
+            args_digest=binding["args_digest"],
+            sandbox_mode=(
+                parse_sandbox_mode(args.get("sandbox_permissions"))
+                if approved and "sandbox-escalation" in scopes
+                else None
+            ),
+            hook_approved=bool(approved and "hook-approval" in scopes),
+            hook_outcome=outcome if isinstance(outcome, dict) else None,
+        )
+    return authorizations

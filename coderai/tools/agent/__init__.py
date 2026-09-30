@@ -391,7 +391,6 @@ async def handle_report_tool(args: dict[str, Any], context: ToolExecutionContext
     )
 
 
-# --- from coderai/core/tools/subagent.py ---
 """Sub-Agent Task tool handler for CoderAI."""
 
 

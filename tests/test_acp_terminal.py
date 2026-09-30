@@ -45,14 +45,14 @@ class _FakeManager:
         self.terms: dict[str, _FakeTerm] = {}
         self._next = 1
 
-    def open_session(self, command=None, name=None, cwd=None, env=None) -> _FakeTerm:
+    def open_session(self, command=None, name=None, cwd=None, env=None, **scope) -> _FakeTerm:
         term_id = f"term_{self._next}"
         self._next += 1
         term = _FakeTerm(term_id, name or term_id)
         self.terms[term_id] = term
         return term
 
-    def get_session(self, session_id: str) -> _FakeTerm | None:
+    def get_session(self, session_id: str, **scope) -> _FakeTerm | None:
         if session_id in self.terms:
             return self.terms[session_id]
         for term in self.terms.values():
@@ -60,7 +60,7 @@ class _FakeManager:
                 return term
         return None
 
-    def close_session(self, session_id: str) -> bool:
+    def close_session(self, session_id: str, **scope) -> bool:
         term = self.terms.pop(session_id, None)
         if term is not None:
             term.is_alive = False

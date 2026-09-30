@@ -171,7 +171,6 @@ def cleanup_subagent_scratchpad(scratchpad_path: str | None) -> None:
         logger.debug("Failed to clean up scratchpad %s: %s", scratchpad_path, exc)
 
 
-# --- SubAgentSpec (from coderai/core/subagent.py) ---
 MAX_SUBAGENT_ITERATIONS = DEFAULT_SUBAGENT_MAX_ITERATIONS
 MAX_SUBAGENT_DEPTH = DEFAULT_MAX_SUBAGENT_DEPTH
 DEFAULT_SUBAGENT_TIMEOUT = DEFAULT_SUBAGENT_TIMEOUT_SECONDS
@@ -218,7 +217,13 @@ class SubAgentSpec:
     plan_mode: bool = False
     on_before_file_mutation: Any | None = None
     on_after_file_mutation: Any | None = None
+    on_process_start: Any | None = None
+    on_process_exit: Any | None = None
+    on_process_stdout: Any | None = None
+    on_process_timeout_control: Any | None = None
+    on_background_process_complete: Any | None = None
     session_manager: Any | None = None
+    project_root: str | None = None
 
     def __post_init__(self) -> None:
         # Resolve type policy and role instructions from registry.
@@ -228,7 +233,8 @@ class SubAgentSpec:
             try:
                 from coderai.subagents.registry import get_subagent_definition, resolve_tool_policy
 
-                defn = get_subagent_definition(self.subagent_type, project_root=self.isolated_cwd)
+                role_root = self.project_root or self.isolated_cwd
+                defn = get_subagent_definition(self.subagent_type, project_root=role_root)
                 if defn is None:
                     logger.warning(
                         "Unknown subagent_type '%s'; denying all tools by default.",
@@ -239,7 +245,7 @@ class SubAgentSpec:
                 else:
                     if self.allowed_tools is None:
                         mode, tools = resolve_tool_policy(
-                            self.subagent_type, project_root=self.isolated_cwd
+                            self.subagent_type, project_root=role_root
                         )
                         if mode == "allowlist":
                             self.allowed_tools = list(tools)
@@ -331,18 +337,25 @@ def build_spec(
     else:
         max_iterations = defaults["max_iterations"]
 
+    # Lineage comes from the running parent's registry entry, never tool args.
+    from coderai.subagents.core import get_agent_registry
+
+    session_id = getattr(context, "session_id", None)
+    parent_handle = (
+        next((h for h in get_agent_registry().list() if h.run_session_id == session_id), None)
+        if session_id
+        else None
+    )
+    if (
+        parent_handle is not None
+        and parent_handle.spec is not None
+        and parent_handle.spec.max_depth is not None
+    ):
+        max_depth = min(max_depth, parent_handle.spec.max_depth)
+
     # Depth resolution
     if depth is None:
-        from coderai.subagents.core import get_agent_registry
-
-        d = 0
-        session_id = getattr(context, "session_id", None)
-        if session_id:
-            for handle in get_agent_registry().list():
-                if getattr(handle, "run_session_id", None) == session_id:
-                    d = handle.depth + 1
-                    break
-        depth = d
+        depth = parent_handle.depth + 1 if parent_handle is not None else 0
 
     # Numeric budgets
     def _parse_opt_int(v: Any) -> int | None:
@@ -379,7 +392,38 @@ def build_spec(
         "plan_mode": getattr(context, "plan_mode", False),
         "on_before_file_mutation": getattr(context, "on_before_file_mutation", None),
         "on_after_file_mutation": getattr(context, "on_after_file_mutation", None),
+        "on_process_start": getattr(context, "on_process_start", None),
+        "on_process_exit": getattr(context, "on_process_exit", None),
+        "on_process_stdout": getattr(context, "on_process_stdout", None),
+        "on_process_timeout_control": getattr(context, "on_process_timeout_control", None),
+        "on_background_process_complete": getattr(context, "on_background_process_complete", None),
         "session_manager": getattr(context, "session_manager", None),
+        "project_root": getattr(context, "project_root", None),
+        "isolated_cwd": getattr(context, "isolated_cwd", None),
+        "dry_run": getattr(context, "dry_run", False),
+        "parent_agent_id": parent_handle.id if parent_handle is not None else None,
+        "root_agent_id": (
+            parent_handle.root_agent_id or parent_handle.id if parent_handle is not None else None
+        ),
     }
     spec_kwargs.update(overrides)
-    return SubAgentSpec(**spec_kwargs)
+    # Internal callers may narrow the quota, but cannot widen the configured
+    # or inherited parent limit while constructing a child.
+    requested_max_depth = spec_kwargs.get("max_depth")
+    spec_kwargs["max_depth"] = (
+        min(max_depth, requested_max_depth) if requested_max_depth is not None else max_depth
+    )
+    spec = SubAgentSpec(**spec_kwargs)
+    parent_tools = getattr(context, "allowed_tools", None)
+    if parent_tools is not None:
+        from coderai.subagents.registry import is_tool_allowed
+
+        if spec.allowed_tools is None:
+            spec.allowed_tools = list(parent_tools)
+        else:
+            spec.allowed_tools = [
+                name
+                for name in spec.allowed_tools
+                if is_tool_allowed(name, "allowlist", tuple(parent_tools))
+            ]
+    return spec
