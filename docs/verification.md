@@ -42,6 +42,10 @@ backends remain a runtime error rather than silently running without isolation.
 The release workflow builds and attests one wheel/sdist pair. Smoke jobs install that same uploaded wheel into clean environments, run CLI/core/search/provenance probes, and audit the graph actually installed there. `--audit-report PATH` preserves inventory and findings on audit failure. Artifact uploads explicitly include the hidden `.verification` evidence directory.
 Both publishing jobs explicitly depend on source verification and required artifact smoke tests. No check looks for success on an unrelated branch or older commit.
 
+Audited wheel environments upgrade the interpreter's bundled pip before
+installation. Bootstrap tools remain in the inventory and are audited; Python
+3.12's old ensurepip bundle is not treated as an advisory exemption.
+
 ## Dependency policy
 
 `scripts/audit_dependencies.py` snapshots all distributions visible to the selected interpreter and generates exact name/version requirements from that snapshot. `pip-audit --no-deps --disable-pip` scans these pins without resolving another graph. Coverage is checked against the inventory, so a missing or silently skipped third-party package fails. Only `coderai-agent` and `coderai-sdk` are excluded from advisory lookup: they are first-party source/artifacts covered by this repository's gates. Audit tooling is included in the inventory and audit.

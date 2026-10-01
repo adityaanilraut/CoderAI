@@ -300,6 +300,9 @@ def _verify_installed(
             with_pip=True,
             clear=True,
             system_site_packages=system_site_packages,
+            # Python 3.12's bundled ensurepip version has known advisories.
+            # Audit the actual installation after updating its bootstrap tooling.
+            upgrade_deps=audit,
         ).create(environment)
         python = _venv_python(environment)
         if audit:
