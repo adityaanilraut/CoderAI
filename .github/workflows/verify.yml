@@ -42,7 +42,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap
+          sudo apt-get install --yes bubblewrap apparmor-profiles
           if [[ -f /etc/apparmor.d/bwrap-userns-restrict ]]; then
             sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
           fi
