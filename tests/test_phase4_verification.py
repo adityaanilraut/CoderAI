@@ -203,7 +203,7 @@ def test_type_budget_guards_wildcards_and_growth():
     current["patterns"] = ["coderai.soul.*"]
     assert any("Wildcard" in p for p in mod.check_budget(current, budget))
     current["patterns"] = []
-    current["lines"] += 1
+    current["lines"] = budget["max_lines"] + 1
     assert any("lines" in p for p in mod.check_budget(current, budget))
 
 
@@ -239,3 +239,45 @@ def test_precommit_and_make_use_shared_project_checks():
     assert all(h["entry"].startswith(".venv/bin/python scripts/verification.py") for h in hooks)
     assert all(h["pass_filenames"] is False for h in hooks)
     assert "PYTHON ?= .venv/bin/python" in (ROOT / "Makefile").read_text()
+
+
+def test_offline_runner_isolates_each_home_and_scrubs_credentials(tmp_path, monkeypatch):
+    verification = script("verification")
+    files = [tmp_path / "one.py", tmp_path / "two.py"]
+    monkeypatch.setattr(verification, "ROOT", tmp_path)
+    monkeypatch.setattr(verification, "test_files", lambda _: files)
+    monkeypatch.setenv("OPENAI_API_KEY", "never-forward")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "never-forward")
+    monkeypatch.setenv("GITHUB_TOKEN", "never-forward")
+    monkeypatch.setenv("CODERAI_CONFIG_FILE", "host-settings")
+    monkeypatch.setenv("CODERAI_SDK_INTEGRATION", "0")
+    monkeypatch.setenv("KIMI_BASE_URL", "https://invalid.test")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--ignore=tests")
+    homes = []
+
+    def run(command, **kwargs):
+        env = kwargs["env"]
+        assert (
+            not {
+                "OPENAI_API_KEY",
+                "TYPESAFE_API_KEY",
+                "GITHUB_TOKEN",
+                "CODERAI_CONFIG_FILE",
+                "KIMI_BASE_URL",
+                "PYTEST_ADDOPTS",
+            }
+            & env.keys()
+        )
+        assert env["CODERAI_SDK_INTEGRATION"] == "1"
+        assert env["HOME"] == env["USERPROFILE"]
+        home = Path(env["HOME"])
+        assert home.is_dir() and not list(home.iterdir())
+        homes.append(home)
+        (home / "settings-from-test").touch()
+        junit = Path(next(s.split("=", 1)[1] for s in command if s.startswith("--junitxml=")))
+        junit.write_text('<testsuites><testsuite><testcase name="pass"/></testsuite></testsuites>')
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(verification.subprocess, "run", run)
+    assert verification.run_tests("all", coverage=False, report=None) == 0
+    assert len(set(homes)) == 2 and all(not home.exists() for home in homes)

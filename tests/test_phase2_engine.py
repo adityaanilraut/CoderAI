@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from kaos.path import KaosPath
+from coderai.kaos.path import KaosPath
 from kosong.message import Message, TextPart
 from pydantic import SecretStr
 

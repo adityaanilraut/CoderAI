@@ -203,8 +203,8 @@ def _write_settings_file(path: str, settings: dict) -> None:
             _chmod_quiet(p.parent, 0o700)
     except OSError:
         pass
-    # atomic_json_write uses mkstemp (0600); keep it that way for secrets.
-    atomic_json_write(settings, p)
+    # Keep both temporary and replacement files private, including new files.
+    atomic_json_write(settings, p, mode=0o600)
     _chmod_quiet(p, 0o600)
 
 

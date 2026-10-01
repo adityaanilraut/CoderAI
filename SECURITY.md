@@ -110,14 +110,16 @@ For `read-only` and `workspace-write` presets, shell commands are wrapped in nat
 
 ### 3. PreToolUse Hooks (`coderai/hooks/`)
 
-Organizations can define custom PreToolUse hook scripts in `.coderai/hooks.json` to enforce compliance and security checks:
+Organizations can define PreToolUse hooks in trusted project `.coderai/hooks.json`
+or user `~/.coderai/hooks.json`. Hooks receive JSON on stdin; output decisions
+and non-zero failures participate in the fail-closed execution policy:
 
 ```json
 {
-  "preToolUse": [
+  "PreToolUse": [
     {
-      "command": "python scripts/security_check.py --tool {tool_name}",
-      "failAction": "deny"
+      "command": "python scripts/security_check.py",
+      "timeout": 10
     }
   ]
 }
@@ -185,8 +187,21 @@ Shell execution is guarded by multiple defense layers:
 
 ### 10. Storage and Credential Protection
 
-- **Local Session Storage**: Session transcripts, indexes, and checkpoints are stored in user-owned directories (`~/.coderai/projects/<project-hash>/`).
-- **Environment Isolation**: API keys configured via environment variables (`OPENAI_API_KEY`, `CODERAI_API_KEY`) are read strictly within client initialization and never logged to disk or serialized in session histories.
+- **Local Session Storage**: Session transcripts, indexes, and checkpoints normally use `<project>/.coderai/sessions/`, with migration/fallback to the legacy `~/.coderai/projects/<project-hash>/` directory.
+- **Environment Isolation**: Provider configuration resolves environment credentials; tool subprocesses scrub ambient keys and tokens unless supplied explicitly through their configured environment. Avoid putting credentials in prompts or tool output.
+
+---
+
+Settings and OAuth token persistence request mode `0600` for temporary creation
+and replacement. Approval request IDs cannot replace an existing record, including
+a settled record; collisions raise `ValueError` before events or owner changes.
+Legacy Kimi/Moonshot routing rejects explicit `sk-proj-` credentials and does not
+inherit ambient `OPENAI_API_KEY`; configure a dedicated key or OAuth.
+
+The [verification contract](docs/verification.md) defines dependency-audit and
+platform release gates. Passing offline regressions does not certify live providers
+or clear known dependency advisories. The current cleanup audit remains blocked;
+no advisory exceptions or incompatible overrides were introduced.
 
 ---
 
@@ -194,9 +209,9 @@ Shell execution is guarded by multiple defense layers:
 
 | Platform                          | Support Tier                        |
 | --------------------------------- | ----------------------------------- |
-| **macOS (Apple Silicon & Intel)** | Tier 1 (Fully Supported & Verified) |
-| **Linux (x86_64, aarch64)**       | Tier 1 (Fully Supported & Verified) |
-| **Windows (WSL2 / PowerShell)**   | Tier 2 (Supported)                  |
+| **macOS (Apple Silicon & Intel)** | Required source and installed-wheel CI gates |
+| **Linux (x86_64, aarch64)**       | Required source and installed-wheel CI gates |
+| **Windows (WSL2 / PowerShell)**   | Advisory source / required wheel CI gate                  |
 
 ---
 

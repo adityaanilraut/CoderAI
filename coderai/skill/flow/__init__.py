@@ -64,6 +64,23 @@ def parse_choice(text: str) -> str | None:
     return matches[-1].strip()
 
 
+def infer_decision_nodes(
+    nodes: dict[str, FlowNode],
+    outgoing: dict[str, list[FlowEdge]],
+) -> dict[str, FlowNode]:
+    """Mark tasks with multiple outgoing edges as decisions for either parser."""
+    updated: dict[str, FlowNode] = {}
+    for node_id, node in nodes.items():
+        kind = node.kind
+        if kind == "task" and len(outgoing.get(node_id, [])) > 1:
+            kind = "decision"
+        if kind != node.kind:
+            updated[node_id] = FlowNode(id=node.id, label=node.label, kind=kind)
+        else:
+            updated[node_id] = node
+    return updated
+
+
 def validate_flow(
     nodes: dict[str, FlowNode],
     outgoing: dict[str, list[FlowEdge]],

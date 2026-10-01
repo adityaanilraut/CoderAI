@@ -25,7 +25,7 @@ Use `/permission` to view the current mode or set one of:
 - `workspace-write`
 - `danger-full-access`
 
-The CLI also accepts specialized read presets shown by `/help permission`. Prefer the three primary presets unless the user needs a narrower read policy.
+The `/permission` command also accepts specialized read presets shown by `/help permission`. Prefer the three primary presets unless the user needs a narrower read policy.
 
 Persist a preset in settings:
 

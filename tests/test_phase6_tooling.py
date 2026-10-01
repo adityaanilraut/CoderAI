@@ -16,8 +16,7 @@ import urllib.request
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
-FRAMEWORK_PY = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
-PY = FRAMEWORK_PY if Path(FRAMEWORK_PY).exists() else sys.executable
+PY = sys.executable
 
 
 def _load_module(name: str, filename: str):
@@ -40,6 +39,20 @@ def test_normalize_remote_shapes():
     assert mod._normalize_remote("https://github.com/user/repo.git") == "github.com/user/repo"
     assert mod._normalize_remote("https://user:token@github.com/repo.git") == "github.com/repo"
     assert mod._normalize_remote("https://example.com/a/b") == "example.com/a/b"
+
+
+def test_standalone_and_runtime_remote_normalizers_match():
+    from coderai.constant import _normalize_remote
+
+    mod = _load_module("inject_build_sha_equivalence", "inject_build_sha.py")
+    for remote, expected in [
+        (" git@github.com:user/repo.git \n", "github.com/user/repo"),
+        ("https://user:token@github.com/repo.git", "github.com/repo"),
+        ("http://example.com/a/b.git", "example.com/a/b"),
+        ("host:path.git", "host/path"),
+        ("", ""),
+    ]:
+        assert mod._normalize_remote(remote) == _normalize_remote(remote) == expected
 
 
 def test_assemble_build_id():
@@ -131,7 +144,7 @@ def test_extract_dependencies_from_repo_pyproject():
     text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
     deps = mod._extract_dependencies(text)
     names = [mod._parse_requirement(d)[0] for d in deps if mod._parse_requirement(d)]
-    for expected in ("rich", "kosong", "pykaos", ("fastmcp-slim", "fastmcp"), "aiohttp"):
+    for expected in ("rich", "kosong", ("fastmcp-slim", "fastmcp"), "aiohttp"):
         if isinstance(expected, tuple):
             assert any(e in names for e in expected), f"{expected} missing from parsed dependencies"
         else:

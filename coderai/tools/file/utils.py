@@ -22,10 +22,10 @@ def get_effective_workdir(context: Any) -> str:
     if context is None:
         return os.getcwd()
     iso = context_value(context, "isolated_cwd")
-    if iso and isinstance(iso, (str, pathlib.Path)) and "MagicMock" not in str(type(iso)):
+    if iso and isinstance(iso, (str, pathlib.Path)):
         return str(pathlib.Path(iso).resolve())
     pr = context_value(context, "project_root")
-    if pr and isinstance(pr, (str, pathlib.Path)) and "MagicMock" not in str(type(pr)):
+    if pr and isinstance(pr, (str, pathlib.Path)):
         return str(pathlib.Path(pr).resolve())
     return os.getcwd()
 
@@ -99,11 +99,7 @@ def check_file_write_access(context: Any, file_path: str) -> str | None:
         return "SANDBOX_VIOLATION: empty file path."
     isolated_cwd = context_value(context, "isolated_cwd")
     isolated_root: str | None = None
-    if (
-        isinstance(isolated_cwd, (str, pathlib.Path))
-        and str(isolated_cwd).strip()
-        and "MagicMock" not in str(type(isolated_cwd))
-    ):
+    if isinstance(isolated_cwd, (str, pathlib.Path)) and str(isolated_cwd).strip():
         isolated_root = str(isolated_cwd)
 
     sb_mode = context_value(context, "sandbox_mode")

@@ -10,7 +10,7 @@ CoderAI is an enterprise-grade AI software engineering CLI and agentic execution
 
 ### Core Systems
 - **Terminal CLI (`coderai/ui/shell/`, `coderai/cli/`)**: Pure CLI interface (`coderai` and `cai`) with rich terminal rendering, interactive REPL, slash command dispatcher (`coderai/ui/shell/slash.py`), and multi-provider configuration.
-- **Session Manager (`coderai/soul/session/manager.py`)**: Stateful session orchestrator managing conversation histories, event streams, turn life cycles, compaction, and file history checkpoints.
+- **Session Manager (`coderai/soul/session/manager.py`, `streaming.py`, `tool_dispatch.py`)**: Stateful session orchestrator managing conversation histories, event streams, turn life cycles, compaction, and file history checkpoints.
 - **Agent Roles & Discovery (`coderai/subagents/` & `.coderai/agents/`)**: Dynamic discovery of specialized markdown agent specifications (`.coderai/agents/*.md`, `~/.coderai/agents/*.md`, `.agents/agents/*.md`, `~/.agents/agents/*.md`). Discovered roles include `architect`, `build-error-resolver`, `code-reviewer`, `planner`, `security-reviewer`, and `tdd-guide`.
 - **Autonomous Swarms (`coderai/teams/`)**: Decentralized multi-agent swarm coordination featuring `TeamManager`, DAG-validated `TeamTaskBoard`, priority actor mailboxes (`ActorChannel` / `AsyncMailbox`), and synchronization barriers (`wait_agent`).
 - **Tool Platform (`coderai/tools/`, `coderai/tools/legacy/`)**: Sandboxed tool execution with dry-run verification, approval workflows (`YOLO` and `AFK` modes), AST-based code transforms, ripgrep search, and git working tree isolation.
@@ -67,3 +67,8 @@ coderai --agent-file .coderai/agents/code-reviewer.md
  .venv/bin/python -m pytest tests/<test_file>.py -p no:cacheprovider --benchmark-disable -q
  ```
 - Install `pip install -e '.[dev,jev]'` so the real-SDK Jev tests (`tests/test_jev_calibration.py`) run instead of skipping.
+
+The shared verification runner (`.venv/bin/python scripts/verification.py test --suite all`)
+executes files independently with isolated homes and scrubbed credentials. See
+[verification](docs/verification.md) and [test-suite audit](docs/test-suite-audit.md)
+for the offline coverage, real-SDK requirements, and dependency-audit release gate.

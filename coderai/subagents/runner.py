@@ -27,7 +27,11 @@ from coderai.subagents.builder import (
     setup_subagent_scratchpad,
 )
 from coderai.file_snippets import clear_session_state
-from coderai.tools.legacy.types import ToolExecutionHooks
+from coderai.subagents.execution import (
+    build_child_execution_hooks,
+    subagent_tool_denial,
+    writable_child_denial,
+)
 
 logger = logging.getLogger(__name__)
 from coderai.subagents.builder import (
@@ -1065,7 +1069,6 @@ class SubAgentManager:
                     pass
 
                 # Check tool permissions inside sub-agent
-                from coderai.subagents.registry import is_tool_allowed, get_subagent_definition
                 from coderai.tools.legacy.registry import get_tool_registry
 
                 tdef = get_tool_registry().get_tool(fn_name)
@@ -1090,145 +1093,20 @@ class SubAgentManager:
                     )
                     permission_decision = permission_plan["permissions"][0]["permission"]
 
-                if permission_decision != "allow":
-                    tool_result_content = json.dumps(
-                        {
-                            "ok": False,
-                            "name": fn_name,
-                            "error": (
-                                "PermissionDenied: Parent permission policy requires approval."
-                                if permission_decision == "ask"
-                                else "PermissionDenied: Parent permission policy denies this tool call."
-                            ),
-                        }
-                    )
-                elif spec.exclude_tools and is_tool_allowed(
-                    fn_name, "allowlist", tuple(spec.exclude_tools)
+                denial = subagent_tool_denial(spec, fn_name, permission_decision, is_mutating)
+                if (
+                    denial is None
+                    and spec.mode == "read_only"
+                    and fn_name in ("Task", "subagent", "subagent_fork")
                 ):
+                    denial = writable_child_denial(parsed_args)
+                if denial is not None:
                     tool_result_content = json.dumps(
-                        {
-                            "ok": False,
-                            "name": fn_name,
-                            "error": f"PermissionDenied: Tool '{fn_name}' is excluded by sub-agent policy.",
-                        }
+                        {"ok": False, "name": fn_name, "error": denial}
                     )
-                elif spec.allowed_tools is not None and not is_tool_allowed(
-                    fn_name, "allowlist", tuple(spec.allowed_tools)
-                ):
-                    tool_result_content = json.dumps(
-                        {
-                            "ok": False,
-                            "name": fn_name,
-                            "error": f"PermissionDenied: Tool '{fn_name}' is not permitted by sub-agent allowlist policy.",
-                        }
-                    )
-                elif spec.mode == "read_only" and (
-                    fn_name in ("bash", "pwsh") and spec.sandbox_mode != "read-only"
-                ):
-                    tool_result_content = json.dumps(
-                        {
-                            "ok": False,
-                            "name": fn_name,
-                            "error": f"PermissionDenied: Sub-agent in read_only mode cannot invoke shell tool '{fn_name}' outside read-only sandbox.",
-                        }
-                    )
-                elif spec.mode == "read_only" and (
-                    fn_name
-                    in (
-                        "write",
-                        "Write",
-                        "edit",
-                        "Edit",
-                        "str_replace_editor",
-                        "schedule_create",
-                        "schedule_delete",
-                        "spawn_teammate",
-                    )
-                    or fn_name.startswith("terminal_")
-                    or (is_mutating and fn_name not in ("bash", "pwsh"))
-                ):
-                    tool_result_content = json.dumps(
-                        {
-                            "ok": False,
-                            "name": fn_name,
-                            "error": f"PermissionDenied: Sub-agent in read_only mode cannot invoke mutating tool '{fn_name}'.",
-                        }
-                    )
-                elif spec.mode == "read_only" and fn_name in ("Task", "subagent", "subagent_fork"):
-                    child_mode = parsed_args.get("mode") if isinstance(parsed_args, dict) else None
-                    child_type = (
-                        parsed_args.get("subagent_type") if isinstance(parsed_args, dict) else None
-                    )
-                    child_is_writable = False
-                    if child_mode == "general":
-                        child_is_writable = True
-                    elif not child_mode and child_type:
-                        c_def = get_subagent_definition(child_type)
-                        if c_def and c_def.mode != "read_only":
-                            child_is_writable = True
-                    elif not child_mode and not child_type:
-                        child_is_writable = True
-
-                    if child_is_writable:
-                        tool_result_content = json.dumps(
-                            {
-                                "ok": False,
-                                "name": fn_name,
-                                "error": "PermissionDenied: Sub-agent in read_only mode cannot spawn a writable child sub-agent.",
-                            }
-                        )
-                    else:
-                        hooks = ToolExecutionHooks(
-                            on_process_start=spec.on_process_start,
-                            on_process_exit=spec.on_process_exit,
-                            on_process_stdout=spec.on_process_stdout,
-                            on_process_timeout_control=spec.on_process_timeout_control,
-                            on_background_process_complete=spec.on_background_process_complete,
-                            should_stop=lambda: abort_event.is_set(),
-                            isolated_cwd=self._resolve_subagent_cwd(spec, session_id),
-                            dry_run=spec.dry_run,
-                            on_before_file_mutation=spec.on_before_file_mutation,
-                            on_after_file_mutation=lambda fp: (
-                                diffs.append({"file_path": str(fp)}),
-                                spec.on_after_file_mutation(fp)
-                                if spec.on_after_file_mutation
-                                else None,
-                            ),
-                            sandbox_mode=spec.sandbox_mode,
-                            plan_mode=spec.plan_mode,
-                            session_manager=spec.session_manager,
-                            allowed_tools=spec.allowed_tools,
-                        )
-                        executions = await tool_executor.execute_tool_calls(
-                            session_id, [tc], hooks=hooks
-                        )
-                        if executions:
-                            tool_result_content = executions[0]["content"]
-                        else:
-                            tool_result_content = json.dumps(
-                                {"ok": False, "error": "Execution aborted."}
-                            )
                 else:
-                    hooks = ToolExecutionHooks(
-                        on_process_start=spec.on_process_start,
-                        on_process_exit=spec.on_process_exit,
-                        on_process_stdout=spec.on_process_stdout,
-                        on_process_timeout_control=spec.on_process_timeout_control,
-                        on_background_process_complete=spec.on_background_process_complete,
-                        should_stop=lambda: abort_event.is_set(),
-                        isolated_cwd=self._resolve_subagent_cwd(spec, session_id),
-                        dry_run=spec.dry_run,
-                        on_before_file_mutation=spec.on_before_file_mutation,
-                        on_after_file_mutation=lambda fp: (
-                            diffs.append({"file_path": str(fp)}),
-                            spec.on_after_file_mutation(fp)
-                            if spec.on_after_file_mutation
-                            else None,
-                        ),
-                        sandbox_mode=spec.sandbox_mode,
-                        plan_mode=spec.plan_mode,
-                        session_manager=spec.session_manager,
-                        allowed_tools=spec.allowed_tools,
+                    hooks = build_child_execution_hooks(
+                        spec, abort_event, self._resolve_subagent_cwd(spec, session_id), diffs
                     )
                     executions = await tool_executor.execute_tool_calls(
                         session_id, [tc], hooks=hooks

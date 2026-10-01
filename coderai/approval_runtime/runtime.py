@@ -80,12 +80,15 @@ class ApprovalRuntime:
         session_id: str | None = None,
         session_grant_key: str | None = None,
     ) -> ApprovalRequestRecord:
-        """Register a request and notify subscribers; id is unique."""
+        """Register a request; reject IDs already owned by any retained record."""
+        request_id = request_id or f"apr_{uuid.uuid4().hex[:12]}"
+        if request_id in self._requests:
+            raise ValueError(f"Approval request already exists: {request_id}")
         owner_session_id = session_id or source.session_id
         if not owner_session_id and source.kind in ("foreground_turn", "turn"):
             owner_session_id = source.id if source.id and source.id != "default" else None
         record = ApprovalRequestRecord(
-            id=request_id or f"apr_{uuid.uuid4().hex[:12]}",
+            id=request_id,
             tool_call_id=tool_call_id,
             action=action,
             description=description,

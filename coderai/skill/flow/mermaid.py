@@ -11,6 +11,7 @@ from coderai.skill.flow import (
     FlowNode,
     FlowNodeKind,
     FlowParseError,
+    infer_decision_nodes as _infer_decision_nodes,
     validate_flow,
 )
 
@@ -250,19 +251,3 @@ def _normalize_edge_line(line: str) -> tuple[str, str | None]:
             label = edge_match.group(1).strip() or None
             normalized = normalized[: edge_match.start()] + "-->" + normalized[edge_match.end() :]
     return normalized, label
-
-
-def _infer_decision_nodes(
-    nodes: dict[str, FlowNode],
-    outgoing: dict[str, list[FlowEdge]],
-) -> dict[str, FlowNode]:
-    updated: dict[str, FlowNode] = {}
-    for node_id, node in nodes.items():
-        kind = node.kind
-        if kind == "task" and len(outgoing.get(node_id, [])) > 1:
-            kind = "decision"
-        if kind != node.kind:
-            updated[node_id] = FlowNode(id=node.id, label=node.label, kind=kind)
-        else:
-            updated[node_id] = node
-    return updated

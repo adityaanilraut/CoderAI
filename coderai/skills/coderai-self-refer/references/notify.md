@@ -1,6 +1,8 @@
 # CoderAI Notifications
 
-Set `notify` in user or project settings to an executable path or command:
+Set `notify` in user settings to an executable file path, or use
+`CODERAI_NOTIFY`. Project `notify` is ignored even when trusted. Shell command
+strings and arguments in this setting are not interpreted:
 
 ```json
 {

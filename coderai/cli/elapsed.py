@@ -47,11 +47,6 @@ def estimate_tokens(text: str) -> int:
     return int(_estimate_tokens_float(text))
 
 
-def estimate_tokens_float(text: str) -> float:
-    """Float estimator for incremental accumulation."""
-    return _estimate_tokens_float(text)
-
-
 def format_token_count(n: int) -> str:
     """Format token count with commas (legacy CoderAI)."""
     return f"{n:,}"
@@ -81,23 +76,6 @@ def format_context_status(
         total = format_token_count_compact(max_context_tokens)
         return f"context: {bounded:.1%} ({used}/{total})"
     return f"context: {bounded:.1%}"
-
-
-# ---------------------------------------------------------------------------
-# Progress bar helpers (multi-step)
-# ---------------------------------------------------------------------------
-
-PROGRESS_BAR_WIDTH = 20
-
-
-def format_progress_bar(completed: int, total: int, width: int = PROGRESS_BAR_WIDTH) -> str:
-    """Render a unicode progress bar like '████░░░░ 40% (2/5)'."""
-    if total <= 0:
-        return "░" * width + " 0%"
-    pct = max(0.0, min(1.0, completed / total))
-    filled = int(round(pct * width))
-    bar = "█" * filled + "░" * (width - filled)
-    return f"{bar} {pct * 100:.0f}% ({completed}/{total})"
 
 
 # ---------------------------------------------------------------------------

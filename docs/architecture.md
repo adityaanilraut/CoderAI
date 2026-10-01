@@ -60,22 +60,49 @@ shell imports are retained through narrow exports and a fallback constructor
 adapter in `_blocks`.
 
 `coderai.utils.rich.markdown.Markdown` supplies the heading and code background
-policy for both streaming paths. The former no-op `CODERAI_MARKDOWN_LEAK`
-environment switch has been removed. Approval, question, and background-chat
+policy for both streaming paths. Approval, question, and background-chat
 overlays remain separate modules under `visualize`.
+
+## Persistence and execution boundaries
+
+`hooks.events` builds lifecycle payloads exposed through compatible `hooks.runner`
+names. D2 and Mermaid share decision inference; wire adapters share JSON-RPC
+framing while retaining their error-envelope policies. MCP overlays share merging;
+settings normalization remains separate because its filtering policies differ.
+Request, UI, and streaming token estimates retain distinct policies.
+
+`soul.session.streaming` assembles provider deltas; `completion` negotiates clients,
+retries, and synchronous fallback. `soul.session.tool_dispatch` prepares chunks and
+persists results; `SessionManager` retains execution ownership, cancellation, and
+settlement. `subagents.execution` applies child policy and constructs callbacks;
+the runner calculates inherited approval and owns the loop. CLI drivers use an
+asynchronous `ProcessFactory` boundary and shared process-group shutdown.
+
+Session index/JSONL replacement share `soul.session.store` storage logic with
+umask permissions and failed-write orphan recovery. The general atomic writer
+uses exclusive temporary creation, mode preservation, fsync, replacement, and
+failure cleanup. Its sync/async text API honors Python codecs and error handlers,
+retains `utf16le` shorthand, and returns encoded byte counts. Settings and OAuth
+callers explicitly require private temporary/replacement mode `0600`.
+
+Approval IDs identify retained records for the lifetime of an `ApprovalRuntime`.
+A reused ID raises `ValueError` before creating a record or publishing events,
+including when the old record is resolved or cancelled. This prevents stale
+responses and waiters from targeting a different owner.
+
+## Local filesystem adapter
+
+`coderai.kaos` bundles the local PyKAOS 0.9.0 path, filesystem, subprocess and
+ContextVar interfaces with their Apache-2.0 license and upstream notice. Session
+metadata and ACP fallbacks use this package. The unused SSH backend is excluded,
+removing the external distribution's vulnerable exact AsyncSSH dependency pin.
+Backend names and serialized workspace metadata retain their existing values.
 
 ## Maintenance and verification
 
-The five review remediation phases are implemented. Completed implementation
-plans, dated design clips, and duplicate run logs have been removed. Four
-unused internal modules were removed: `soul.toolset`, `utils.diff`,
-`utils.message`, and `tools.file.plan_mode`. They were not registered tools or
-SDK exports. Active CLI entry points, packaged skill scripts, and build helpers
-remain available. The unused 4 MB macOS-only vendored `rg` executable
-was removed; search uses a validated explicit/PATH executable or the tested
-Python fallback.
-
-The [verification contract](verification.md) is authoritative for local and
-release checks. Its dependency audit still blocks release on the previously
-identified AsyncSSH advisories. Remaining typing exclusions are measured by
-`docs/type-suppression-budget.json`; renderer extraction adds no exclusions.
+The [verification contract](verification.md) defines local and release gates.
+The [test-suite audit](test-suite-audit.md) inventories coverage, intentional
+behavior corrections and removal decisions. Source/regression checks and dependency-audit
+release readiness are separate results. Remaining typing exclusions are measured
+by `type-suppression-budget.json`; the extracted execution modules have no new
+exclusions.

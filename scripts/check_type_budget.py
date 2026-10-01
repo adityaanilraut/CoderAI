@@ -38,10 +38,12 @@ def measure(root: Path, config: dict) -> dict:
     files = list(sources.values()) + list((root / "sdks/coderai-sdk/src").rglob("*.py"))
     return {
         "modules": len(suppressed),
-        "lines": sum(len(p.read_text().splitlines()) for p in suppressed.values()),
+        "lines": sum(len(p.read_text(encoding="utf-8").splitlines()) for p in suppressed.values()),
         "total_modules": len(sources),
-        "total_lines": sum(len(p.read_text().splitlines()) for p in sources.values()),
-        "inline_ignores": sum(p.read_text().count("type: ignore") for p in files),
+        "total_lines": sum(
+            len(p.read_text(encoding="utf-8").splitlines()) for p in sources.values()
+        ),
+        "inline_ignores": sum(p.read_text(encoding="utf-8").count("type: ignore") for p in files),
         "remaining": sorted(suppressed),
         "patterns": patterns,
     }
@@ -60,8 +62,8 @@ def check_budget(current: dict, budget: dict) -> list[str]:
 
 
 def main() -> int:
-    current = measure(ROOT, tomllib.loads((ROOT / "pyproject.toml").read_text()))
-    problems = check_budget(current, json.loads(BUDGET.read_text()))
+    current = measure(ROOT, tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8")))
+    problems = check_budget(current, json.loads(BUDGET.read_text(encoding="utf-8")))
     print(json.dumps(current, indent=2))
     for problem in problems:
         print(f"error: {problem}")

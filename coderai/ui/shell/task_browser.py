@@ -143,7 +143,7 @@ def run_task_browser(console: Any, mgr: Any, session_id: str | None) -> None:
         body = Columns([left, detail, preview], padding=(0, 1), expand=False)
         return Group(body, Text(""), footer), jobs
 
-    if not sys.stdin.isatty():
+    if sys.platform == "win32" or not sys.stdin.isatty():
         jobs = _collect_jobs(mgr, session_id)
         for j in jobs:
             console.print(

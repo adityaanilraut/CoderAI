@@ -96,9 +96,13 @@ class _SlowClient:
         return _resp(_msg("done"))
 
 
-def _subprocess_result(payload: dict):
-    """Build a fake successful subprocess result emitting payload as JSON stdout."""
-    return NS(returncode=0, stdout=json.dumps(payload), stderr="")
+def _cli_process(payload: dict):
+    """Fake the async process contract used by external CLI drivers."""
+
+    async def communicate():
+        return json.dumps(payload).encode(), b""
+
+    return NS(returncode=0, communicate=communicate)
 
 
 async def test_subagent_spec_result_formats_markdown():
@@ -290,35 +294,61 @@ def test_subagent_acp_parser_decodes_ndjson():
     assert parsed[1].result["sessionId"] == "sess_123"
 
 
-async def test_subagent_claude_driver_config_and_execution(monkeypatch: pytest.MonkeyPatch):
+async def test_subagent_claude_driver_config_and_execution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
     """Claude driver keeps its config and surfaces subprocess JSON as completed."""
-    import subprocess
-
     driver = ClaudeCodeDriver(
         ClaudeCodeConfig(
             permission_mode="acceptEdits", timeout_seconds=60.0, claude_bin="/fake/bin/claude"
         )
     )
     assert driver.config.permission_mode == "acceptEdits"
-    fake = lambda *a, **k: _subprocess_result({"result": "Found 3 files"})  # noqa: E731
-    monkeypatch.setattr(subprocess, "run", fake)
-    res = await ClaudeCodeDriver(ClaudeCodeConfig(claude_bin="claude")).execute("Find todos")
+
+    async def fake(*args, **kwargs):
+        assert args == (
+            "/fake/bin/claude",
+            "-p",
+            "Find todos",
+            "--output-format",
+            "json",
+            "--permission-mode",
+            "acceptEdits",
+        )
+        assert kwargs["cwd"] == str(tmp_path)
+        return _cli_process({"result": "Found 3 files"})
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake)
+    res = await driver.execute("Find todos", project_root=str(tmp_path))
     assert res["ok"] is True and res["status"] == "completed" and "Found 3 files" in res["summary"]
 
 
-async def test_subagent_codex_driver_config_and_execution(monkeypatch: pytest.MonkeyPatch):
+async def test_subagent_codex_driver_config_and_execution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
     """Codex driver keeps its config and surfaces subprocess JSON as completed."""
-    import subprocess
-
     driver = CodexDriver(
         CodexConfig(
             approval_policy="approve-for-me", timeout_seconds=90.0, codex_bin="/fake/bin/codex"
         )
     )
     assert driver.config.approval_policy == "approve-for-me"
-    fake = lambda *a, **k: _subprocess_result({"output": "Refactored module"})  # noqa: E731
-    monkeypatch.setattr(subprocess, "run", fake)
-    res = await CodexDriver(CodexConfig(codex_bin="codex")).execute("Refactor module")
+
+    async def fake(*args, **kwargs):
+        assert args == (
+            "/fake/bin/codex",
+            "exec",
+            "Refactor module",
+            "--json",
+            "--approval-policy",
+            "on-request",
+            "--auto-approve",
+        )
+        assert kwargs["cwd"] == str(tmp_path)
+        return _cli_process({"output": "Refactored module"})
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake)
+    res = await driver.execute("Refactor module", project_root=str(tmp_path))
     assert res["ok"] is True and res["status"] == "completed"
     assert "Refactored module" in res["summary"]
 

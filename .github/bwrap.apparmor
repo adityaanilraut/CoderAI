@@ -1,0 +1,8 @@
+# GitHub-hosted CI only: permit the packaged sandbox launcher to create namespaces.
+# Filesystem, PID and network restrictions are applied by Bubblewrap itself.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile coderai-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}

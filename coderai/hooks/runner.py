@@ -22,7 +22,23 @@ logger = logging.getLogger(__name__)
 
 from coderai.hooks.config import DEFAULT_HOOK_TIMEOUT_SECONDS, MergedHookOutcome
 from coderai.hooks.engine import run_hook_point, run_hook_point_async
+import coderai.hooks.events as _events
 from coderai.hooks.events import HookPoint
+
+# Compatibility names share the canonical lifecycle payload builders.
+build_pre_tool_use_payload = _events.pre_tool_use
+build_post_tool_use_payload = _events.post_tool_use
+build_post_tool_use_failure_payload = _events.post_tool_use_failure
+build_user_prompt_submit_payload = _events.user_prompt_submit
+build_stop_payload = _events.stop
+build_stop_failure_payload = _events.stop_failure
+build_session_start_payload = _events.session_start
+build_session_end_payload = _events.session_end
+build_subagent_start_payload = _events.subagent_start
+build_subagent_stop_payload = _events.subagent_stop
+build_pre_compact_payload = _events.pre_compact
+build_post_compact_payload = _events.post_compact
+build_notification_payload = _events.notification
 
 
 def run_pre_tool_use(
@@ -147,158 +163,6 @@ def run_on_subagent_spawn(
         project_root=project_root,
         settings=settings,
     )
-
-
-# ---------------------------------------------------------------------------
-# Event payload builders
-# ---------------------------------------------------------------------------
-
-
-def _event_base(event: str, session_id: str, cwd: str) -> dict[str, Any]:
-    return {"hook_event_name": event, "session_id": session_id, "cwd": cwd}
-
-
-def build_pre_tool_use_payload(
-    *,
-    session_id: str,
-    cwd: str,
-    tool_name: str,
-    tool_input: dict[str, Any],
-    tool_call_id: str = "",
-) -> dict[str, Any]:
-    return {
-        **_event_base("PreToolUse", session_id, cwd),
-        "tool_name": tool_name,
-        "tool_input": tool_input,
-        "tool_call_id": tool_call_id,
-    }
-
-
-def build_post_tool_use_payload(
-    *,
-    session_id: str,
-    cwd: str,
-    tool_name: str,
-    tool_input: dict[str, Any],
-    tool_output: str = "",
-    tool_call_id: str = "",
-) -> dict[str, Any]:
-    return {
-        **_event_base("PostToolUse", session_id, cwd),
-        "tool_name": tool_name,
-        "tool_input": tool_input,
-        "tool_output": tool_output,
-        "tool_call_id": tool_call_id,
-    }
-
-
-def build_post_tool_use_failure_payload(
-    *,
-    session_id: str,
-    cwd: str,
-    tool_name: str,
-    tool_input: dict[str, Any],
-    error: str,
-    tool_call_id: str = "",
-) -> dict[str, Any]:
-    return {
-        **_event_base("PostToolUseFailure", session_id, cwd),
-        "tool_name": tool_name,
-        "tool_input": tool_input,
-        "error": error,
-        "tool_call_id": tool_call_id,
-    }
-
-
-def build_user_prompt_submit_payload(*, session_id: str, cwd: str, prompt: str) -> dict[str, Any]:
-    return {**_event_base("UserPromptSubmit", session_id, cwd), "prompt": prompt}
-
-
-def build_stop_payload(
-    *, session_id: str, cwd: str, stop_hook_active: bool = False
-) -> dict[str, Any]:
-    return {
-        **_event_base("Stop", session_id, cwd),
-        "stop_hook_active": stop_hook_active,
-    }
-
-
-def build_stop_failure_payload(
-    *, session_id: str, cwd: str, error_type: str, error_message: str
-) -> dict[str, Any]:
-    return {
-        **_event_base("StopFailure", session_id, cwd),
-        "error_type": error_type,
-        "error_message": error_message,
-    }
-
-
-def build_session_start_payload(*, session_id: str, cwd: str, source: str) -> dict[str, Any]:
-    return {**_event_base("SessionStart", session_id, cwd), "source": source}
-
-
-def build_session_end_payload(*, session_id: str, cwd: str, reason: str) -> dict[str, Any]:
-    return {**_event_base("SessionEnd", session_id, cwd), "reason": reason}
-
-
-def build_subagent_start_payload(
-    *, session_id: str, cwd: str, agent_name: str, prompt: str
-) -> dict[str, Any]:
-    return {
-        **_event_base("SubagentStart", session_id, cwd),
-        "agent_name": agent_name,
-        "prompt": prompt,
-    }
-
-
-def build_subagent_stop_payload(
-    *, session_id: str, cwd: str, agent_name: str, response: str = ""
-) -> dict[str, Any]:
-    return {
-        **_event_base("SubagentStop", session_id, cwd),
-        "agent_name": agent_name,
-        "response": response,
-    }
-
-
-def build_pre_compact_payload(
-    *, session_id: str, cwd: str, trigger: str, token_count: int
-) -> dict[str, Any]:
-    return {
-        **_event_base("PreCompact", session_id, cwd),
-        "trigger": trigger,
-        "token_count": token_count,
-    }
-
-
-def build_post_compact_payload(
-    *, session_id: str, cwd: str, trigger: str, estimated_token_count: int
-) -> dict[str, Any]:
-    return {
-        **_event_base("PostCompact", session_id, cwd),
-        "trigger": trigger,
-        "estimated_token_count": estimated_token_count,
-    }
-
-
-def build_notification_payload(
-    *,
-    session_id: str,
-    cwd: str,
-    sink: str,
-    notification_type: str,
-    title: str = "",
-    body: str = "",
-    severity: str = "info",
-) -> dict[str, Any]:
-    return {
-        **_event_base("Notification", session_id, cwd),
-        "sink": sink,
-        "notification_type": notification_type,
-        "title": title,
-        "body": body,
-        "severity": severity,
-    }
 
 
 # ---------------------------------------------------------------------------

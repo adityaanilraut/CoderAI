@@ -10,6 +10,23 @@ from rich.console import Console
 
 from coderai.ui.shell.console import kv_table
 from coderai.ui.shell.prompt import get_bottom_toolbar_tokens, make_mini_bar
+
+
+def test_token_usage_commands_and_aliases_render_the_same_breakdown(monkeypatch):
+    from coderai.ui.shell import dispatch, session_picker
+
+    calls = []
+    monkeypatch.setattr(session_picker, "render_token_breakdown", lambda *args: calls.append(args))
+    ctx = dispatch.ShellContext(mgr=object(), session_id="session", console=object())
+    for name in ("tokens", "cost", "usage", "status", "quota"):
+        command = dispatch.registry.find_command(name)
+        assert command is not None
+        assert command.func(ctx, "") is dispatch.SlashAction.HANDLED
+    assert calls == [(ctx.console, ctx.mgr, ctx.session_id)] * 5
+    assert dispatch.registry.find_command("tokens").description == "Show token usage breakdown."
+    assert dispatch.registry.find_command("usage").description == "Show API usage / quota."
+
+
 from coderai.ui.shell.slash import _help_command_column_width, _render_plain_overview
 from coderai.ui.shell.task_browser import task_browser_widths
 from coderai.ui.shell.visualize._approval_panel import ApprovalRequestPanel

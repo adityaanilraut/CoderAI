@@ -754,8 +754,6 @@ def resolve_model_provider_routing(
             or os.getenv("MOONSHOT_API_KEY")
             or oauth_token
             or clean_explicit
-            or explicit_api_key
-            or os.getenv("OPENAI_API_KEY")
         )
         return base_url, api_key
 

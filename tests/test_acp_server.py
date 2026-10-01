@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import acp
 import pytest
-from kaos.path import KaosPath
+from coderai.kaos.path import KaosPath
 
 from coderai.acp.kaos import ACPKaos
 from coderai.acp.server import ACPServer, _ModelIDConv, _expand_llm_models

@@ -117,22 +117,20 @@ def collect_cli_mcp_overlays(
     warning instead of aborting startup (upstream raises; we warn to stay
     offline-safe and non-interactive friendly).
     """
-    merged: dict[str, dict[str, Any]] = {}
+    layers: list[dict[str, dict[str, Any]]] = []
     warnings: list[str] = []
     for path in config_files or []:
         servers, error = try_load_mcp_servers_file(path)
         if error:
             warnings.append(error)
             continue
-        for name, cfg in servers.items():
-            merged[name] = merge_server_cfg(merged[name], cfg) if name in merged else dict(cfg)
+        layers.append(servers)
     for raw in config_jsons or []:
         servers, error = parse_mcp_config_json(raw, source="--mcp-config")
         if error:
             warnings.append(error)
             continue
-        for name, cfg in servers.items():
-            merged[name] = merge_server_cfg(merged[name], cfg) if name in merged else dict(cfg)
+        layers.append(servers)
     # Env-bridged overlays (set by ``main()`` from argv for child reuse).
     env_files = os.getenv("CODERAI_MCP_CONFIG_FILES")
     if env_files and not config_files:
@@ -144,14 +142,12 @@ def collect_cli_mcp_overlays(
             if error:
                 warnings.append(error)
                 continue
-            for name, cfg in servers.items():
-                merged[name] = merge_server_cfg(merged[name], cfg) if name in merged else dict(cfg)
+            layers.append(servers)
     env_json = os.getenv("CODERAI_MCP_CONFIG_JSON")
     if env_json and not config_jsons:
         servers, error = parse_mcp_config_json(env_json, source="CODERAI_MCP_CONFIG_JSON")
         if error:
             warnings.append(error)
         else:
-            for name, cfg in servers.items():
-                merged[name] = merge_server_cfg(merged[name], cfg) if name in merged else dict(cfg)
-    return merged, warnings
+            layers.append(servers)
+    return merge_mcp_servers_dicts(None, *layers) or {}, warnings

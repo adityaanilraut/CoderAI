@@ -31,12 +31,11 @@ dependencies = [
     "certifi>=2024.0.0",
     "tenacity>=8.0.0",
     # loguru is required (also pulled in by kosong).
-    # Core engine deps (kosong 0.56.x, pykaos 0.9.x,
+    # Core engine deps (kosong 0.56.x, bundled local KAOS,
     # fastmcp-slim 3.2.x, agent-client-protocol 0.8.x).
     # NOTE: ranges are capped at next-minor/major to avoid silent breaking
     # upgrades; bump deliberately. CLI is argparse-only (no typer/click).
     "kosong>=0.56,<0.57",
-    "pykaos>=0.9,<0.10",
     "fastmcp-slim[client]>=3.2,<4",
     "streamingjson>=0.0.5,<1",
     "jinja2>=3.1",
@@ -44,6 +43,8 @@ dependencies = [
     "agent-client-protocol>=0.8,<0.9",
     # Telemetry transport (async).
     "aiohttp>=3.10",
+    # Reject the vulnerable transitive JWT versions used by MCP authentication.
+    "PyJWT>=2.15.0,<3",
 ]
 
 [project.optional-dependencies]
@@ -87,6 +88,9 @@ include = ["coderai*"]
 [tool.setuptools.package-data]
 coderai = [
     "py.typed",
+    "kaos/LICENSE",
+    "kaos/NOTICE",
+    "kaos/README.md",
     "prompt/templates/*.md",
     "tools/*/*.md",
     "skills/*/SKILL.md",
@@ -97,7 +101,7 @@ coderai = [
 ]
 
 [tool.setuptools.exclude-package-data]
-coderai = ["vendor/rg", "vendor/rg-*", "vendor/rg.exe"]
+coderai = ["vendor/rg", "vendor/rg-*", "vendor/rg.exe", "**/__pycache__/*", "**/*.py[cod]"]
 
 [tool.setuptools.dynamic]
 version = {attr = "coderai._version.__version__"}

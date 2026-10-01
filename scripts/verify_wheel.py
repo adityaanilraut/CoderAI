@@ -40,6 +40,8 @@ BUNDLED_MEMBERS = (
     # Mirrors [tool.setuptools.package-data] in pyproject.toml: prompt,
     # tool descriptions, and agent-spec data files shipped inside the wheel.
     "coderai/py.typed",
+    "coderai/kaos/LICENSE",
+    "coderai/kaos/NOTICE",
     *_source_members("prompt/templates/*.md"),
     *_source_members("tools/*/*.md"),
     *_source_members("agents/*/*.yaml"),
@@ -102,11 +104,24 @@ def _verify_stamp(raw: bytes, expected_sha: str, *, label: str) -> str:
     return build_id
 
 
+def _reject_generated_members(members: set[str], *, label: str) -> None:
+    cache_directories = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache"}
+    generated = sorted(
+        name
+        for name in members
+        if cache_directories.intersection(name.split("/"))
+        or name.endswith((".pyc", ".pyo", "/.DS_Store"))
+    )
+    if generated:
+        raise SystemExit(f"{label} must not contain generated caches: {', '.join(generated)}")
+
+
 def _verify_wheel_archive(
     wheel: Path, *, expected_version: str | None, expected_sha: str | None = None
 ) -> str:
     with zipfile.ZipFile(wheel) as archive:
         members = set(archive.namelist())
+        _reject_generated_members(members, label="Wheel")
         missing = sorted((set(RUNTIME_MEMBERS) | set(BUNDLED_MEMBERS)) - members)
         if missing:
             raise SystemExit("Wheel is missing runtime files: " + ", ".join(missing))
@@ -135,6 +150,7 @@ def _verify_wheel_archive(
 def _verify_sdist(sdist: Path, *, wheel_version: str, expected_sha: str | None = None) -> None:
     with tarfile.open(sdist, mode="r:gz") as archive:
         members = {member.name for member in archive.getmembers()}
+        _reject_generated_members(members, label="Sdist")
         roots = {name.split("/", 1)[0] for name in members}
         if len(roots) != 1:
             raise SystemExit("Sdist must contain exactly one top-level directory")
@@ -284,6 +300,9 @@ def _verify_installed(
             with_pip=True,
             clear=True,
             system_site_packages=system_site_packages,
+            # Python 3.12's bundled ensurepip version has known advisories.
+            # Audit the actual installation after updating its bootstrap tooling.
+            upgrade_deps=audit,
         ).create(environment)
         python = _venv_python(environment)
         if audit:

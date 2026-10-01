@@ -104,9 +104,16 @@ def success_response(id: Any, result: Any) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": id, "result": result}
 
 
-def error_response(id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
+def error_response(
+    id: Any,
+    code: int,
+    message: str,
+    data: Any = None,
+    *,
+    include_null_data: bool = False,
+) -> dict[str, Any]:
     err: dict[str, Any] = {"code": code, "message": message}
-    if data is not None:
+    if data is not None or include_null_data:
         err["data"] = data
     return {"jsonrpc": "2.0", "id": id, "error": err}
 
