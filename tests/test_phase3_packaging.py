@@ -161,6 +161,33 @@ def test_stamp_verifier_rejects_short_or_wrong_sha():
             verifier._verify_stamp(f'BUILD_SHA = "{wrong}"\n'.encode(), sha, label="test")
 
 
+@pytest.mark.parametrize("kind", ["wheel", "sdist"])
+@pytest.mark.parametrize(
+    "member",
+    ["coderai/tools/__pycache__/file.pyc", "coderai/.DS_Store", "coderai/.ruff_cache/check"],
+)
+def test_release_archives_reject_generated_caches(tmp_path, kind, member):
+    import io
+    import tarfile
+    import zipfile
+
+    verifier = _script_module("verify_wheel")
+    if kind == "wheel":
+        artifact = tmp_path / "test.whl"
+        with zipfile.ZipFile(artifact, "w") as archive:
+            archive.writestr(member, b"generated")
+        with pytest.raises(SystemExit, match="generated caches"):
+            verifier._verify_wheel_archive(artifact, expected_version="0.5.0")
+    else:
+        artifact = tmp_path / "test.tar.gz"
+        with tarfile.open(artifact, "w:gz") as archive:
+            info = tarfile.TarInfo("test-0.5.0/" + member)
+            info.size = 9
+            archive.addfile(info, io.BytesIO(b"generated"))
+        with pytest.raises(SystemExit, match="generated caches"):
+            verifier._verify_sdist(artifact, wheel_version="0.5.0")
+
+
 def test_python_grep_multiline_and_type(tmp_path, monkeypatch):
     monkeypatch.setenv("CODERAI_SEARCH_BACKEND", "python")
     (tmp_path / "one.py").write_text("start\nfinish\n")

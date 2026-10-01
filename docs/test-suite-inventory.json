@@ -1,6 +1,6 @@
 {
   "test_files": 87,
-  "cases": 1192,
+  "cases": 1199,
   "files": [
     {
       "file": "sdks/coderai-sdk/tests/test_sdk.py",
@@ -2580,6 +2580,10 @@
           "contract": ""
         },
         {
+          "name": "test_release_archives_reject_generated_caches",
+          "contract": ""
+        },
+        {
           "name": "test_python_grep_multiline_and_type",
           "contract": ""
         }
@@ -2609,6 +2613,12 @@
         "tests/test_phase3_packaging.py::test_posix_installer_uses_selected_supported_interpreter[pip-3.14]",
         "tests/test_phase3_packaging.py::test_git_stamp_retains_full_commit",
         "tests/test_phase3_packaging.py::test_stamp_verifier_rejects_short_or_wrong_sha",
+        "tests/test_phase3_packaging.py::test_release_archives_reject_generated_caches[coderai/tools/__pycache__/file.pyc-wheel]",
+        "tests/test_phase3_packaging.py::test_release_archives_reject_generated_caches[coderai/tools/__pycache__/file.pyc-sdist]",
+        "tests/test_phase3_packaging.py::test_release_archives_reject_generated_caches[coderai/.DS_Store-wheel]",
+        "tests/test_phase3_packaging.py::test_release_archives_reject_generated_caches[coderai/.DS_Store-sdist]",
+        "tests/test_phase3_packaging.py::test_release_archives_reject_generated_caches[coderai/.ruff_cache/check-wheel]",
+        "tests/test_phase3_packaging.py::test_release_archives_reject_generated_caches[coderai/.ruff_cache/check-sdist]",
         "tests/test_phase3_packaging.py::test_python_grep_multiline_and_type"
       ]
     },
@@ -2932,6 +2942,10 @@
       "purpose": "Behavioral contracts for streaming and fallback terminal renderers.",
       "definitions": [
         {
+          "name": "test_task_browser_uses_plain_listing_on_windows",
+          "contract": ""
+        },
+        {
           "name": "test_streamed_content_commits_complete_blocks_and_keeps_tail",
           "contract": ""
         },
@@ -2966,6 +2980,7 @@
       ],
       "fixtures": [],
       "cases": [
+        "tests/test_phase5_rendering.py::test_task_browser_uses_plain_listing_on_windows",
         "tests/test_phase5_rendering.py::test_streamed_content_commits_complete_blocks_and_keeps_tail[24]",
         "tests/test_phase5_rendering.py::test_streamed_content_commits_complete_blocks_and_keeps_tail[40]",
         "tests/test_phase5_rendering.py::test_streamed_content_commits_complete_blocks_and_keeps_tail[80]",

@@ -10,7 +10,8 @@ the final collection evidence is `.verification/cleanup-collection.json`.
 
 Phase 3 had 1,137 passing cases, four empty skips and 83 test files. Final cleanup
 had **1,186 passing cases, zero skips and 86 independently executed test files**.
-The 0.5.0 inventory adds six bundled local-adapter contracts, for 1,192 cases
+The 0.5.0 inventory adds six bundled local-adapter contracts and six archive
+cache rejection regressions plus Windows task-listing coverage, for 1,199 cases
 across 87 test files.
 The four placeholders were the only removed cases. No live-provider coverage was
 added or implied by the zero-skip result. Fixtures remain local to matching
@@ -157,12 +158,12 @@ in the JSON inventory, including both conftests, wire helpers and the replay fak
 | `tests/test_phase2_protocol_events.py` | 20 | Protocol regressions through real runtime managers and mocked providers. |
 | `tests/test_phase2_runtime_ownership.py` | 12 | Project-local schedules and manager-owned shutdown through real runtime objects. |
 | `tests/test_phase2_teammate_context.py` | 14 | Exercise teammate tasks through the real spec builder and child runner. |
-| `tests/test_phase3_packaging.py` | 24 | Portable installed search, selected interpreter, and source-stamp regressions. |
+| `tests/test_phase3_packaging.py` | 30 | Portable installed search, selected interpreter, and source-stamp regressions. |
 | `tests/test_phase3_sdk_oauth.py` | 31 | Production SDK types and runtime OAuth boundaries, with offline providers. |
 | `tests/test_phase3_session_approvals.py` | 26 | Session grants agree across public adapters and never widen exact-call grants. |
 | `tests/test_phase4_ui.py` | 6 | Unit tests for Phase 4: shell branding, theme, status, nudge, and update helpers. |
 | `tests/test_phase4_verification.py` | 21 | Release-gate, isolated test runner, audit policy and type-budget regressions. |
-| `tests/test_phase5_rendering.py` | 20 | Behavioral contracts for streaming and fallback terminal renderers. |
+| `tests/test_phase5_rendering.py` | 21 | Behavioral contracts for streaming and fallback terminal renderers. |
 | `tests/test_phase6_tooling.py` | 10 | Tests for developer tooling scripts. |
 | `tests/test_plan_mode_tools.py` | 10 | Plan-mode entry/exit, arguments and idempotence. |
 | `tests/test_prompt_context.py` | 43 | Consolidated prompt-context: usage formats, cache prefixes, effort, streams, errors, refs. |

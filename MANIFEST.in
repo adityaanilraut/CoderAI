@@ -9,4 +9,4 @@ recursive-include coderai/skills *
 recursive-include coderai/agents *
 recursive-include docs *.md
 prune tests
-
+global-exclude *.py[cod] .DS_Store

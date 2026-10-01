@@ -11,8 +11,11 @@
 - Correct search result counts and close/reap the stream-JSON example process.
 - Remove the vulnerable PyKAOS/AsyncSSH dependency chain by bundling the licensed
   local KAOS interfaces. Require patched PyJWT and refresh the runtime lockfile.
+- Exclude bytecode caches from release archives and reject generated caches in
+  both wheel and source archive verification.
 - Preserve strict source, isolated regression, real-SDK Jev and installed-wheel
-  audit gates. Use UTF-8 in CI and source inventory reads on Windows.
+  audit gates. Use UTF-8 in CI and source inventory reads on Windows; guard
+  POSIX terminal/process operations and provide Windows task-listing fallback.
 - Align documentation with current CLI/configuration behavior, remove completed
   plans and empty live-provider test placeholders, and clean generated caches.
 

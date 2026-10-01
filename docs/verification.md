@@ -24,7 +24,7 @@ Ruff 0.16.8, mypy 2.3.1, requests/PyYAML stubs and pip-audit 2.10.1 are pinned i
 ## Release gates
 
 CI and Release call `.github/workflows/verify.yml` from their own commit and pass `github.sha`. Each required job checks out that exact SHA. The source job also verifies `git rev-parse HEAD`; the release build verifies the same identity before stamping/building. Linux and macOS/Python 3.12 source checks, separate security regressions/audit, and real-SDK Jev calibration must succeed before release build or publication. Windows source compatibility retains the existing advisory status and runs the
-explicit `windows` suite (CLI, approval identity, completion/compaction, flow/hook
+explicit `windows` suite (CLI and child lifecycle, approval identity, completion/compaction, rendering, flow/hook
 adapters, Jev, bundled local KAOS, MCP overlays, token estimation, wire framing
 and SDK). POSIX-only PTYs, signals and chmod/umask contracts run in the full
 required Linux/macOS suites. Windows still runs source quality, types, installed

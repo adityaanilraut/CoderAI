@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
 from collections.abc import Awaitable
 from typing import Protocol
 
@@ -38,7 +39,10 @@ class ProcessFactory(Protocol):
 async def stop_process(process: RunningProcess) -> None:
     """Kill the process group, fall back to the child, then wait for reaping."""
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        if sys.platform == "win32":
+            process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
     except Exception:
         try:
             process.kill()

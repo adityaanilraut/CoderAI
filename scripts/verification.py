@@ -29,10 +29,12 @@ SUITES = {
     # chmod/umask and signal contracts covered by required Linux/macOS jobs.
     "windows": (
         "tests/test_cli.py",
+        "tests/test_cli_subagent_process.py",
         "tests/test_approval_identity.py",
         "tests/test_completion_streaming.py",
         "tests/test_compaction_conversion.py",
         "tests/test_flow_parsers.py",
+        "tests/test_phase5_rendering.py",
         "tests/test_hook_payloads.py",
         "tests/test_jev_calibration.py",
         "tests/test_local_kaos.py",

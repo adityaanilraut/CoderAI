@@ -2,6 +2,22 @@
 
 from __future__ import annotations
 
+
+def test_task_browser_uses_plain_listing_on_windows(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from coderai.ui.shell.task_browser import run_task_browser
+
+    lines = []
+    job = SimpleNamespace(id="task-1", status="running", session_id="session-1")
+    manager = SimpleNamespace(job_store=SimpleNamespace(_jobs={job.id: job}))
+    monkeypatch.setattr(sys, "platform", "win32")
+    # A Windows TTY must not reach POSIX fileno/termios operations.
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    run_task_browser(SimpleNamespace(print=lines.append), manager, "session-1")
+    assert lines == ["[running] task-1"]
+
+
 import io
 import json
 

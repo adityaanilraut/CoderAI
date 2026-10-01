@@ -101,7 +101,7 @@ coderai = [
 ]
 
 [tool.setuptools.exclude-package-data]
-coderai = ["vendor/rg", "vendor/rg-*", "vendor/rg.exe"]
+coderai = ["vendor/rg", "vendor/rg-*", "vendor/rg.exe", "**/__pycache__/*", "**/*.py[cod]"]
 
 [tool.setuptools.dynamic]
 version = {attr = "coderai._version.__version__"}

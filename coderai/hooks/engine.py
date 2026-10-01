@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import time
 from typing import Any
 
@@ -266,7 +267,7 @@ async def execute_hook_command_async(
                 import os as _os
                 import signal as _sig
 
-                if hasattr(_os, "killpg"):
+                if sys.platform != "win32" and hasattr(_os, "killpg"):
                     try:
                         _os.killpg(_os.getpgid(proc.pid), _sig.SIGKILL)
                     except ProcessLookupError:
