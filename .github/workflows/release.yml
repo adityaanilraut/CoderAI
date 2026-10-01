@@ -135,6 +135,7 @@ jobs:
         with:
           name: wheel-audit-${{ matrix.os }}-${{ matrix.python-version }}
           path: .verification/
+          include-hidden-files: true
 
   publish-github-release:
     name: Publish exact artifacts to GitHub

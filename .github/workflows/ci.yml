@@ -45,3 +45,4 @@ jobs:
         with:
           name: ci-wheel-audit
           path: .verification/
+          include-hidden-files: true

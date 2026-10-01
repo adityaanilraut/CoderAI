@@ -30,12 +30,17 @@ and SDK). POSIX-only PTYs, signals and chmod/umask contracts run in the full
 required Linux/macOS suites. Windows still runs source quality, types, installed
 dependency constraints and the complete dependency audit; installed-wheel smoke tests on Linux, macOS and Windows are all required.
 
-The Linux source job installs Bubblewrap, reloads the distribution's AppArmor
-profile when present, and probes actual PID/network isolation before testing.
+The Linux source job installs Bubblewrap and loads `.github/bwrap.apparmor`,
+a CI-only AppArmor profile attached to `/usr/bin/bwrap` that permits namespace
+creation. It replaces the distribution profile for that launcher on the
+ephemeral runner and probes actual PID/network isolation before testing.
+This follows [Ubuntu's application-specific namespace guidance](https://discourse.ubuntu.com/t/ubuntu-24-04-lts-noble-numbat-release-notes/39890);
+AppArmor's global namespace restriction remains enabled.
 Shell/PTY regressions therefore exercise the requested OS sandbox; missing
 backends remain a runtime error rather than silently running without isolation.
 
-The release workflow builds and attests one wheel/sdist pair. Smoke jobs install that same uploaded wheel into clean environments, run CLI/core/search/provenance probes, and audit the graph actually installed there. `--audit-report PATH` preserves inventory and findings on audit failure. Both publishing jobs explicitly depend on source verification and required artifact smoke tests. No check looks for success on an unrelated branch or older commit.
+The release workflow builds and attests one wheel/sdist pair. Smoke jobs install that same uploaded wheel into clean environments, run CLI/core/search/provenance probes, and audit the graph actually installed there. `--audit-report PATH` preserves inventory and findings on audit failure. Artifact uploads explicitly include the hidden `.verification` evidence directory.
+Both publishing jobs explicitly depend on source verification and required artifact smoke tests. No check looks for success on an unrelated branch or older commit.
 
 ## Dependency policy
 
