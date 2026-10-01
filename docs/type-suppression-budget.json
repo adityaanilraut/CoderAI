@@ -6,7 +6,7 @@
     "measurement": "Completed Phase 4 source snapshot before dead-code removal and renderer extraction."
   },
   "max_modules": 23,
-  "max_lines": 19059,
+  "max_lines": 18790,
   "max_inline_ignores": 73,
   "remaining": [
     "coderai.background.agent_runner",

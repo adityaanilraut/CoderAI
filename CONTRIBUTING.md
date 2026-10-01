@@ -40,6 +40,10 @@ Run tests per file using pytest:
 
 `make check` runs the shared source, SDK, wire, type, dependency and audit gates.
 Use `make test-jev`, `make test-sdk`, or `make test-e2e` for a focused suite.
+The shared runner isolates each test file in a temporary home and strips provider
+credentials. Never run the entire suite in one pytest process. The [suite audit](docs/test-suite-audit.md)
+records retained contracts and cleanup decisions.
+
 The full [verification contract](docs/verification.md) also documents network-dependent auditing and remaining live-provider gaps.
 
 ---
@@ -52,7 +56,7 @@ To add a new specialized agent role to your workspace:
 ---
 name: database-optimizer
 description: Analyzes SQL queries, indexes, and schema definitions.
-tools: read, grep, glob, bash
+tools: read, grep, glob
 mode: read_only
 ---
 

@@ -1298,10 +1298,7 @@ def cmd_debug(ctx: ShellContext, args: str) -> SlashAction:
 @registry.command(aliases=["status", "quota"])
 def cmd_usage(ctx: ShellContext, args: str) -> SlashAction:
     """Show API usage / quota."""
-    from coderai.ui.shell.session_picker import render_token_breakdown
-
-    render_token_breakdown(ctx.console, ctx.mgr, ctx.session_id)
-    return SlashAction.HANDLED
+    return cmd_tokens(ctx, args)
 
 
 @registry.command

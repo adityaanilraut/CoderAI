@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import acp
-from kaos.path import KaosPath
+from coderai.kaos.path import KaosPath
 
 from coderai.acp.engine import SessionManagerEngine
 from coderai.acp.kaos import ACPKaos

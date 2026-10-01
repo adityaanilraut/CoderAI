@@ -1,21 +1,29 @@
 # Configuration
 
-CoderAI resolves configuration from layered sources, lowest → highest
-precedence:
+Legacy settings combine user settings and trusted project settings, with process
+`CODERAI_*` overrides taking precedence. Global MCP seed, user/project server
+entries, and repeatable CLI MCP overlays merge in that order. Untrusted projects
+cannot supply executable hooks, MCP commands, or provider endpoints paired with
+user credentials. Project `notify` is ignored even when trusted; use user settings
+or `CODERAI_NOTIFY` for notification executables.
 
-1. Global MCP seed: `~/.coderai/mcp.json`
-2. User settings: `~/.coderai/settings.json`
-3. Project settings: `<project>/.coderai/settings.json` (project wins over user)
-4. Typed config: `~/.coderai/config.toml` (`CODERAI_CONFIG_FILE` /
-   `CODERAI_CONFIG_STRING` redirect it)
-5. CLI overlays: `--mcp-config-file`, `--mcp-config`, `--add-dir`,
-   `--skills-dir`, `--config-file`, `--config`
-6. Environment: `CODERAI_*`
-7. `.env` files: `<project>/.env` and `~/.coderai/.env` (`key=value` pairs
-   loaded into `os.environ`)
+Typed provider/model config coexists with legacy settings; it is not a single
+unconditional overlay. An explicit `--config-file` / `CODERAI_CONFIG_FILE` selects
+that file; otherwise discovery checks project `.coderai/config.toml`,
+`~/.config/coderai/config.toml`, then the share-directory `config.toml`.
+`--config` / `CODERAI_CONFIG_STRING` supplies inline JSON. Model selection and
+whether the typed config is project-scoped determine its legacy overlay;
+[configuration regressions](../tests/test_hierarchical_config.py) cover this boundary.
+
+User `.env` loads before trusted project `.env`; neither replaces values already
+in the process environment. It supplies missing environment values rather than
+forming a higher-precedence configuration layer. CLI workspace/skill directories
+and MCP overlays have their own merging rules.
 
 Share directory: `CODERAI_SHARE_DIR` overrides, otherwise `~/.coderai`.
-Sessions, device identity, and telemetry spillover live under the share dir.
+Device identity and telemetry spillover use the share dir. Session storage
+normally lives in `<project>/.coderai/sessions/`, with a legacy global fallback;
+see the [session persistence reference](../coderai/skills/coderai-self-refer/references/session-persistence.md).
 
 ---
 
@@ -35,7 +43,7 @@ coderai --setup --global                          # save to ~/.coderai explicitl
 ```
 
 Supported provider names include `openai`, `deepseek`, `gemini`, `anthropic`,
-`openrouter`, and `ollama` (see `--provider` help). Under the hood each entry
+`openrouter`, and `jev`; local presets include `ollama` (see setup help). Under the hood each entry
 carries a `type` selecting the wire client:
 
 | `type` | Protocol |
@@ -44,19 +52,29 @@ carries a `type` selecting the wire client:
 | `openai_responses` | OpenAI Responses API |
 | `anthropic` | Anthropic Claude API (`provider_type "anthropic"` in `coderai/llm.py`) |
 | `gemini` / `google_genai` | Google Gemini API |
-| `coderai` | CoderAI API |
+| `kimi` | Kimi coding API |
+| `vertexai` | Google Vertex AI |
 
 Per-invocation overrides:
 
 ```bash
-coderai --model gpt-4o --provider openai
-coderai --model claude-3-7-sonnet --provider anthropic
+coderai --model gpt-4o
+coderai --model claude-3-7-sonnet
 CODERAI_MODEL=gpt-4o CODERAI_API_KEY=sk-... coderai -p "hello"
 ```
 
 `CODERAI_BASE_URL` redirects the endpoint (local proxies, gateways);
 `CODERAI_PROVIDER_<TYPE>_BASE_URL` / `CODERAI_PROVIDER_<TYPE>_API_KEY`-style
 overrides exist per provider type (see `coderai/llm.py`).
+
+### Legacy Kimi / Moonshot routing
+
+For Kimi/Moonshot model-name routing, credential precedence remains dedicated
+`KIMI_API_KEY`, dedicated `MOONSHOT_API_KEY`, Kimi OAuth, then a non-project
+explicit key. Within each dedicated key, the supplied environment mapping wins
+over the process environment. `sk-proj-` explicit keys are rejected and ambient
+`OPENAI_API_KEY` is never a fallback to the Kimi endpoint. Configure a dedicated
+key or OAuth instead. Typed providers retain their explicit credential policy.
 
 ### Reasoning effort
 
@@ -79,6 +97,10 @@ coderai --setup --provider deepseek --key $DEEPSEEK_KEY
 coderai --setup --status   # confirm what is configured
 coderai --setup --test     # confirm the key actually authenticates
 ```
+
+Settings and OAuth token JSON writers pass mode `0600` when creating their
+temporary files, before replacement; they also retain the final private mode.
+This applies to new files and replacement of an older public file.
 
 Never commit keys: project settings (`<root>/.coderai/settings.json`) are
 inside the repo — use `--global`/user settings for secrets, and keep
@@ -156,7 +178,7 @@ Jev activates automatically when `TYPESAFE_API_KEY` is present in the environmen
 export TYPESAFE_API_KEY="ts-..."
 
 # Or via interactive setup
-coderai setup
+coderai --setup
 ```
 
 To install the optional TypeSafe SDK dependencies:

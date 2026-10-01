@@ -27,8 +27,7 @@ def atomic_write_text(
     """Write text data to a file atomically, preserving existing mode bits."""
     from coderai.utils.path import write_file_atomic
 
-    enc = "utf16le" if encoding.lower().replace("-", "") == "utf16le" else "utf8"
-    return write_file_atomic(path, content, mode=mode, encoding=enc)
+    return write_file_atomic(path, content, mode=mode, encoding=encoding, errors=errors)
 
 
 async def async_atomic_write_text(

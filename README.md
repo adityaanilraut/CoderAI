@@ -424,7 +424,7 @@ Settings are resolved in order of precedence: **CLI arguments > Environment vari
 | `CODERAI_PERMISSION_PRESET`            | Permission preset (`read-only`, `workspace-write`, `danger-full-access`) |
 | `CODERAI_THINKING_ENABLED`             | Enable reasoning/thinking tokens (`true` / `false`)                      |
 | `CODERAI_REASONING_EFFORT`             | Reasoning effort (`off`, `low`, `medium`, `high`, `max`)                 |
-| `CODERAI_RG_PATH`                      | Path to custom ripgrep executable (defaults to bundled binary)           |
+| `CODERAI_RG_PATH`                      | Explicit ripgrep path (validated PATH executable or Python fallback otherwise)           |
 | `CODERAI_DEBUG_LOG_ENABLED`            | Enable verbose engine debug logging                                      |
 
 ### Migration Notes
@@ -465,7 +465,7 @@ make clean
 
 ---
 
-Development commands use `.venv/bin/python` by default. See [the verification contract](docs/verification.md) for check scopes, required Jev/SDK coverage, tool pins and audit policy.
+Development commands use `.venv/bin/python` by default. The [test-suite audit](docs/test-suite-audit.md) documents the completed local audit and retained contracts. See [the verification contract](docs/verification.md) for check scopes, required Jev/SDK coverage, tool pins and audit policy.
 
 ## Acknowledgements
 

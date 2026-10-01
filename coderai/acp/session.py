@@ -11,7 +11,7 @@ from typing import Any
 
 import acp
 import streamingjson
-from kaos import Kaos, reset_current_kaos, set_current_kaos
+from coderai.kaos import Kaos, reset_current_kaos, set_current_kaos
 from kosong.chat_provider import APIStatusError, ChatProviderError
 
 from coderai.acp.convert import (

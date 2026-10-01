@@ -7,6 +7,7 @@ import json
 import pathlib
 import shutil
 import uuid
+from collections.abc import Iterable
 from typing import Any
 
 from coderai.events import SessionEvent, legacy_message_to_event
@@ -131,9 +132,20 @@ class JsonlSessionStore:
                 reverse=True,
             )[: self.max_entries]
         index["entries"] = entries
-        tmp_path = self.index_path.with_suffix(f".tmp-{uuid.uuid4().hex[:8]}")
-        tmp_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
-        tmp_path.replace(self.index_path)
+        self._replace_text(self.index_path, [json.dumps(index, indent=2)])
+
+    @staticmethod
+    def _replace_text(target: pathlib.Path, chunks: Iterable[str]) -> None:
+        """Replace session text, retaining umask modes and recoverable orphan names.
+
+        Unlike the general atomic writer, session replacement leaves failed
+        writes for cleanup_orphan_tmps and does not preserve the old inode mode.
+        """
+        tmp = target.with_suffix(f".tmp-{uuid.uuid4().hex[:8]}")
+        with tmp.open("w", encoding="utf-8") as stream:
+            for chunk in chunks:
+                stream.write(chunk)
+        tmp.replace(target)
 
     def append_row(self, session_id: str, row: dict[str, Any]) -> None:
         self.project_dir.mkdir(parents=True, exist_ok=True)
@@ -143,11 +155,7 @@ class JsonlSessionStore:
     def replace_rows(self, session_id: str, rows: list[dict[str, Any]]) -> None:
         self.project_dir.mkdir(parents=True, exist_ok=True)
         target = self.messages_path(session_id)
-        tmp = target.with_suffix(f".tmp-{uuid.uuid4().hex[:8]}")
-        with tmp.open("w", encoding="utf-8") as stream:
-            for row in rows:
-                stream.write(json.dumps(row, ensure_ascii=False) + "\n")
-        tmp.replace(target)
+        self._replace_text(target, (json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
 
     def read_rows(self, session_id: str) -> list[dict[str, Any]]:
         path = self.messages_path(session_id)
@@ -185,11 +193,7 @@ class JsonlSessionStore:
     def write_raw_lines(self, session_id: str, lines: list[str]) -> None:
         self.project_dir.mkdir(parents=True, exist_ok=True)
         target = self.messages_path(session_id)
-        tmp = target.with_suffix(f".tmp-{uuid.uuid4().hex[:8]}")
-        with tmp.open("w", encoding="utf-8") as stream:
-            for line in lines:
-                stream.write(line + "\n")
-        tmp.replace(target)
+        self._replace_text(target, (line + "\n" for line in lines))
 
     def list_events(self, session_id: str) -> list[SessionEvent]:
         """Read event rows and adapt legacy message rows without rewriting the log."""

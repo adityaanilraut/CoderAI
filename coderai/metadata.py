@@ -14,9 +14,9 @@ from hashlib import md5
 from pathlib import Path
 from typing import Any
 
-from kaos import get_current_kaos
-from kaos.local import local_kaos
-from kaos.path import KaosPath
+from coderai.kaos import get_current_kaos
+from coderai.kaos.local import local_kaos
+from coderai.kaos.path import KaosPath
 from pydantic import BaseModel, ConfigDict, Field
 
 from coderai.share import get_share_dir

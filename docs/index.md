@@ -40,6 +40,7 @@ Explore the CoderAI documentation suite:
 | Guide / Reference | Description |
 |---|---|
 | [**Runtime Architecture**](architecture.md) | Session ownership, execution boundaries, protocol adapters, and terminal rendering. |
+| [**Test Suite Audit**](test-suite-audit.md) | Case inventory, retained coverage, and removal decisions. |
 | [**Verification Contract**](verification.md) | Shared checks, release gates, dependency policy, and measured typing debt. |
 | [**CLI & Slash Commands**](cli.md) | Complete CLI flags, options, keyboard shortcuts, and interactive `/slash` commands. |
 | [**Configuration**](configuration.md) | Configuration hierarchy, provider credentials, LLM endpoints, permission presets, and JEV settings. |

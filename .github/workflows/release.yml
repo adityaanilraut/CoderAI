@@ -7,9 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Package version to validate without publishing (e.g. 0.3.3)"
+        description: "Package version to validate without publishing (e.g. 0.5.0)"
         required: true
         type: string
+
+env:
+  PYTHONUTF8: "1"
 
 permissions:
   contents: read

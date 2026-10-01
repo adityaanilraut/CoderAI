@@ -294,7 +294,7 @@ def load_token(key: str) -> OAuthToken | None:
 
 
 def save_token(key: str, token: OAuthToken) -> None:
-    atomic_json_write(token.to_dict(), credentials_path(key))
+    atomic_json_write(token.to_dict(), credentials_path(key), mode=0o600)
     with suppress(OSError):
         os.chmod(credentials_path(key), 0o600)
 

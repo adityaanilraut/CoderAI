@@ -12,7 +12,6 @@ import json
 import os
 import pathlib
 import signal
-import subprocess
 import sys
 from typing import Any
 
@@ -23,7 +22,6 @@ from coderai.ui.shell.dispatch import (
 )
 from coderai.ui.shell.slash import (
     parse_slash_command,
-    render_help,
 )
 from coderai.ui.shell.prompt import (
     expand_file_mentions,
@@ -1696,42 +1694,6 @@ async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes:
             return
 
         break
-
-
-def _render_help_menu(cmd_name: str | None = None) -> None:
-    """Display interactive command help or specific command contextual help."""
-    render_help(cmd_name, console if _RICH else None)
-
-
-def _show_diff(mgr: SessionManager, session_id: str | None) -> None:
-    """Display the unified diff of changes made in the session or git workspace."""
-    diff_output = ""
-    if session_id:
-        diff_output = mgr.get_diff(session_id)
-
-    if not diff_output.strip():
-        # Fallback to workspace git diff if in a git repository
-        try:
-            res = subprocess.run(
-                ["git", "diff", "HEAD"],
-                cwd=mgr.project_root,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if res.returncode == 0 and res.stdout.strip():
-                diff_output = res.stdout
-        except Exception:
-            pass
-
-    if not diff_output.strip():
-        if console is not None and _RICH:
-            console.print("[dim]No file changes detected since session start.[/]")
-        else:
-            print("No file changes detected since session start.")
-        return
-
-    render_diff_preview(console, diff_output, title="Session File Diffs")
 
 
 def _queue_skill(

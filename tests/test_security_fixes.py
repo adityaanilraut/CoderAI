@@ -34,16 +34,18 @@ def test_notify_executes_file_directly(tmp_path):
         assert kwargs.get("shell", False) is not True
 
 
-def test_config_ignores_project_notify():
-    """Untrusted project checkout must not supply the notify executable."""
-    from coderai.config import resolve_current_settings
+def test_config_ignores_project_notify(isolated_home, monkeypatch):
+    """Project notify cannot override the user's trusted executable, even when trusted."""
+    import coderai.config as config
 
-    merged = resolve_current_settings(".")
-    _ = merged  # smoke: resolver still works without project notify
-    import inspect
-
-    src = inspect.getsource(resolve_current_settings)
-    assert 'project.get("notify")' not in src
+    monkeypatch.setattr(config, "read_settings", lambda: {"notify": "/user/notify"})
+    monkeypatch.setattr(config, "read_project_settings", lambda _: {"notify": "/project/evil"})
+    monkeypatch.setattr(config, "resolve_typed_config_overlay", lambda _: {})
+    monkeypatch.setattr(config, "load_dotenv", lambda *a, **kw: None)
+    for trusted in (False, True):
+        assert config.resolve_current_settings(".", trusted=trusted)["notify"] == "/user/notify"
+    monkeypatch.setenv("CODERAI_NOTIFY", "/explicit/notify")
+    assert config.resolve_current_settings(".", trusted=True)["notify"] == "/explicit/notify"
 
 
 def test_read_blocks_nested_traversal(tmp_path):
@@ -156,15 +158,35 @@ def test_statusline_avoids_shell():
         assert mock_run.call_args[1].get("shell") is False
 
 
-def test_terminal_scrubs_secrets():
-    """Terminal spawn must not copy ambient secrets verbatim."""
-    import inspect
+def test_terminal_scrubs_secrets(tmp_path, monkeypatch):
+    """Observe the spawn boundary, including explicitly supplied per-terminal secrets."""
+    import os
+    import coderai.terminal.manager as manager
 
-    from coderai.terminal import manager
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "ambient-token")
+    monkeypatch.setenv("SAFE_TEST_VALUE", "keep")
+    master, slave = os.pipe()
+    monkeypatch.setattr(manager, "pty", MagicMock(openpty=lambda: (master, slave)))
+    captured = []
 
-    src = inspect.getsource(manager.TerminalSession.__init__)
-    assert "os.environ.copy()" not in src
-    assert "scrub_subprocess_env" in src
+    def spawn(*args, **kwargs):
+        captured.append(kwargs["env"])
+        raise OSError("stop before spawn")
+
+    monkeypatch.setattr(manager.subprocess, "Popen", spawn)
+    import pytest
+
+    with pytest.raises(OSError, match="stop before spawn"):
+        manager.TerminalSession(
+            "test", ["bash"], cwd=str(tmp_path), env={"OPENAI_API_KEY": "explicit-secret"}
+        )
+    assert captured[0]["OPENAI_API_KEY"] == "explicit-secret"
+    assert "GITHUB_TOKEN" not in captured[0]
+    assert captured[0]["SAFE_TEST_VALUE"] == "keep"
+    for fd in (master, slave):
+        with pytest.raises(OSError):
+            os.fstat(fd)
 
 
 def test_state_public_surface_only():

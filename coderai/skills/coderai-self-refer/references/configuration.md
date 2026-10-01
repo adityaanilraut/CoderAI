@@ -8,7 +8,7 @@ CoderAI reads:
 2. `<project>/.coderai/settings.json`
 3. `CODERAI_*` process environment variables
 
-Later sources win for scalar settings. CoderAI also loads `~/.coderai/.env` and `<project>/.env` without replacing variables already present in the process environment. Use `/config` to inspect the resolved configuration.
+Later sources win for ordinary scalar settings; project `notify` is ignored even in a trusted workspace. CoderAI also loads user `~/.coderai/.env` followed by trusted `<project>/.env` without replacing variables already present in the process environment. Use `/config` to inspect the resolved configuration.
 
 Use canonical camelCase keys in JSON:
 
@@ -43,7 +43,7 @@ coderai
 | `reasoningEffort` | string | `off`, `low`, `medium`, `high`, or `max` |
 | `debugLogEnabled` | boolean | Enable debug logging |
 | `multimodal` | string | `on`, `off`, or `default` |
-| `notify` | string | Notification script path or command |
+| `notify` | string | User-only notification executable file path |
 | `webSearchTool` | string | Custom web-search executable |
 | `mcpServers` | object | MCP server definitions |
 | `permissions` | object | Permission rules or preset |
@@ -75,6 +75,12 @@ CODERAI_PERMISSION_PRESET
 ```
 
 `OPENAI_API_KEY` and `OPENAI_BASE_URL` are compatibility fallbacks when the corresponding CoderAI values are absent.
+
+Settings and OAuth token JSON writes create private `0600` temporary files before
+replacement. For legacy Kimi/Moonshot routing, use `KIMI_API_KEY`,
+`MOONSHOT_API_KEY`, or Kimi OAuth; dedicated keys precede OAuth, which precedes
+a non-project explicit key. OpenAI `sk-proj-` keys are rejected and ambient
+`OPENAI_API_KEY` is not forwarded to Kimi. Typed-provider credentials stay explicit.
 
 ## Skills
 

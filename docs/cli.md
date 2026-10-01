@@ -17,8 +17,8 @@ usage: coderai [-h] [--version] [-p PROMPT] [-e [PROMPT]] [--agent AGENT]
 
 | Flag | Description |
 |---|---|
-| `-p, --prompt <text>`, `-c, --command <text>` | Submit a prompt on launch (a bare positional prompt works too). |
-| `-e, -x, --exec [prompt]` | Run one prompt non-interactively (requires `--prompt`/`-p` or a positional prompt). |
+| `-p, --prompt <text>` | Submit a prompt on launch (a bare positional prompt works too). |
+| `-e, -x, --exec [prompt]` | Run one prompt non-interactively; supply the optional argument, `--prompt`/`-p`, or a positional prompt. |
 | `--agent <name>` | Launch with a specific agent spec or discovered role (`architect`, `tdd-guide`, etc.). |
 | `--agent-file <path>` | Path to a custom YAML or Markdown agent spec file. |
 | `-m, --model <model>` | Override the default model (e.g. `gpt-4o`, `claude-3-7-sonnet`). |
@@ -74,6 +74,12 @@ plumbing for spawned subagent processes, not user-facing options.
 
 ---
 
+`--input-format stream-json` consumes one JSON object with a `prompt` field
+through stdin EOF. Supply a launch prompt (`--prompt` or positional) to enter
+the single-shot path, then close stdin after writing. Output is a sequence of
+JSON lines. See the [stdio example](../examples/coderai-cli-stream-json/README.md);
+use `--wire` for the session-oriented JSON-RPC protocol.
+
 ## Interactive Slash Commands
 
 Inside the interactive REPL shell, the following commands are available:
@@ -109,7 +115,7 @@ Inside the interactive REPL shell, the following commands are available:
 | `/context` | Inspect live context window utilization. |
 | `/debug` | Show context debug info (msgs/tokens/checkpoints). |
 | `/tokens` | Show token usage breakdown. |
-| `/usage` | Show API usage / quota. |
+| `/usage` | Alias behavior for `/tokens`; show token usage breakdown. |
 | `/effort [level]` | Select reasoning effort. |
 | `/thinking` | Toggle reasoning trace display. |
 | `/config` | Show resolved configuration. |

@@ -214,6 +214,8 @@ async def test_al_a3_compaction_no_tools_and_empty_summary_aborts(tmp_path: path
         )
 
     engine = BasicCompaction(mgr)
+    # Compaction requires a client before the stubbed completion boundary.
+    mgr.create_openai_client = lambda: {"client": object(), "model": "gpt-6-luna"}
 
     # 1. Mock _create_completion_with_retry returning an empty summary
     captured_requests = []

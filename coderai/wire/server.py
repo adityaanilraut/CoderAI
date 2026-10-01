@@ -25,7 +25,15 @@ from coderai.approval_runtime.models import ApprovalResponseKind
 from coderai.utils.aioqueue import Queue, QueueShutDown
 from coderai.utils.broadcast import BroadcastQueueOverflow, DEFAULT_SUBSCRIBER_QUEUE_LIMIT
 from coderai.utils.logging import logger
-from coderai.wire.jsonrpc import ErrorCodes, Statuses
+from coderai.wire.jsonrpc import (
+    ErrorCodes,
+    Statuses,
+    JSONRPC_IN_METHODS as IN_METHODS,
+    error_response,
+    event_notification,
+    request_message,
+    success_response as _success,
+)
 from coderai.wire.protocol import WIRE_PROTOCOL_VERSION
 from coderai.wire.types import (
     ApprovalRequest,
@@ -39,29 +47,20 @@ from coderai.wire.types import (
     serialize_wire_message,
 )
 
-IN_METHODS = {"initialize", "prompt", "steer", "replay", "set_plan_mode", "cancel"}
 VALID_APPROVAL_RESPONSES = ("approve", "approve_for_session", "reject")
 
 
-def _success(id: Any, result: Any) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": id, "result": result}
-
-
 def _error(id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message, "data": data}}
+    # The stdio server has always included data, even when it is null.
+    return error_response(id, code, message, data, include_null_data=True)
 
 
 def _event(msg: Any) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "method": "event", "params": serialize_wire_message(msg)}
+    return event_notification(serialize_wire_message(msg))
 
 
 def _request(id: Any, msg: Any) -> dict[str, Any]:
-    return {
-        "jsonrpc": "2.0",
-        "method": "request",
-        "id": id,
-        "params": serialize_wire_message(msg),
-    }
+    return request_message(id, serialize_wire_message(msg))
 
 
 _active_wire_server: WireServer | None = None

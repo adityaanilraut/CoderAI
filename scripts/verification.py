@@ -25,23 +25,43 @@ SUITES = {
     "wire": ("tests_e2e/test_*.py",),
     "sdk": ("sdks/coderai-sdk/tests/test_*.py",),
     "jev": ("tests/test_jev_calibration.py",),
+    # Windows probes portable boundaries; the full suite includes POSIX PTYs,
+    # chmod/umask and signal contracts covered by required Linux/macOS jobs.
+    "windows": (
+        "tests/test_cli.py",
+        "tests/test_approval_identity.py",
+        "tests/test_completion_streaming.py",
+        "tests/test_compaction_conversion.py",
+        "tests/test_flow_parsers.py",
+        "tests/test_hook_payloads.py",
+        "tests/test_jev_calibration.py",
+        "tests/test_local_kaos.py",
+        "tests/test_mcp_overlays.py",
+        "tests/test_token_estimation.py",
+        "tests/test_wire_framing.py",
+        "sdks/coderai-sdk/tests/test_sdk*.py",
+    ),
     "security": (
         "tests/test_security*.py",
         "tests/test_phase1_*.py",
         "tests/test_phase2_runtime_ownership.py",
         "tests/test_phase3_session_approvals.py",
         "tests/test_review_phase4.py",
+        "tests/test_approval_identity.py",
+        "tests/test_credential_boundaries.py",
     ),
 }
 REQUIRED_FILES = {
     "tests/test_jev_calibration.py",
+    "tests/test_local_kaos.py",
+    "tests/test_approval_identity.py",
+    "tests/test_credential_boundaries.py",
+    "tests/test_atomic_file_ops.py",
     "tests/test_phase2_protocol_events.py",
     "tests/test_phase3_sdk_oauth.py",
     "sdks/coderai-sdk/tests/test_sdk.py",
     "sdks/coderai-sdk/tests/test_sdk_integration.py",
 }
-# These four placeholders do not exercise providers; make their absence visible.
-OPTIONAL_FILES = {"tests_e2e/test_wire_real_llm.py"}
 
 
 def test_files(suite: str) -> list[Path]:
@@ -78,7 +98,13 @@ def junit_counts(path: Path) -> dict[str, int]:
 
 def run_tests(suite: str, *, coverage: bool, report: Path | None) -> int:
     files = test_files(suite)
-    env = dict(os.environ, CODERAI_SDK_INTEGRATION="1")
+    from coderai.utils.subprocess_env import scrub_subprocess_env
+
+    env = scrub_subprocess_env(dict(os.environ))
+    for key in list(env):
+        if key.startswith("CODERAI_") or any(part in key for part in ("BASE_URL", "MODEL")):
+            env.pop(key)
+    env["CODERAI_SDK_INTEGRATION"] = "1"
     # Prevent developer pytest options from silently altering the gate/coverage.
     env.pop("PYTEST_ADDOPTS", None)
     rows = []
@@ -87,6 +113,9 @@ def run_tests(suite: str, *, coverage: bool, report: Path | None) -> int:
         subprocess.run([sys.executable, "-m", "coverage", "erase"], cwd=ROOT, check=True)
     with tempfile.TemporaryDirectory(prefix="coderai-verification-") as temporary:
         for index, file in enumerate(files):
+            home = Path(temporary) / f"home-{index}"
+            home.mkdir()
+            env.update(HOME=str(home), USERPROFILE=str(home), XDG_CONFIG_HOME=str(home / ".config"))
             name = file.relative_to(ROOT).as_posix()
             junit = Path(temporary) / f"{index}.xml"
             command = [
@@ -106,7 +135,7 @@ def run_tests(suite: str, *, coverage: bool, report: Path | None) -> int:
             proc = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
             counts = junit_counts(junit) if junit.exists() else {}
             required = name in REQUIRED_FILES or suite in {"jev", "security", "sdk"}
-            skip_failure = bool(counts.get("skipped")) and (required or name not in OPTIONAL_FILES)
+            skip_failure = bool(counts.get("skipped"))
             empty = (
                 not counts
                 or sum(counts.values()) == 0
@@ -126,11 +155,7 @@ def run_tests(suite: str, *, coverage: bool, report: Path | None) -> int:
             print(f"{name}: {'FAIL' if bad else 'PASS'} {counts}", flush=True)
             if bad:
                 print(proc.stdout + proc.stderr, flush=True)
-            elif name in OPTIONAL_FILES:
-                print(
-                    "  Live-provider coverage is absent: four opt-in placeholders remain.",
-                    flush=True,
-                )
+
     if coverage:
         failed |= (
             subprocess.run(

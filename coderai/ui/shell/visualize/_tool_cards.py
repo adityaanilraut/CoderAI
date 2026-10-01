@@ -257,9 +257,9 @@ def _render_search_grep_card(
     """Render grep / glob code search matches cleanly."""
     query = metadata.get("query") or metadata.get("pattern") or ""
     path = metadata.get("path") or metadata.get("directory") or ""
-    matches_count = metadata.get("matches_count") or (
-        len(output_text.splitlines()) if output_text else 0
-    )
+    matches_count = metadata.get("matches_count", metadata.get("count"))
+    if matches_count is None:
+        matches_count = len(output_text.splitlines()) if output_text else 0
 
     title = f"    ↳ [bold cyan]Search:[/] [bold yellow]'{escape(query)}'[/]"
     if path:

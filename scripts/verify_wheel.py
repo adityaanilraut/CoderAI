@@ -40,6 +40,8 @@ BUNDLED_MEMBERS = (
     # Mirrors [tool.setuptools.package-data] in pyproject.toml: prompt,
     # tool descriptions, and agent-spec data files shipped inside the wheel.
     "coderai/py.typed",
+    "coderai/kaos/LICENSE",
+    "coderai/kaos/NOTICE",
     *_source_members("prompt/templates/*.md"),
     *_source_members("tools/*/*.md"),
     *_source_members("agents/*/*.yaml"),

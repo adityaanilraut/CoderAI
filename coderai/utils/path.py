@@ -105,6 +105,7 @@ def write_file_atomic(
     mode: int | None = None,
     dir_mode: int | None = None,
     encoding: str = "utf8",
+    errors: str = "strict",
 ) -> int:
     """Replace filename with content in one atomic step, creating parent directories.
 
@@ -129,8 +130,11 @@ def write_file_atomic(
         else:
             target_mode = 0o644
 
-    target_encoding = "utf-16-le" if encoding == "utf16le" else "utf-8"
-    encoded_bytes = content.encode(target_encoding)
+    # Retain the historical utf16le shorthand alongside Python codec aliases.
+    target_encoding = (
+        "utf-16-le" if encoding.lower().replace("-", "").replace("_", "") == "utf16le" else encoding
+    )
+    encoded_bytes = content.encode(target_encoding, errors=errors)
 
     temp_name = f"{target.name}.{secrets.token_hex(6)}.tmp"
     temp_path = target.parent / temp_name
@@ -293,7 +297,7 @@ import asyncio
 import re
 import aiofiles.os
 from pathlib import Path, PurePath
-from kaos.path import KaosPath
+from coderai.kaos.path import KaosPath
 
 _ROTATION_OPEN_FLAGS = os.O_CREAT | os.O_EXCL | os.O_WRONLY
 _ROTATION_FILE_MODE = 0o600

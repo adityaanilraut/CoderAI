@@ -6,7 +6,6 @@ to force-stop the turn. Excluded tools neither count nor reset the chain.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Any, Literal
 
@@ -73,11 +72,6 @@ def build_repeat_reminder(
     if streak >= 3:
         return "r1", _REMINDER_R1
     return "none", None
-
-
-def args_hash(canonical_args: str) -> str:
-    """Stable 8-char hash of canonical tool-call arguments."""
-    return hashlib.sha256(canonical_args.encode()).hexdigest()[:8]
 
 
 def _sort_json_value(value: Any) -> Any:
@@ -161,10 +155,6 @@ class RepeatToolReminder:
             action = "r2" if self._count == 5 else "r3"
             return detailed_reminder(tool_name, self._count, canonical), action
         return detailed_reminder(tool_name, self._count, canonical), "r2"
-
-    def observe_legacy(self, tool_name: str, arguments: Any) -> str | None:
-        """Legacy observe returning only text (backward compat)."""
-        return self.observe(tool_name, arguments)
 
     @property
     def consecutive_key(self) -> tuple[str, str] | None:

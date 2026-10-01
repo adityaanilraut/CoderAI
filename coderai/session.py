@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from kaos.path import KaosPath
+from coderai.kaos.path import KaosPath
 from kosong.message import Message
 
 from coderai.metadata import WorkDirMeta, load_metadata, save_metadata

@@ -30,7 +30,7 @@ def normalize_tag(tag: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check version tag matches _version.py")
     parser.add_argument(
-        "tag", nargs="?", help="Tag or version string to check (e.g. v0.4.0 or 0.4.0)"
+        "tag", nargs="?", help="Tag or version string to check (e.g. v0.5.0 or 0.5.0)"
     )
     args = parser.parse_args()
 

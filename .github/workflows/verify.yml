@@ -8,6 +8,9 @@ on:
         required: true
         type: string
 
+env:
+  PYTHONUTF8: "1"
+
 permissions:
   contents: read
 
@@ -99,7 +102,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -e ".[dev,jev]" -e sdks/coderai-sdk
-      - run: python scripts/verification.py check --report .verification/windows.json
+      - run: python scripts/verification.py check --suite windows --report .verification/windows.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -10,7 +10,7 @@ except ImportError:  # optional display-time dependency
     streamingjson = None  # type: ignore[assignment]
 
 try:
-    from kaos.path import KaosPath
+    from coderai.kaos.path import KaosPath
 except ImportError:  # optional display-time dependency
     KaosPath = None  # type: ignore[assignment]
 
