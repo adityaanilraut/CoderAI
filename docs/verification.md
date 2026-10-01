@@ -30,6 +30,11 @@ and SDK). POSIX-only PTYs, signals and chmod/umask contracts run in the full
 required Linux/macOS suites. Windows still runs source quality, types, installed
 dependency constraints and the complete dependency audit; installed-wheel smoke tests on Linux, macOS and Windows are all required.
 
+The Linux source job installs Bubblewrap, reloads the distribution's AppArmor
+profile when present, and probes actual PID/network isolation before testing.
+Shell/PTY regressions therefore exercise the requested OS sandbox; missing
+backends remain a runtime error rather than silently running without isolation.
+
 The release workflow builds and attests one wheel/sdist pair. Smoke jobs install that same uploaded wheel into clean environments, run CLI/core/search/provenance probes, and audit the graph actually installed there. `--audit-report PATH` preserves inventory and findings on audit failure. Both publishing jobs explicitly depend on source verification and required artifact smoke tests. No check looks for success on an unrelated branch or older commit.
 
 ## Dependency policy

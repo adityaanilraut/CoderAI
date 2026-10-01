@@ -38,6 +38,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+      - name: Install and probe Linux OS sandbox
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          if [[ -f /etc/apparmor.d/bwrap-userns-restrict ]]; then
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          fi
+          bwrap --die-with-parent --unshare-pid --unshare-net --ro-bind / / --dev /dev --proc /proc -- /bin/true
       - name: Install verification dependencies
         run: python -m pip install -e ".[dev,jev]" -e sdks/coderai-sdk
       - name: Shared source, SDK, wire and dependency gates
