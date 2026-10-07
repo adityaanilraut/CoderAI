@@ -358,9 +358,10 @@ def test_sse_cross_origin_endpoint_rejected(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.security
-def test_pwsh_uses_scrubbed_shell_env(monkeypatch: pytest.MonkeyPatch):
+def test_pwsh_uses_scrubbed_shell_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """TL-A9 (env part): pwsh no longer inherits ambient API keys."""
     import coderai.tools.shell as shell_mod
+    from coderai.tools.legacy.types import ToolExecutionContext
 
     captured: dict = {}
 
@@ -378,10 +379,7 @@ def test_pwsh_uses_scrubbed_shell_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(shell_mod, "_resolve_pwsh_executable", lambda: "/bin/true")
     monkeypatch.setattr(shell_mod.subprocess, "Popen", _fake_run)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-host-secret")
-    ctx = MagicMock()
-    ctx.project_root = "/tmp"
-    ctx.session_id = "s"
-    ctx.sandbox_mode = "danger-full-access"
+    ctx = ToolExecutionContext("s", str(tmp_path), sandbox_mode="danger-full-access")
     result = asyncio.run(shell_mod.handle_pwsh_tool({"command": "echo hi"}, ctx))
     assert result.ok is True
     assert captured["env"].get("OPENAI_API_KEY") is None

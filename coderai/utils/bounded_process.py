@@ -6,6 +6,7 @@ import asyncio
 import os
 import subprocess
 import signal
+import sys
 import threading
 import time
 from typing import Any
@@ -22,7 +23,7 @@ class OutputLimitError(RuntimeError):
 
 def terminate_owned_process(pid: int) -> None:
     """Only for children started with start_new_session=True."""
-    if os.name != "nt":
+    if sys.platform != "win32":
         try:
             os.killpg(pid, signal.SIGKILL)
             return

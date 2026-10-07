@@ -47,7 +47,7 @@ def parent_directory(path: Path, *, create: bool = False) -> Iterator[int | None
     remains the responsibility of its filesystem permissions.
     """
     path = path.absolute()
-    if os.open not in os.supports_dir_fd:
+    if sys.platform == "win32" or os.open not in os.supports_dir_fd:
         parent = path.parent
         if create:
             parent.mkdir(parents=True, exist_ok=True)
