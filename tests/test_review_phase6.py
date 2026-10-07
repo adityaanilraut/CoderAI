@@ -195,8 +195,12 @@ def test_terminal_send_completes_when_pty_exits(tmp_path):
         job_id = res.metadata["jobId"]
         # Mark term not alive
         mock_term.is_alive = False
-        time.sleep(0.15)
-        job = store.get(job_id)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            job = store.get(job_id)
+            if job is not None and job.status == "completed":
+                break
+            time.sleep(0.01)
         assert job is not None
         assert job.status == "completed"
 
