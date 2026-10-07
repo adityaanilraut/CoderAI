@@ -55,4 +55,4 @@ def read_plan_for_approval(session_id: str, project_root: str) -> str | None:
         raise ValueError(
             "Plan exceeds the 50 KiB presentation limit; shorten it before requesting acceptance"
         )
-    return content.decode("utf-8", errors="strict")
+    return content.decode("utf-8", errors="strict").replace("\r\n", "\n").replace("\r", "\n")

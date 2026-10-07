@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -287,7 +288,8 @@ async def test_tool_output_spill_preserves_full_json_and_actionable_pointer(tmp_
         assert payload["metadata"]["exitCode"] == 2
         assert payload["ok"] is False
         assert message.meta["output_path"] == str(output_path)
-        assert output_path.stat().st_mode & 0o777 == 0o600
+        if sys.platform != "win32":
+            assert output_path.stat().st_mode & 0o777 == 0o600
     finally:
         await close_session_manager(manager)
 

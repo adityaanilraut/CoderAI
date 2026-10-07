@@ -760,7 +760,7 @@ def _rewrite_last_history_entry(project_root: str, replacement: str) -> None:
     hist = _get_history_file(project_root)
     if not hist.exists():
         return
-    raw = hist.read_bytes().decode("utf-8", errors="replace").split("\n")
+    raw = hist.read_bytes().decode("utf-8", errors="replace").replace("\r\n", "\n").split("\n")
     # FileHistory format: entries separated by `# <timestamp>` lines, each
     # entry line prefixed with `+`. Drop the last entry block, keep the rest.
     last_sep = None
@@ -773,7 +773,7 @@ def _rewrite_last_history_entry(project_root: str, replacement: str) -> None:
     import datetime
 
     entry = [f"# {datetime.datetime.now()}", *(f"+{line}" for line in replacement.split("\n"))]
-    hist.write_text("\n".join([*raw[:last_sep], *entry, ""]), encoding="utf-8")
+    hist.write_text("\n".join([*raw[:last_sep], *entry, ""]), encoding="utf-8", newline="\n")
 
 
 # ---------------------------------------------------------------------------

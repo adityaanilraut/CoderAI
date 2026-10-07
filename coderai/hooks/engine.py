@@ -106,7 +106,7 @@ def execute_hook_command(
             cwd=project_root,
             shell=True,
             env=run_env,
-            start_new_session=True,
+            start_new_session=sys.platform != "win32",
         )
         if cancellation_event is not None:
             watcher = threading.Thread(target=watch_cancellation, daemon=True)
@@ -286,7 +286,7 @@ async def execute_hook_command_async(
             stderr=asyncio.subprocess.PIPE,
             cwd=project_root,
             env=run_env,
-            start_new_session=True,
+            start_new_session=sys.platform != "win32",
         )
         input_data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
         try:
@@ -296,16 +296,9 @@ async def execute_hook_command_async(
             )
         except (asyncio.TimeoutError, TimeoutError, asyncio.CancelledError) as exc:
             try:
-                import os as _os
-                import signal as _sig
+                from coderai.utils.bounded_process import terminate_owned_process
 
-                if sys.platform != "win32" and hasattr(_os, "killpg"):
-                    try:
-                        _os.killpg(_os.getpgid(proc.pid), _sig.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                else:
-                    proc.kill()
+                terminate_owned_process(proc.pid)
                 await proc.wait()
             except Exception:
                 pass

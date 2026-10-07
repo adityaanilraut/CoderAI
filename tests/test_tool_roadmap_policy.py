@@ -290,10 +290,11 @@ async def test_planning_shell_cannot_mutate_even_when_claiming_read_effects(tmp_
     assert not (tmp_path / "should-not-exist").exists()
 
 
-def test_approval_presents_complete_plan_and_denies_unpresentable_file(tmp_path):
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_approval_presents_complete_plan_and_denies_unpresentable_file(tmp_path, newline):
     plan_file = tmp_path / ".coderai" / "plans" / "s.md"
     plan_file.parent.mkdir(parents=True)
-    plan_file.write_text("# Actual plan\nChange the owned files")
+    plan_file.write_bytes(f"# Actual plan{newline}Change the owned files".encode())
     request = call("exit_plan_mode", {"summary": "Ready"})
     plan = compute_tool_call_permissions(
         session_id="s", project_root=str(tmp_path), tool_calls=[request]

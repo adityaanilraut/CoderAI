@@ -342,13 +342,16 @@ async def test_attach_ambiguous_choice_does_not_consume_images(controller, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_image_history_updates_loaded_recall(tmp_path):
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+async def test_image_history_updates_loaded_recall(tmp_path, newline):
     from coderai.ui.shell.prompt import _PasteSafeFileHistory
 
     history = _PasteSafeFileHistory(str(tmp_path / "history"))
     history.append_string("inspect image")
     original = [text async for text in history.load()]
     assert original == ["inspect image"]
+    path = tmp_path / "history"
+    path.write_bytes(path.read_bytes().replace(b"\n", newline))
     with patch("coderai.ui.shell.prompt._get_history_file", return_value=tmp_path / "history"):
         history.replace_last(str(tmp_path), "inspect image [attachments:cached]")
     assert [text async for text in history.load()] == ["inspect image [attachments:cached]"]

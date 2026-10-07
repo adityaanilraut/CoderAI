@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import inspect
 import asyncio
-import os
 import shlex
+import subprocess
 import sys
 
 import pytest
 
 from coderai import hooks
 from coderai.hooks import events, runner
+from coderai.utils.subprocess_env import is_process_alive
+
+
+def _python_hook_command(tmp_path, script):
+    path = tmp_path / "hook_command.py"
+    path.write_text(script, encoding="utf-8")
+    argv = [sys.executable, str(path)]
+    return subprocess.list2cmdline(argv) if sys.platform == "win32" else shlex.join(argv)
 
 
 @pytest.mark.parametrize("point", ["PreTurn", "PostTurn", "Stop", "SubagentStart"])
@@ -30,7 +38,7 @@ async def test_turn_and_child_hooks_cancel_without_blocking_or_leaking_processes
         "import os, pathlib, time; "
         f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(30)"
     )
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    command = _python_hook_command(tmp_path, script)
     monkeypatch.setattr(
         "coderai.hooks.engine.load_hook_config",
         lambda *_a, **_kw: {point: [{"command": command}]},
@@ -67,8 +75,7 @@ async def test_turn_and_child_hooks_cancel_without_blocking_or_leaking_processes
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(task, 3)
             assert sid not in manager.session_controllers
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
+        assert not is_process_alive(pid)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -143,7 +150,7 @@ async def test_tool_hooks_leave_event_loop_responsive_and_cancel_process(
         "import os, pathlib, time; "
         f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(30)"
     )
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    command = _python_hook_command(tmp_path, script)
     monkeypatch.setattr(
         "coderai.hooks.engine.load_hook_config",
         lambda *_a, **_kw: {point: [{"matcher": "probe", "command": command}]},
@@ -166,11 +173,7 @@ async def test_tool_hooks_leave_event_loop_responsive_and_cancel_process(
         with pytest.raises(asyncio.CancelledError):
             await task
         async with asyncio.timeout(2):
-            while True:
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    break
+            while is_process_alive(pid):
                 await asyncio.sleep(0.01)
     finally:
         if not task.done():
@@ -191,7 +194,7 @@ async def test_async_hook_cancellation_propagates_and_reaps_descendant(tmp_path,
         "import os, pathlib, time; "
         f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(30)"
     )
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    command = _python_hook_command(tmp_path, script)
     if entry == "engine":
         invocation = execute_hook_command_async(command, {}, str(tmp_path))
     else:
@@ -206,11 +209,7 @@ async def test_async_hook_cancellation_propagates_and_reaps_descendant(tmp_path,
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 2)
         async with asyncio.timeout(2):
-            while True:
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    break
+            while is_process_alive(pid):
                 await asyncio.sleep(0.01)
     finally:
         if not task.done():
@@ -228,16 +227,12 @@ async def test_sync_hook_timeout_reaps_descendant(tmp_path):
         "import os, pathlib, time; "
         f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(30)"
     )
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    command = _python_hook_command(tmp_path, script)
     result = await asyncio.to_thread(execute_hook_command, command, {}, str(tmp_path), 0.2)
     assert result.decision == "deny" and "timed out" in result.reason
     pid = int(pid_file.read_text())
     async with asyncio.timeout(2):
-        while True:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                break
+        while is_process_alive(pid):
             await asyncio.sleep(0.01)
 
 

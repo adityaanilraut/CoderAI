@@ -15,6 +15,20 @@ from coderai.tools.legacy.registry import ToolRegistry
 from coderai.utils.bounded_process import bounded_run, OutputLimitError
 
 
+def test_process_liveness_probe_does_not_terminate_child():
+    import subprocess
+    from coderai.utils.subprocess_env import is_process_alive
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert is_process_alive(proc.pid)
+        assert proc.poll() is None
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    assert not is_process_alive(proc.pid)
+
+
 def test_subprocess_caps_during_collection_and_bounds_stderr():
     with pytest.raises(OutputLimitError):
         bounded_run(
