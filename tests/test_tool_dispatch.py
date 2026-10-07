@@ -84,7 +84,11 @@ async def test_chunk_and_result_order_survives_barrier_stop(tmp_path):
         _call("r3", "read"),
     ]
     try:
-        outcome = await manager._append_tool_messages(session, calls)
+        outcome = await manager._append_tool_messages(
+            session,
+            calls,
+            message_permissions=[{"toolCallId": c["id"], "permission": "allow"} for c in calls],
+        )
         assert outcome.waiting and outcome.stop_reason == "hook"
         assert [item for item in trace if item[0] == "execute"] == [
             ("execute", ["r1", "r2"], True),
@@ -127,7 +131,11 @@ async def test_dispatch_failure_or_cancellation_pairs_remaining_calls(tmp_path, 
     try:
         with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
             await manager._append_tool_messages(
-                session, [_call("first", "read"), _call("second", "edit")]
+                session,
+                [_call("first", "read"), _call("second", "edit")],
+                message_permissions=[
+                    {"toolCallId": cid, "permission": "allow"} for cid in ("first", "second")
+                ],
             )
         tools = [
             message for message in manager.list_session_messages(session) if message.role == "tool"

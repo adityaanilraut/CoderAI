@@ -16,10 +16,8 @@ if TYPE_CHECKING:
 from coderai.tools.plan.enter import DESCRIPTION as ENTER_PLAN_MODE_DESCRIPTION
 from coderai.tools.plan.enter import handle_enter_plan_mode_tool
 from coderai.tools.plan.heroes import (
-    get_or_create_slug,
     get_plan_file_path,
     read_plan_file,
-    seed_slug_cache,
 )
 
 
@@ -100,6 +98,33 @@ def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult
         plan = "Plan completed."
 
     summary = plan
+    if not has_plan_key:
+        from coderai.tools.plan.heroes import read_plan_for_approval
+
+        root = (
+            context.get("project_root", ".")
+            if isinstance(context, dict)
+            else getattr(context, "project_root", ".")
+        )
+        try:
+            summary = read_plan_for_approval(session_id, root) or summary
+        except (OSError, ValueError) as exc:
+            return ToolResult(
+                ok=False,
+                name="exit_plan_mode",
+                error=str(exc),
+                metadata={"code": "PLAN_PRESENTATION_FAILED", "approved": False},
+            )
+    authorization = getattr(context, "authorization", None)
+    if not (authorization and authorization.plan_approved and authorization.matches(context, args)):
+        return ToolResult(
+            ok=False,
+            name="exit_plan_mode",
+            output=summary,
+            error="PlanApprovalRequired: Present this plan for explicit user acceptance before leaving plan mode.",
+            metadata={"code": "PLAN_APPROVAL_REQUIRED", "approved": False, "summary": summary},
+            concludes_turn=True,
+        )
     return ToolResult(
         ok=True,
         name="exit_plan_mode",
@@ -113,8 +138,6 @@ __all__ = [
     "handle_exit_plan_mode_tool",
     "handle_enter_plan_mode_tool",
     "ENTER_PLAN_MODE_DESCRIPTION",
-    "get_or_create_slug",
     "get_plan_file_path",
     "read_plan_file",
-    "seed_slug_cache",
 ]

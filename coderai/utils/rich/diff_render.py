@@ -476,15 +476,16 @@ def render_diff_preview(*args: Any, **kwargs: Any) -> Any:
     if not isinstance(diff_text, str) or not diff_text.strip():
         return None
 
+    added, removed = parse_diff_stats(diff_text)
     lines = diff_text.splitlines()
-    if len(lines) > 500:
-        diff_text = "\n".join(lines[:500]) + f"\n... truncated {len(lines) - 500} lines"
+    limit = kwargs.get("max_lines", 500)
+    if limit is not None and len(lines) > limit:
+        diff_text = "\n".join(lines[:limit]) + f"\n... truncated {len(lines) - limit} lines"
 
     from rich.console import Console
 
     active_console = console if console is not None else Console()
 
-    added, removed = parse_diff_stats(diff_text)
     header = Text()
     header.append("    ↳ ", style="dim cyan")
     header.append(str(title), style="bold cyan")

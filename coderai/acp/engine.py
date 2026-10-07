@@ -91,16 +91,6 @@ def build_acp_prompt(user_input: list[ContentPart]) -> tuple[str, list[dict[str,
     return "\n".join(chunks).strip(), images
 
 
-def build_prompt(user_input: list[ContentPart]) -> str:
-    """Flatten ACP content parts into the text prompt Stack A accepts.
-
-    Image parts ride alongside via :func:`build_acp_prompt` content params;
-    this text-only view exists for history recording and backward compat.
-    """
-    text, _ = build_acp_prompt(user_input)
-    return text
-
-
 class SessionManagerEngine:
     """Drive one ACP session on the CoderAI ``SessionManager`` engine."""
 
@@ -184,6 +174,20 @@ class SessionManagerEngine:
         if callable(setter):
             setter(enabled)
 
+    def set_mode(self, mode: str) -> None:
+        """Map ACP's four modes to the existing plan, YOLO and AFK controls."""
+        if mode not in {"default", "plan", "auto", "yolo"}:
+            raise ValueError("Unknown ACP mode")
+        # Hydrate persisted state before applying explicit overrides, otherwise
+        # a later resume read could re-enable a mode the client just disabled.
+        if self._engine_session_id is not None:
+            self._manager.get_session_state(self._engine_session_id)
+        self._manager.set_yolo(mode == "yolo")
+        self._manager.set_afk(mode == "auto")
+        self._plan_mode = mode == "plan"
+        if self._engine_session_id is not None:
+            self._manager.set_plan_mode(self._engine_session_id, self._plan_mode)
+
     def bind_session(self, session_id: str) -> None:
         """Attach to an existing ``SessionManager`` session (resume/fork)."""
         self._engine_session_id = session_id
@@ -196,6 +200,19 @@ class SessionManagerEngine:
             self._manager.interrupt_session(self._engine_session_id)
         if self._active_task is not None:
             self._active_task.cancel()
+        if self._run_task is not None and self._run_task is not asyncio.current_task():
+            self._run_task.cancel()
+
+    async def close(self) -> None:
+        """Settle the active driver before releasing owned processes and MCP."""
+        self.interrupt()
+        task = self._run_task
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        from coderai.cli.session_factory import close_session_manager
+
+        await close_session_manager(self._manager)
 
     def _event_emitter(self) -> WireEmitter:
         getter = getattr(self._manager, "get_event_emitter", None)
@@ -523,4 +540,4 @@ class SessionManagerEngine:
         return "\n".join(lines)
 
 
-__all__ = ["SessionManagerEngine", "build_acp_prompt", "build_prompt"]
+__all__ = ["SessionManagerEngine", "build_acp_prompt"]

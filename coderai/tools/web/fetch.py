@@ -1,34 +1,47 @@
-"""Fetch, sanitize, and extract web content for terminal tool execution."""
+"""Fetch bounded public web content and extract readable text for terminal agents."""
 
 from __future__ import annotations
 
-
-import html
+import asyncio
+import io
+import json
 import re
+import time
+import uuid
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any
 
-# Zero-width / invisible control characters used in prompt injection attacks
-INVISIBLE_CHARS_PATTERN = re.compile(r"[\u200B-\u200D\uFEFF\u202A-\u202E\u2060\u180E\u00AD]+")
-
-# Potential LLM delimiter & role hijacking patterns
-PROMPT_INJECTION_DELIMITERS = [
-    re.compile(r"<\s*\|\s*im_start\s*\|[^>]*>", re.IGNORECASE),
-    re.compile(r"<\s*\|\s*im_end\s*\|[^>]*>", re.IGNORECASE),
-    re.compile(r"\[\s*(?:system|assistant|developer|instruction)\s*\]", re.IGNORECASE),
-    re.compile(r"```(?:system|instruction|prompt)\s*\n[\s\S]*?\n```", re.IGNORECASE),
-]
-
-# Common injection attack phrases to sanitize/defang in fetched web content
-INJECTION_KEYWORDS_PATTERN = re.compile(
-    r"(?i)\b(?:ignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions|"
-    r"disregard\s+(?:all\s+)?(?:previous|prior|above)\s+instructions|"
-    r"you\s+are\s+now\s+in\s+developer\s+mode|"
-    r"override\s+system\s+prompt)\b"
+from coderai.network.security import NetworkPolicy, NetworkSecurityError
+from coderai.tools.legacy.types import ToolResult, as_str
+from coderai.tools.web.common import (
+    DEFAULT_OUTPUT_CHARS,
+    EXTERNAL_CONTENT_NOTICE,
+    MAX_OUTPUT_CHARS as HARD_OUTPUT_LIMIT,
+    bounded_int,
+    safe_web_url,
+    sanitize_prompt_injection,
+    slice_payload,
+    web_settings,
 )
+from coderai.utils.aiohttp import HttpClient, get_http_client
 
-# Tags to completely drop with all their inner contents
+VOID_TAGS = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
 DROP_TAGS = {
     "script",
     "style",
@@ -48,39 +61,14 @@ DROP_TAGS = {
     "textarea",
     "nav",
     "footer",
-    "header",
     "aside",
 }
-
-# Tags that represent block boundaries in Markdown
-BLOCK_TAGS = {
-    "p",
-    "div",
-    "article",
-    "section",
-    "main",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "blockquote",
-    "pre",
-    "ul",
-    "ol",
-    "li",
-    "table",
-    "tr",
-    "hr",
-    "br",
-}
+BLOCK_TAGS = {"p", "div", "article", "section", "main", "header", "blockquote", "dl", "dt", "dd"}
+WEB_FETCH_ACTIVITY_PREFIX = "WebFetch:"
 
 
 @dataclass
 class ExtractedWebPage:
-    """Sanitized extracted web page content with metadata."""
-
     title: str = ""
     description: str = ""
     author: str = ""
@@ -93,449 +81,411 @@ class ExtractedWebPage:
 
 
 class _HTMLToMarkdownParser(HTMLParser):
-    """Clean HTML to semantic Markdown converter with tag filtering and security sanitization."""
+    """HTML extraction with balanced hidden subtrees, links, lists, and tables."""
 
-    def __init__(self) -> None:
+    def __init__(self, base_url: str = "") -> None:
         super().__init__(convert_charrefs=True)
+        self.base_url = base_url
         self.drop_stack: list[str] = []
-        self.tag_stack: list[str] = []
         self.output_chunks: list[str] = []
         self.metadata: dict[str, str] = {}
         self.in_title = False
         self.title_text: list[str] = []
         self.in_pre = False
-        self.in_code = False
         self.current_link_url: str | None = None
         self.current_link_text: list[str] = []
-        self.list_depth = 0
         self.list_counters: list[int] = []
+        self.tables: list[dict[str, Any]] = []
+
+    def _target(self) -> list[str]:
+        if self.current_link_url:
+            return self.current_link_text
+        if self.tables and self.tables[-1]["cell"] is not None:
+            return self.tables[-1]["cell"]
+        return self.output_chunks
+
+    def _emit(self, text: str) -> None:
+        self._target().append(text)
+
+    def _newline(self, count: int = 2) -> None:
+        chunks = self._target()
+        if chunks:
+            tail = "".join(chunks[-3:])
+            self._emit("\n" * max(0, count - (len(tail) - len(tail.rstrip("\n")))))
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        tag_lower = tag.lower()
-        attr_dict = {k.lower(): (v or "") for k, v in attrs}
-
-        # Check for hidden styles (display: none, visibility: hidden, aria-hidden="true")
-        style = attr_dict.get("style", "").lower()
-        aria_hidden = attr_dict.get("aria-hidden", "").lower()
-        hidden_attr = "hidden" in attr_dict
-        is_hidden = (
-            "display:none" in style.replace(" ", "")
-            or "visibility:hidden" in style.replace(" ", "")
-            or aria_hidden == "true"
-            or hidden_attr
+        attrs_map = {key.lower(): value or "" for key, value in attrs}
+        style = re.sub(r"\s+", "", attrs_map.get("style", "").lower())
+        hidden = (
+            "hidden" in attrs_map
+            or attrs_map.get("aria-hidden", "").lower() == "true"
+            or "display:none" in style
+            or "visibility:hidden" in style
         )
-
-        if tag_lower in DROP_TAGS or is_hidden:
-            self.drop_stack.append(tag_lower)
+        if self.drop_stack or tag in DROP_TAGS or hidden:
+            if tag not in VOID_TAGS:
+                self.drop_stack.append(tag)
             return
-
-        if self.drop_stack:
-            return
-
-        self.tag_stack.append(tag_lower)
-
-        # Metadata extraction
-        if tag_lower == "title":
+        if tag == "title":
             self.in_title = True
-        elif tag_lower == "meta":
-            name = attr_dict.get("name") or attr_dict.get("property") or ""
-            content = attr_dict.get("content") or ""
-            if name and content:
-                self.metadata[name.lower()] = content
-        elif tag_lower == "link" and attr_dict.get("rel") == "canonical":
-            href = attr_dict.get("href")
-            if href:
-                self.metadata["canonical"] = href
-
-        # Heading tags
-        if tag_lower in ("h1", "h2", "h3", "h4", "h5", "h6"):
-            level = int(tag_lower[1])
-            self._ensure_newline(2)
-            self.output_chunks.append("#" * level + " ")
-
-        elif tag_lower == "p":
-            self._ensure_newline(2)
-
-        elif tag_lower == "br":
-            self.output_chunks.append("\n")
-
-        elif tag_lower == "hr":
-            self._ensure_newline(2)
-            self.output_chunks.append("---\n\n")
-
-        elif tag_lower == "blockquote":
-            self._ensure_newline(2)
-            self.output_chunks.append("> ")
-
-        elif tag_lower == "pre":
-            self._ensure_newline(2)
+        elif tag == "meta":
+            key = attrs_map.get("name") or attrs_map.get("property")
+            if key:
+                self.metadata[key.lower()] = attrs_map.get("content", "")
+        elif tag == "link" and "canonical" in attrs_map.get("rel", "").lower().split():
+            self.metadata["canonical"] = safe_web_url(attrs_map.get("href", ""), self.base_url)
+        elif re.fullmatch(r"h[1-6]", tag):
+            self._newline()
+            self._emit("#" * int(tag[1]) + " ")
+        elif tag in BLOCK_TAGS:
+            self._newline()
+            if tag == "blockquote":
+                self._emit("> ")
+        elif tag == "br":
+            self._emit("\n")
+        elif tag == "hr":
+            self._newline()
+            self._emit("---\n\n")
+        elif tag == "pre":
+            self._newline()
             self.in_pre = True
-            self.output_chunks.append("```\n")
-
-        elif tag_lower == "code":
-            if not self.in_pre:
-                self.in_code = True
-                self.output_chunks.append("`")
-
-        elif tag_lower in ("ul", "ol"):
-            self._ensure_newline(1)
-            self.list_depth += 1
-            if tag_lower == "ol":
-                self.list_counters.append(1)
-            else:
-                self.list_counters.append(0)
-
-        elif tag_lower == "li":
-            self._ensure_newline(1)
-            indent = "  " * max(0, self.list_depth - 1)
-            if self.list_counters and self.list_counters[-1] > 0:
-                count = self.list_counters[-1]
-                self.output_chunks.append(f"{indent}{count}. ")
+            self._emit("\x60\x60\x60\n")
+        elif tag == "code" and not self.in_pre:
+            self._emit("\x60")
+        elif tag in {"ul", "ol"}:
+            self._newline(1)
+            self.list_counters.append(1 if tag == "ol" else 0)
+        elif tag == "li":
+            self._newline(1)
+            count = self.list_counters[-1] if self.list_counters else 0
+            self._emit(
+                "  " * max(0, len(self.list_counters) - 1) + (f"{count}. " if count else "- ")
+            )
+            if count:
                 self.list_counters[-1] += 1
-            else:
-                self.output_chunks.append(f"{indent}- ")
-
-        elif tag_lower == "a":
-            href = attr_dict.get("href")
-            if href and not href.startswith("javascript:"):
-                self.current_link_url = href
+        elif tag == "a":
+            url = safe_web_url(attrs_map.get("href", ""), self.base_url)
+            if url and not self.current_link_url:
+                self.current_link_url = url
                 self.current_link_text = []
+        elif tag in {"strong", "b", "em", "i", "del", "s"}:
+            self._emit(
+                {"strong": "**", "b": "**", "em": "*", "i": "*", "del": "~~", "s": "~~"}[tag]
+            )
+        elif tag == "table":
+            self._newline()
+            self.tables.append({"rows": [], "row": [], "cell": None})
+        elif self.tables and tag == "tr":
+            self.tables[-1]["row"] = []
+        elif self.tables and tag in {"th", "td"}:
+            self.tables[-1]["cell"] = []
 
-        elif tag_lower in ("b", "strong"):
-            self.output_chunks.append("**")
-
-        elif tag_lower in ("i", "em"):
-            self.output_chunks.append("*")
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        if tag not in VOID_TAGS:
+            self.handle_endtag(tag)
 
     def handle_endtag(self, tag: str) -> None:
-        tag_lower = tag.lower()
-
         if self.drop_stack:
-            if self.drop_stack[-1] == tag_lower:
-                self.drop_stack.pop()
+            if tag in self.drop_stack:
+                index = len(self.drop_stack) - 1 - self.drop_stack[::-1].index(tag)
+                del self.drop_stack[index:]
             return
-
-        if self.tag_stack and self.tag_stack[-1] == tag_lower:
-            self.tag_stack.pop()
-
-        if tag_lower == "title":
+        if tag == "title":
             self.in_title = False
-        elif tag_lower in ("h1", "h2", "h3", "h4", "h5", "h6", "p", "blockquote"):
-            self._ensure_newline(2)
-        elif tag_lower == "pre":
+        elif tag == "a" and self.current_link_url:
+            url, label = self.current_link_url, "".join(self.current_link_text).strip()
+            self.current_link_url = None
+            self.current_link_text = []
+            self._emit(f"[{label or url}]({url.replace('(', '%28').replace(')', '%29')})")
+        elif tag == "pre":
+            self._newline(1)
+            self._emit("\x60\x60\x60\n\n")
             self.in_pre = False
-            self._ensure_newline(1)
-            self.output_chunks.append("```\n\n")
-        elif tag_lower == "code":
-            if not self.in_pre and self.in_code:
-                self.in_code = False
-                self.output_chunks.append("`")
-        elif tag_lower in ("ul", "ol"):
-            self.list_depth = max(0, self.list_depth - 1)
+        elif tag == "code" and not self.in_pre:
+            self._emit("\x60")
+        elif tag in {"strong", "b", "em", "i", "del", "s"}:
+            self._emit(
+                {"strong": "**", "b": "**", "em": "*", "i": "*", "del": "~~", "s": "~~"}[tag]
+            )
+        elif self.tables and tag in {"th", "td"}:
+            table = self.tables[-1]
+            if table["cell"] is not None:
+                table["row"].append(" ".join("".join(table["cell"]).split()).replace("|", r"\|"))
+                table["cell"] = None
+        elif self.tables and tag == "tr":
+            table = self.tables[-1]
+            if table["row"]:
+                table["rows"].append(table["row"])
+                table["row"] = []
+        elif self.tables and tag == "table":
+            rows = self.tables.pop()["rows"]
+            if rows:
+                width = max(map(len, rows))
+                formatted = [
+                    "| " + " | ".join(row + [""] * (width - len(row))) + " |" for row in rows
+                ]
+                formatted.insert(1, "| " + " | ".join(["---"] * width) + " |")
+                self._emit("\n".join(formatted) + "\n\n")
+        elif tag in {"ul", "ol"}:
             if self.list_counters:
                 self.list_counters.pop()
-            self._ensure_newline(2)
-        elif tag_lower == "li":
-            self._ensure_newline(1)
-        elif tag_lower == "a":
-            if self.current_link_url is not None:
-                link_text = "".join(self.current_link_text).strip()
-                if link_text:
-                    self.output_chunks.append(f"[{link_text}]({self.current_link_url})")
-                else:
-                    self.output_chunks.append(self.current_link_url)
-                self.current_link_url = None
-                self.current_link_text = []
-        elif tag_lower in ("b", "strong"):
-            self.output_chunks.append("**")
-        elif tag_lower in ("i", "em"):
-            self.output_chunks.append("*")
+            self._newline()
+        elif tag == "li":
+            self._newline(1)
+        elif tag in BLOCK_TAGS or re.fullmatch(r"h[1-6]", tag):
+            self._newline()
 
     def handle_data(self, data: str) -> None:
         if self.drop_stack:
             return
-
         if self.in_title:
             self.title_text.append(data)
-            return
-
-        if self.current_link_url is not None:
-            self.current_link_text.append(data)
-            return
-
-        self.output_chunks.append(data)
-
-    def handle_comment(self, data: str) -> None:
-        # Intentionally drop all HTML comments to eliminate prompt injection vectors
-        pass
-
-    def _ensure_newline(self, count: int = 1) -> None:
-        if not self.output_chunks:
-            return
-        last = "".join(self.output_chunks[-3:])
-        trailing_newlines = len(last) - len(last.rstrip("\n"))
-        needed = max(0, count - trailing_newlines)
-        if needed > 0:
-            self.output_chunks.append("\n" * needed)
+        else:
+            self._emit(data if self.in_pre else re.sub(r"\s+", " ", data))
 
     def get_result(self) -> tuple[str, dict[str, str]]:
-        raw = "".join(self.output_chunks)
-        title = "".join(self.title_text).strip()
-        if title:
-            self.metadata["title"] = title
-        return raw, self.metadata
-
-
-def sanitize_prompt_injection(text: str) -> str:
-    """Sanitize text to defang prompt injection vectors and remove invisible chars."""
-    if not text:
-        return text
-
-    # 1. Remove invisible / zero-width characters
-    sanitized = INVISIBLE_CHARS_PATTERN.sub("", text)
-
-    # 2. Defang role hijack delimiters
-    for pattern in PROMPT_INJECTION_DELIMITERS:
-        sanitized = pattern.sub(lambda m: f"({m.group(0).strip('[]<>|`')})", sanitized)
-
-    # 3. Defang injection keywords by wrapping in quotes/neutralizing
-    def _defang(match: re.Match) -> str:
-        return f"[sanitized prompt injection pattern: {match.group(0)}]"
-
-    sanitized = INJECTION_KEYWORDS_PATTERN.sub(_defang, sanitized)
-
-    return sanitized
+        if self.title_text:
+            self.metadata["title"] = "".join(self.title_text).strip()
+        return "".join(self.output_chunks), self.metadata
 
 
 def clean_markdown_whitespace(text: str) -> str:
-    """Clean redundant blank lines and spaces while preserving markdown formatting."""
-    # Collapse multiple consecutive blank lines to max 2
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    # Strip trailing whitespace on each line
-    lines = [line.rstrip() for line in text.split("\n")]
+    """Collapse blank lines outside code fences, preserving examples verbatim."""
+    lines: list[str] = []
+    in_code = False
+    blanks = 0
+    for line in text.split("\n"):
+        if line.lstrip().startswith("\x60\x60\x60"):
+            in_code = not in_code
+        if in_code:
+            lines.append(line)
+            continue
+        line = line.rstrip()
+        blanks = blanks + 1 if not line else 0
+        if blanks <= 1:
+            lines.append(line)
     return "\n".join(lines).strip()
 
 
-def slice_payload(text: str, max_chars: int = 30_000) -> tuple[str, bool]:
-    """Token-aware payload slicing: truncate cleanly at paragraph/newline boundaries."""
-    if len(text) <= max_chars:
-        return text, False
-
-    target_slice = text[:max_chars]
-    # Try to find a paragraph break near the end
-    last_break = target_slice.rfind("\n\n")
-    if last_break >= max_chars * 0.75:
-        sliced = target_slice[:last_break].strip()
-    else:
-        # Try finding a single newline
-        last_nl = target_slice.rfind("\n")
-        if last_nl >= max_chars * 0.85:
-            sliced = target_slice[:last_nl].strip()
-        else:
-            sliced = target_slice.strip()
-
-    footer = f"\n\n[Content truncated: {len(sliced):,} of {len(text):,} characters displayed]"
-    return sliced + footer, True
-
-
 def extract_and_sanitize_html(
-    html_content: str, max_chars: int = 30_000, base_url: str = ""
+    html_content: str,
+    max_chars: int = DEFAULT_OUTPUT_CHARS,
+    base_url: str = "",
 ) -> ExtractedWebPage:
-    """Parse HTML, extract metadata, convert to clean Markdown, and sanitize against injection."""
-    parser = _HTMLToMarkdownParser()
-    try:
-        parser.feed(html_content)
-        parser.close()
-        raw_markdown, meta = parser.get_result()
-    except Exception:
-        # Fallback regex strip
-        raw_text = re.sub(r"<[^>]+>", " ", html_content)
-        raw_markdown = html.unescape(raw_text)
-        meta = {}
-
-    title = meta.get("title") or meta.get("og:title") or ""
-    description = meta.get("description") or meta.get("og:description") or ""
-    author = meta.get("author") or meta.get("article:author") or ""
-    canonical = meta.get("canonical") or meta.get("og:url") or base_url
-
-    # Apply prompt injection defense
-    sanitized_md = sanitize_prompt_injection(raw_markdown)
-    cleaned_md = clean_markdown_whitespace(sanitized_md)
-
-    sliced_md, truncated = slice_payload(cleaned_md, max_chars=max_chars)
-
+    parser = _HTMLToMarkdownParser(base_url)
+    parser.feed(html_content)
+    parser.close()
+    markdown, meta = parser.get_result()
+    meta = {
+        key[:128]: sanitize_prompt_injection(value)[:2000] for key, value in list(meta.items())[:64]
+    }
+    cleaned = clean_markdown_whitespace(sanitize_prompt_injection(markdown))
+    sliced, truncated = slice_payload(cleaned, max_chars)
     return ExtractedWebPage(
-        title=title,
-        description=description,
-        author=author,
-        canonical_url=canonical,
-        markdown=sliced_md,
-        raw_text=cleaned_md,
-        total_chars=len(cleaned_md),
+        title=meta.get("title") or meta.get("og:title", ""),
+        description=meta.get("description") or meta.get("og:description", ""),
+        author=meta.get("author") or meta.get("article:author", ""),
+        canonical_url=safe_web_url(meta.get("canonical") or meta.get("og:url", ""), base_url)
+        or base_url,
+        markdown=sliced,
+        raw_text=cleaned,
+        total_chars=len(cleaned),
         truncated=truncated,
         metadata=meta,
     )
 
 
-"""WebFetch tool — fetch and sanitize online web pages, documentation, and APIs."""
+def _select_section(text: str, section: str) -> str:
+    headings = list(re.finditer(r"^(#{1,6})\s+(.+)$", text, re.M))
+    for index, match in enumerate(headings):
+        title = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", match[2]).strip().rstrip("¶").strip()
+        if title.casefold() == section.casefold().strip():
+            end = len(text)
+            for following in headings[index + 1 :]:
+                if len(following[1]) <= len(match[1]):
+                    end = following.start()
+                    break
+            return text[match.start() : end].strip()
+    raise ValueError(f"Section '{section}' was not found; use a heading from the page.")
 
 
-import json
-import uuid
+def _pdf_text(content: bytes) -> tuple[str, int]:
+    from pypdf import PdfReader
 
-from coderai.utils.aiohttp import get_http_client
-from coderai.network.security import NetworkSecurityError
-from coderai.tools.legacy.types import ToolResult, as_str
-
-WEB_FETCH_ACTIVITY_PREFIX = "WebFetch:"
-MAX_OUTPUT_CHARS = 30_000
-
-
-def _format_activity_label(url: str) -> str:
-    max_len = 120
-    clipped = f"{url[: max_len - 3]}..." if len(url) > max_len else url
-    return f"{WEB_FETCH_ACTIVITY_PREFIX} {clipped}"
+    reader = PdfReader(io.BytesIO(content), strict=False)
+    if reader.is_encrypted and not reader.decrypt(""):
+        raise ValueError("Encrypted PDF requires a password.")
+    if len(reader.pages) > 200:
+        raise ValueError("PDF exceeds the 200-page extraction limit.")
+    parts: list[str] = []
+    total = 0
+    has_text = False
+    for number, page in enumerate(reader.pages, 1):
+        stream = page.get_contents()
+        if stream is not None and len(stream.get_data()) > 10 * 1024 * 1024:
+            raise ValueError("PDF page exceeds the decoded content limit.")
+        extracted_text = page.extract_text() or ""
+        has_text = has_text or bool(extracted_text.strip())
+        part = f"## Page {number}\n\n{extracted_text}"
+        total += len(part)
+        if total > 2_000_000:
+            raise ValueError("PDF exceeds the extracted text limit.")
+        parts.append(part)
+    if not has_text:
+        raise ValueError("No readable text extracted. Scanned PDFs require OCR.")
+    return "\n\n".join(parts), len(reader.pages)
 
 
 async def handle_web_fetch_tool(args: dict[str, Any], context: Any) -> ToolResult:
-    """Fetch content from an external web URL, sanitize against prompt injection, and return clean Markdown."""
     url = as_str(args.get("url")).strip()
     if not url:
         return ToolResult(ok=False, name="WebFetch", error='Missing required "url" argument.')
-
-    if not url.startswith("http://") and not url.startswith("https://"):
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", url):
         url = "https://" + url
-
-    raw_mode = bool(args.get("raw", False))
     try:
-        max_length = (
-            int(args.get("max_length", MAX_OUTPUT_CHARS))
-            if args.get("max_length") is not None
-            else MAX_OUTPUT_CHARS
+        max_length = bounded_int(
+            args.get("max_length"), DEFAULT_OUTPUT_CHARS, 1, HARD_OUTPUT_LIMIT, "max_length"
         )
-    except (ValueError, TypeError):
-        max_length = MAX_OUTPUT_CHARS
-    use_cache = bool(args.get("use_cache", True))
-
-    # Activity tracking hooks
+        offset = bounded_int(args.get("offset"), 0, 0, 5_000_000, "offset")
+    except ValueError as exc:
+        return ToolResult(ok=False, name="WebFetch", error=str(exc))
     activity_id = f"web-fetch-{uuid.uuid4()}"
-    on_process_start = getattr(context, "on_process_start", None) or (
-        context.get("on_process_start") if isinstance(context, dict) else None
-    )
-    on_process_exit = getattr(context, "on_process_exit", None) or (
-        context.get("on_process_exit") if isinstance(context, dict) else None
-    )
-
-    if on_process_start:
-        on_process_start(activity_id, _format_activity_label(url))
-
+    get = context.get if isinstance(context, dict) else lambda key: getattr(context, key, None)
+    on_start, on_exit = get("on_process_start"), get("on_process_exit")
+    owned_client = None
+    metadata: dict[str, Any] = {"url": url, "untrusted": True}
+    if on_start:
+        on_start(activity_id, f"{WEB_FETCH_ACTIVITY_PREFIX} {url[:120]}")
     try:
-        # Resolve network policy from context/settings if available
-        client = get_http_client()
-
-        resp = await client.get_async(
+        settings = web_settings(context)
+        if settings.get("network"):
+            owned_client = HttpClient(policy=NetworkPolicy.from_settings(settings))
+        client = owned_client or get_http_client()
+        response = await client.get_async(
             url,
             timeout=(10.0, 30.0),
-            use_cache=use_cache,
+            use_cache=bool(args.get("use_cache", True)),
             cache_ttl=300.0,
         )
-
-        if not resp.ok:
-            error_detail = resp.error or f"HTTP {resp.status_code}"
+        metadata = {
+            "url": response.url,
+            "statusCode": response.status_code,
+            "fromCache": response.from_cache,
+            "elapsedMs": round(response.elapsed_ms, 2),
+            "bytes": len(response.content),
+            "fetchedAt": response.fetched_at,
+            "cacheAgeSeconds": max(0, time.time() - response.fetched_at)
+            if response.fetched_at
+            else 0,
+            "untrusted": True,
+        }
+        if not response.ok:
+            if response.security_blocked:
+                metadata["securityBlocked"] = True
             return ToolResult(
                 ok=False,
                 name="WebFetch",
-                error=f"Failed to fetch '{url}': {error_detail}",
-                metadata={"url": url, "statusCode": resp.status_code, "elapsedMs": resp.elapsed_ms},
+                error=f"Failed to fetch '{url}': {response.error or f'HTTP {response.status_code}'}",
+                metadata=metadata,
             )
-
-        content_type = resp.headers.get("content-type", "").lower()
-
-        # Handle JSON responses
-        if "application/json" in content_type:
-            try:
-                parsed_json = json.loads(resp.text)
-                formatted = json.dumps(parsed_json, indent=2)
-                sliced, truncated = slice_payload(formatted, max_chars=max_length)
-                return ToolResult(
-                    ok=True,
-                    name="WebFetch",
-                    output=sliced,
-                    metadata={
-                        "url": resp.url,
-                        "contentType": "application/json",
-                        "statusCode": resp.status_code,
-                        "fromCache": resp.from_cache,
-                        "truncated": truncated,
-                    },
+        content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+        metadata["contentType"] = content_type
+        needs_sanitization = True
+        if content_type == "application/pdf" or response.content.startswith(b"%PDF-"):
+            text, pages = await asyncio.to_thread(_pdf_text, response.content)
+            metadata["pages"] = pages
+        elif args.get("raw"):
+            if not (
+                content_type.startswith("text/")
+                or "json" in content_type
+                or "xml" in content_type
+                or not content_type
+            ):
+                raise ValueError(f"Unsupported content type: {content_type}")
+            text = response.text
+        elif content_type == "application/json" or content_type.endswith("+json"):
+            text = json.dumps(json.loads(response.text), indent=2, ensure_ascii=False)
+        elif content_type in {"text/html", "application/xhtml+xml", ""}:
+            page = extract_and_sanitize_html(
+                response.text, max_chars=HARD_OUTPUT_LIMIT, base_url=response.url
+            )
+            metadata.update(
+                {
+                    "title": page.title,
+                    "description": page.description,
+                    "canonicalUrl": page.canonical_url,
+                    "author": page.author,
+                }
+            )
+            text = "\n\n".join(
+                part
+                for part in (
+                    f"# {page.title}" if page.title else "",
+                    f"> {page.description}" if page.description else "",
+                    page.raw_text,
                 )
-            except Exception:
-                pass
-
-        # Handle Plain Text responses
-        if raw_mode or "text/plain" in content_type:
-            sliced, truncated = slice_payload(resp.text, max_chars=max_length)
-            return ToolResult(
-                ok=True,
-                name="WebFetch",
-                output=sliced,
-                metadata={
-                    "url": resp.url,
-                    "contentType": "text/plain",
-                    "statusCode": resp.status_code,
-                    "fromCache": resp.from_cache,
-                    "truncated": truncated,
-                },
+                if part
             )
-
-        # Handle HTML responses: extract metadata and convert to clean Markdown with sanitization
-        extracted = extract_and_sanitize_html(resp.text, max_chars=max_length, base_url=resp.url)
-
-        output_parts: list[str] = []
-        if extracted.title:
-            output_parts.append(f"# {extracted.title}\n")
-        if extracted.description:
-            output_parts.append(f"> {extracted.description}\n")
-
-        output_parts.append(extracted.markdown)
-        final_output = "\n".join(output_parts).strip()
-
-        return ToolResult(
-            ok=True,
-            name="WebFetch",
-            output=final_output,
-            metadata={
-                "url": resp.url,
-                "title": extracted.title,
-                "description": extracted.description,
-                "canonicalUrl": extracted.canonical_url,
-                "author": extracted.author,
-                "statusCode": resp.status_code,
-                "fromCache": resp.from_cache,
-                "totalChars": extracted.total_chars,
-                "truncated": extracted.truncated,
-                "elapsedMs": round(resp.elapsed_ms, 2),
-            },
+            if not page.raw_text.strip():
+                raise ValueError(
+                    "No readable page content found. The page may require JavaScript, login, or access verification."
+                )
+            needs_sanitization = False
+        elif content_type.startswith("text/") or content_type in {
+            "application/xml",
+            "application/rss+xml",
+            "application/atom+xml",
+        }:
+            text = response.text
+        else:
+            raise ValueError(f"Unsupported content type: {content_type or 'unknown'}")
+        if needs_sanitization:
+            text = sanitize_prompt_injection(text)
+        if args.get("section"):
+            text = _select_section(text, as_str(args["section"]))
+        if not text.strip():
+            raise ValueError("No readable text extracted. Scanned PDFs require OCR.")
+        if offset >= len(text) and offset:
+            raise ValueError(f"offset exceeds the available {len(text)} characters.")
+        metadata["totalChars"] = len(text)
+        metadata["offset"] = offset
+        notice = EXTERNAL_CONTENT_NOTICE + "\n\n"
+        if max_length > len(notice) + 64:
+            sliced, truncated = slice_payload(text[offset:], max_length - len(notice))
+            output = notice + sliced
+        else:
+            sliced, truncated = slice_payload(text[offset:], max_length)
+            output = sliced
+        displayed = len(sliced)
+        if truncated:
+            for footer in (
+                "\n\n[Content truncated; use offset to continue.]",
+                "[Content truncated]",
+            ):
+                if sliced.endswith(footer):
+                    displayed -= len(footer)
+                    break
+        metadata.update(
+            {"truncated": truncated, "nextOffset": offset + displayed if truncated else None}
         )
-
-    except NetworkSecurityError as sec_err:
+        return ToolResult(ok=True, name="WebFetch", output=output, metadata=metadata)
+    except NetworkSecurityError as exc:
         return ToolResult(
             ok=False,
             name="WebFetch",
-            error=f"Security Policy Violation: {sec_err}",
+            error=f"Security Policy Violation: {exc}",
             metadata={"url": url, "securityBlocked": True},
         )
     except Exception as exc:
         return ToolResult(
-            ok=False,
-            name="WebFetch",
-            error=f"Unexpected error fetching '{url}': {exc}",
-            metadata={"url": url},
+            ok=False, name="WebFetch", error=f"Error fetching '{url}': {exc}", metadata=metadata
         )
     finally:
-        if on_process_exit:
-            on_process_exit(activity_id)
+        if owned_client:
+            owned_client.close()
+        if on_exit:
+            on_exit(activity_id)
 
 
-# Alias for backward compatibility
 handle = handle_web_fetch_tool

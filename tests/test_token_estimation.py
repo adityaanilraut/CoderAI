@@ -54,3 +54,19 @@ def test_stream_fallback_keeps_per_delta_estimates(deltas, expected):
     )
     assert result["usage"]["completion_tokens"] == expected
     assert progress[-1] == {"estimatedTokens": expected, "type": "end"}
+
+
+def test_openai_media_estimate_matches_native_request_media_budget():
+    from coderai.llm import MEDIA_TOKEN_ESTIMATE, estimate_openai_request_tokens
+
+    def request(url):
+        return [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]
+
+    assert (
+        estimate_openai_request_tokens(request("https://example.test/image.png"))
+        == MEDIA_TOKEN_ESTIMATE + 1
+    )
+    assert (
+        estimate_openai_request_tokens(request("data:image/png;base64," + "x" * 100_000))
+        == MEDIA_TOKEN_ESTIMATE + 1
+    )

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
+import contextlib
 import json
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 from collections.abc import Callable, Sequence
@@ -114,6 +117,9 @@ class McpManager:
         self.server_statuses: list[McpServerStatus] = []
         self.configured_server_names: list[str] = []
         self.server_configs: dict[str, dict[str, Any]] = {}
+        self._server_attempts: dict[str, int] = {}
+        self._notification_refreshes: dict[str, asyncio.Task[None]] = {}
+        self._notification_dirty: set[str] = set()
         self.session_tool_masks: dict[str, dict[str, set[str]]] = {}
         self.initialized = False
         self.disposed = False
@@ -159,6 +165,7 @@ class McpManager:
 
     def eject_server(self, name: str) -> bool:
         """Dynamically eject and disconnect an MCP server and purge all its registered tools."""
+        self._server_attempts[name] = self._server_attempts.get(name, 0) + 1
         client = next((c for c in self.clients if c.server_name == name), None)
         if client:
             try:
@@ -206,6 +213,37 @@ class McpManager:
     def set_on_status_changed(self, handler: Callable[[], None]) -> None:
         self.on_status_changed = handler
 
+    def _schedule_tools_refresh(self, name: str, attempt: int) -> None:
+        """Coalesce server notifications on the manager's event loop."""
+        if self.disposed or self._server_attempts.get(name) != attempt:
+            return
+        self._notification_dirty.add(name)
+        task = self._notification_refreshes.get(name)
+        if task is not None and not task.done():
+            return
+
+        async def refresh() -> None:
+            try:
+                while (
+                    not self.disposed
+                    and self._server_attempts.get(name) == attempt
+                    and name in self._notification_dirty
+                ):
+                    self._notification_dirty.discard(name)
+                    await self.hot_reload_tools(name)
+            finally:
+                if self._notification_refreshes.get(name) is asyncio.current_task():
+                    self._notification_refreshes.pop(name, None)
+
+        task = asyncio.create_task(refresh())
+        self._notification_refreshes[name] = task
+
+        def observe(completed: asyncio.Task[None]) -> None:
+            if not completed.cancelled():
+                completed.exception()
+
+        task.add_done_callback(observe)
+
     def _set_status(self, status: McpServerStatus) -> None:
         if self.disposed:
             return
@@ -242,13 +280,15 @@ class McpManager:
         if not servers:
             return
 
-        self.server_configs = servers
+        self.server_configs = deepcopy(servers)
         self.prepare(servers)
 
-        for name, config in servers.items():
-            if self.disposed:
-                break
-            await self._connect_server(name, config)
+        # One slow/unreachable server must not delay discovery of every
+        # independent server (Kimi's connectAllNow uses allSettled).
+        await asyncio.gather(
+            *(self._connect_server(name, config) for name, config in servers.items()),
+            return_exceptions=True,
+        )
 
     async def sync_servers(self, servers: dict[str, dict[str, Any]] | None) -> None:
         """Dynamically sync MCP servers with updated configuration during runtime."""
@@ -261,6 +301,7 @@ class McpManager:
         # Disconnect and remove deleted servers
         removed_names = current_names - new_names
         for name in removed_names:
+            self._server_attempts[name] = self._server_attempts.get(name, 0) + 1
             client = next((c for c in self.clients if c.server_name == name), None)
             if client:
                 try:
@@ -282,7 +323,7 @@ class McpManager:
             if name not in self.configured_server_names or old_config != config:
                 if name not in self.configured_server_names:
                     self.configured_server_names.append(name)
-                self.server_configs[name] = config
+                self.server_configs[name] = deepcopy(config)
                 await self._connect_server(name, config)
 
         if self.on_tools_list_changed:
@@ -295,7 +336,7 @@ class McpManager:
         if not effective_config:
             return False
         if config:
-            self.server_configs[name] = config
+            self.server_configs[name] = deepcopy(config)
 
         existing_client = next((c for c in self.clients if c.server_name == name), None)
         if existing_client:
@@ -390,8 +431,15 @@ class McpManager:
             if not client.is_connected():
                 continue
             name = client.server_name
+            attempt = self._server_attempts.get(name)
             try:
                 fresh_tools = await client.list_tools(timeout_s=10.0)
+                if (
+                    self.disposed
+                    or self._server_attempts.get(name) != attempt
+                    or client not in self.clients
+                ):
+                    continue
                 self.tools = [t for t in self.tools if t.server_name != name]
                 used_names = {t.namespaced_name for t in self.tools}
                 tool_names: list[str] = []
@@ -460,16 +508,26 @@ class McpManager:
     async def _connect_server(self, name: str, config: dict[str, Any]) -> None:
         if self.disposed:
             return
+        attempt = self._server_attempts.get(name, 0) + 1
+        self._server_attempts[name] = attempt
+        old_refresh = self._notification_refreshes.pop(name, None)
+        if old_refresh is not None:
+            old_refresh.cancel()
+        self._notification_dirty.discard(name)
 
-        if bool(config.get("disabled")) or config.get("enabled") is False:
-            self._set_status(
-                McpServerStatus(
-                    name=name,
-                    status="disabled",
-                    connected=False,
-                )
-            )
-            return
+        def current() -> bool:
+            return not self.disposed and self._server_attempts.get(name) == attempt
+
+        async def discard_stale(client: McpClient) -> bool:
+            if current():
+                return False
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+            self.clients = [c for c in self.clients if c is not client]
+            self.tools = [t for t in self.tools if t.client is not client]
+            self.prompts = [p for p in self.prompts if p.get("client") is not client]
+            self.resources = [r for r in self.resources if r.get("client") is not client]
+            return True
 
         # Disconnect and filter out existing clients for this server
         for c in list(self.clients):
@@ -478,16 +536,26 @@ class McpManager:
                     await c.disconnect()
                 except Exception:
                     pass
-        self.clients = [c for c in self.clients if c.server_name != name and c.is_connected()]
+        self.clients = [c for c in self.clients if c.server_name != name]
         self.tools = [t for t in self.tools if t.server_name != name]
         self.prompts = [p for p in self.prompts if p.get("server_name") != name]
         self.resources = [r for r in self.resources if r.get("server_name") != name]
 
-        client = McpClient(name, config)
-        client.set_on_disconnect(lambda reason: self._on_server_crash(name, reason))
+        if bool(config.get("disabled")) or config.get("enabled") is False:
+            self._set_status(McpServerStatus(name=name, status="disabled", connected=False))
+            if self.on_tools_list_changed:
+                self.on_tools_list_changed()
+            return
 
+        client: McpClient | None = None
         try:
+            client = McpClient(name, config)
+            client.set_on_disconnect(
+                lambda reason: self._on_server_crash(name, reason) if current() else None
+            )
             await client.connect()
+            if await discard_stale(client):
+                return
             self.clients.append(client)
 
             server_tools = (
@@ -495,6 +563,8 @@ class McpManager:
                 if (isinstance(getattr(client, "_tools", None), list) and client._tools)
                 else await client.list_tools(timeout_s=10.0)
             )
+            if await discard_stale(client):
+                return
             tool_names: list[str] = []
             used_names = {t.namespaced_name for t in self.tools}
 
@@ -518,6 +588,8 @@ class McpManager:
                 server_prompts = await client.list_prompts(timeout_s=5.0)
             except Exception:
                 server_prompts = []
+            if await discard_stale(client):
+                return
             prompt_names: list[str] = []
             for p in server_prompts:
                 p_name = p.get("name", "")
@@ -538,6 +610,8 @@ class McpManager:
                 server_resources = await client.list_resources(timeout_s=5.0)
             except Exception:
                 server_resources = []
+            if await discard_stale(client):
+                return
             resource_names: list[str] = []
             for r in server_resources:
                 r_name = r.get("name", "")
@@ -566,10 +640,36 @@ class McpManager:
                     resources=resource_names,
                 )
             )
+            notification_setter = getattr(client, "set_notification_handler", None)
+            if callable(notification_setter):
+                loop = asyncio.get_running_loop()
+
+                def on_notification(method: str, params: dict[str, Any]) -> None:
+                    if method == "notifications/tools/list_changed" and current():
+                        loop.call_soon_threadsafe(self._schedule_tools_refresh, name, attempt)
+
+                notification_setter(on_notification)
             if self.on_tools_list_changed:
                 self.on_tools_list_changed()
+        except asyncio.CancelledError:
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    await client.disconnect()
+            self.clients = [c for c in self.clients if c is not client]
+            self.tools = [t for t in self.tools if t.client is not client]
+            self.prompts = [p for p in self.prompts if p.get("client") is not client]
+            self.resources = [r for r in self.resources if r.get("client") is not client]
+            raise
         except Exception as err:
-            await client.disconnect()
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    await client.disconnect()
+            self.clients = [c for c in self.clients if c is not client]
+            self.tools = [t for t in self.tools if t.client is not client]
+            self.prompts = [p for p in self.prompts if p.get("client") is not client]
+            self.resources = [r for r in self.resources if r.get("client") is not client]
+            if not current():
+                return
             http_status = getattr(client, "last_http_status", None)
             if http_status == 401:
                 self._set_status(
@@ -626,19 +726,21 @@ class McpManager:
         return result
 
     def get_mcp_tool_definitions(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        from coderai.tools.legacy.schema import assert_supported_json_schema
+
         defs: list[dict[str, Any]] = []
         target_tools = self.list_tools(session_id=session_id)
         for t in target_tools:
             input_schema = t.definition.get("inputSchema") or {}
-            props = input_schema.get("properties") or {}
-            params: dict[str, Any] = {
-                "type": "object",
-                "properties": props,
-            }
-            if input_schema.get("required"):
-                params["required"] = input_schema["required"]
-            if input_schema.get("additionalProperties") is not None:
-                params["additionalProperties"] = input_schema["additionalProperties"]
+            # Preserve references, unions and constraints. Flattening to just
+            # properties/required changes the server's argument contract.
+            assert_supported_json_schema(input_schema, t.namespaced_name)
+            params = deepcopy(input_schema)
+            params.setdefault("type", "object")
+            if not params.get("properties") and not any(
+                key in params for key in ("$ref", "allOf", "anyOf", "oneOf")
+            ):
+                params.setdefault("properties", {})
 
             defs.append(
                 {
@@ -684,6 +786,19 @@ class McpManager:
         tool = next((t for t in self.tools if t.namespaced_name == name), None)
         if not tool:
             return ToolResult(ok=False, name=name, error=f"Unknown MCP tool: {name}")
+
+        from coderai.tools.legacy.schema import validate_json_schema_value
+
+        errors = validate_json_schema_value(
+            tool.definition.get("inputSchema") or {"type": "object"}, args, name
+        )
+        if errors:
+            return ToolResult(
+                ok=False,
+                name=name,
+                error="; ".join(errors),
+                metadata={"code": "INVALID_TOOL_ARGUMENTS", "retryable": False},
+            )
 
         effective_timeout = (
             timeout_s if timeout_s and timeout_s > 0 else self.default_tool_timeout_s
@@ -756,6 +871,13 @@ class McpManager:
 
     async def disconnect(self) -> None:
         self.disposed = True
+        refreshes = list(self._notification_refreshes.values())
+        for task in refreshes:
+            task.cancel()
+        if refreshes:
+            await asyncio.gather(*refreshes, return_exceptions=True)
+        self._notification_refreshes.clear()
+        self._notification_dirty.clear()
         for client in self.clients:
             try:
                 await client.disconnect()

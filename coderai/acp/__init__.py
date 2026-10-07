@@ -15,7 +15,15 @@ def acp_main() -> None:
 
     enable_logging(redirect_stderr=False)
     logger.info("Starting ACP server on stdio")
-    asyncio.run(acp.run_agent(ACPServer(), use_unstable_protocol=True))
+
+    async def serve() -> None:
+        server = ACPServer()
+        try:
+            await acp.run_agent(server, use_unstable_protocol=True)
+        finally:
+            await server.close()
+
+    asyncio.run(serve())
 
 
 from coderai.acp.server import ACPServer

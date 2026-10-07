@@ -31,12 +31,6 @@ except ImportError:  # minimal fallback when utils are unavailable
         return text[:half] + "..." + text[-half:]
 
 
-class SkipThisTool(Exception):
-    """Raised when a tool decides to skip itself from the loading process."""
-
-    pass
-
-
 def extract_key_argument(json_content: Any, tool_name: str) -> str | None:
     _lexer_type = getattr(streamingjson, "Lexer", None) if streamingjson else None
     if _lexer_type is not None and isinstance(json_content, _lexer_type):

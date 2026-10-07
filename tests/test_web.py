@@ -6,6 +6,8 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from rich.console import Console
 
 from coderai.ui.shell.visualize._blocks import _render_search_card, render_tool_card
@@ -34,6 +36,21 @@ from coderai.web_providers import (
     register_web_search_provider,
     resolve_web_search_provider,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_web_configuration(monkeypatch):
+    """Web unit tests must never load host credentials or provider preferences."""
+    for name in (
+        "EXA_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "CODERAI_WEB_SEARCH_PROVIDER",
+        "CODERAI_WEB_SEARCH_TOOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("coderai.tools.web.search.web_settings", lambda context: {})
+    monkeypatch.setattr("coderai.tools.web.fetch.web_settings", lambda context: {})
 
 
 def test_web_registry_lists_builtin_providers():

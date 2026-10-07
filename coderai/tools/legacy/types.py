@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import json
+import threading
 from pathlib import Path
 from typing import Any, Literal
 from collections.abc import Callable
@@ -110,18 +111,32 @@ def tool_arguments_digest(args: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def plan_file_digest(session_id: str, project_root: str) -> str | None:
+    from coderai.tools.plan.heroes import read_plan_for_approval
+
+    try:
+        content = read_plan_for_approval(session_id, project_root)
+        return hashlib.sha256(content.encode("utf-8")).hexdigest() if content is not None else None
+    except (OSError, ValueError):
+        return "!invalid-plan-file"
+
+
 def tool_call_binding(session_id: str, project_root: str, call: dict[str, Any]) -> dict[str, str]:
     """Identity persisted by the runtime before presenting an approval request."""
     from coderai.soul.approval import parse_tool_arguments
 
     args = parse_tool_arguments(call["function"]["arguments"])
-    return {
+    binding = {
         "toolCallId": call["id"],
         "tool_name": call["function"]["name"],
         "session_id": session_id,
         "project_root": str(Path(project_root).resolve()),
         "args_digest": tool_arguments_digest(args if isinstance(args, dict) else {}),
     }
+
+    if call["function"]["name"] == "exit_plan_mode":
+        binding["plan_digest"] = plan_file_digest(session_id, project_root) or ""
+    return binding
 
 
 def matches_tool_call_binding(record: dict[str, Any], binding: dict[str, str]) -> bool:
@@ -139,6 +154,8 @@ class ToolCallAuthorization:
     args_digest: str
     sandbox_mode: str | None = None
     hook_approved: bool = False
+    plan_approved: bool = False
+    plan_digest: str | None = None
     hook_outcome: dict[str, Any] | None = None
     isolated_cwd: str | None = None
 
@@ -152,6 +169,11 @@ class ToolCallAuthorization:
             and self.project_root == str(Path(get("project_root") or "").resolve())
             and self.args_digest == tool_arguments_digest(args)
             and self.isolated_cwd == get("isolated_cwd")
+            and self.plan_digest != "!invalid-plan-file"
+            and (
+                not self.plan_approved
+                or self.plan_digest == plan_file_digest(self.session_id, self.project_root)
+            )
         )
 
 
@@ -190,6 +212,7 @@ class ToolExecutionContext:
         default_factory=list
     )
     is_turn_concluded: bool = False
+    cancellation_event: threading.Event = field(default_factory=threading.Event)
 
     def defer_context(self, message: ToolExecutionFollowUpMessage | dict[str, Any]) -> None:
         """Attach a follow-up context message to this execution result."""
@@ -269,6 +292,23 @@ class ToolDefinition:
     timeout_ms: int | None = None
     present_result: Callable[[dict[str, Any], ToolResult], dict[str, Any] | None] | None = None
     finalize_content: Callable[[ToolExecutionContext, ToolResult], str | None] | None = None
+    resource_accesses: Any = None
+    effects: str | Callable[[dict[str, Any]], str] | None = None
+
+    def resolve_effects(self, args: dict[str, Any]) -> str:
+        from coderai.tools.legacy.policy import resolve_effects
+
+        return resolve_effects(self, args)
+
+    def runtime_schema(self) -> dict[str, Any]:
+        # Keep the authoritative schema intact; provider projection may remove
+        # unsupported keywords without changing runtime validation.
+        return {
+            "type": "object",
+            "properties": self.parameters,
+            "required": self.required,
+            "additionalProperties": False,
+        }
 
     def check_concurrency_safe(self, args: dict[str, Any]) -> bool:
         """Evaluate whether this invocation can run concurrently in parallel groups."""

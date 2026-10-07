@@ -24,6 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
+import shutil
+from dataclasses import replace
+import uuid
 import pytest
 from unittest.mock import MagicMock
 
@@ -42,6 +45,15 @@ from coderai.tools.legacy.executor import ToolExecutor
 from coderai.soul.approval import Approval, compute_tool_call_permissions
 from coderai.soul.session.manager import SessionManager
 from coderai.agentspec import resolve_agent_spec
+
+
+def _install_role(root: pathlib.Path, name: str) -> None:
+    destination = root / ".coderai" / "agents"
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(
+        pathlib.Path(__file__).resolve().parents[1] / ".coderai" / "agents" / f"{name}.md",
+        destination / f"{name}.md",
+    )
 
 
 @pytest.mark.security
@@ -82,6 +94,7 @@ def test_unknown_subagent_type_denied_all_tools(tmp_path: pathlib.Path):
 @pytest.mark.security
 def test_code_reviewer_role_is_read_only_and_restricted(tmp_path: pathlib.Path):
     """WF-A5 / PR-A2: code-reviewer with tools: [] has mode=read_only and no mutating tools."""
+    _install_role(tmp_path, "code-reviewer")
     defn = get_subagent_definition("code-reviewer", project_root=str(tmp_path))
     assert defn is not None
     assert defn.mode == "read_only"
@@ -214,7 +227,7 @@ async def test_read_only_mode_blocks_mutating_execution_and_writable_child(tmp_p
         "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
     }
     mock_client.chat.completions.create.side_effect = [mock_resp_spawn, mock_resp2]
-    res2 = await mgr.spawn_subagent(spec)
+    res2 = await mgr.spawn_subagent(replace(spec, task_id=uuid.uuid4().hex, handle=None))
     assert res2.status == "completed"
 
 
@@ -506,6 +519,7 @@ async def test_approval_runtime_tracks_pending_and_cancellation():
 @pytest.mark.security
 def test_switch_agent_role_rebuilds_session_system_message(tmp_path: pathlib.Path):
     """PR-B7: switch_agent_role updates persona, allowedTools, and session messages."""
+    _install_role(tmp_path, "architect")
     test_settings = {"model": "gpt-4o"}
     mgr = SessionManager(
         project_root=str(tmp_path),

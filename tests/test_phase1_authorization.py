@@ -266,7 +266,14 @@ async def test_hook_halt_prevents_following_calls(tmp_path, monkeypatch):
 
 
 def _real_manager(tmp_path, monkeypatch, args, outcome):
+    import coderai.hooks as hook_api
+
     monkeypatch.setattr("coderai.hooks.run_hook_point", lambda *a, **k: outcome)
+    monkeypatch.setattr(
+        hook_api,
+        "run_hook_point_async",
+        AsyncMock(side_effect=lambda *a, **k: hook_api.run_hook_point(*a, **k)),
+    )
     manager = SessionManager(
         project_root=str(tmp_path),
         create_openai_client=lambda: {"client": object(), "model": "gpt-4o"},

@@ -11,9 +11,11 @@ Provides structured compaction with:
 from __future__ import annotations
 
 import abc
+import asyncio
+import copy
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass, replace
 from typing import Any, TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
@@ -64,6 +66,7 @@ class CompactionResult:
     shadowed_ids: list[str] = field(default_factory=list)
     shadowed_seqs: list[int] = field(default_factory=list)
     shadowed_token_count: int = 0
+    tokens_after: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +76,7 @@ class CompactionResult:
             "shadowedIds": self.shadowed_ids,
             "shadowedSeqs": self.shadowed_seqs,
             "shadowedTokenCount": self.shadowed_token_count,
+            "tokensAfter": self.tokens_after,
         }
 
 
@@ -86,10 +90,9 @@ class ToolResultPruner:
         """Truncate content exceeding max_chars symmetrically."""
         if not content or len(content) <= self.max_chars:
             return content
-        head = self.max_chars // 2
-        tail = self.max_chars - head
-        omitted = len(content) - self.max_chars
-        return f"{content[:head]}\n\n...[{omitted} characters omitted]...\n\n{content[-tail:]}"
+        from coderai.utils.common.tool_payload import prune_tool_payload
+
+        return prune_tool_payload(content, self.max_chars)
 
     def prune_messages(self, messages: list[Any]) -> list[Any]:
         """Prune tool result messages in place or on copies while preserving list structure."""
@@ -106,17 +109,14 @@ class ToolResultPruner:
                 out.append(msg)
                 continue
             pruned_text = self.prune_content(content)
-            if hasattr(msg, "__dict__"):
-                try:
-                    clone = type(msg)(**{**msg.__dict__, "content": pruned_text})
-                except TypeError:
-                    setattr(msg, "content", pruned_text)
-                    clone = msg
-                out.append(clone)
-            elif isinstance(msg, dict):
+            if isinstance(msg, dict):
                 out.append({**msg, "content": pruned_text})
+            elif is_dataclass(msg) and not isinstance(msg, type):
+                out.append(replace(msg, content=pruned_text))
             else:
-                out.append(msg)
+                clone = copy.copy(msg)
+                setattr(clone, "content", pruned_text)
+                out.append(clone)
         return out
 
 
@@ -141,7 +141,7 @@ def evaluate_compaction_trigger(
     if context_limit <= 0 or active_tokens <= 0:
         return None
     # Reserved budget guard
-    if reserved_context_size and reserved_context_size > 0:
+    if reserved_context_size and 0 < reserved_context_size < context_limit:
         if active_tokens + reserved_context_size >= context_limit:
             return (
                 "overflow" if active_tokens >= int(context_limit * overflow_ratio) else "pressure"
@@ -157,6 +157,7 @@ def estimate_text_tokens(messages: Any) -> int:
     """Estimate tokens from message text content and tool calls using a character-based heuristic."""
     total_chars = 0
     non_ascii_count = 0
+    media_tokens = 0
 
     def _add_text(t: str) -> None:
         nonlocal total_chars, non_ascii_count
@@ -180,6 +181,23 @@ def estimate_text_tokens(messages: Any) -> int:
                     _add_text(part.get("text") or "")
                 elif isinstance(part, str):
                     _add_text(part)
+                if (
+                    part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+                ) in ("image_url", "audio_url", "video_url"):
+                    media_tokens += 2000
+        meta = (
+            getattr(msg, "meta", None) or (msg.get("meta") if isinstance(msg, dict) else {}) or {}
+        )
+        params = meta.get("contentParams") or []
+        if isinstance(params, dict):
+            params = [params]
+        if not isinstance(content, (list, tuple)):
+            media_tokens += sum(
+                2000
+                for part in params
+                if isinstance(part, dict)
+                and part.get("type") in ("image_url", "audio_url", "video_url")
+            )
         tool_calls = getattr(msg, "tool_calls", None)
         if tool_calls is None and isinstance(msg, dict):
             tool_calls = msg.get("tool_calls") or msg.get("toolCalls")
@@ -194,7 +212,7 @@ def estimate_text_tokens(messages: Any) -> int:
                     )
                     if isinstance(args, str):
                         _add_text(args)
-    return (total_chars + 3) // 4 + non_ascii_count
+    return (total_chars + 3) // 4 + non_ascii_count + media_tokens
 
 
 def should_auto_compact(
@@ -205,10 +223,77 @@ def should_auto_compact(
     reserved_context_size: int = 50_000,
 ) -> bool:
     """Check if token_count triggers compaction (either condition)."""
-    return (
+    return max_context_size > 0 and (
         token_count >= max_context_size * trigger_ratio
-        or token_count + reserved_context_size >= max_context_size
+        or (
+            0 < reserved_context_size < max_context_size
+            and token_count + reserved_context_size >= max_context_size
+        )
     )
+
+
+def estimate_context_tokens(
+    messages: list[Any], active_tokens: int = 0, strategy: str = "measured+estimated"
+) -> int:
+    """Combine a persisted provider measurement with the unmeasured suffix.
+
+    Compaction summaries invalidate earlier measurements. Measurements live on
+    assistant rows, so resumption needs no process-local token ledger.
+    """
+    from coderai.soul.session.log import derive_messages
+    from coderai.utils.common.usage import extract_usage_dict
+
+    visible = derive_messages(messages)
+    estimated = estimate_text_tokens(visible)
+    if strategy == "estimated":
+        return estimated
+    has_summary = False
+    summary_time = max(
+        (
+            getattr(message, "create_time", "")
+            for message in visible
+            if (getattr(message, "meta", None) or {}).get("isSummary")
+            or (getattr(message, "meta", None) or {}).get("kind") == "compact/summary"
+        ),
+        default="",
+    )
+    measured = 0
+    anchor = 0
+    for index, message in enumerate(visible):
+        meta = getattr(message, "meta", None) or {}
+        if meta.get("isSummary") or meta.get("kind") == "compact/summary":
+            has_summary = True
+            measured = 0
+        usage = meta.get("usage")
+        if summary_time and getattr(message, "create_time", "") <= summary_time:
+            continue
+        if getattr(message, "role", None) == "assistant" and usage:
+            tokens = extract_usage_dict(usage)["total_tokens"]
+            if tokens > 0:
+                measured = tokens
+                anchor = index + 1
+    if strategy == "measured":
+        return measured or (0 if has_summary else max(0, active_tokens))
+    if measured:
+        return max(estimated, measured + estimate_text_tokens(visible[anchor:]))
+    return estimated if has_summary else max(estimated, active_tokens)
+
+
+def _tool_groups(messages: list[Any]) -> list[set[int]]:
+    """Find complete exchanges, even when steering interleaves their results."""
+    groups: list[set[int]] = []
+    calls: dict[str, set[int]] = {}
+    for index, message in enumerate(messages):
+        if message.role == "assistant" and message.tool_calls:
+            group = {index}
+            groups.append(group)
+            for call in message.tool_calls:
+                call_id = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+                if call_id:
+                    calls[call_id] = group
+        elif message.role == "tool" and message.tool_call_id in calls:
+            calls[message.tool_call_id].add(index)
+    return groups
 
 
 class CompactionEngine(abc.ABC):
@@ -254,6 +339,7 @@ class BasicCompaction(CompactionEngine):
     ) -> None:
         self.manager = manager
         self.pruner = pruner or ToolResultPruner(max_chars=2000)
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def _find_safe_region(
         self,
@@ -268,10 +354,13 @@ class BasicCompaction(CompactionEngine):
         # Take roughly the older 2/3 of user/assistant/tool messages
         search_start = start + (len(messages) - start) * 2 // 3
         end = -1
+        groups = _tool_groups(messages)
         for i in range(max(search_start, start), len(messages)):
             # Never cut immediately after an assistant tool_calls without its tool results
             # and never cut inside a tool result sequence
-            if messages[i].role not in ("tool", "system"):
+            if messages[i].role not in ("tool", "system") and not any(
+                min(group) < i <= max(group) for group in groups
+            ):
                 end = i
                 break
 
@@ -287,6 +376,21 @@ class BasicCompaction(CompactionEngine):
         end_idx: int,
         trigger: str = "pressure",
         preserve_ids: set[str] | None = None,
+        custom_instruction: str | None = None,
+    ) -> CompactionResult | None:
+        async with self._locks.setdefault(session_id, asyncio.Lock()):
+            return await self._compact_region(
+                session_id, start_idx, end_idx, trigger, preserve_ids, custom_instruction
+            )
+
+    async def _compact_region(
+        self,
+        session_id: str,
+        start_idx: int,
+        end_idx: int,
+        trigger: str,
+        preserve_ids: set[str] | None,
+        custom_instruction: str | None,
     ) -> CompactionResult | None:
         from coderai.prompt import get_compact_prompt
         from coderai.events import (
@@ -305,6 +409,33 @@ class BasicCompaction(CompactionEngine):
         if not target_slice:
             return None
 
+        groups = _tool_groups(messages)
+        selected = set(range(start_idx, end_idx))
+        if any(group & selected and not group <= selected for group in groups):
+            return None
+        preserved = {
+            i
+            for i, message in enumerate(messages)
+            if message.role == "system"
+            or message.id in (preserve_ids or set())
+            or (message.meta or {}).get("preserve") is True
+            or (message.meta or {}).get("pinned") is True
+        }
+        for group in groups:
+            assistant = messages[min(group)]
+            expected = {
+                call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+                for call in assistant.tool_calls or []
+            } - {None, ""}
+            completed = {
+                messages[index].tool_call_id for index in group if messages[index].role == "tool"
+            }
+            if group & preserved or expected - completed:
+                preserved.update(group)
+        replaced_ids = [m.id for i, m in enumerate(messages) if i in selected - preserved and m.id]
+        if not replaced_ids:
+            return None
+
         # Prune oversized tool result dumps from history before building prompt
         pruned_slice = self.pruner.prune_messages(target_slice)
 
@@ -318,7 +449,7 @@ class BasicCompaction(CompactionEngine):
         settings = self.manager.get_resolved_settings()
         thinking_enabled = bool(settings.get("thinkingEnabled"))
 
-        prefix_messages = messages[:end_idx]
+        prefix_messages = [m for m in messages[:start_idx] if m.role == "system"] + target_slice
         pruned_prefix = self.pruner.prune_messages(prefix_messages)
         converter = cast(
             CompactionMessageConverter | None,
@@ -335,7 +466,7 @@ class BasicCompaction(CompactionEngine):
             thinking_enabled=thinking_enabled,
         )
 
-        _custom = getattr(self, "_pending_custom_instruction", None)
+        _custom = custom_instruction
         if _custom:
             extra = f"\n\nAdditional focus instruction from user: {_custom}\nPay extra attention to this focus while keeping all sections."
         else:
@@ -364,6 +495,12 @@ class BasicCompaction(CompactionEngine):
             request,
         )
         raw = (response.get("choices") or [{}])[0].get("message") or {}
+        if (response.get("choices") or [{}])[0].get("finish_reason") in (
+            "length",
+            "max_tokens",
+            "content_filter",
+        ):
+            return None
         raw_summary = str(raw.get("content") or "").strip()
         summary = re.sub(
             r"<analysis>[\s\S]*?</analysis>", "", raw_summary, flags=re.IGNORECASE
@@ -371,6 +508,10 @@ class BasicCompaction(CompactionEngine):
 
         # AL-A3: Abort without committing if summary is empty
         if not summary:
+            return None
+
+        current = derive_messages(self.manager.list_session_messages(session_id))
+        if current[:end_idx] != messages[:end_idx]:
             return None
 
         # Emit compaction/start with trigger metadata
@@ -384,22 +525,7 @@ class BasicCompaction(CompactionEngine):
             ),
         )
 
-        usage = response.get("usage")
-        tokens = usage.get("total_tokens", 0) if usage else 0
-
-        # Filter out preserved/pinned messages from shadowed IDs
-        preserved_set = set(preserve_ids or [])
-        replaced_ids = [
-            m.id
-            for m in target_slice
-            if m.id
-            and m.id not in preserved_set
-            and not (
-                hasattr(m, "meta")
-                and isinstance(m.meta, dict)
-                and (m.meta.get("preserve") is True or m.meta.get("pinned") is True)
-            )
-        ]
+        tokens = estimate_text_tokens(target_slice)
         replaced_id_set = set(replaced_ids)
 
         shadowed_seqs: list[int] = []
@@ -408,8 +534,11 @@ class BasicCompaction(CompactionEngine):
         except Exception:
             rows = []
         for row in rows:
-            row_data = row.get("data") if isinstance(row.get("data"), dict) else {}
+            data = row.get("data")
+            row_data = data if isinstance(data, dict) else {}
             row_id = row.get("id") or row_data.get("id")
+            if not row_id and row.get("type") == "tool/result":
+                row_id = f"{session_id}:event:{row.get('seq')}"
             if row_id in replaced_id_set or row_data.get("compactionId") in replaced_id_set:
                 seq = row.get("seq")
                 if isinstance(seq, int) and seq not in shadowed_seqs:
@@ -445,6 +574,7 @@ class BasicCompaction(CompactionEngine):
             shadowed_ids=replaced_ids,
             shadowed_seqs=shadowed_seqs,
             shadowed_token_count=tokens,
+            tokens_after=estimate_context_tokens(self.manager.list_session_messages(session_id)),
         )
 
     async def compact_now(
@@ -456,20 +586,15 @@ class BasicCompaction(CompactionEngine):
     ) -> CompactionResult | None:
         from coderai.soul.session.log import derive_messages
 
-        messages = self.manager.list_session_messages(session_id)
-        derived = derive_messages(messages)
-        region = self._find_safe_region(derived, preserve_ids=preserve_ids)
-        if not region:
-            return None
-        # Custom instruction appended to directive when /compact <focus>
-        if custom_instruction:
-            self._pending_custom_instruction = custom_instruction  # type: ignore
-        try:
-            return await self.compact_region(
-                session_id, region[0], region[1], trigger=trigger, preserve_ids=preserve_ids
+        async with self._locks.setdefault(session_id, asyncio.Lock()):
+            messages = self.manager.list_session_messages(session_id)
+            derived = derive_messages(messages)
+            region = self._find_safe_region(derived, preserve_ids=preserve_ids)
+            if not region:
+                return None
+            return await self._compact_region(
+                session_id, region[0], region[1], trigger, preserve_ids, custom_instruction
             )
-        finally:
-            self._pending_custom_instruction = None  # type: ignore
 
     async def compact_if_needed(
         self,
@@ -478,21 +603,19 @@ class BasicCompaction(CompactionEngine):
         preserve_ids: set[str] | None = None,
     ) -> CompactionResult | None:
         from coderai.prompt import calculate_context_budget
-        from coderai.soul.session.log import derive_messages
 
         entry = self.manager._get_entry(session_id) or {}
         active_tokens = int(entry.get("activeTokens", 0) or 0)
         messages = self.manager.list_session_messages(session_id)
-        derived = derive_messages(messages)
-        token_count = max(active_tokens, estimate_text_tokens(derived))
-
         model = self.manager.get_active_model()
-        budget = calculate_context_budget(model)
-        limit = budget["context_limit"]
-
         settings = self.manager.get_resolved_settings()
+        budget = calculate_context_budget(model, context_limit=settings.get("contextWindow"))
+        limit = budget["context_limit"]
         pressure_ratio = float(settings.get("compactionTriggerRatio") or 0.85)
-        reserved_size = int(settings.get("reservedContextSize") or 50_000)
+        token_count = estimate_context_tokens(
+            messages, active_tokens, settings.get("tokenCountingStrategy", "measured+estimated")
+        )
+        reserved_size = int(settings.get("reservedContextSize", 50_000))
         auto_window = settings.get("autoCompactWindow")
 
         evaluated_trigger = evaluate_compaction_trigger(

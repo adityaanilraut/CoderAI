@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 from coderai.config import DEFAULT_MODEL
+from coderai.utils.path import open_regular_binary
 from coderai.tools.legacy.types import ToolResult, as_str
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -73,7 +74,10 @@ def handle_understand_image_tool(args: dict[str, Any], context: Any) -> ToolResu
         on_process_start(activity_id, f"UnderstandImage: {p.name}")
 
     try:
-        image_bytes = p.read_bytes()
+        with open_regular_binary(str(p)) as image_stream:
+            image_bytes = image_stream.read(MAX_IMAGE_BYTES + 1)
+        if len(image_bytes) > MAX_IMAGE_BYTES:
+            return _tool_error("Image file exceeds the 10 MiB limit.")
         b64_data = base64.b64encode(image_bytes).decode("ascii")
         data_url = f"data:{mime};base64,{b64_data}"
 

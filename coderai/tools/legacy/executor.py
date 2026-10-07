@@ -7,6 +7,7 @@ import inspect
 import json
 import os
 import time
+import threading
 from typing import Any
 from collections.abc import Callable
 
@@ -62,6 +63,7 @@ class SlidingWindowRateLimiter:
 
     def __init__(self) -> None:
         self._history: dict[str, list[float]] = {}
+        self._lock = threading.RLock()
 
     def acquire(self, key: str, max_requests: int, window_seconds: float) -> tuple[bool, float]:
         """Attempt to acquire a call permit.
@@ -72,7 +74,11 @@ class SlidingWindowRateLimiter:
         if max_requests <= 0 or window_seconds <= 0:
             return True, 0.0
 
-        now = time.time()
+        with self._lock:
+            return self._acquire(key, max_requests, window_seconds)
+
+    def _acquire(self, key: str, max_requests: int, window_seconds: float) -> tuple[bool, float]:
+        now = time.monotonic()
         window_start = now - window_seconds
 
         calls = self._history.setdefault(key, [])
@@ -89,10 +95,11 @@ class SlidingWindowRateLimiter:
         return False, retry_after
 
     def reset(self, key: str | None = None) -> None:
-        if key:
-            self._history.pop(key, None)
-        else:
-            self._history.clear()
+        with self._lock:
+            if key:
+                self._history.pop(key, None)
+            else:
+                self._history.clear()
 
 
 class ToolExecutor:
@@ -323,8 +330,10 @@ class ToolExecutor:
             return ToolResult(
                 ok=False,
                 name=tool_name,
-                error=parsed["error"],
+                error=sanitize_tool_output(parsed["error"]),
                 metadata={
+                    "code": "INVALID_TOOL_ARGUMENTS",
+                    "retryable": False,
                     "startTime": start_time_ms,
                     "endTime": end_time_ms,
                     "durationMs": end_time_ms - start_time_ms,
@@ -334,8 +343,61 @@ class ToolExecutor:
         raw_args = parsed["args"]
         context = self._build_execution_context(session_id, tool_call, hooks)
 
+        if not self.registry.admits(tool_name, scope=session_id):
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=f"PermissionDenied: Tool '{tool_name}' is masked.",
+                metadata={"code": "TOOL_MASKED", "retryable": False},
+            )
+        definition = self.registry.get(tool_name, scope=session_id)
+        try:
+            if definition is not None:
+                self.registry.validate_arguments(definition.name, raw_args, scope=session_id)
+            elif self.mcp_manager is not None and self.mcp_manager.is_mcp_tool(tool_name):
+                from coderai.tools.legacy.schema import validate_json_schema_value
+
+                definitions = self.mcp_manager.get_mcp_tool_definitions()
+                schema = next(
+                    (
+                        d["function"]["parameters"]
+                        for d in definitions
+                        if d["function"]["name"] == tool_name
+                    ),
+                    None,
+                )
+                if schema is None:
+                    raise ValidationError("MCP tool has no registered runtime schema")
+                violations = validate_json_schema_value(schema, raw_args, tool_name)
+                if violations:
+                    raise ValidationError("; ".join(violations))
+            elif self.is_plugin_tool(tool_name):
+                from coderai.tools.legacy.schema import validate_json_schema_value
+
+                schema = next(
+                    d["function"]["parameters"]
+                    for d in self.plugin_tool_definitions()
+                    if d["function"]["name"] == tool_name
+                )
+                violations = validate_json_schema_value(schema, raw_args, tool_name)
+                if violations:
+                    raise ValidationError("; ".join(violations))
+        except (ValidationError, AttributeError, ValueError) as exc:
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=sanitize_tool_output(f"ValidationError: {exc}"),
+                metadata={"code": "INVALID_TOOL_ARGUMENTS", "retryable": False},
+            )
+
         # 2. Pre-Execute & Permission & Monotonic Guard Gate
-        denied = self._pre_execute_deny(tool_name, raw_args, context, hooks)
+        try:
+            denied = await asyncio.to_thread(
+                self._pre_execute_deny, tool_name, raw_args, context, hooks
+            )
+        except asyncio.CancelledError:
+            context.cancellation_event.set()
+            raise
         if denied is not None:
             end_time_ms = int(time.time() * 1000)
             meta = dict(denied.metadata or {})
@@ -343,8 +405,12 @@ class ToolExecutor:
             meta.setdefault("endTime", end_time_ms)
             meta.setdefault("durationMs", end_time_ms - start_time_ms)
             meta.setdefault("timestamp", start_time_ms)
+            meta.setdefault("outputBytes", len((denied.output or "").encode("utf-8")))
+            if not denied.ok:
+                meta.setdefault("code", "PERMISSION_DENIED")
+                meta.setdefault("retryable", False)
             denied.metadata = meta
-            return denied
+            return sanitize_tool_output(denied)
 
         # 3. Resolve Definition & Validate Schema
         tool_def = self.registry.get(tool_name, scope=session_id)
@@ -386,9 +452,11 @@ class ToolExecutor:
                     error=f"MCP tool '{tool_name}' is disabled or masked for session '{session_id}'.",
                 )
             else:
-                result = await self._run_mcp(tool_name, raw_args, hooks, session_id=session_id)
+                result = await self._run_mcp(
+                    tool_name, raw_args, hooks, session_id=session_id, context=context
+                )
         elif self.is_plugin_tool(tool_name):
-            result = await self._run_plugin(tool_name, raw_args, hooks)
+            result = await self._run_plugin(tool_name, raw_args, hooks, context=context)
         else:
             result = ToolResult(ok=False, name=tool_name, error=f"Unknown tool: {tool_name}")
 
@@ -415,6 +483,10 @@ class ToolExecutor:
         meta.setdefault("endTime", end_time_ms)
         meta.setdefault("durationMs", max(0, end_time_ms - start_time_ms))
         meta.setdefault("timestamp", start_time_ms)
+        meta.setdefault("outputBytes", len((result.output or "").encode("utf-8")))
+        if not result.ok:
+            meta.setdefault("code", "TOOL_EXECUTION_FAILED")
+            meta.setdefault("retryable", False)
 
         if tool_def and tool_def.present_result:
             try:
@@ -435,7 +507,13 @@ class ToolExecutor:
             result.concludes_turn = True
 
         # 9. Post-Execute Waterfall Hooks
-        result = self._post_execute(tool_name, raw_args, result, context, hooks)
+        try:
+            result = await asyncio.to_thread(
+                self._post_execute, tool_name, raw_args, result, context, hooks
+            )
+        except asyncio.CancelledError:
+            context.cancellation_event.set()
+            raise
 
         # 10. Credential & Secret Sanitization
         return sanitize_tool_output(result)
@@ -517,46 +595,49 @@ class ToolExecutor:
         if context.allowed_tools is not None:
             from coderai.subagents.registry import is_tool_allowed
 
-            if not is_tool_allowed(tool_name, "allowlist", tuple(context.allowed_tools)):
+            resolved = self.registry.get(tool_name, scope=context.session_id)
+            canonical_name = resolved.name if resolved else tool_name
+            if not is_tool_allowed(canonical_name, "allowlist", tuple(context.allowed_tools)):
                 return ToolResult(
                     ok=False,
                     name=tool_name,
                     error=f"PermissionDenied: Tool '{tool_name}' is not in allowedTools policy for active agent role.",
                 )
 
-        # TL-B8: Enforce plan mode
-        if getattr(context, "plan_mode", False):
-            tool_def = self.registry.get(tool_name, scope=getattr(context, "session_id", None))
-            plan_allowed = {
-                "todo_write",
-                "UpdatePlan",
-                "update_plan",
-                "plan_mode_response",
-                "bash",
-                "pwsh",
-            }
-            mutating_names = {
-                "write",
-                "edit",
-                "str_replace_editor",
-                "terminal_open",
-                "terminal_send",
-                "terminal_signal",
-                "terminal_close",
-                "schedule_create",
-                "schedule_delete",
-                "spawn_teammate",
-                "team_task_create",
-                "team_task_update",
-            }
-            is_mutating = (tool_name in mutating_names) or (
-                tool_def is not None and getattr(tool_def, "is_mutating", False)
+        from coderai.tools.legacy.policy import external_effects, is_owned_plan_file
+
+        tool_def = self.registry.get(tool_name, scope=context.session_id)
+        effect = (
+            tool_def.resolve_effects(args) if tool_def else external_effects(tool_name, context)
+        )
+        if (
+            context.dry_run
+            and effect != "read"
+            and tool_name not in {"write", "edit", "str_replace_editor"}
+        ):
+            return ToolResult(
+                ok=True,
+                name=tool_name,
+                output=f"[dry-run] Would invoke {tool_name}; no changes made.",
+                metadata={"dry_run": True, "effects": effect},
             )
-            if is_mutating and tool_name not in plan_allowed:
+        if context.plan_mode:
+            if tool_name in {"bash", "pwsh"}:
+                requested = args.get("sandbox_permissions")
+                if requested and requested != "read-only":
+                    return ToolResult(
+                        ok=False,
+                        name=tool_name,
+                        error="PermissionDenied: sandbox escalation is unavailable in plan mode.",
+                    )
+                context.sandbox_mode = "read-only"
+            elif tool_name in {"write", "edit"} and is_owned_plan_file(context, args):
+                pass
+            elif effect not in {"read", "session"}:
                 return ToolResult(
                     ok=False,
                     name=tool_name,
-                    error=f"PermissionDenied: Tool '{tool_name}' cannot mutate workspace while in plan mode.",
+                    error=f"PermissionDenied: Tool '{tool_name}' has {effect} effects and cannot run in plan mode.",
                 )
 
         def get_hook(name: str) -> Any:
@@ -592,8 +673,20 @@ class ToolExecutor:
             except TypeError:
                 try:
                     verdict = guard(tool_name, args, context)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    return ToolResult(
+                        ok=False,
+                        name=tool_name,
+                        error=f"Execution guard failed: {exc}",
+                        metadata={"code": "TOOL_POLICY_ERROR", "retryable": False},
+                    )
+            except Exception as exc:
+                return ToolResult(
+                    ok=False,
+                    name=tool_name,
+                    error=f"Execution guard failed: {exc}",
+                    metadata={"code": "TOOL_POLICY_ERROR", "retryable": False},
+                )
             if verdict == "deny":
                 return ToolResult(
                     ok=False,
@@ -647,6 +740,7 @@ class ToolExecutor:
                     "session_id": context.session_id,
                 },
                 project_root=context.project_root,
+                cancellation_event=context.cancellation_event,
             ).to_dict()
         if outcome.get("stop"):
             result = ToolResult(
@@ -747,11 +841,23 @@ class ToolExecutor:
 
             effective_workdir = get_effective_workdir(context) if context else self.project_root
             async with _contextlib.AsyncExitStack() as _lock_stack:
+                from coderai.tools.legacy.resources import (
+                    get_resource_scheduler,
+                    tool_resource_accesses,
+                )
+
+                queued_at = time.monotonic()
+                await _lock_stack.enter_async_context(
+                    get_resource_scheduler().acquire(
+                        tool_resource_accesses(tool_def, validated_args, context)
+                    )
+                )
                 for lock_path in sorted(set(lock_paths)):
                     await _lock_stack.enter_async_context(
                         path_lock_mgr.acquire_write_lock(lock_path, effective_workdir)
                     )
                 timeout_s = int(timeout_ms) / 1000.0 if timeout_ms and int(timeout_ms) > 0 else None
+                started_at = time.monotonic()
                 invoke_task = asyncio.create_task(_invoke())
                 try:
                     # Cancelling a waiter cannot stop a to_thread worker. Keep
@@ -761,11 +867,17 @@ class ToolExecutor:
                     if not done:
                         raise asyncio.TimeoutError
                     res = invoke_task.result()
-                except (asyncio.CancelledError, TimeoutError) as exc:
-                    if isinstance(exc, asyncio.CancelledError) and inspect.iscoroutinefunction(
-                        handler
-                    ):
+                    if isinstance(res, ToolResult):
+                        res.metadata = {
+                            **(res.metadata or {}),
+                            "queueWaitMs": round((started_at - queued_at) * 1000, 3),
+                            "executionMs": round((time.monotonic() - started_at) * 1000, 3),
+                        }
+                except (asyncio.CancelledError, TimeoutError):
+                    context.cancellation_event.set()
+                    if inspect.iscoroutinefunction(handler):
                         invoke_task.cancel()
+                    cancelled_at = time.monotonic()
                     transferred_stack = _lock_stack.pop_all()
 
                     async def _release_when_done(
@@ -779,6 +891,18 @@ class ToolExecutor:
                                 task.exception()
                         finally:
                             await stack.aclose()
+                            from collections import deque
+
+                            if not hasattr(self, "cleanup_timings"):
+                                self.cleanup_timings: deque[dict[str, Any]] = deque(maxlen=1000)
+                            self.cleanup_timings.append(
+                                {
+                                    "toolCallId": context.tool_call.get("id"),
+                                    "cancellationSettlementMs": round(
+                                        (time.monotonic() - cancelled_at) * 1000, 3
+                                    ),
+                                }
+                            )
 
                     cleanup_tasks = getattr(self, "_handler_cleanup_tasks", None)
                     if cleanup_tasks is None:
@@ -795,6 +919,7 @@ class ToolExecutor:
                 ok=False,
                 name=tool_def.name,
                 error=f"TOOL_TIMEOUT: tool exceeded {timeout_ms}ms.",
+                metadata={"code": "TOOL_TIMEOUT", "timed_out": True, "retryable": True},
             )
         except Exception as e:
             return ToolResult(ok=False, name=tool_def.name, error=f"ToolExecutionError: {e}")
@@ -812,12 +937,19 @@ class ToolExecutor:
             )
         return ToolResult(ok=True, name=tool_def.name, output=str(res))
 
+    async def aclose(self) -> None:
+        """Drain cancelled workers before releasing executor ownership."""
+        tasks = list(getattr(self, "_handler_cleanup_tasks", ()))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _run_mcp(
         self,
         tool_name: str,
         raw_args: dict[str, Any],
         hooks: Any,
         session_id: str | None = None,
+        context: Any = None,
     ) -> ToolResult:
         timeout_ms = None
         if hooks:
@@ -829,9 +961,17 @@ class ToolExecutor:
             sig = inspect.signature(fn)
 
             async def _invoke_mcp() -> Any:
-                if "session_id" in sig.parameters:
-                    return await fn(tool_name, raw_args, session_id=session_id)
-                return await fn(tool_name, raw_args)
+                from coderai.tools.legacy.resources import (
+                    external_resource_accesses,
+                    get_resource_scheduler,
+                )
+
+                async with get_resource_scheduler().acquire(
+                    external_resource_accesses(tool_name, context)
+                ):
+                    if "session_id" in sig.parameters:
+                        return await fn(tool_name, raw_args, session_id=session_id)
+                    return await fn(tool_name, raw_args)
 
             if timeout_ms and int(timeout_ms) > 0:
                 res = await asyncio.wait_for(_invoke_mcp(), timeout=int(timeout_ms) / 1000.0)
@@ -839,14 +979,9 @@ class ToolExecutor:
                 res = await _invoke_mcp()
 
             if isinstance(res, ToolResult):
-                # ponytail: MCP_MAX_OUTPUT_CHARS=100k budget
-                if res.output and len(res.output) > 100_000:
-                    res.output = res.output[:100_000] + "\n...[truncated MCP output >100k]..."
                 return res
             if isinstance(res, dict):
                 out = res.get("output")
-                if isinstance(out, str) and len(out) > 100_000:
-                    out = out[:100_000] + "\n...[truncated MCP output >100k]..."
                 return ToolResult(
                     ok=res.get("ok", True),
                     name=tool_name,
@@ -855,15 +990,13 @@ class ToolExecutor:
                     metadata=res.get("metadata"),
                 )
             text = str(res)
-            if len(text) > 100_000:
-                text = text[:100_000] + "\n...[truncated MCP output >100k]..."
             return ToolResult(ok=True, name=tool_name, output=text)
         except (TimeoutError, asyncio.TimeoutError):
             return ToolResult(
                 ok=False,
                 name=tool_name,
                 error=f"TOOL_TIMEOUT: MCP tool exceeded {timeout_ms}ms.",
-                metadata={"code": "TOOL_TIMEOUT"},
+                metadata={"code": "TOOL_TIMEOUT", "timed_out": True, "retryable": True},
             )
         except Exception as e:
             return ToolResult(ok=False, name=tool_name, error=f"McpToolExecutionError: {e}")
@@ -873,6 +1006,7 @@ class ToolExecutor:
         tool_name: str,
         raw_args: dict[str, Any],
         hooks: Any,
+        context: Any = None,
     ) -> ToolResult:
         from coderai.plugin.tool import run_plugin_tool
 
@@ -884,9 +1018,17 @@ class ToolExecutor:
         try:
 
             async def _invoke_plugin() -> Any:
-                return await run_plugin_tool(
-                    tool_name, raw_args, host_values=self._plugin_host_values()
+                from coderai.tools.legacy.resources import (
+                    external_resource_accesses,
+                    get_resource_scheduler,
                 )
+
+                async with get_resource_scheduler().acquire(
+                    external_resource_accesses(tool_name, context)
+                ):
+                    return await run_plugin_tool(
+                        tool_name, raw_args, host_values=self._plugin_host_values()
+                    )
 
             if timeout_ms and int(timeout_ms) > 0:
                 res = await asyncio.wait_for(_invoke_plugin(), timeout=int(timeout_ms) / 1000.0)
@@ -902,7 +1044,7 @@ class ToolExecutor:
                 ok=False,
                 name=tool_name,
                 error=f"TOOL_TIMEOUT: plugin tool exceeded {timeout_ms}ms.",
-                metadata={"code": "TOOL_TIMEOUT"},
+                metadata={"code": "TOOL_TIMEOUT", "timed_out": True, "retryable": True},
             )
         except Exception as e:
             return ToolResult(ok=False, name=tool_name, error=f"PluginToolExecutionError: {e}")
@@ -911,14 +1053,20 @@ class ToolExecutor:
         self, tool_name: str, result: ToolResult, context: ToolExecutionContext
     ) -> ToolResult:
         """Spill oversized plain-text results except `read` (avoids read → spill → read)."""
-        from coderai.spill import SPILL_SKIP_TOOLS, apply_spill_policy
+        from coderai.spill import SPILL_SKIP_TOOLS, apply_spill_policy, resolve_spill_root
 
-        if tool_name in SPILL_SKIP_TOOLS or not result.ok or not result.output:
+        definition = self.registry.get(tool_name, scope=context.session_id)
+        if (
+            tool_name in SPILL_SKIP_TOOLS
+            or (definition is not None and definition.name in SPILL_SKIP_TOOLS)
+            or not result.output
+        ):
             return result
         replaced, ref = apply_spill_policy(
             result.output,
             session_id=context.session_id,
             tool_name=tool_name,
+            root=resolve_spill_root(context),
         )
         if ref is None:
             return result
@@ -1055,12 +1203,16 @@ class ToolExecutor:
             and isinstance(sanitized_res.metadata, dict)
             and len(sanitized_res.metadata) > 0
         ):
-            payload["metadata"] = sanitized_res.metadata
+            from coderai.utils.common.tool_payload import project_tool_metadata
+
+            payload["metadata"] = project_tool_metadata(
+                sanitized_res.name, sanitized_res.metadata, sanitized_res.output is not None
+            )
 
         if sanitized_res.await_user_response:
             payload["awaitUserResponse"] = True
 
-        return json.dumps(payload, indent=2)
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def _result_as_dict(result: ToolResult) -> dict[str, Any]:

@@ -1,8 +1,31 @@
 import pytest
-from coderai.tools.legacy.types import ToolExecutionContext, ToolExecutionHooks
+from coderai.tools.legacy.types import (
+    ToolExecutionContext,
+    ToolExecutionHooks,
+    ToolCallAuthorization,
+    tool_arguments_digest,
+)
+import json
+from pathlib import Path
 from coderai.tools.plan import handle_exit_plan_mode_tool, handle_enter_plan_mode_tool
 from coderai.tools.legacy.executor import ToolExecutor
 from coderai.tools.legacy.registry import get_tool_registry
+
+
+def accepted_exit(args, ctx):
+    ctx.tool_call = {
+        "id": "accepted",
+        "function": {"name": "exit_plan_mode", "arguments": json.dumps(args)},
+    }
+    ctx.authorization = ToolCallAuthorization(
+        session_id=ctx.session_id,
+        tool_call_id="accepted",
+        tool_name="exit_plan_mode",
+        project_root=str(Path(ctx.project_root).resolve()),
+        args_digest=tool_arguments_digest(args),
+        plan_approved=True,
+    )
+    return handle_exit_plan_mode_tool(args, ctx)
 
 
 class DummySessionManager:
@@ -19,7 +42,7 @@ def test_exit_plan_mode_when_in_plan_mode():
         project_root="/tmp",
         plan_mode=True,
     )
-    res = handle_exit_plan_mode_tool({"plan": "# Implementation Plan\nStep 1: Code"}, ctx)
+    res = accepted_exit({"plan": "# Implementation Plan\nStep 1: Code"}, ctx)
     assert res.ok is True
     assert res.name == "exit_plan_mode"
     assert res.metadata.get("exitPlanMode") is True
@@ -33,7 +56,7 @@ def test_exit_plan_mode_empty_args_in_plan_mode():
         project_root="/tmp",
         plan_mode=True,
     )
-    res = handle_exit_plan_mode_tool({}, ctx)
+    res = accepted_exit({}, ctx)
     assert res.ok is True
     assert res.metadata.get("exitPlanMode") is True
     assert res.concludes_turn is True
@@ -46,9 +69,7 @@ def test_exit_plan_mode_summary_arg():
         project_root="/tmp",
         plan_mode=True,
     )
-    res = handle_exit_plan_mode_tool(
-        {"summary": "Finished exploring and wrote verification test"}, ctx
-    )
+    res = accepted_exit({"summary": "Finished exploring and wrote verification test"}, ctx)
     assert res.ok is True
     assert res.metadata.get("exitPlanMode") is True
     assert res.concludes_turn is True
@@ -61,7 +82,7 @@ def test_exit_plan_mode_idempotent_when_not_in_plan_mode():
         project_root="/tmp",
         plan_mode=False,
     )
-    res = handle_exit_plan_mode_tool({}, ctx)
+    res = accepted_exit({}, ctx)
     assert res.ok is True
     assert res.metadata.get("exitPlanMode") is True
     assert res.concludes_turn is True
@@ -76,7 +97,7 @@ def test_exit_plan_mode_detects_plan_mode_from_session_manager():
         plan_mode=False,
         session_manager=mgr,
     )
-    res = handle_exit_plan_mode_tool({"summary": "Ready to execute"}, ctx)
+    res = accepted_exit({"summary": "Ready to execute"}, ctx)
     assert res.ok is True
     assert res.metadata.get("exitPlanMode") is True
     assert res.concludes_turn is True
@@ -89,7 +110,7 @@ def test_exit_plan_mode_invalid_plan_heading():
         project_root="/tmp",
         plan_mode=True,
     )
-    res = handle_exit_plan_mode_tool({"plan": "No heading here"}, ctx)
+    res = accepted_exit({"plan": "No heading here"}, ctx)
     assert res.ok is False
     assert "requires a non-empty markdown plan starting with a # heading" in res.error
 
@@ -139,6 +160,17 @@ async def test_tool_executor_propagates_plan_mode_and_exits_cleanly():
             "name": "exit_plan_mode",
             "arguments": '{"summary": "All steps planned"}',
         },
+    }
+    args = json.loads(tool_call["function"]["arguments"])
+    hooks.authorizations = {
+        "call_1": ToolCallAuthorization(
+            session_id="s1",
+            tool_call_id="call_1",
+            tool_name="exit_plan_mode",
+            project_root=str(Path("/tmp").resolve()),
+            args_digest=tool_arguments_digest(args),
+            plan_approved=True,
+        )
     }
     executions = await executor.execute_tool_calls("s1", [tool_call], hooks=hooks)
     assert len(executions) == 1

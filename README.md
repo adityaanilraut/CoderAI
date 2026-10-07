@@ -1,6 +1,7 @@
 # 🤖 CoderAI
 
 <p align="center">
+  <a href="https://github.com/adityaanilraut/CoderAI/actions/workflows/ci.yml"><img src="https://github.com/adityaanilraut/CoderAI/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <strong>Autonomous AI Pair Programming & Multi-Agent Swarm in Your Terminal</strong>
 </p>
 
@@ -24,7 +25,8 @@
 </p>
 
 ---
-![alt text](Screenshot.png)
+![CoderAI interactive terminal session](Screenshot.png)
+
 ## Overview
 <a id="key-features"></a>
 
@@ -38,13 +40,15 @@ See [Runtime architecture](docs/architecture.md) for execution boundaries and
 - ⚡ **JEV System-One AI Compound Engine**: Sub-second non-autoregressive diff screening & precision gating via TypeSafe, shielding developers from false-positive hallucinations and cutting review turnaround to under 7 seconds.
 - 🛡️ **Defense-in-Depth Security**: 10 fine-grained permission scopes, 3 security presets, and native OS sandboxing (Seatbelt / Bubblewrap).
 - ⏪ **Turn Checkpoints & Instant Undo**: Automatic `.git_history` snapshots enable one-command rollback (`/undo`) and diff inspection (`/diff`).
-- 🔍 **High-Performance Search**: Bundled native `ripgrep` binary with spill-to-disk locators for large search outputs.
+- 🔍 **High-Performance Search**: Native `ripgrep` integration with spill-to-disk locators for large search outputs.
 - 🤖 **Multi-Agent Teams & Swarm**: Continuable background subagents, shared team task boards, and automated verification loops (`ralph`).
 - 🧠 **Frontier Models & MCP**: Native reasoning token support (OpenAI, DeepSeek, Gemini, Claude) and Model Context Protocol integration.
 
 ---
 
 ## 🏆 Martian Code Review Benchmark Results
+
+<a id="benchmarks"></a>
 
 CoderAI was independently evaluated on the **Martian Code Review Benchmark** across **50 real-world pull requests** across 5 production enterprise repositories (`cal.com`, `keycloak`, `grafana`, `sentry`, `discourse`), competing against 30 leading commercial and open-source AI code review tools.
 
@@ -201,7 +205,7 @@ When running `coderai`, you enter an interactive REPL featuring an ASCII banner,
 | `/fork [id]`           | Fork current or specified session into a new branch/session                           |
 | `/delete <id>`         | Delete a saved session from workspace storage                                         |
 | `/new`                 | Start a fresh session in the current project                                          |
-| `/goal [action]`       | View or manage session goals and milestones                                           |
+| `/goal [action]`       | [Save and execute bounded session goals](docs/goals.md)                                           |
 | `/permission [preset]` | View or set permission preset (`read-only`, `workspace-write`, `danger-full-access`)  |
 | `/init`                | Generate or update `AGENTS.md` contributor guidelines for the workspace               |
 | `/agent [role]`        | View or switch active agent role (`architect`, `tdd-guide`, `code-reviewer`, etc.)    |

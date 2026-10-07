@@ -154,13 +154,15 @@ def test_agents_tree_rendering_is_rich_tree() -> None:
 
 
 def test_cli_parser_deduplicated_and_has_all_flags() -> None:
-    """Verify _build_parser has all subagent flags intact and parses without error."""
+    """Verify _build_parser parses without error and keeps the live subagent knob."""
     parser = _build_parser()
     args = parser.parse_args(["--agent", "architect", "-y"])
     assert args.agent == "architect"
     assert args.yes is True
 
-    # Test preset and subagent flags
-    args2 = parser.parse_args(["--subagent-type", "planner", "--subagent-runner", "acp"])
-    assert args2.subagent_type == "planner"
-    assert args2.subagent_runner == "acp"
+    # Dead --subagent-* worker flags were removed (in-process subagents path);
+    # --subagent-timeout stays: it feeds CODERAI_SUBAGENT_TIMEOUT_SECONDS.
+    args2 = parser.parse_args(["--subagent-timeout", "30"])
+    assert args2.subagent_timeout == 30
+    assert not hasattr(args2, "subagent_type")
+    assert not hasattr(args2, "subagent_runner")

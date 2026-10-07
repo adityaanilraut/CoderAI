@@ -54,13 +54,13 @@ def test_release_requires_same_commit_source_security_and_jev_gates():
 
 
 @pytest.mark.asyncio
-async def test_acp_rejects_unadvertised_config_option():
+async def test_acp_rejects_invalid_config_option_parameters():
     import acp
     from coderai.acp.server import ACPServer
 
     with pytest.raises(acp.RequestError) as error:
         await ACPServer().set_config_option("unknown", "session", "value")
-    assert error.value.code == -32601
+    assert error.value.code == -32602
 
 
 def test_audited_wheel_requires_clean_dependency_installation():

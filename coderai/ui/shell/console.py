@@ -67,6 +67,12 @@ class _CoderAIPager(Pager):
 class _CoderAIConsole(Console):
     """Console subclass that defaults to :class:`_CoderAIPager`."""
 
+    def print(self, *objects: Any, **kwargs: Any) -> None:
+        from coderai.ui.theme import get_shell_rich_theme
+
+        with self.use_theme(get_shell_rich_theme()):
+            super().print(*objects, **kwargs)
+
     def pager(
         self,
         pager: Pager | None = None,

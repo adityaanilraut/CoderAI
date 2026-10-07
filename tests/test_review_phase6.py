@@ -344,13 +344,13 @@ async def test_executor_timeout_keeps_path_lock_until_thread_finishes(tmp_path):
     cpath = lock_mgr._canonicalize(target_file, str(tmp_path))
     entry = lock_mgr._locks.get(cpath)
     assert entry is not None
-    assert entry._write_lock.locked() is True
+    assert entry.locked() is True
 
     # Wait for thread to finish
     thread_finished.wait(timeout=1.0)
     # Give the release task a moment to release
     await asyncio.sleep(0.05)
-    assert entry._write_lock.locked() is False
+    assert entry.locked() is False
 
 
 # ---------------------------------------------------------------------------

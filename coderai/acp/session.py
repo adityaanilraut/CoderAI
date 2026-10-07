@@ -13,6 +13,7 @@ import acp
 import streamingjson
 from coderai.kaos import Kaos, reset_current_kaos, set_current_kaos
 from kosong.chat_provider import APIStatusError, ChatProviderError
+from kosong.message import TextPart as ProviderTextPart, ThinkPart as ProviderThinkPart
 
 from coderai.acp.convert import (
     acp_blocks_to_content_parts,
@@ -104,11 +105,14 @@ def load_engine_session_id(session_dir: Path | str | None) -> str | None:
     if session_dir is None:
         return None
     try:
-        with open(engine_session_id_path(session_dir), encoding="utf-8") as handle:
-            data = json.load(handle)
+        from coderai.utils.storage import read_bytes, storage_id
+
+        data = json.loads(read_bytes(engine_session_id_path(session_dir), limit=4096))
         engine_session_id = data.get(_ENGINE_SESSION_ID_KEY) if isinstance(data, dict) else None
         return (
-            engine_session_id if isinstance(engine_session_id, str) and engine_session_id else None
+            storage_id(engine_session_id)
+            if isinstance(engine_session_id, str) and engine_session_id
+            else None
         )
     except (OSError, ValueError):
         return None
@@ -207,7 +211,7 @@ class ACPSession:
 
     async def prompt(self, prompt: list[ACPContentBlock]) -> acp.PromptResponse:
         if self._turn_state is not None:
-            raise acp.RequestError.internal_error({"error": "Session already has an active turn"})
+            raise acp.RequestError.invalid_request({"error": "Session already has an active turn"})
         user_input = acp_blocks_to_content_parts(prompt)
         self._turn_state = _TurnState()
         token = _current_turn_id.set(self._turn_state.id)
@@ -217,6 +221,12 @@ class ACPSession:
         interrupted = False
         try:
             async for msg in stream:
+                # Persist before delivery: reconnecting clients can replay even
+                # partial turns after cancellation or a transport failure.
+                session = getattr(self._cli, "session", None)
+                wire_file = getattr(session, "wire_file", None)
+                if isinstance(wire_file, WireFile):
+                    wire_file.append_message_sync(msg)
                 match msg:
                     case TurnBegin():
                         pass
@@ -243,9 +253,9 @@ class ACPSession:
                         pass
                     case Notification():
                         await self._send_notification(msg)
-                    case ThinkPart(text=think):
+                    case ThinkPart(text=think) | ProviderThinkPart(think=think):
                         await self._send_thinking(think)
-                    case TextPart(text=text):
+                    case TextPart(text=text) | ProviderTextPart(text=text):
                         await self._send_text(text)
                     case ContentPart():
                         logger.warning("Unsupported content part: %s", msg)
@@ -286,16 +296,16 @@ class ACPSession:
             raise acp.RequestError.auth_required() from e
         except LLMNotSupported as e:
             logger.exception("LLM not supported:")
-            raise acp.RequestError.internal_error({"error": str(e)}) from e
+            raise acp.RequestError.internal_error({"error": "Session prompt failed"}) from e
         except APIStatusError as e:
             if e.status_code == 401 and self._is_oauth_session():
                 logger.warning("Authentication failed (401), prompting re-login")
                 raise acp.RequestError.auth_required() from e
             logger.exception("LLM API status error:")
-            raise acp.RequestError.internal_error({"error": str(e)}) from e
+            raise acp.RequestError.internal_error({"error": "Session prompt failed"}) from e
         except ChatProviderError as e:
             logger.exception("LLM provider error:")
-            raise acp.RequestError.internal_error({"error": str(e)}) from e
+            raise acp.RequestError.internal_error({"error": "Session prompt failed"}) from e
         except MaxStepsReached as e:
             logger.warning("Max steps reached: %s", e.n_steps)
             return acp.PromptResponse(stop_reason="max_turn_requests")
@@ -308,17 +318,19 @@ class ACPSession:
             raise
         except Exception as e:
             logger.exception("Unexpected error during prompt:")
-            raise acp.RequestError.internal_error({"error": str(e)}) from e
+            raise acp.RequestError.internal_error({"error": "Session prompt failed"}) from e
         finally:
-            close_stream = getattr(stream, "aclose", None)
-            if close_stream is not None:
-                await close_stream()
-            self._turn_state = None
-            if kaos_token is not None:
-                reset_current_kaos(kaos_token)
-            _terminal_tool_call_ids.reset(terminal_tool_calls_token)
-            _current_turn_id.reset(token)
-            self._persist_engine_binding()
+            try:
+                close_stream = getattr(stream, "aclose", None)
+                if close_stream is not None:
+                    await close_stream()
+            finally:
+                self._turn_state = None
+                if kaos_token is not None:
+                    reset_current_kaos(kaos_token)
+                _terminal_tool_call_ids.reset(terminal_tool_calls_token)
+                _current_turn_id.reset(token)
+                self._persist_engine_binding()
         return acp.PromptResponse(stop_reason="cancelled" if interrupted else "end_turn")
 
     async def replay_history(self, wire_file: WireFile) -> None:
@@ -346,9 +358,9 @@ class ACPSession:
                         pass
                     case Notification():
                         await self._send_notification(wire_msg)
-                    case ThinkPart(text=think):
+                    case ThinkPart(text=think) | ProviderThinkPart(think=think):
                         await self._send_thinking(think)
-                    case TextPart(text=text):
+                    case TextPart(text=text) | ProviderTextPart(text=text):
                         await self._send_text(text)
                     case ContentPart():
                         await self._send_text(f"[{wire_msg.__class__.__name__}]")

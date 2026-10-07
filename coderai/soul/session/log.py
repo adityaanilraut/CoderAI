@@ -54,7 +54,9 @@ def derive_messages(messages: list[Any]) -> list[Any]:
         if isinstance(msg_id, str) and msg_id in summary_by_first_id:
             s_msg = summary_by_first_id[msg_id]
             s_id = getattr(s_msg, "id", None)
-            while isinstance(s_id, str) and s_id in summary_by_first_id:
+            seen = {msg_id}
+            while isinstance(s_id, str) and s_id in summary_by_first_id and s_id not in seen:
+                seen.add(s_id)
                 s_msg = summary_by_first_id[s_id]
                 s_id = getattr(s_msg, "id", None)
             if isinstance(s_id, str) and s_id not in placed_summaries:

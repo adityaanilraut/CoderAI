@@ -152,11 +152,7 @@ def cmd_jobs(ctx: ShellContext, args: str) -> SlashAction:
     sub_action = tokens_sub[0].lower() if tokens_sub else "list"
     job_target = tokens_sub[1].strip() if len(tokens_sub) > 1 else ""
     if sub_action in ("", "list"):
-        jobs = [
-            j
-            for j in getattr(job_store, "_jobs", {}).values()
-            if not ctx.session_id or j.session_id == ctx.session_id or j.session_id == "default"
-        ]
+        jobs = job_store.snapshot(ctx.session_id) if ctx.session_id else []
         if not jobs:
             print("No background jobs recorded in active session.")
         else:
@@ -180,19 +176,23 @@ def cmd_jobs(ctx: ShellContext, args: str) -> SlashAction:
                 for j in jobs:
                     print(f"[{j.status.upper():9}] {j.id} ({j.kind}) {j.label}")
     elif sub_action == "kill" and job_target:
-        ok = job_store.kill_job(job_target)
-        print(f"✓ Terminated job {job_target}" if ok else f"Failed to kill job '{job_target}'.")
+        if not ctx.session_id:
+            print("No active session.")
+            return SlashAction.HANDLED
+        result = job_store.kill(job_target, ctx.session_id)
+        print(f"Job {job_target}: {result}.")
     elif sub_action == "logs" and job_target:
-        job = job_store.get_job(job_target)
-        if not job or not job.log_path:
-            print(f"No logs found for job '{job_target}'.")
+        job = job_store.get(job_target, ctx.session_id) if ctx.session_id else None
+        if not job:
+            print(f"No job '{job_target}' in this session.")
         else:
-            p = pathlib.Path(job.log_path)
-            if p.exists():
-                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
-                print("\n".join(lines) or "(log file empty)")
-            else:
-                print(f"Log file {job.log_path} does not exist.")
+            from coderai.ui.shell.emit import _emit_plain
+
+            _emit_plain(
+                ctx.console,
+                job_store.tail_output(job_target, ctx.session_id, lines=40) or "(no output)",
+            )
+
     else:
         print("Usage: /jobs [list|kill <id>|logs <id>]")
     return SlashAction.HANDLED
@@ -451,11 +451,11 @@ def cmd_context(ctx: ShellContext, args: str) -> SlashAction:
     if not entry:
         print("No active session.")
         return SlashAction.HANDLED
-    from coderai.config import get_default_context_window
-
     active_tokens = entry.active_tokens
     model = ctx.mgr.get_active_model()
-    max_ctx = get_default_context_window(model)
+    from coderai.ui.shell.runtime_view import context_limit
+
+    max_ctx = context_limit(ctx.mgr)
     pct = (active_tokens / max_ctx * 100) if max_ctx > 0 else 0
     from coderai.ui.shell.console import PANEL_BORDER_STYLE, PANEL_PADDING, kv_table
     from coderai.ui.shell.prompt import make_mini_bar
@@ -467,7 +467,7 @@ def cmd_context(ctx: ShellContext, args: str) -> SlashAction:
         t = kv_table(
             [
                 ("Model:", model),
-                ("Active tokens:", f"{active_tokens:,} / {max_ctx:,} ({pct:.1f}%)"),
+                ("Estimated context:", f"{active_tokens:,} / {max_ctx:,} ({pct:.1f}%)"),
                 ("Usage bar:", f"{bar}  {pct:.0f}%"),
                 ("Session ID:", ctx.session_id[:12] if ctx.session_id else "none"),
             ]
@@ -481,7 +481,7 @@ def cmd_context(ctx: ShellContext, args: str) -> SlashAction:
             )
         )
     else:
-        print(f"Context: {active_tokens:,} / {max_ctx:,} ({pct:.1f}%) [{bar}]")
+        print(f"Estimated context: {active_tokens:,} / {max_ctx:,} ({pct:.1f}%) [{bar}]")
     return SlashAction.HANDLED
 
 
@@ -504,7 +504,7 @@ def cmd_permission(ctx: ShellContext, args: str) -> SlashAction:
     if not arg:
         perms = ctx.mgr.get_resolved_settings().get("permissions") or {}
         msg = (
-            f"Permission preset: {perms.get('preset') or 'unset (danger-full-access default)'}\n"
+            f"Permission preset: {perms.get('preset') or 'unset (workspace-write default)'}\n"
             f"Sandbox: {perms.get('sandbox')}\n"
             f"allow={perms.get('allow')}\n"
             f"deny={perms.get('deny')}\n"
@@ -536,27 +536,10 @@ def cmd_permission(ctx: ShellContext, args: str) -> SlashAction:
 
 
 @registry.command
-def cmd_goal(ctx: ShellContext, args: str) -> SlashAction:
-    """List or update session goals."""
-    from coderai.goals.core import get_goal_store
+async def cmd_goal(ctx: ShellContext, args: str) -> SlashAction:
+    from coderai.ui.shell.goals_cmd import execute_goal_command
 
-    store = get_goal_store(ctx.mgr.project_root)
-    sid = ctx.session_id or "default"
-    tokens = args.split(None, 1)
-    goal_action = tokens[0].lower() if tokens else "list"
-    rest = tokens[1].strip() if len(tokens) > 1 else ""
-    if goal_action in ("", "list"):
-        print(store.format(sid))
-    elif goal_action == "add" and rest:
-        goal = store.add(sid, rest)
-        print(f"Added goal {goal.id}: {goal.objective}")
-    elif goal_action in ("done", "cancel", "start") and rest:
-        status_map = {"done": "done", "cancel": "cancelled", "start": "in_progress"}
-        updated = store.update(sid, rest, status=status_map[goal_action])
-        print(f"Updated {updated.id}" if updated else f"Unknown goal '{rest}'")
-    else:
-        print("Usage: /goal [list|add <title>|start <id>|done <id>|cancel <id>]")
-    return SlashAction.HANDLED
+    return await execute_goal_command(ctx, args)
 
 
 @registry.command
@@ -767,7 +750,16 @@ async def cmd_compact(ctx: ShellContext, args: str) -> SlashAction:
         return SlashAction.HANDLED
     t0 = time.time()
     custom = args.strip() if args.strip() else None
-    await ctx.mgr.compact_session(ctx.session_id, trigger="manual", custom_instruction=custom)
+    try:
+        compacted = await ctx.mgr.compact_session(
+            ctx.session_id, trigger="manual", custom_instruction=custom
+        )
+    except RuntimeError as error:
+        print(str(error))
+        return SlashAction.HANDLED
+    if compacted is False:
+        print("No context compaction was applied; the session history is intact.")
+        return SlashAction.HANDLED
     elapsed = time.time() - t0
     entry = ctx.mgr.get_session(ctx.session_id)
     active_tokens = entry.active_tokens if entry else 0
@@ -877,7 +869,7 @@ def cmd_diff(ctx: ShellContext, args: str) -> SlashAction:
         else:
             print("No file changes detected since session start.")
         return SlashAction.HANDLED
-    render_diff_preview(ctx.console, diff_output, title="Session File Diffs")
+    render_diff_preview(ctx.console, diff_output, title="Session File Diffs", max_lines=None)
     return SlashAction.HANDLED
 
 
@@ -890,7 +882,7 @@ async def cmd_review(ctx: ShellContext, args: str) -> SlashAction:
     return SlashAction.HANDLED
 
 
-@registry.command
+@registry.command(aliases=["models"])
 def cmd_model(ctx: ShellContext, args: str) -> SlashAction:
     """Select or switch the active model."""
     arg_clean = args.strip()
@@ -908,7 +900,72 @@ def cmd_model(ctx: ShellContext, args: str) -> SlashAction:
                 ctx.console.print(f"[bold green]✓ Switched active model to:[/] [cyan]{chosen}[/]")
             else:
                 print(f"✓ Switched active model to: {chosen}")
+    elif arg_clean.lower() == "refresh":
+        from coderai.openrouter import refresh_openrouter_catalog
+        from coderai.ui.shell.session_picker import select_model_interactive
+
+        if ctx.console is not None:
+            ctx.console.print("  [dim]Pinging OpenRouter for latest model list...[/dim]")
+        else:
+            print("  Pinging OpenRouter for latest model list...")
+        _count, status_line = refresh_openrouter_catalog()
+        if ctx.console is not None:
+            ctx.console.print(f"  [bold green]{escape(status_line)}[/]")
+        else:
+            print(f"  {status_line}")
+        chosen = select_model_interactive(
+            ctx.console,
+            ctx.mgr.get_active_model(),
+            force_refresh_openrouter=False,
+            announce_catalog=False,
+        )
+        if chosen and chosen != ctx.mgr.get_active_model():
+            try:
+                ctx.mgr.set_model(chosen)
+            except ValueError as exc:
+                print(f"Invalid model: {exc}")
+                return SlashAction.HANDLED
+            if ctx.console is not None:
+                ctx.console.print(f"[bold green]✓ Switched active model to:[/] [cyan]{chosen}[/]")
+            else:
+                print(f"✓ Switched active model to: {chosen}")
     else:
+        from coderai.ui.shell.session_picker import (
+            _PROVIDER_LABELS,
+            get_models_by_provider,
+            select_model_interactive,
+        )
+
+        # /model <provider> jumps straight to that provider's model list.
+        key = arg_clean.strip().lower()
+        grouped = get_models_by_provider(ctx.mgr.get_active_model(), refresh_openrouter=False)
+        provider_hit: str | None = None
+        if key in grouped:
+            provider_hit = key
+        else:
+            for pid in grouped:
+                if key == _PROVIDER_LABELS[pid][0].lower():
+                    provider_hit = pid
+                    break
+        if provider_hit is not None:
+            chosen = select_model_interactive(
+                ctx.console,
+                ctx.mgr.get_active_model(),
+                initial_provider=provider_hit,
+            )
+            if chosen and chosen != ctx.mgr.get_active_model():
+                try:
+                    ctx.mgr.set_model(chosen)
+                except ValueError as exc:
+                    print(f"Invalid model: {exc}")
+                    return SlashAction.HANDLED
+                if ctx.console is not None:
+                    ctx.console.print(
+                        f"[bold green]✓ Switched active model to:[/] [cyan]{chosen}[/]"
+                    )
+                else:
+                    print(f"✓ Switched active model to: {chosen}")
+            return SlashAction.HANDLED
         try:
             ctx.mgr.set_model(arg_clean)
         except ValueError as exc:
@@ -969,7 +1026,7 @@ def cmd_sessions(ctx: ShellContext, args: str) -> SlashAction:
             print(f"No saved session matching '{arg_clean}'.")
         return SlashAction.HANDLED
 
-    sessions = ctx.mgr.list_sessions()[:25]
+    sessions = ctx.mgr.list_sessions()
     if not sessions:
         print("No saved sessions found in this workspace.")
         return SlashAction.HANDLED
@@ -1096,23 +1153,34 @@ def _parse_on_off(args: str) -> bool | None:
     return None
 
 
+def _resolve_toggle(mgr: Any, args: str, attr: str) -> bool:
+    """Apply a yolo/afk-style on/off/toggle switch; return the new state."""
+    want = _parse_on_off(args)
+    is_name, set_name = f"is_{attr}", f"set_{attr}"
+    if hasattr(mgr, set_name) and hasattr(mgr, is_name):
+        getattr(mgr, set_name)(
+            bool(want) if want is not None else not bool(getattr(mgr, is_name)())
+        )
+        return bool(getattr(mgr, is_name)())
+    enabled = bool(want) if want is not None else not bool(getattr(mgr, attr, False))
+    setattr(mgr, attr, enabled)
+    return enabled
+
+
 @registry.command
 def cmd_yolo(ctx: ShellContext, args: str) -> SlashAction:
     """Toggle YOLO auto-approve all actions (`/yolo [on|off]`)."""
-    mgr = ctx.mgr
-    want = _parse_on_off(args)
-    if hasattr(mgr, "set_yolo") and hasattr(mgr, "is_yolo"):
-        mgr.set_yolo(bool(want) if want is not None else not bool(mgr.is_yolo()))
-        enabled = bool(mgr.is_yolo())
-    else:
-        enabled = bool(want) if want is not None else not bool(getattr(mgr, "yolo", False))
-        mgr.yolo = enabled
+    enabled = _resolve_toggle(ctx.mgr, args, "yolo")
     _sync_auto_approve_context(ctx)
     if enabled:
         if ctx.console is not None:
-            ctx.console.print("[bold red]YOLO mode ON.[/] [dim]All actions auto-approved.[/dim]")
+            ctx.console.print(
+                "[bold red]YOLO mode ON.[/] [dim]All actions auto-approved (Plan Mode writes still require approval — /plan off to fully auto-approve).[/dim]"
+            )
         else:
-            print("YOLO mode ON. All actions auto-approved.")
+            print(
+                "YOLO mode ON. All actions auto-approved (Plan Mode writes still require approval — /plan off to fully auto-approve)."
+            )
     else:
         if ctx.console is not None:
             ctx.console.print("[bold green]YOLO mode OFF.[/] [dim]Approvals will prompt.[/dim]")
@@ -1124,22 +1192,17 @@ def cmd_yolo(ctx: ShellContext, args: str) -> SlashAction:
 @registry.command
 def cmd_afk(ctx: ShellContext, args: str) -> SlashAction:
     """Toggle AFK auto-dismiss questions & approvals (`/afk [on|off]`)."""
-    mgr = ctx.mgr
-    want = _parse_on_off(args)
-    if hasattr(mgr, "set_afk") and hasattr(mgr, "is_afk"):
-        mgr.set_afk(bool(want) if want is not None else not bool(mgr.is_afk()))
-        enabled = bool(mgr.is_afk())
-    else:
-        enabled = bool(want) if want is not None else not bool(getattr(mgr, "afk", False))
-        mgr.afk = enabled
+    enabled = _resolve_toggle(ctx.mgr, args, "afk")
     _sync_auto_approve_context(ctx)
     if enabled:
         if ctx.console is not None:
             ctx.console.print(
-                "[bold yellow]AFK mode ON.[/] [dim]Auto-dismiss questions and approvals.[/dim]"
+                "[bold yellow]AFK mode ON.[/] [dim]Auto-dismiss questions and approvals (Plan Mode writes still require approval).[/dim]"
             )
         else:
-            print("AFK mode ON. Auto-dismiss questions and approvals.")
+            print(
+                "AFK mode ON. Auto-dismiss questions and approvals (Plan Mode writes still require approval)."
+            )
     else:
         if ctx.console is not None:
             ctx.console.print(
@@ -1297,7 +1360,7 @@ def cmd_debug(ctx: ShellContext, args: str) -> SlashAction:
 
 @registry.command(aliases=["status", "quota"])
 def cmd_usage(ctx: ShellContext, args: str) -> SlashAction:
-    """Show API usage / quota."""
+    """Show local token usage; provider quota is unavailable."""
     return cmd_tokens(ctx, args)
 
 
@@ -1338,11 +1401,13 @@ def cmd_upgrade(ctx: ShellContext, args: str) -> SlashAction:
 
 
 @registry.command
-def cmd_task(ctx: ShellContext, args: str) -> SlashAction:
+async def cmd_task(ctx: ShellContext, args: str) -> SlashAction:
     """Open interactive background-task browser."""
     from coderai.ui.shell.task_browser import run_task_browser
 
-    run_task_browser(ctx.console, ctx.mgr, ctx.session_id)
+    import asyncio
+
+    await asyncio.to_thread(run_task_browser, ctx.console, ctx.mgr, ctx.session_id)
     return SlashAction.HANDLED
 
 
@@ -1357,31 +1422,88 @@ def cmd_web_vis(ctx: ShellContext, args: str) -> SlashAction:
     return SlashAction.HANDLED
 
 
+def effective_tool_rows(ctx: ShellContext) -> list[dict]:
+    """Inspect effective tools, their schemas, and policy restrictions."""
+    from coderai.tools.legacy.catalog import inspect_tools
+    from coderai.tools.legacy.registry import get_tool_registry
+    from coderai.tools.legacy.types import ToolExecutionContext
+
+    settings = ctx.mgr.get_resolved_settings()
+    rows = inspect_tools(
+        get_tool_registry(),
+        ToolExecutionContext(
+            ctx.session_id or "",
+            ctx.mgr.project_root,
+            session_manager=ctx.mgr,
+            plan_mode=ctx.active_plan_mode,
+        ),
+        options={
+            "model": settings.get("model", ""),
+            "multimodal": settings.get("multimodal", "default"),
+            "preset": settings.get("toolsPreset"),
+            "allowedTools": settings.get("allowedTools"),
+            "nonInteractive": getattr(ctx.mgr, "non_interactive", False),
+        },
+        external_tools=ctx.mgr.get_external_tool_definitions(),
+    )
+    return rows
+
+
+@registry.command(name="tools")
+def cmd_tools(ctx: ShellContext, args: str) -> SlashAction:
+    import json
+
+    rows = effective_tool_rows(ctx)
+    requested = args.strip()
+    if requested:
+        row = next(
+            (row for row in rows if requested == row["name"] or requested in row["aliases"]), None
+        )
+        output = json.dumps(row, indent=2) if row else f"Unknown tool: {requested}"
+    else:
+        output = "\n".join(
+            f"{row['name']}: {'conditional' if row.get('conditional') else 'available' if row['available'] else 'restricted'}; effects={row['effects']}; source={row['source']}"
+            + ("; " + "; ".join(row["restrictions"]) if row["restrictions"] else "")
+            for row in rows
+        )
+    if ctx.console is not None:
+        ctx.console.print(output, markup=False)
+    else:
+        print(output)
+    return SlashAction.HANDLED
+
+
 @registry.command(name="teams", aliases=["team", "swarm"])
 def cmd_teams(ctx: ShellContext, args: str) -> SlashAction:
     """Inspect autonomous multi-agent swarm team and task board."""
     from coderai.teams import get_team_manager
 
     team_mgr = get_team_manager()
-    teammates = team_mgr.list_teammates()
-    tasks = team_mgr.board.list_tasks()
+    from coderai.tools.legacy.policy import team_scope
+    from coderai.tools.legacy.types import ToolExecutionContext
+
+    scope = team_scope(
+        ToolExecutionContext(ctx.session_id or "", ctx.mgr.project_root, session_manager=ctx.mgr)
+    )
+    teammates = [tm for tm in team_mgr.list_teammates() if tm.owner_scope == scope]
+    tasks = [task for task in team_mgr.task_board.list_tasks() if task.owner_scope == scope]
 
     if ctx.console is not None:
         tt = Table(title="Autonomous Swarm — Teammates", border_style="cyan")
         tt.add_column("Agent ID", style="bold cyan")
         tt.add_column("Role / Spec", style="magenta")
         tt.add_column("Status", style="green")
-        tt.add_column("Turn / Iter", justify="right")
+        tt.add_column("Depth", justify="right")
         tt.add_column("Description")
         if not teammates:
             tt.add_row("(none active)", "-", "-", "-", "No autonomous teammates currently spawned.")
         else:
             for tm in teammates:
                 tt.add_row(
-                    escape(tm.agent_id),
+                    escape(tm.teammate_id),
                     escape(tm.role),
                     escape(tm.status),
-                    escape(str(tm.turn_count)),
+                    escape(str(tm.depth)),
                     escape(tm.description or "-"),
                 )
         ctx.console.print(tt)
@@ -1407,7 +1529,7 @@ def cmd_teams(ctx: ShellContext, args: str) -> SlashAction:
     else:
         print(f"Autonomous Swarm: {len(teammates)} teammates, {len(tasks)} tasks.")
         for tm in teammates:
-            print(f"  • {tm.agent_id} [{tm.role}]: {tm.status}")
+            print(f"  • {tm.teammate_id} [{tm.role}]: {tm.status}")
         for t in tasks:
             print(f"  [{t.task_id}] {t.title} ({t.status}) -> {t.assigned_to or 'unassigned'}")
     return SlashAction.HANDLED
@@ -1446,12 +1568,13 @@ async def cmd_image(ctx: ShellContext, args: str, drain_fn: Any = None) -> Slash
     """Attach an image for analysis."""
     from coderai.cli.image_attachment import parse_and_attach_image
 
-    tokens_img = args.split(None, 1)
-    if not tokens_img:
+    from coderai.ui.shell.submission import split_path_argument
+
+    img_path, remainder = split_path_argument(args)
+    if not img_path:
         print("Usage: /image <file_path> [prompt]")
         return SlashAction.HANDLED
-    img_path = tokens_img[0]
-    img_prompt = tokens_img[1] if len(tokens_img) > 1 else f"Inspect and analyze image: {img_path}"
+    img_prompt = remainder or f"Inspect and analyze image: {img_path}"
     content_param, err = parse_and_attach_image(img_path, ctx.mgr.project_root)
     if err:
         print(f"Image error: {err}")
@@ -1470,19 +1593,16 @@ async def cmd_image(ctx: ShellContext, args: str, drain_fn: Any = None) -> Slash
         )
 
     if ctx.session_id is None:
-        s_id = await ctx.mgr.create_session(img_prompt, plan_mode=ctx.active_plan_mode)
-        ctx.session_id = s_id
-        msgs = ctx.mgr.list_session_messages(s_id)
-        if msgs:
-            user_msg = next((m for m in reversed(msgs) if m.role == "user"), None)
-            if user_msg:
-                user_msg.meta = {**(user_msg.meta or {}), "contentParams": [content_param]}
-    else:
-        user_msg = ctx.mgr._build_message(
-            ctx.session_id, "user", img_prompt, meta={"contentParams": [content_param]}
+        ctx.session_id = await ctx.mgr.create_session(
+            img_prompt, plan_mode=ctx.active_plan_mode, content_params=[content_param]
         )
-        ctx.mgr._append_message(user_msg)
-        await ctx.mgr.reply_session(ctx.session_id, plan_mode=ctx.active_plan_mode)
+    else:
+        await ctx.mgr.reply_session(
+            ctx.session_id,
+            img_prompt,
+            plan_mode=ctx.active_plan_mode,
+            content_params=[content_param],
+        )
 
     if callable(drain_fn):
         await drain_fn(ctx.mgr, ctx.session_id, ctx.yes)

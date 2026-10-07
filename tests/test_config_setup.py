@@ -402,3 +402,36 @@ def test_test_api_connection_handles_403_quota(monkeypatch: pytest.MonkeyPatch) 
     )
     assert success is False
     assert "Quota Exceeded (403)" in msg
+
+
+@pytest.mark.usefixtures("isolated_home")
+def test_token_strategy_and_zero_reserve_follow_environment_precedence(tmp_path, monkeypatch):
+    import json
+    from coderai.config import resolve_current_settings
+
+    local = tmp_path / ".coderai"
+    local.mkdir()
+    (local / "settings.json").write_text(
+        json.dumps(
+            {
+                "tokenCountingStrategy": "estimated",
+                "reservedContextSize": 1000,
+                "bashAutoBackgroundOnTimeout": False,
+            }
+        )
+    )
+    monkeypatch.setenv("CODERAI_TOKEN_COUNTING_STRATEGY", "measured")
+    monkeypatch.setenv("CODERAI_RESERVED_CONTEXT_SIZE", "0")
+    resolved = resolve_current_settings(str(tmp_path), trusted=True)
+    assert resolved["tokenCountingStrategy"] == "measured"
+    assert resolved["reservedContextSize"] == 0
+    assert resolved["bashAutoBackgroundOnTimeout"] is False
+    monkeypatch.setenv("CODERAI_BASH_AUTO_BACKGROUND_ON_TIMEOUT", "true")
+    assert (
+        resolve_current_settings(str(tmp_path), trusted=True)["bashAutoBackgroundOnTimeout"] is True
+    )
+    monkeypatch.setenv("CODERAI_TOKEN_COUNTING_STRATEGY", "unknown")
+    assert (
+        resolve_current_settings(str(tmp_path), trusted=True)["tokenCountingStrategy"]
+        == "estimated"
+    )

@@ -6,6 +6,7 @@ import asyncio
 import enum
 import itertools
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,15 +28,17 @@ class PrioritizedMessage:
     """Wrapped message entry with priority sorting and monotonic arrival sequence."""
 
     priority_score: int
-    arrival_time: float
+    arrival_time: float = field(compare=False)
     sequence: int
     payload: Any = field(compare=False)
 
 
 class AsyncMailbox:
-    """Bounded, thread-safe and async-safe FIFO/Priority mailbox for an agent actor."""
+    """Bounded mailbox owned by one asyncio event loop."""
 
     def __init__(self, agent_id: str, max_size: int = DEFAULT_MAILBOX_CAPACITY) -> None:
+        if not isinstance(max_size, int) or max_size <= 0:
+            raise ValueError("Mailbox capacity must be a positive integer")
         self.agent_id = agent_id
         self.max_size = max_size
         self._queue: asyncio.PriorityQueue[PrioritizedMessage] = asyncio.PriorityQueue(
@@ -60,14 +63,19 @@ class AsyncMailbox:
         self,
         message: Any,
         priority: MessagePriority = MessagePriority.NORMAL,
-        timeout_seconds: float | None = None,
+        timeout_seconds: float | None = 0.1,
     ) -> bool:
         """Enqueue message asynchronously with priority and optional timeout."""
+        timeout_seconds = 0.1 if timeout_seconds is None else timeout_seconds
+        if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
+            raise ValueError("Mailbox timeout must be finite and nonnegative")
+        if timeout_seconds == 0:
+            return self.send_nowait(message, priority)
         # Invert priority so higher enum values get popped first
         score = -int(priority)
         item = PrioritizedMessage(
             priority_score=score,
-            arrival_time=time.time(),
+            arrival_time=time.monotonic(),
             sequence=next(self._seq),
             payload=message,
         )
@@ -93,7 +101,7 @@ class AsyncMailbox:
         score = -int(priority)
         item = PrioritizedMessage(
             priority_score=score,
-            arrival_time=time.time(),
+            arrival_time=time.monotonic(),
             sequence=next(self._seq),
             payload=message,
         )
@@ -120,6 +128,7 @@ class AsyncMailbox:
                 item = await self._queue.get()
         except (asyncio.TimeoutError, TimeoutError):
             return None
+        self._queue.task_done()
         return item.payload
 
     async def receive_async(self, timeout_seconds: float | None = None) -> Any:
@@ -133,6 +142,7 @@ class AsyncMailbox:
             try:
                 item = self._queue.get_nowait()
                 collected.append(item.payload)
+                self._queue.task_done()
             except asyncio.QueueEmpty:
                 break
         return collected
@@ -176,7 +186,7 @@ class ActorChannel:
         topic: str,
         message: Any,
         priority: MessagePriority = MessagePriority.NORMAL,
-        timeout_seconds: float | None = None,
+        timeout_seconds: float | None = 0.1,
     ) -> int:
         """Publish a message to all subscribers of a specific topic.
 
@@ -196,7 +206,7 @@ class ActorChannel:
         message: Any,
         priority: MessagePriority = MessagePriority.NORMAL,
         exclude_agent_id: str | None = None,
-        timeout_seconds: float | None = None,
+        timeout_seconds: float | None = 0.1,
     ) -> int:
         """Broadcast a message to all registered agent mailboxes.
 
@@ -204,7 +214,7 @@ class ActorChannel:
         full mailbox cannot stall the whole broadcast.
         """
         delivered = 0
-        for aid, mb in self._mailboxes.items():
+        for aid, mb in list(self._mailboxes.items()):
             if exclude_agent_id and aid == exclude_agent_id:
                 continue
             ok = await mb.send_async(message, priority=priority, timeout_seconds=timeout_seconds)

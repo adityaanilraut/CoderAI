@@ -19,9 +19,10 @@ class BroadcastQueueOverflow(RuntimeError):
 class SubscriptionQueue(Queue[T], Generic[T]):
     """Bounded subscription with an explicit, idempotent lifetime."""
 
-    def __init__(self, owner: BroadcastQueue[T], maxsize: int) -> None:
+    def __init__(self, owner: BroadcastQueue[T], maxsize: int, *, lossless: bool = True) -> None:
         super().__init__(maxsize=maxsize)
         self._owner = owner
+        self.lossless = lossless
         self._closed = False
         self._failure: BroadcastQueueOverflow | None = None
 
@@ -101,8 +102,8 @@ class BroadcastQueue(Generic[T]):
     def history_size(self) -> int:
         return len(self._history)
 
-    def subscribe(self, *, replay: bool = True) -> SubscriptionQueue[T]:
-        queue = SubscriptionQueue(self, self._queue_limit)
+    def subscribe(self, *, replay: bool = True, lossless: bool = True) -> SubscriptionQueue[T]:
+        queue = SubscriptionQueue(self, self._queue_limit, lossless=lossless)
         if replay:
             for item in self._history:
                 queue.put_nowait(item)
@@ -145,10 +146,12 @@ class BroadcastQueue(Generic[T]):
             try:
                 queue.put_nowait(item)
             except asyncio.QueueFull:
-                overflow = BroadcastQueueOverflow(
+                error = BroadcastQueueOverflow(
                     f"Subscriber exceeded its {self._queue_limit}-message queue; stream disconnected."
                 )
-                queue._fail(overflow)
+                queue._fail(error)
+                if queue.lossless:
+                    overflow = error
             except QueueShutDown:
                 self._queues.discard(queue)
         if overflow is not None:

@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from coderai.spill import SpillRef, try_save_text
+from coderai.spill import SpillRef, resolve_spill_root, try_save_text
 from coderai.tools.file._search_common import (
     GLOB_VCS_EXCLUDES,
     SEARCH_TIMEOUT_MS,
@@ -32,6 +32,7 @@ from coderai.tools.file._search_common import (
     to_workdir_relative,
 )
 from coderai.tools.legacy.schema import define_tool
+from coderai.tools.legacy.sanitizer import sanitize_text
 from coderai.tools.legacy.types import (
     ToolDefinition,
     ToolExecutionContext,
@@ -157,7 +158,7 @@ def build_grep_command(
     after_context: int | None = None,
     context: int | None = None,
 ) -> list[str]:
-    parts = ["--json", f"--regexp={pattern}"]
+    parts = ["--json", "--no-require-git", f"--regexp={pattern}"]
     # Hidden files are always searched (matches the Python
     # fallback which walks dotfiles); sensitive files are filtered afterwards.
     parts.append("--hidden")
@@ -334,13 +335,73 @@ def _python_grep(
     search_path: str | None,
     include: str | None,
     timeout_ms: int,
+    **options: Any,
+) -> list[GrepMatch]:
+    import subprocess
+    import sys
+    from coderai.utils.bounded_process import bounded_run, OutputLimitError
+    from coderai.utils.subprocess_env import scrub_subprocess_env
+
+    cancellation_event = options.pop("cancellation_event", None)
+    payload = {
+        "pattern": pattern,
+        "workdir": workdir,
+        "search_path": search_path,
+        "include": include,
+        "timeout_ms": timeout_ms,
+        **options,
+    }
+    try:
+        run = bounded_run(
+            [sys.executable, "-m", "coderai.tools.file.search_worker", json.dumps(payload)],
+            timeout=max(0.1, timeout_ms / 1000),
+            env=scrub_subprocess_env(dict(os.environ)),
+            cwd=str(pathlib.Path(__file__).resolve().parents[3]),
+            cancellation_event=cancellation_event,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SearchError(
+            "Search deadline reached; narrow pattern or path and retry", "SEARCH_ABORTED"
+        ) from exc
+    except OutputLimitError as exc:
+        raise SearchError(str(exc), "SEARCH_RAW_OUTPUT_OVERFLOW") from exc
+    if run.returncode:
+        detail = run.stderr.decode(errors="replace").strip()
+        raise SearchError(detail or "Fallback search worker failed", "SEARCH_FAILED")
+    try:
+        result = json.loads(run.stdout)
+        if "error" in result:
+            raise SearchError(result["error"], result["code"])
+        return [GrepMatch(**item) for item in result["matches"]]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise SearchError(
+            "Fallback search worker returned invalid output", "SEARCH_FAILED"
+        ) from exc
+
+
+def _python_grep_worker(
+    pattern: str,
+    workdir: str,
+    search_path: str | None,
+    include: str | None,
+    timeout_ms: int,
     *,
     ignore_case: bool = False,
     before_context: int = 0,
     after_context: int = 0,
     file_type: str | None = None,
     multiline: bool = False,
+    include_ignored: bool = False,
 ) -> list[GrepMatch]:
+    from collections import deque
+    from coderai.tools.file._search_common import RAW_OUTPUT_MAX_BYTES
+
+    deadline = time.monotonic() + max(0.1, timeout_ms / 1000.0)
+    if re.search(r"\\[1-9]|\(\?[=!<]|\(\?P", pattern):
+        raise SearchError(
+            "This regex requires ripgrep; Python fallback does not support lookaround or backreferences",
+            "SEARCH_UNSUPPORTED_OPTION",
+        )
     type_glob = _PYTHON_TYPE_GLOBS.get(file_type) if file_type else None
     if file_type and type_glob is None:
         raise SearchError(
@@ -348,10 +409,9 @@ def _python_grep(
             "SEARCH_UNSUPPORTED_OPTION",
         )
     try:
-        flags = re.IGNORECASE if ignore_case else 0
-        if multiline:
-            flags |= re.MULTILINE
-        regex = re.compile(pattern, flags)
+        regex = re.compile(
+            pattern, (re.IGNORECASE if ignore_case else 0) | (re.MULTILINE if multiline else 0)
+        )
     except re.error as exc:
         raise SearchError(f"grep pattern rejected: {exc}", "SEARCH_INVALID_PATTERN") from exc
     target = pathlib.Path(search_path or workdir)
@@ -359,58 +419,103 @@ def _python_grep(
         target = pathlib.Path(workdir) / target
     target = target.resolve()
     if not target.exists():
-        raise SearchError(f"grep search failed: path not found: {target}", "SEARCH_FAILED")
-    files: list[pathlib.Path]
-    if target.is_file():
-        files = [target]
-    else:
-        deadline = time.time() + max(0.1, timeout_ms / 1000.0)
-        files = _iter_workspace_files(target, deadline)
+        raise SearchError(f"grep path not found: {target}", "SEARCH_FAILED")
+    files = (
+        [target]
+        if target.is_file()
+        else _iter_workspace_files(
+            target,
+            deadline,
+            include_ignored=include_ignored
+            or (include is not None and not include.startswith("!")),
+        )
+    )
     matches: list[GrepMatch] = []
-    deadline = time.time() + max(0.1, timeout_ms / 1000.0)
+    raw_size = 0
     for path in files:
-        if time.time() > deadline:
-            break
+        if time.monotonic() >= deadline:
+            raise SearchError("Search deadline reached; narrow path and retry", "SEARCH_ABORTED")
         rel = to_workdir_relative(str(path), workdir).replace("\\", "/")
-        if include is not None and not _matches_glob(rel, include):
-            continue
-        if type_glob is not None and not _matches_glob(rel, type_glob):
+        if (include is not None and not _matches_glob(rel, include)) or (
+            type_glob is not None and not _matches_glob(rel, type_glob)
+        ):
             continue
         try:
-            info = path.stat()
-            if info.st_size > 2 * 1024 * 1024:
+            if not stat.S_ISREG(path.stat().st_mode):
                 continue
-            if not stat.S_ISREG(info.st_mode):
+            with path.open("rb") as sample:
+                if b"\0" in sample.read(8192):
+                    continue
+            if multiline:
+                from bisect import bisect_right
+
+                with path.open(encoding="utf-8", errors="replace") as stream:
+                    text = stream.read(1_000_001)
+                if len(text) > 1_000_000:
+                    raise SearchError(
+                        "Multiline fallback supports files up to 1,000,000 characters; use ripgrep or narrow path",
+                        "SEARCH_UNSUPPORTED_OPTION",
+                    )
+                lines = text.splitlines()
+                starts = [0] + [match.end() for match in re.finditer("\n", text)]
+                hits: set[int] = set()
+                for match in regex.finditer(text):
+                    lo = bisect_right(starts, match.start()) - 1
+                    hi = bisect_right(starts, max(match.start(), match.end() - 1)) - 1
+                    hits.update(range(lo, hi + 1))
+                wanted = {
+                    index
+                    for hit in hits
+                    for index in range(
+                        max(0, hit - before_context), min(len(lines), hit + after_context + 1)
+                    )
+                }
+                for index in sorted(wanted):
+                    raw_size += len(lines[index].encode()) + len(rel.encode()) + 80
+                    if raw_size > RAW_OUTPUT_MAX_BYTES:
+                        raise SearchError(
+                            "Search output limit reached; narrow pattern or path and retry",
+                            "SEARCH_RAW_OUTPUT_OVERFLOW",
+                        )
+                    matches.append(GrepMatch(rel, index + 1, lines[index], index not in hits))
                 continue
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        if "\0" in text[:4096]:
-            continue
-        lines = text.splitlines()
-        if multiline:
-            hits = [False] * len(lines)
-            for match in regex.finditer(text):
-                start_line = text.count("\n", 0, match.start())
-                end_line = text.count("\n", 0, max(match.start(), match.end() - 1))
-                for line_index in range(start_line, min(end_line + 1, len(lines))):
-                    hits[line_index] = True
-        else:
-            hits = [bool(regex.search(line)) for line in lines]
-        if not any(hits):
-            continue
-        wanted = [False] * len(lines)
-        for i, hit in enumerate(hits):
-            if hit:
-                lo = max(0, i - before_context)
-                hi = min(len(lines), i + after_context + 1)
-                for j in range(lo, hi):
-                    wanted[j] = True
-        for i, want in enumerate(wanted):
-            if want:
-                matches.append(
-                    GrepMatch(path=rel, line_number=i + 1, line=lines[i], is_context=not hits[i])
-                )
+            previous: Any = deque(maxlen=before_context)
+            after_until = emitted = 0
+            with path.open(encoding="utf-8", errors="replace") as stream:
+                # Limit one line too: never allocate an arbitrary-size line.
+                number = 0
+                while line := stream.readline(RAW_OUTPUT_MAX_BYTES + 1):
+                    number += 1
+                    if time.monotonic() >= deadline:
+                        raise SearchError(
+                            "Search deadline reached; narrow pattern and retry", "SEARCH_ABORTED"
+                        )
+                    if len(line) > RAW_OUTPUT_MAX_BYTES:
+                        raise SearchError(
+                            "A line exceeds the fallback search limit; install ripgrep or narrow path",
+                            "SEARCH_RAW_OUTPUT_OVERFLOW",
+                        )
+                    line = line.rstrip("\r\n")
+                    hit = bool(regex.search(line))
+                    chosen = list(previous) if hit else []
+                    if hit or number <= after_until:
+                        chosen.append((number, line))
+                    if hit:
+                        after_until = number + after_context
+                    for index, text in chosen:
+                        if index <= emitted:
+                            continue
+                        raw_size += len(text.encode()) + len(rel.encode()) + 80
+                        if raw_size > RAW_OUTPUT_MAX_BYTES:
+                            raise SearchError(
+                                "Search output limit reached; narrow pattern or path and retry",
+                                "SEARCH_RAW_OUTPUT_OVERFLOW",
+                            )
+                        matches.append(GrepMatch(rel, index, text, not bool(regex.search(text))))
+                        emitted = index
+                    previous.append((number, line))
+        except OSError as exc:
+            raise SearchError(f"Cannot search {rel}: {exc}", "SEARCH_FAILED") from exc
     return matches
 
 
@@ -541,7 +646,8 @@ def _grep_content_result(
         spill_ref = try_save_text(
             session_id=_session_id(context),
             suggested_name="grep-results.txt",
-            content=spill_body,
+            content=sanitize_text(spill_body)[0],
+            root=resolve_spill_root(context),
         )
     output = format_grep_output(
         inline,
@@ -583,6 +689,14 @@ def handle_grep_tool(args: dict[str, Any], context: ToolExecutionContext | Any) 
     context_lines = parsed.get("context")
     if context_lines is not None:
         before_context = after_context = context_lines
+    deadline = time.monotonic() + SEARCH_TIMEOUT_MS / 1000
+
+    def remaining_ms() -> int:
+        remaining = int((deadline - time.monotonic()) * 1000)
+        if remaining <= 0:
+            raise SearchError("Search deadline reached; narrow path and retry", "SEARCH_ABORTED")
+        return remaining
+
     try:
         if _prefer_python_backend() or resolve_rg_path() is None:
             matches = _python_grep(
@@ -590,12 +704,14 @@ def handle_grep_tool(args: dict[str, Any], context: ToolExecutionContext | Any) 
                 workdir,
                 path,
                 include,
-                SEARCH_TIMEOUT_MS,
+                remaining_ms(),
                 ignore_case=parsed["ignore_case"],
                 before_context=before_context,
                 after_context=after_context,
                 file_type=parsed.get("file_type"),
                 multiline=parsed["multiline"],
+                include_ignored=parsed["include_ignored"],
+                cancellation_event=getattr(context, "cancellation_event", None),
             )
         else:
             try:
@@ -614,6 +730,8 @@ def handle_grep_tool(args: dict[str, Any], context: ToolExecutionContext | Any) 
                     ),
                     workdir,
                     tool_name="grep",
+                    timeout_ms=remaining_ms(),
+                    cancellation_event=getattr(context, "cancellation_event", None),
                 )
                 if run.no_matches:
                     matches = []
@@ -635,12 +753,14 @@ def handle_grep_tool(args: dict[str, Any], context: ToolExecutionContext | Any) 
                     workdir,
                     path,
                     include,
-                    SEARCH_TIMEOUT_MS,
+                    remaining_ms(),
                     ignore_case=parsed["ignore_case"],
                     before_context=before_context,
                     after_context=after_context,
                     file_type=parsed.get("file_type"),
                     multiline=parsed["multiline"],
+                    include_ignored=parsed["include_ignored"],
+                    cancellation_event=getattr(context, "cancellation_event", None),
                 )
     except SearchError as err:
         return _search_error_result("grep", err)
@@ -661,6 +781,7 @@ handle_grep = handle_grep_tool
 def grep_tool_definition() -> ToolDefinition:
     """Per-tool registry definition for `grep` (keeps `registry.py` thin)."""
     return define_tool(
+        effects="read",
         name="grep",
         description=GREP_DESCRIPTION,
         parameters={

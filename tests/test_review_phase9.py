@@ -269,6 +269,7 @@ def test_wf_b1_build_spec_defaults():
     mock_context = MagicMock()
     mock_context.session_id = "sess-spec-test"
     mock_context.session_manager = None
+    mock_context.allowed_tools = None
     mock_context.settings = {
         "orchestration": {
             "timeoutSeconds": 45.0,

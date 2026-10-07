@@ -489,7 +489,16 @@ def get_default_auto_compact_window(model: str = "") -> int:
 # Project-scope keys that can execute commands or steer secrets. Ignored
 # until the project is trusted (IN-A1).
 _UNTRUSTED_PROJECT_DENY_KEYS = frozenset(
-    {"mcpServers", "baseURL", "env", "statusline", "hooks", "webSearchTool"}
+    {
+        "mcpServers",
+        "baseURL",
+        "env",
+        "statusline",
+        "hooks",
+        "webSearchTool",
+        "network",
+        "toolPolicies",
+    }
 )
 
 
@@ -525,6 +534,14 @@ def resolve_current_settings(
     project = read_project_settings(project_root) or {}
     if not trusted:
         project = _strip_untrusted_project_settings(project)
+
+    network: dict[str, Any] = {}
+    for scope_settings in (user, project):
+        scope_network = scope_settings.get("network")
+        if scope_network is not None:
+            if not isinstance(scope_network, dict):
+                raise ValueError("network settings must be an object.")
+            network.update(scope_network)
 
     user_env = _normalize_env(user.get("env"))
     project_env = _normalize_env(project.get("env"))
@@ -670,15 +687,22 @@ def resolve_current_settings(
         )
         or 1000
     )
-    reserved_context_size = (
-        first_parsed(
-            _parse_int,
-            system_env.get("RESERVED_CONTEXT_SIZE"),
-            project.get("reservedContextSize"),
-            user.get("reservedContextSize"),
-        )
-        or 50_000
+
+    def _parse_nonnegative(v: Any) -> int | None:
+        try:
+            value = int(str(v).strip())
+            return value if value >= 0 else None
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    reserved_context_size = first_parsed(
+        _parse_nonnegative,
+        system_env.get("RESERVED_CONTEXT_SIZE"),
+        project.get("reservedContextSize"),
+        user.get("reservedContextSize"),
     )
+    if reserved_context_size is None:
+        reserved_context_size = 50_000
     compaction_trigger_ratio = (
         first_parsed(
             _parse_float,
@@ -722,6 +746,7 @@ def resolve_current_settings(
         "autoCompactWindow": auto_compact_window,
         "temperature": temperature,
         "thinkingEnabled": thinking_enabled,
+        "explicitThinkingEnabled": configured_thinking,
         "reasoningEffort": (
             parse_reasoning_effort(system_env.get("REASONING_EFFORT"))
             or parse_reasoning_effort(project.get("reasoningEffort"))
@@ -747,6 +772,14 @@ def resolve_current_settings(
             )
             or None
         ),
+        "webSearchProvider": first(
+            system_env.get("WEB_SEARCH_PROVIDER"),
+            project.get("webSearchProvider"),
+            user.get("webSearchProvider"),
+        )
+        or None,
+        "toolPolicies": {**(user.get("toolPolicies") or {}), **(project.get("toolPolicies") or {})},
+        "network": network,
         "multimodal": multimodal,
         "toolsPreset": first_parsed(
             parse_tool_preset,
@@ -754,7 +787,15 @@ def resolve_current_settings(
             project.get("toolsPreset"),
             user.get("toolsPreset"),
         ),
-        "mcpServers": _merge_mcp_servers(user, project, user_env, project_env, system_env),
+        "mcpServers": _merge_mcp_servers(
+            user,
+            project,
+            user_env,
+            project_env,
+            system_env,
+            project_root=project_root,
+            trusted=trusted,
+        ),
         "permissions": apply_preset(
             _merge_permissions(user, project),
             parse_sandbox_mode(
@@ -799,6 +840,30 @@ def resolve_current_settings(
         "maxStepsPerTurn": max_steps_per_turn,
         "reservedContextSize": reserved_context_size,
         "compactionTriggerRatio": compaction_trigger_ratio,
+        "bashAutoBackgroundOnTimeout": next(
+            (
+                parsed
+                for value in (
+                    system_env.get("BASH_AUTO_BACKGROUND_ON_TIMEOUT"),
+                    project.get("bashAutoBackgroundOnTimeout"),
+                    user.get("bashAutoBackgroundOnTimeout"),
+                )
+                if (parsed := _parse_bool(value)) is not None
+            ),
+            True,
+        ),
+        "tokenCountingStrategy": next(
+            (
+                str(value).strip().lower()
+                for value in (
+                    system_env.get("TOKEN_COUNTING_STRATEGY"),
+                    project.get("tokenCountingStrategy"),
+                    user.get("tokenCountingStrategy"),
+                )
+                if str(value).strip().lower() in {"measured+estimated", "measured", "estimated"}
+            ),
+            "measured+estimated",
+        ),
         # Typed-config overlay passthrough (provider vocabulary + loop control).
         "providerType": typed_overlay.get("providerType") or "openai_legacy",
         "capabilities": typed_overlay.get("capabilities") or [],
@@ -968,6 +1033,9 @@ def _merge_mcp_servers(
     _user_env: dict[str, str],
     _project_env: dict[str, str],
     _system_env: dict[str, str],
+    *,
+    project_root: str = ".",
+    trusted: bool = True,
 ) -> dict[str, dict] | None:
     """Merge MCP servers: global file → user → project → CLI overlays.
 
@@ -977,6 +1045,7 @@ def _merge_mcp_servers(
     from coderai.mcp.files import (
         collect_cli_mcp_overlays,
         load_global_mcp_servers,
+        load_workspace_mcp_servers,
         merge_mcp_servers_dicts,
     )
 
@@ -986,17 +1055,31 @@ def _merge_mcp_servers(
         user_servers = {}
     if not isinstance(project_servers, dict):
         project_servers = {}
-    names = set(user_servers) | set(project_servers)
-    merged: dict[str, dict] = {}
-    for name in names:
+    normalized_user: dict[str, dict] = {}
+    for name in user_servers:
         if not isinstance(name, str) or not name:
             continue
-        cfg = _merge_mcp_server_config(user_servers.get(name), project_servers.get(name))
+        cfg = _merge_mcp_server_config(user_servers.get(name), None)
         if cfg:
-            merged[name] = cfg
-    layered = merge_mcp_servers_dicts(load_global_mcp_servers(), merged or None)
+            normalized_user[name] = cfg
+    workspace_servers = load_workspace_mcp_servers(project_root) if trusted else {}
+    layered = (
+        merge_mcp_servers_dicts(
+            load_global_mcp_servers(), normalized_user or None, workspace_servers or None
+        )
+        or {}
+    )
+    for name, project_config in project_servers.items():
+        if not isinstance(name, str) or not name:
+            continue
+        cfg = _merge_mcp_server_config(layered.get(name), project_config)
+        if cfg:
+            merged_project = (
+                merge_mcp_servers_dicts({name: layered.get(name, {})}, {name: cfg}) or {}
+            )
+            layered[name] = merged_project[name]
     cli_overlays, _warnings = collect_cli_mcp_overlays()
-    layered = merge_mcp_servers_dicts(layered, cli_overlays or None)
+    layered = merge_mcp_servers_dicts(layered, cli_overlays or None) or {}
     return layered or None
 
 

@@ -28,11 +28,11 @@ class RootWireHub(BroadcastQueue[Any]):
         self._routes: dict[SubscriptionQueue[Any], str | None] = {}
 
     def subscribe(
-        self, *, session_id: str | None = None, replay: bool = False
+        self, *, session_id: str | None = None, replay: bool = False, lossless: bool = True
     ) -> SubscriptionQueue[Any]:
         if session_id is not None and (not isinstance(session_id, str) or not session_id.strip()):
             raise ValueError("Session subscriptions require a nonempty session_id")
-        queue = super().subscribe(replay=False)
+        queue = super().subscribe(replay=False, lossless=lossless)
         if not queue.closed:
             self._routes[queue] = session_id
         return queue

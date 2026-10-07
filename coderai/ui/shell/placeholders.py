@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from hashlib import sha256
+import secrets
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
@@ -255,13 +256,19 @@ class PastedTextEntry:
 class PastedTextPlaceholderHandler:
     def __init__(self) -> None:
         self._entries: dict[int, PastedTextEntry] = {}
-        self._next_id = 1
+
+    def _path(self, paste_id: int) -> Path:
+        return get_share_dir().resolve() / "prompt-cache" / "text" / f"{paste_id}.txt"
 
     def create_placeholder(self, text: str) -> str:
         normalized = sanitize_surrogates(normalize_pasted_text(text))
-        entry = PastedTextEntry(paste_id=self._next_id, text=normalized)
+        # Persist a collision-resistant identity, never a process-local counter.
+        # Old numbered tokens deliberately remain unresolved.
+        entry = PastedTextEntry(paste_id=secrets.randbits(128) | (1 << 127), text=normalized)
+        from coderai.utils.storage import write_bytes
+
+        write_bytes(self._path(entry.paste_id), normalized.encode("utf-8"))
         self._entries[entry.paste_id] = entry
-        self._next_id += 1
         return entry.token
 
     def maybe_placeholderize(self, text: str) -> str:
@@ -271,6 +278,14 @@ class PastedTextPlaceholderHandler:
         return self.create_placeholder(normalized)
 
     def entry_for_id(self, paste_id: int) -> PastedTextEntry | None:
+        if paste_id not in self._entries and paste_id >= 1 << 127:
+            from coderai.utils.storage import read_bytes
+
+            try:
+                text = read_bytes(self._path(paste_id)).decode("utf-8")
+            except (OSError, ValueError):
+                return None
+            self._entries[paste_id] = PastedTextEntry(paste_id, text)
         return self._entries.get(paste_id)
 
     def iter_entries_for_command(

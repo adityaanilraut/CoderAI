@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-import re
+import json
+from functools import lru_cache
+
+from jsonschema import Draft202012Validator, validators
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
 from typing import Any
 from collections.abc import Callable, Sequence
 from coderai.tools.legacy.types import (
@@ -12,164 +17,70 @@ from coderai.tools.legacy.types import (
 )
 
 
+@lru_cache(maxsize=256)
+def _validator(encoded: str) -> Any:
+    schema = json.loads(encoded)
+    cls = validators.validator_for(schema, default=Draft202012Validator)
+    cls.check_schema(schema)
+    registry = Registry().with_resource(
+        "urn:coderai:tool-schema", Resource.from_contents(schema, default_specification=DRAFT202012)
+    )
+    resolver = registry.resolver("urn:coderai:tool-schema")
+    validator = cls(schema, registry=registry)
+
+    # Resolve references during registration, never as a network side effect.
+    def check_refs(node: Any) -> None:
+        if isinstance(node, dict):
+            for ref in (node.get("$ref"), node.get("$dynamicRef"), node.get("$recursiveRef")):
+                if not isinstance(ref, str):
+                    continue
+                if not ref.startswith("#"):
+                    raise ValueError(f"Remote schema reference is disabled: {ref}")
+                resolver.lookup(ref)
+            for key, child in node.items():
+                if key not in ("enum", "const", "default", "examples"):
+                    check_refs(child)
+        elif isinstance(node, list):
+            for child in node:
+                check_refs(child)
+
+    check_refs(schema)
+    return validator
+
+
 def assert_supported_json_schema(schema: dict[str, Any], path: str = "root") -> None:
-    """Validate that a schema definition is a well-formed JSON Schema object."""
     if not isinstance(schema, dict):
         raise TypeError(f"Schema at '{path}' must be a JSON dictionary object.")
-    stype = schema.get("type")
-    if stype is not None:
-        valid_types = {"string", "number", "integer", "boolean", "array", "object", "null"}
-        if isinstance(stype, str):
-            if stype not in valid_types:
-                raise ValueError(f"Schema at '{path}' specifies unsupported type '{stype}'.")
-        elif isinstance(stype, list):
-            for t in stype:
-                if t not in valid_types:
-                    raise ValueError(f"Schema at '{path}' specifies unsupported type '{t}'.")
-    if "properties" in schema:
-        if not isinstance(schema["properties"], dict):
-            raise TypeError(f"Schema 'properties' at '{path}' must be a dictionary.")
-        for prop_name, prop_schema in schema["properties"].items():
-            assert_supported_json_schema(prop_schema, f"{path}.properties.{prop_name}")
-    if "items" in schema and isinstance(schema["items"], dict):
-        assert_supported_json_schema(schema["items"], f"{path}.items")
+    try:
+        _validator(json.dumps(schema, sort_keys=True, allow_nan=False))
+    except Exception as exc:
+        raise ValueError(f"Invalid tool schema at {path}: {exc}") from exc
 
 
 def validate_json_schema_value(schema: dict[str, Any], value: Any, path: str = "root") -> list[str]:
-    """Validate a Python value against a JSON Schema, returning a list of violation messages."""
-    violations: list[str] = []
-
-    # Handle oneOf
-    if "oneOf" in schema:
-        branches = schema["oneOf"]
-        if not isinstance(branches, list) or len(branches) < 1:
-            violations.append(f"{path}: 'oneOf' must be a non-empty list.")
-            return violations
-        matches = 0
-        branch_errors: list[str] = []
-        for idx, branch in enumerate(branches):
-            errs = validate_json_schema_value(branch, value, f"{path}.oneOf[{idx}]")
-            if not errs:
-                matches += 1
-            else:
-                branch_errors.extend(errs)
-        if matches != 1:
-            violations.append(
-                f"{path}: value must match exactly one 'oneOf' schema branch, matched {matches}."
-            )
-        return violations
-
-    # Handle const
-    if "const" in schema:
-        if value != schema["const"]:
-            violations.append(f"{path}: expected constant value {schema['const']!r}, got {value!r}")
-            return violations
-
-    # Handle enum
-    if "enum" in schema:
-        if value not in schema["enum"]:
-            allowed = ", ".join(repr(v) for v in schema["enum"])
-            violations.append(f"{path}: invalid value {value!r}. Must be one of: [{allowed}]")
-            return violations
-
-    target_type = schema.get("type")
-    if target_type is None:
-        return violations
-
-    # Check null
-    if target_type == "null":
-        if value is not None:
-            violations.append(f"{path}: expected null, got {type(value).__name__}")
-        return violations
-
-    if value is None:
-        # None is only permitted if null was in type
-        violations.append(f"{path}: value cannot be null/None")
-        return violations
-
-    # Check string
-    if target_type == "string":
-        if not isinstance(value, str):
-            violations.append(f"{path}: expected string, got {type(value).__name__}")
-            return violations
-        if "minLength" in schema and len(value) < schema["minLength"]:
-            violations.append(
-                f"{path}: string length {len(value)} < minLength {schema['minLength']}"
-            )
-        if "maxLength" in schema and len(value) > schema["maxLength"]:
-            violations.append(
-                f"{path}: string length {len(value)} > maxLength {schema['maxLength']}"
-            )
-        if "pattern" in schema:
-            pat = schema["pattern"]
-            if not re.search(pat, value):
-                violations.append(f"{path}: string does not match regex pattern {pat!r}")
-
-    # Check boolean
-    elif target_type == "boolean":
-        if not isinstance(value, bool):
-            violations.append(f"{path}: expected boolean, got {type(value).__name__}")
-
-    # Check integer
-    elif target_type == "integer":
-        if isinstance(value, bool) or not isinstance(value, int):
-            violations.append(f"{path}: expected integer, got {type(value).__name__}")
-            return violations
-        if "minimum" in schema and value < schema["minimum"]:
-            violations.append(f"{path}: integer {value} < minimum {schema['minimum']}")
-        if "maximum" in schema and value > schema["maximum"]:
-            violations.append(f"{path}: integer {value} > maximum {schema['maximum']}")
-
-    # Check number
-    elif target_type == "number":
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            violations.append(f"{path}: expected number, got {type(value).__name__}")
-            return violations
-        if "minimum" in schema and value < schema["minimum"]:
-            violations.append(f"{path}: number {value} < minimum {schema['minimum']}")
-        if "maximum" in schema and value > schema["maximum"]:
-            violations.append(f"{path}: number {value} > maximum {schema['maximum']}")
-
-    # Check array
-    elif target_type == "array":
-        if not isinstance(value, list):
-            violations.append(f"{path}: expected array/list, got {type(value).__name__}")
-            return violations
-        if "minItems" in schema and len(value) < schema["minItems"]:
-            violations.append(f"{path}: array length {len(value)} < minItems {schema['minItems']}")
-        if "maxItems" in schema and len(value) > schema["maxItems"]:
-            violations.append(f"{path}: array length {len(value)} > maxItems {schema['maxItems']}")
-        if "uniqueItems" in schema and schema["uniqueItems"]:
-            try:
-                unique_set = set(value)
-                if len(unique_set) != len(value):
-                    violations.append(f"{path}: array items must be unique")
-            except TypeError:
-                pass
-        item_schema = schema.get("items")
-        if isinstance(item_schema, dict):
-            for i, item in enumerate(value):
-                violations.extend(validate_json_schema_value(item_schema, item, f"{path}[{i}]"))
-
-    # Check object
-    elif target_type == "object":
-        if not isinstance(value, dict):
-            violations.append(f"{path}: expected object/dict, got {type(value).__name__}")
-            return violations
-        req_list = schema.get("required") or []
-        for req_prop in req_list:
-            if req_prop not in value:
-                violations.append(f"{path}: missing required property '{req_prop}'")
-        props = schema.get("properties") or {}
-        for prop_name, prop_val in value.items():
-            if prop_name in props:
-                violations.extend(
-                    validate_json_schema_value(props[prop_name], prop_val, f"{path}.{prop_name}")
+    try:
+        validator = _validator(json.dumps(schema, sort_keys=True, allow_nan=False))
+        errors = sorted(validator.iter_errors(value), key=lambda e: str(list(e.absolute_path)))
+        messages = []
+        for error in errors:
+            message = error.message
+            if error.validator == "required":
+                missing = next(
+                    (key for key in error.validator_value if key not in error.instance), ""
                 )
-            elif schema.get("additionalProperties") is False:
-                violations.append(f"{path}: unexpected property '{prop_name}'")
-
-    return violations
+                message = f"missing required argument '{missing}'"
+            elif error.validator == "type":
+                kind = error.validator_value
+                if isinstance(kind, str):
+                    message = f"must be a {kind} (got {type(error.instance).__name__})"
+            elif error.validator == "enum":
+                message = f"invalid value {error.instance!r}; Allowed: {error.validator_value}"
+            elif error.validator == "additionalProperties":
+                message = f"unknown argument (unexpected property): {message}"
+            messages.append(f"{path}{''.join(f'[{p!r}]' for p in error.absolute_path)}: {message}")
+        return messages
+    except Exception as exc:
+        return [f"{path}: schema validation failed: {exc}"]
 
 
 def define_tool(
@@ -188,14 +99,23 @@ def define_tool(
     timeout_ms: int | None = None,
     present_result: Callable[[dict[str, Any], Any], dict[str, Any] | None] | None = None,
     finalize_content: Callable[[Any, Any], str | None] | None = None,
+    resource_accesses: Any = None,
+    effects: Any = None,
 ) -> ToolDefinition:
     """Create a structured ToolDefinition."""
-    params = parameters or {}
+    params = {
+        key: (
+            {k: v for k, v in spec.items() if not (k == "required" and isinstance(v, bool))}
+            if isinstance(spec, dict)
+            else spec
+        )
+        for key, spec in (parameters or {}).items()
+    }
     req = list(required) if required is not None else []
     als = list(aliases) if aliases is not None else []
 
     # Infer required from parameters spec if property has required=True
-    for key, spec in params.items():
+    for key, spec in (parameters or {}).items():
         if isinstance(spec, dict) and spec.get("required") is True:
             if key not in req:
                 req.append(key)
@@ -216,4 +136,6 @@ def define_tool(
         timeout_ms=timeout_ms,
         present_result=present_result,
         finalize_content=finalize_content,
+        resource_accesses=resource_accesses,
+        effects=effects,
     )

@@ -1,15 +1,31 @@
-"""WebSearch tool — multi-query web search over pluggable providers (Exa, Perplexity, DeepSeek, HTTP)."""
+"""Bounded multi-query web search with provider fallback and freshness metadata."""
 
 from __future__ import annotations
 
 import asyncio
 import inspect
+import json
+import time
 from typing import Any
 
 from coderai.network.cache import build_search_key, get_search_cache
+from coderai.network.security import NetworkPolicy, NetworkSecurityError
 from coderai.tools.legacy.types import ToolResult, as_str
+from coderai.tools.web.common import (
+    DEFAULT_OUTPUT_CHARS,
+    EXTERNAL_CONTENT_NOTICE,
+    bounded_int,
+    safe_web_url,
+    sanitize_prompt_injection,
+    slice_payload,
+    web_settings,
+)
+from coderai.tools.web.options import SearchFilters
+from coderai.utils.aiohttp import HttpClient
 from coderai.web_providers import (
+    WebSearchProvider,
     WebSearchResult,
+    WebSearchSource,
     resolve_web_search_provider,
 )
 
@@ -17,122 +33,219 @@ MAX_QUERIES = 4
 DEFAULT_MAX_RESULTS = 8
 
 
-async def handle_web_search_tool(args: dict[str, Any], context: Any) -> ToolResult:
-    """Execute one or more web search queries via the configured WebSearchProvider."""
-    raw_queries = args.get("queries") or args.get("query")
-    if not raw_queries:
-        return ToolResult(
-            ok=False,
-            name="WebSearch",
-            error="Missing required argument 'query' or 'queries'.",
-        )
-
-    queries: list[str] = []
-    if isinstance(raw_queries, str):
-        q = raw_queries.strip()
-        if q:
-            queries.append(q)
-    elif isinstance(raw_queries, list):
-        for item in raw_queries:
-            if isinstance(item, str) and item.strip():
-                queries.append(item.strip())
-
-    if not queries:
-        return ToolResult(
-            ok=False,
-            name="WebSearch",
-            error="No valid non-empty search query provided.",
-        )
-
-    # Bound query count
-    if len(queries) > MAX_QUERIES:
-        queries = queries[:MAX_QUERIES]
-
-    try:
-        max_results = int(args.get("max_results", DEFAULT_MAX_RESULTS))
-    except (ValueError, TypeError):
-        max_results = DEFAULT_MAX_RESULTS
-    max_results = max(1, min(max_results, 50))
-    provider_name = as_str(args.get("provider", "")).strip() or None
-
-    provider = resolve_web_search_provider(provider_name)
-    cache = get_search_cache()
-
-    # Single cache owner: provider-scoped key covers provider, normalized
-    # query, and max_results, so a truncated or foreign-provider answer can
-    # never be served as a hit. Error results are not cached.
-    async def _fetch_unique(key: str, q: str) -> WebSearchResult:
-        cached = cache.get(key)
-        if cached is not None:
-            return cached
-
-        search_async_fn = getattr(provider, "search_async", None)
-        if inspect.iscoroutinefunction(search_async_fn):
-            res = await search_async_fn(q, max_results)
-        else:
-            loop = asyncio.get_running_loop()
-            res = await loop.run_in_executor(None, provider.search, q, max_results)
-
-        if res is not None and res.error is None:
-            cache.set(key, res)
-        return res
-
-    # Dedupe identical cache keys within one call: one fetch serves every
-    # duplicate instead of racing duplicate misses through the provider.
-    keys = [build_search_key(provider.id, q, max_results) for q in queries]
-    query_by_key: dict[str, str] = {}
-    for q, key in zip(queries, keys):
-        query_by_key.setdefault(key, q)
-    unique_keys = list(query_by_key)
-    fetched = await asyncio.gather(*[_fetch_unique(key, query_by_key[key]) for key in unique_keys])
-    result_by_key = dict(zip(unique_keys, fetched))
-    results: list[WebSearchResult] = [result_by_key[key] for key in keys]
-
-    # Format output for LLM
-    output_lines: list[str] = []
-    metadata_results: list[dict[str, Any]] = []
-    all_sources: list[dict[str, Any]] = []
-    seen_urls: set[str] = set()
-
-    for res in results:
-        metadata_results.append(res.to_dict())
-        for s in res.sources:
-            if s.url and s.url not in seen_urls:
-                seen_urls.add(s.url)
-                all_sources.append(s.to_dict())
-
-        output_lines.append(f"## Search Results: `{res.query}`")
-
-        if res.error:
-            output_lines.append(f"> ⚠️ **Search Error**: {res.error}\n")
+def _normalize_result(
+    result: WebSearchResult, query: str, limit: int, filters: SearchFilters, budget: int = 20_000
+) -> WebSearchResult:
+    """Bound both model text and metadata; search sources stay external data."""
+    sources: list[WebSearchSource] = []
+    seen: set[str] = set()
+    remaining = max(0, budget - min(len(as_str(result.content)), 4000) - len(query) - 500)
+    for source in result.sources:
+        url = safe_web_url(as_str(source.url))
+        if not url or len(url) > 2048 or url in seen or not filters.allows_url(url):
             continue
-
-        if res.content:
-            output_lines.append(f"### Direct Summary\n{res.content}\n")
-
-        if res.sources:
-            output_lines.append("### Sources:")
-            for i, src in enumerate(res.sources, 1):
-                date_str = f" ({src.published_at})" if src.published_at else ""
-                output_lines.append(f"{i}. **[{src.title}]({src.url})**{date_str}")
-                if src.snippet:
-                    output_lines.append(f"   > {src.snippet}")
-            output_lines.append("")
-        elif not res.content:
-            output_lines.append("*(No results found for query)*\n")
-
-    return ToolResult(
-        ok=True,
-        name="WebSearch",
-        output="\n".join(output_lines).strip(),
-        metadata={
-            "provider": provider.id,
-            "query": ", ".join(queries),
-            "results": metadata_results,
-            "sources": all_sources,
-        },
+        normalized = WebSearchSource(
+            title=sanitize_prompt_injection(as_str(source.title))[:200],
+            url=url,
+            snippet=sanitize_prompt_injection(as_str(source.snippet))[:500] or None,
+            published_at=sanitize_prompt_injection(as_str(source.published_at))[:64] or None,
+        )
+        size = len(normalized.title) + len(url) + len(normalized.snippet or "") + 64
+        if size > remaining:
+            break
+        seen.add(url)
+        remaining -= size
+        sources.append(normalized)
+        if len(sources) >= limit:
+            break
+    # Drop summaries with strict domain constraints: synthesized answers may
+    # cite excluded sources even when the returned source list is filtered.
+    content = (
+        None
+        if filters.include_domains or filters.exclude_domains
+        else (sanitize_prompt_injection(as_str(result.content))[:4000] or None)
+    )
+    return WebSearchResult(
+        query=query,
+        sources=sources,
+        content=content,
+        error=sanitize_prompt_injection(as_str(result.error))[:1000] or None,
+        fetched_at=result.fetched_at,
+        from_cache=result.from_cache,
+        truncated=result.truncated
+        or len(sources) < min(limit, len(result.sources))
+        or len(as_str(result.content)) > 4000,
     )
 
 
-# Alias for backward compatibility
+async def handle_web_search_tool(args: dict[str, Any], context: Any) -> ToolResult:
+    raw_queries = args.get("queries") if "queries" in args else args.get("query")
+    if "queries" in args and "query" in args:
+        return ToolResult(ok=False, name="WebSearch", error="Provide query or queries, not both.")
+    if not raw_queries:
+        return ToolResult(
+            ok=False, name="WebSearch", error="Missing required argument 'query' or 'queries'."
+        )
+    queries = [raw_queries] if isinstance(raw_queries, str) else raw_queries
+    if not isinstance(queries, list) or not 1 <= len(queries) <= MAX_QUERIES:
+        return ToolResult(
+            ok=False, name="WebSearch", error=f"Provide between 1 and {MAX_QUERIES} search queries."
+        )
+    if any(not isinstance(query, str) or not query.strip() for query in queries):
+        return ToolResult(
+            ok=False, name="WebSearch", error="No valid non-empty search query provided."
+        )
+    queries = [query.strip() for query in queries]
+    if any(len(query) > 2000 for query in queries):
+        return ToolResult(
+            ok=False, name="WebSearch", error="Each query must be at most 2000 characters."
+        )
+    try:
+        max_results = bounded_int(
+            args.get("max_results"), DEFAULT_MAX_RESULTS, 1, 50, "max_results"
+        )
+        filters = SearchFilters.from_args(args)
+        settings = web_settings(context)
+        policy = NetworkPolicy.from_settings(settings)
+    except ValueError as exc:
+        return ToolResult(ok=False, name="WebSearch", error=str(exc))
+    provider_name = as_str(args.get("provider")).strip() or None
+    use_cache = bool(args.get("use_cache", True))
+    cache = get_search_cache()
+    owned_client = HttpClient(policy=policy) if settings.get("network") else None
+    try:
+        try:
+            provider = resolve_web_search_provider(
+                provider_name, settings=settings, filters=filters, client=owned_client
+            )
+        except ValueError as exc:
+            return ToolResult(ok=False, name="WebSearch", error=str(exc))
+        scope = (
+            provider.cache_scope()
+            if isinstance(provider, WebSearchProvider)
+            else {"id": provider.id}
+        )
+        scope["output_budget"] = DEFAULT_OUTPUT_CHARS // len(queries)
+        key_suffix = json.dumps(scope, sort_keys=True, default=str)
+        # Metadata stays bounded even for four queries with 50 requested results.
+        per_query_limit = max_results
+
+        async def fetch(query: str) -> tuple[WebSearchResult, str, str | None]:
+            key = build_search_key(provider.id, query, max_results) + ":" + key_suffix
+            if use_cache:
+                cached = cache.get(key)
+                if isinstance(cached, WebSearchResult):
+                    cached.from_cache = True
+                    cached.query = query
+                    return cached, provider.id, None
+
+            async def invoke(selected: Any) -> WebSearchResult:
+                async_search = getattr(selected, "search_async", None)
+                if inspect.iscoroutinefunction(async_search):
+                    result = await async_search(query, max_results)
+                else:
+                    result = await asyncio.to_thread(selected.search, query, max_results)
+                if not isinstance(result, WebSearchResult):
+                    raise ValueError("Provider returned an invalid search result.")
+                return _normalize_result(
+                    result, query, per_query_limit, filters, DEFAULT_OUTPUT_CHARS // len(queries)
+                )
+
+            selected = provider
+            warning = None
+            try:
+                result = await invoke(selected)
+                if (
+                    result.error
+                    and selected.id != "http"
+                    and selected.id in {"exa", "perplexity", "deepseek"}
+                ):
+                    warning = f"{selected.id} failed: {result.error}"
+                    selected = resolve_web_search_provider(
+                        "http", settings=settings, filters=filters, client=owned_client
+                    )
+                    result = await invoke(selected)
+            except NetworkSecurityError as exc:
+                # A denial is terminal for this query; it never triggers fallback.
+                return (
+                    WebSearchResult(query=query, error=f"Security Policy Violation: {exc}"),
+                    selected.id,
+                    None,
+                )
+            except Exception as exc:
+                return (
+                    WebSearchResult(query=query, error=sanitize_prompt_injection(str(exc))[:1000]),
+                    selected.id,
+                    warning,
+                )
+            result.fetched_at = time.time()
+            if use_cache and not result.error and selected.id == provider.id:
+                cache.set(key, result)
+            return result, selected.id, warning
+
+        unique_queries = list(dict.fromkeys(queries))
+        fetched = await asyncio.gather(*(fetch(query) for query in unique_queries))
+        lines = [EXTERNAL_CONTENT_NOTICE, ""]
+        results_metadata: list[dict[str, Any]] = []
+        sources: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        successes = 0
+        for result, selected_id, warning in fetched:
+            item = result.to_dict()
+            item["provider"] = selected_id
+            item["cacheAgeSeconds"] = (
+                max(0, time.time() - result.fetched_at) if result.fetched_at else 0
+            )
+            if warning:
+                item["warning"] = warning
+            results_metadata.append(item)
+            lines.append(f"## Search Results: `{result.query}`")
+            if result.error:
+                lines.append(f"Search Error: {result.error}")
+                continue
+            successes += 1
+            if warning:
+                lines.append(f"Provider fallback: {warning}")
+            if result.content:
+                lines.append(f"### Direct Summary\n{result.content}")
+            for source in result.sources:
+                source_dict = source.to_dict()
+                if source.url not in seen_urls and len(sources) < max_results:
+                    seen_urls.add(source.url)
+                    sources.append(source_dict)
+                lines.append(
+                    f"- [{source.title}]({source.url})"
+                    + (f" ({source.published_at})" if source.published_at else "")
+                )
+                if source.snippet:
+                    lines.append(f"  {source.snippet}")
+            if not result.sources and not result.content:
+                lines.append("No results found for query.")
+            lines.append("")
+        output, truncated = slice_payload(
+            "\n".join(lines).strip(), DEFAULT_OUTPUT_CHARS, continuation=False
+        )
+        errors = [item["error"] for item in results_metadata if item.get("error")]
+        return ToolResult(
+            ok=successes > 0,
+            name="WebSearch",
+            output=output,
+            error="; ".join(errors) if not successes else None,
+            metadata={
+                "provider": provider.id,
+                "query": ", ".join(queries),
+                "results": results_metadata,
+                "sources": sources,
+                "filters": filters.to_dict(),
+                "partialFailure": bool(successes and errors),
+                "untrusted": True,
+                "truncated": truncated or any(item.get("truncated") for item in results_metadata),
+                "useCache": use_cache,
+            },
+        )
+    finally:
+        if owned_client:
+            owned_client.close()
+
+
 handle = handle_web_search_tool

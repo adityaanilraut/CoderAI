@@ -7,11 +7,13 @@ parallel execution, cancellation/timeout recovery, and result aggregation.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import pathlib
 import uuid
 from typing import Any
+from types import SimpleNamespace
 from collections.abc import Callable
 
 from coderai.utils.common.message_converter import OpenAIMessageConverter
@@ -23,8 +25,6 @@ from coderai.orchestration import (
 from coderai.prompt import get_runtime_context, get_subagent_system_prompt, get_tools
 from coderai.subagents.builder import (
     check_subagent_depth_quota,
-    cleanup_subagent_scratchpad,
-    setup_subagent_scratchpad,
 )
 from coderai.file_snippets import clear_session_state
 from coderai.subagents.execution import (
@@ -43,6 +43,44 @@ from coderai.subagents.core import _call_llm_sync, _normalize_subagent_tool_call
 from coderai.subagents.output import SubAgentResult
 
 _global_active_controllers: dict[str, asyncio.Event] = {}
+
+
+class _TurnAborted(asyncio.CancelledError):
+    """The child's abort signal fired; parent cancellation remains distinct."""
+
+
+def _partial_summary(spec: SubAgentSpec, fallback: str) -> str:
+    for message in reversed(getattr(spec.handle, "conversation", None) or []):
+        if message.get("role") == "assistant" and message.get("content"):
+            return str(message["content"])
+    return fallback
+
+
+async def _run_abortable(operation: Any, abort_event: asyncio.Event, timeout: float) -> Any:
+    """Link a turn's abort signal to its complete provider/tool execution.
+
+    Checking the flag only between steps leaves a child stuck in a provider
+    request or a long-running tool. Always cancel and drain the owned task
+    before returning, including when the parent task itself is cancelled.
+    """
+    task = asyncio.ensure_future(operation)
+    stopped = asyncio.create_task(abort_event.wait())
+    try:
+        done, _ = await asyncio.wait(
+            (task, stopped), timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+        )
+        if abort_event.is_set():
+            raise _TurnAborted
+        if task in done:
+            return await task
+        raise TimeoutError
+    finally:
+        if not task.done():
+            abort_event.set()
+        for pending in (task, stopped):
+            if not pending.done():
+                pending.cancel()
+        await asyncio.gather(task, stopped, return_exceptions=True)
 
 
 def make_subagent_result(
@@ -97,7 +135,7 @@ def make_subagent_result(
         tool_calls_count=tool_calls_count,
         artifacts=artifacts or [],
         diffs=diffs or [],
-        token_telemetry=token_telemetry,
+        token_telemetry=token_telemetry or {},
         parent_agent_id=spec.parent_agent_id,
         root_agent_id=spec.root_agent_id,
         depth=spec.depth,
@@ -135,8 +173,7 @@ class SubAgentManager:
     def _resolve_subagent_cwd(self, spec: SubAgentSpec, session_id: str) -> str | None:
         if spec.isolated_cwd:
             return spec.isolated_cwd
-        if getattr(spec, "isolate", False) and spec.scratchpad_dir:
-            return spec.scratchpad_dir
+
         return None
 
     def _emit_lifecycle_event(
@@ -161,33 +198,90 @@ class SubAgentManager:
         events.append(evt)
         if spec.handle and hasattr(spec.handle, "lifecycle_history"):
             spec.handle.lifecycle_history.append(evt)
+            del spec.handle.lifecycle_history[:-200]
         return evt
 
     def cancel_subagent(self, session_id: str) -> None:
-        """Cancel a running sub-agent session across all active manager scopes."""
-        event = self._active_controllers.get(session_id) or _global_active_controllers.get(
-            session_id
-        )
-        if event is not None:
-            event.set()
+        """Abort a current turn and its descendants across manager scopes."""
         from coderai.subagents.core import get_agent_registry
 
-        for handle in get_agent_registry().list():
-            if handle.run_session_id != session_id or (
-                handle.spec is not None and handle.spec.continuable
-            ):
-                continue
-            # A one-shot run has no parked inbox to preserve: wake the actual
-            # invocation even while it waits inside a tool or provider call.
-            if handle.task is not None and not handle.task.done():
-                handle.task.cancel()
+        registry = get_agent_registry()
+        session_ids = {session_id}
+        for handle in registry.list():
+            if handle.run_session_id == session_id:
+                session_ids.update(
+                    child.run_session_id
+                    for child in registry.list_descendants(handle.id)
+                    if child.run_session_id
+                )
+        for child_session in session_ids:
+            event = self._active_controllers.get(child_session) or _global_active_controllers.get(
+                child_session
+            )
+            if event is not None:
+                event.set()
 
     def cancel_all(self) -> None:
-        """Cancel all running sub-agents globally."""
+        """Cancel only the sub-agents owned by this manager."""
         for event in list(self._active_controllers.values()):
             event.set()
-        for event in list(_global_active_controllers.values()):
-            event.set()
+
+    def _prepare_subagent_store(
+        self, spec: SubAgentSpec, agent_id: str, *, background: bool = False
+    ) -> Any:
+        from coderai.subagents.store import SubagentStore
+        from coderai.soul.session.store import JsonlSessionStore
+
+        try:
+            parent_sid = spec.parent_session_id or "root"
+            if spec.session_manager is not None and hasattr(spec.session_manager, "_session_dir"):
+                directory = spec.session_manager._session_dir(parent_sid)
+            else:
+                from coderai.utils.storage import owned_path
+
+                directory = owned_path(
+                    JsonlSessionStore(self.project_root, cleanup=False).project_dir, parent_sid
+                )
+            store = SubagentStore(directory)
+            store.create_instance(
+                agent_id=agent_id,
+                subagent_type=spec.subagent_type or "default",
+                description=spec.description,
+                model_override=spec.model,
+            )
+            store.write_prompt(agent_id, spec.prompt)
+            store.update_instance(
+                agent_id,
+                status="running_background" if background else "running_foreground",
+                last_task_id=spec.task_id,
+            )
+            spec.checkpoint_store = store
+            return store
+        except OSError:
+            logger.warning("Could not initialize durable child context for %s", agent_id)
+            raise
+
+    def _save_subagent_checkpoint(self, spec: SubAgentSpec, messages: list[dict[str, Any]]) -> None:
+        if spec.checkpoint_store is not None:
+            try:
+                spec.checkpoint_store.write_context(spec.agent_id or spec.task_id, messages)
+            except OSError:
+                logger.warning("Could not persist child checkpoint for %s", spec.task_id)
+
+    def _save_subagent_result(self, spec: SubAgentSpec, result: SubAgentResult) -> None:
+        if spec.checkpoint_store is not None:
+            status = (
+                "completed"
+                if result.status == "completed"
+                else "killed"
+                if result.status == "interrupted"
+                else "failed"
+            )
+            try:
+                spec.checkpoint_store.write_output(spec.agent_id or spec.task_id, result.summary)
+                spec.checkpoint_store.update_instance(spec.agent_id or spec.task_id, status=status)
+            except OSError:
+                logger.warning("Could not persist child result for %s", spec.task_id)
 
     async def spawn_subagent(self, spec: SubAgentSpec) -> SubAgentResult:
         """Spawn and execute a single isolated sub-agent with timeout, quota checks, and error recovery.
@@ -197,9 +291,18 @@ class SubAgentManager:
         publication (mirroring the reference's pre-publication rejection), so
         no lifecycle edge pair is emitted for a child that never existed.
         """
+        from coderai.subagents.core import get_agent_registry
+
+        parent = get_agent_registry().get(spec.parent_agent_id) if spec.parent_agent_id else None
+        if parent is not None and (parent.killed or parent.status == "interrupted"):
+            raise ValueError("Cannot spawn from an interrupted parent agent")
+        if spec.project_root is None:
+            spec.project_root = self.project_root
         session_id = (
             f"sub_{spec.parent_session_id[:8] if spec.parent_session_id else 'root'}_{spec.task_id}"
         )
+        if not check_subagent_depth_quota(spec.depth, spec.max_depth)[0]:
+            return await self._spawn_subagent_inner(spec, session_id)
         from coderai.subagents.core import AgentHandle, get_agent_registry
 
         if spec.root_agent_id is None:
@@ -217,18 +320,37 @@ class SubAgentManager:
             manager=self,
             task=asyncio.current_task(),
         )
+        spec.handle = handle
         get_agent_registry().register(handle)
         if spec.parent_agent_id:
             parent_handle = get_agent_registry().get(spec.parent_agent_id)
             if parent_handle is not None and handle.id not in parent_handle.children_ids:
                 parent_handle.children_ids.append(handle.id)
 
-        effective_max_depth = spec.max_depth if spec.max_depth is not None else MAX_SUBAGENT_DEPTH
-        quota_ok, _quota_err = check_subagent_depth_quota(spec.depth, effective_max_depth)
         provider = spec.provider or "in_process"
         local = provider == "in_process"
         run_id = uuid.uuid4().hex
-        if quota_ok:
+        from coderai.wire.emitter import bind_emitter, get_emitter, reset_emitter
+        from coderai.subagents.streaming import ChildWireEmitter
+
+        child_emitter: ChildWireEmitter | None = None
+        emitter_token = None
+        started = False
+        result: SubAgentResult | None = None
+        try:
+            self._prepare_subagent_store(spec, handle.id)
+            child_emitter = ChildWireEmitter(
+                get_emitter(),
+                handle.id,
+                spec.subagent_type,
+                spec.parent_tool_call_id,
+                spec.parent_session_id,
+                wire_path=(
+                    spec.checkpoint_store.instance_dir(handle.id) / "wire.jsonl"
+                    if spec.checkpoint_store is not None
+                    else None
+                ),
+            )
             publish_subagent_start(
                 run_id=run_id,
                 provider=provider,
@@ -236,47 +358,95 @@ class SubAgentManager:
                 local=local,
                 parent_session_id=spec.parent_session_id,
             )
-        # Provider calls run in threads that inherit task context. Give the
-        # child its own emission channel instead of leaking child output into
-        # the parent's turn; start/end notices above/below remain parent-facing.
-        from coderai.wire.emitter import WireEmitter, bind_emitter, reset_emitter
-
-        child_emitter = WireEmitter()
-        emitter_token = bind_emitter(child_emitter)
-        try:
+            started = True
+            emitter_token = bind_emitter(child_emitter)
             result = await self._spawn_subagent_inner(spec, session_id)
+        except asyncio.CancelledError:
+            result = make_subagent_result(
+                spec,
+                session_id,
+                "interrupted",
+                summary=_partial_summary(spec, "Sub-agent was cancelled."),
+                exit_code=130,
+            )
+            raise
+        except Exception as exc:
+            result = make_subagent_result(
+                spec,
+                session_id,
+                "failed",
+                summary="Sub-agent startup or execution failed.",
+                error=str(exc),
+                exit_code=1,
+            )
+            raise
         finally:
+            if result is not None:
+                handle.result = result
+                handle.status = result.status
+                handle.last_stop_reason = result.stop_reason
+                get_agent_registry().changed()
+                self._save_subagent_result(spec, result)
+                if result.status in ("interrupted", "timeout", "failed"):
+                    self.cancel_subagent(session_id)
             # The invoking task may keep working after this child settles;
             # retaining it would let later registry cleanup cancel its owner.
             handle.task = None
             try:
-                child_emitter.close()
+                if child_emitter is not None:
+                    child_emitter.close()
             finally:
-                reset_emitter(emitter_token)
-        handle.result = result
-        handle.status = result.status
-        if quota_ok:
-            partial_ok = result.status in (
-                "completed",
-                "refusal",
-                "max_iterations",
-                "budget_exceeded",
-            )
-            last_message = (
-                [{"type": "text", "text": result.summary}]
-                if result.summary and partial_ok
-                else None
-            )
-            publish_subagent_end(
-                run_id=run_id,
-                provider=provider,
-                child_id=session_id,
-                local=local,
-                stop_reason=result.stop_reason,
-                last_assistant_message=last_message,
-                parent_session_id=spec.parent_session_id,
-            )
+                if emitter_token is not None:
+                    reset_emitter(emitter_token)
+            if started:
+                publish_subagent_end(
+                    run_id=run_id,
+                    provider=provider,
+                    child_id=session_id,
+                    local=local,
+                    stop_reason=result.stop_reason if result is not None else "error",
+                    last_assistant_message=(
+                        [{"type": "text", "text": result.summary}]
+                        if result is not None and result.summary
+                        else None
+                    ),
+                    parent_session_id=spec.parent_session_id,
+                )
+        assert result is not None
         return result
+
+    async def _start_hooks(
+        self, spec: SubAgentSpec, session_id: str, abort: asyncio.Event, deadline: float
+    ) -> None:
+        from coderai.hooks.runner import run_on_subagent_spawn_async, run_subagent_start_async
+
+        parent = spec.parent_session_id or "root"
+        operations = (
+            lambda: run_on_subagent_spawn_async(
+                parent_session_id=parent,
+                subagent_id=session_id,
+                task=spec.prompt or spec.description,
+                mode=spec.mode or "read_only",
+                project_root=self.project_root,
+                settings=self.get_resolved_settings(),
+            ),
+            lambda: run_subagent_start_async(
+                parent,
+                self.project_root,
+                spec.subagent_type or spec.mode or "read_only",
+                spec.prompt or spec.description,
+                settings=self.get_resolved_settings(),
+            ),
+        )
+        for operation in operations:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError
+            outcome = await _run_abortable(operation(), abort, remaining)
+            if outcome and (outcome.stop or outcome.decision in {"deny", "ask"}):
+                raise PermissionError(
+                    outcome.reason or outcome.stop_reason or "Subagent launch denied by hook"
+                )
 
     async def _spawn_subagent_inner(self, spec: SubAgentSpec, session_id: str) -> SubAgentResult:
         """Unpublished spawn body: quota, scratchpad, controller, backend run."""
@@ -311,10 +481,6 @@ class SubAgentManager:
                 lifecycle_events=lifecycle_events,
             )
 
-        has_explicit_isolation = bool(spec.isolated_cwd or getattr(spec, "isolate", False))
-        if has_explicit_isolation and not spec.scratchpad_dir:
-            spec.scratchpad_dir = setup_subagent_scratchpad(self.project_root, session_id)
-
         abort_event = asyncio.Event()
         self._active_controllers[session_id] = abort_event
         _global_active_controllers[session_id] = abort_event
@@ -326,33 +492,28 @@ class SubAgentManager:
             {"timeout_seconds": spec.timeout_seconds, "max_iterations": spec.max_iterations},
         )
 
-        from coderai.hooks.runner import run_on_subagent_spawn, run_subagent_start
-
-        parent_sid = spec.parent_session_id or "root"
-        try:
-            run_on_subagent_spawn(
-                parent_session_id=parent_sid,
-                subagent_id=session_id,
-                task=spec.prompt or spec.description,
-                mode=spec.mode,
-                project_root=self.project_root,
-            )
-        except Exception:
-            pass
-        # SubagentStart fires alongside legacy SubagentSpawn.
-        try:
-            run_subagent_start(
-                parent_sid,
-                self.project_root,
-                getattr(spec, "agent_type", None) or spec.mode,
-                spec.prompt or spec.description,
-            )
-        except Exception:
-            pass
-
         outcome_summary: str = ""
 
+        parent_sid = spec.parent_session_id or "root"
+        deadline = asyncio.get_running_loop().time() + spec.timeout_seconds
         try:
+            await self._start_hooks(spec, session_id, abort_event, deadline)
+            if spec.provider != "in_process" and (
+                spec.mode == "read_only"
+                or spec.sandbox_mode not in (None, "workspace-write")
+                or spec.on_before_file_mutation is not None
+                or spec.on_after_file_mutation is not None
+                or spec.allowed_tools is not None
+                or spec.exclude_tools
+                or spec.plan_mode
+                or spec.token_budget is not None
+                or spec.max_tokens is not None
+                or (spec.descriptor and spec.descriptor.tool_filter)
+                or self._inherits_permission_settings
+            ):
+                raise PermissionError(
+                    "External backend cannot enforce this child capability policy; use in_process"
+                )
             if spec.provider == "claude_code":
                 from coderai.subagents.backends.claude_code import (
                     ClaudeCodeDriver,
@@ -362,12 +523,15 @@ class SubAgentManager:
                 claude_driver = ClaudeCodeDriver(
                     ClaudeCodeConfig(
                         timeout_seconds=spec.timeout_seconds,
-                        cwd=self.project_root,
+                        cwd=spec.isolated_cwd or self.project_root,
                     )
                 )
-                raw_res = await asyncio.wait_for(
-                    claude_driver.execute(spec.prompt, project_root=self.project_root),
-                    timeout=spec.timeout_seconds,
+                raw_res = await _run_abortable(
+                    claude_driver.execute(
+                        spec.prompt, project_root=spec.isolated_cwd or self.project_root
+                    ),
+                    abort_event,
+                    max(0.0, deadline - asyncio.get_running_loop().time()),
                 )
                 status = raw_res.get("status", "completed" if raw_res.get("ok") else "failed")
                 result = make_subagent_result(
@@ -386,12 +550,15 @@ class SubAgentManager:
                 codex_driver = CodexDriver(
                     CodexConfig(
                         timeout_seconds=spec.timeout_seconds,
-                        cwd=self.project_root,
+                        cwd=spec.isolated_cwd or self.project_root,
                     )
                 )
-                raw_res = await asyncio.wait_for(
-                    codex_driver.execute(spec.prompt, project_root=self.project_root),
-                    timeout=spec.timeout_seconds,
+                raw_res = await _run_abortable(
+                    codex_driver.execute(
+                        spec.prompt, project_root=spec.isolated_cwd or self.project_root
+                    ),
+                    abort_event,
+                    max(0.0, deadline - asyncio.get_running_loop().time()),
                 )
                 status = raw_res.get("status", "completed" if raw_res.get("ok") else "failed")
                 result = make_subagent_result(
@@ -410,13 +577,14 @@ class SubAgentManager:
                 runner = AcpSubagentRunner(
                     AcpRunConfig(
                         command="acp-agent",
-                        cwd=self.project_root,
+                        cwd=spec.isolated_cwd or self.project_root,
                         timeout_seconds=spec.timeout_seconds,
                     )
                 )
-                raw_res = await asyncio.wait_for(
+                raw_res = await _run_abortable(
                     runner.execute(spec.prompt),
-                    timeout=spec.timeout_seconds,
+                    abort_event,
+                    max(0.0, deadline - asyncio.get_running_loop().time()),
                 )
                 status = raw_res.get("status", "completed" if raw_res.get("ok") else "failed")
                 result = make_subagent_result(
@@ -430,9 +598,10 @@ class SubAgentManager:
                     lifecycle_events=lifecycle_events,
                 )
             else:
-                result = await asyncio.wait_for(
+                result = await _run_abortable(
                     self._run_subagent_loop(spec, session_id, abort_event, lifecycle_events),
-                    timeout=spec.timeout_seconds,
+                    abort_event,
+                    max(0.0, deadline - asyncio.get_running_loop().time()),
                 )
             result.parent_agent_id = spec.parent_agent_id
             result.root_agent_id = spec.root_agent_id
@@ -474,7 +643,7 @@ class SubAgentManager:
                 exit_code=124,
                 lifecycle_events=lifecycle_events,
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancelled:
             self._emit_lifecycle_event(
                 lifecycle_events,
                 "subagent/error",
@@ -482,12 +651,12 @@ class SubAgentManager:
                 {"error": "CancelledError: Parent or runner cancelled sub-agent."},
             )
             outcome_summary = "Sub-agent was cancelled."
-            if abort_event.is_set():
+            if isinstance(cancelled, _TurnAborted):
                 return make_subagent_result(
                     spec,
                     session_id,
                     "interrupted",
-                    summary="Sub-agent was cancelled.",
+                    summary=_partial_summary(spec, "Sub-agent was cancelled."),
                     error="CancelledError: Parent or runner cancelled sub-agent.",
                     exit_code=130,
                     lifecycle_events=lifecycle_events,
@@ -515,19 +684,18 @@ class SubAgentManager:
             self._active_controllers.pop(session_id, None)
             _global_active_controllers.pop(session_id, None)
             clear_session_state(session_id)
-            if has_explicit_isolation and spec.scratchpad_dir:
-                try:
-                    cleanup_subagent_scratchpad(spec.scratchpad_dir)
-                except Exception:
-                    pass
             try:
-                from coderai.hooks.runner import run_subagent_stop
+                from coderai.hooks.runner import run_subagent_stop_async
 
-                run_subagent_stop(
-                    parent_sid,
-                    self.project_root,
-                    getattr(spec, "agent_type", None) or spec.mode,
-                    outcome_summary,
+                await asyncio.wait_for(
+                    run_subagent_stop_async(
+                        parent_sid,
+                        self.project_root,
+                        spec.subagent_type or spec.mode or "read_only",
+                        outcome_summary,
+                        settings=self.get_resolved_settings(),
+                    ),
+                    timeout=5.0,
                 )
             except Exception:
                 pass
@@ -540,6 +708,8 @@ class SubAgentManager:
         """Concurrently execute multiple sub-agents with bounded concurrency."""
         if not specs:
             return []
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency must be at least 1")
 
         semaphore = asyncio.Semaphore(max_concurrency)
 
@@ -557,9 +727,14 @@ class SubAgentManager:
                     SubAgentResult(
                         task_id=specs[i].task_id,
                         session_id=f"sub_{specs[i].task_id}",
-                        status="failed",
-                        summary=f"Sub-agent failed with exception: {res}",
+                        status="interrupted"
+                        if isinstance(res, asyncio.CancelledError)
+                        else "failed",
+                        summary="Sub-agent was cancelled."
+                        if isinstance(res, asyncio.CancelledError)
+                        else f"Sub-agent failed with exception: {res}",
                         error=str(res),
+                        exit_code=130 if isinstance(res, asyncio.CancelledError) else 1,
                     )
                 )
             elif isinstance(res, SubAgentResult):
@@ -577,6 +752,7 @@ class SubAgentManager:
         finishes with no queued follow-up work.
         """
         from coderai.orchestration import settlement_summary
+        from coderai.subagents.core import get_agent_registry
 
         handle = spec.handle
         if handle is None:
@@ -585,41 +761,31 @@ class SubAgentManager:
         state: dict[str, Any] = {}
         abort_event = asyncio.Event()
         self._active_controllers[session_id] = abort_event
+        _global_active_controllers[session_id] = abort_event
         last_result: SubAgentResult | None = None
         from coderai.hooks.runner import (
-            run_on_subagent_spawn,
-            run_subagent_start,
-            run_subagent_stop,
+            run_subagent_stop_async,
         )
 
         parent_sid = spec.parent_session_id or "root"
         try:
-            run_on_subagent_spawn(
-                parent_session_id=parent_sid,
-                subagent_id=session_id,
-                task=spec.prompt or spec.description,
-                mode=spec.mode,
-                project_root=self.project_root,
+            await self._start_hooks(
+                spec,
+                session_id,
+                abort_event,
+                asyncio.get_running_loop().time() + spec.timeout_seconds,
             )
-        except Exception:
-            pass
-        try:
-            run_subagent_start(
-                parent_sid,
-                self.project_root,
-                getattr(spec, "agent_type", None) or spec.mode,
-                spec.prompt or spec.description,
-            )
-        except Exception:
-            pass
-        try:
             while True:
-                abort_event.clear()
+                # Never clear a signal still observed by an old provider
+                # thread: each activation owns an immutable abort lifetime.
+                abort_event = asyncio.Event()
+                self._active_controllers[session_id] = abort_event
+                _global_active_controllers[session_id] = abort_event
                 waiter = getattr(handle, "inbox_waiter", None)
                 if waiter is not None:
                     waiter.clear()
                 try:
-                    result = await asyncio.wait_for(
+                    result = await _run_abortable(
                         self._run_subagent_loop(
                             spec,
                             session_id,
@@ -629,15 +795,16 @@ class SubAgentManager:
                             messages=state.get("messages"),
                             state=state,
                         ),
-                        timeout=spec.timeout_seconds,
+                        abort_event,
+                        spec.timeout_seconds,
                     )
-                except asyncio.CancelledError:
-                    if abort_event.is_set() or getattr(handle, "killed", False):
+                except asyncio.CancelledError as cancelled:
+                    if isinstance(cancelled, _TurnAborted) or getattr(handle, "killed", False):
                         result = make_subagent_result(
                             spec,
                             session_id,
                             "interrupted",
-                            summary="Sub-agent was cancelled.",
+                            summary=_partial_summary(spec, "Sub-agent was cancelled."),
                             error="CancelledError: Parent or runner cancelled sub-agent.",
                             exit_code=130,
                         )
@@ -653,10 +820,28 @@ class SubAgentManager:
                         exit_code=124,
                     )
                 last_result = result
+                self._save_subagent_result(spec, result)
+                if result.status in ("interrupted", "timeout", "failed"):
+                    self.cancel_subagent(session_id)
                 handle.result = result
                 if handle.status != "interrupted":
                     handle.status = result.status
                 handle.last_stop_reason = result.stop_reason
+                get_agent_registry().changed()
+                from coderai.wire.emitter import get_emitter
+                from coderai.wire.types import SubagentEvent
+
+                get_emitter().send(
+                    SubagentEvent(
+                        agent_id=handle.id,
+                        subagent_type=spec.subagent_type,
+                        event={
+                            "type": "subagent.settled",
+                            "status": handle.status,
+                            "summary": handle.report or result.summary,
+                        },
+                    )
+                )
 
                 # One-shot settlement notice when a turn finishes with no
                 # queued follow-up work (harness subagent-settled notice).
@@ -687,17 +872,22 @@ class SubAgentManager:
                 try:
                     await asyncio.wait_for(waiter.wait(), timeout=idle_ttl)
                 except (asyncio.TimeoutError, TimeoutError):
-                    handle.status = "completed"
+                    handle.status = result.status
                     break
         finally:
             self._active_controllers.pop(session_id, None)
+            _global_active_controllers.pop(session_id, None)
             clear_session_state(session_id)
             try:
-                run_subagent_stop(
-                    parent_sid,
-                    self.project_root,
-                    getattr(spec, "agent_type", None) or spec.mode,
-                    (last_result.summary if last_result else "") or "",
+                await asyncio.wait_for(
+                    run_subagent_stop_async(
+                        parent_sid,
+                        self.project_root,
+                        spec.subagent_type or spec.mode or "read_only",
+                        (last_result.summary if last_result else "") or "",
+                        settings=self.get_resolved_settings(),
+                    ),
+                    timeout=5.0,
                 )
             except Exception:
                 pass
@@ -711,6 +901,75 @@ class SubAgentManager:
         )
 
     async def _run_subagent_loop(
+        self,
+        spec: SubAgentSpec,
+        session_id: str,
+        abort_event: asyncio.Event,
+        lifecycle_events: list[dict[str, Any]] | None = None,
+        *,
+        continuable: bool = False,
+        messages: list[dict[str, Any]] | None = None,
+        state: dict[str, Any] | None = None,
+    ) -> SubAgentResult:
+        """Keep partial conversations protocol-valid when a turn is stopped."""
+        from coderai.wire.emitter import get_emitter
+
+        emitter = get_emitter()
+        emitter.turn_begin(spec.prompt)
+        from coderai.subagents.core import current_subagent_abort, current_subagent_checkpoint
+
+        abort_token = current_subagent_abort.set(abort_event)
+        checkpoint = state if state is not None else {}
+        checkpoint_token = current_subagent_checkpoint.set(checkpoint)
+        try:
+            return await self._run_subagent_loop_inner(
+                spec,
+                session_id,
+                abort_event,
+                lifecycle_events,
+                continuable=continuable,
+                messages=messages,
+                state=checkpoint,
+            )
+        finally:
+            current_subagent_abort.reset(abort_token)
+            current_subagent_checkpoint.reset(checkpoint_token)
+            conversation = checkpoint.get("messages") or []
+            if spec.handle is not None:
+                spec.handle.conversation = conversation
+            # A resumed conversation must answer every advertised tool call,
+            # including calls not reached before SIGINT or a deadline.
+            pending: dict[str, dict[str, Any]] = {}
+            for message in conversation:
+                if message.get("role") == "assistant":
+                    for call in message.get("tool_calls") or []:
+                        pending[str(call.get("id", ""))] = call
+                elif message.get("role") == "tool":
+                    pending.pop(str(message.get("tool_call_id", "")), None)
+            for call_id in pending:
+                conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps(
+                            {
+                                "ok": False,
+                                "error": "Execution interrupted before a result was available.",
+                            }
+                        ),
+                    }
+                )
+            partial = checkpoint.get("streaming_content") or ""
+            thinking = checkpoint.get("streaming_thinking") or ""
+            if (partial or thinking) and not checkpoint.get("streaming_recorded"):
+                partial_message = {"role": "assistant", "content": partial}
+                if thinking:
+                    partial_message["reasoning_content"] = thinking
+                conversation.append(partial_message)
+            self._save_subagent_checkpoint(spec, conversation)
+            emitter.turn_end()
+
+    async def _run_subagent_loop_inner(
         self,
         spec: SubAgentSpec,
         session_id: str,
@@ -757,12 +1016,23 @@ class SubAgentManager:
         from coderai.tools.legacy.executor import ToolExecutor
 
         effective_root = spec.isolated_cwd or self.project_root
-        tool_executor = ToolExecutor(effective_root, self.create_openai_client)
+        mcp_manager = getattr(spec.session_manager, "mcp_manager", None)
+        tool_executor = (
+            ToolExecutor(effective_root, self.create_openai_client, mcp_manager=mcp_manager)
+            if mcp_manager is not None
+            else ToolExecutor(effective_root, self.create_openai_client)
+        )
         available_tools = self._get_sandboxed_tools(spec, model)
 
         if messages is None:
-            system_prompt = get_subagent_system_prompt(spec.mode)
-            if getattr(spec, "system_prompt", None):
+            system_prompt = get_subagent_system_prompt(spec.mode or "read_only")
+            if spec.seed_messages:
+                system_prompt += (
+                    "\n\nThe inherited conversation is a one-time snapshot from the parent, "
+                    "provided as reference material. You are an independent subagent, "
+                    "not a continuation of that agent. Complete your assigned task and report the result."
+                )
+            if spec.system_prompt:
                 system_prompt = f"{system_prompt}\n\n## Role Instructions\n{spec.system_prompt}"
             runtime_context = get_runtime_context(effective_root, model)
 
@@ -789,7 +1059,7 @@ class SubAgentManager:
                 {"role": "system", "content": system_prompt},
             ]
             if spec.seed_messages:
-                for sm in spec.seed_messages:
+                for sm in copy.deepcopy(spec.seed_messages):
                     role = sm.get("role")
                     if role and role != "system":
                         messages.append(dict(sm))
@@ -809,6 +1079,13 @@ class SubAgentManager:
         diffs: list[dict[str, Any]] = []
 
         for iteration in range(1, spec.max_iterations + 1):
+            if state is not None:
+                state["streaming_content"] = ""
+                state["streaming_thinking"] = ""
+                state["streaming_recorded"] = False
+            from coderai.wire.emitter import get_emitter
+
+            get_emitter().step_begin(iteration)
             if abort_event.is_set():
                 return make_subagent_result(
                     spec,
@@ -831,18 +1108,7 @@ class SubAgentManager:
             inbox_messages: list[str] = []
             if spec.handle and getattr(spec.handle, "inbox", None):
                 while spec.handle.inbox:
-                    inbox_messages.append(spec.handle.inbox.pop(0))
-            elif spec.agent_id or spec.task_id:
-                from coderai.subagents.core import get_agent_registry
-
-                reg_handle = (
-                    get_agent_registry().get(spec.agent_id or "")
-                    or get_agent_registry().get(spec.task_id or "")
-                    or get_agent_registry().get(f"agent_{spec.task_id}")
-                )
-                if reg_handle and reg_handle.inbox:
-                    while reg_handle.inbox:
-                        inbox_messages.append(reg_handle.inbox.pop(0))
+                    inbox_messages.append(spec.handle.inbox.popleft())
 
             if inbox_messages:
                 steering_text = "\n\n".join(
@@ -850,9 +1116,61 @@ class SubAgentManager:
                 )
                 messages.append({"role": "user", "content": steering_text})
 
+            from coderai.llm import estimate_openai_request_tokens, apply_request_completion_cap
+            from coderai.prompt import calculate_context_budget
+            from coderai.soul.compaction import evaluate_compaction_trigger
+
+            settings = self.get_resolved_settings()
+            budget = calculate_context_budget(model, context_limit=settings.get("contextWindow"))
+            estimated_context = estimate_openai_request_tokens(messages, available_tools)
+            active_tokens = max(active_tokens, estimated_context)
+            if evaluate_compaction_trigger(
+                active_tokens,
+                budget["context_limit"],
+                pressure_ratio=float(settings.get("compactionTriggerRatio") or 0.85),
+                reserved_context_size=int(settings.get("reservedContextSize", 50_000)),
+            ):
+                from coderai.subagents.compaction import compact_child_messages
+                from coderai.subagents.core import current_subagent_checkpoint
+                from coderai.wire.emitter import WireEmitter, bind_emitter, reset_emitter
+
+                async def summarize(request: dict[str, Any]) -> dict[str, Any]:
+                    # Summaries are scratchpad state, not child answer deltas.
+                    quiet_emitter = WireEmitter()
+                    token = bind_emitter(quiet_emitter)
+                    checkpoint_token = current_subagent_checkpoint.set(None)
+                    try:
+                        apply_request_completion_cap(
+                            request,
+                            context_limit=budget["context_limit"],
+                            response_budget=budget["max_output_tokens"],
+                        )
+                        return await asyncio.to_thread(_call_llm_sync, client, request)
+                    finally:
+                        current_subagent_checkpoint.reset(checkpoint_token)
+                        reset_emitter(token)
+                        quiet_emitter.close()
+
+                get_emitter().compaction_begin()
+                try:
+                    usage = await compact_child_messages(
+                        messages,
+                        model=model,
+                        complete=summarize,
+                        summary_budget=budget["max_output_tokens"],
+                    )
+                    if usage is not None:
+                        total_prompt_tokens += int(usage.get("prompt_tokens") or 0)
+                        total_completion_tokens += int(usage.get("completion_tokens") or 0)
+                        total_cached_tokens += int(usage.get("cached_tokens") or 0)
+                        active_tokens = estimate_openai_request_tokens(messages, available_tools)
+                        self._save_subagent_checkpoint(spec, messages)
+                finally:
+                    get_emitter().compaction_end()
+
             # Build request
             effective_messages = messages
-            effective_tools = available_tools
+            effective_tools: list[dict[str, Any]] | None = available_tools
             from coderai.utils.common.message_converter import (
                 apply_cache_control_breakpoints,
                 apply_tool_cache_control,
@@ -868,6 +1186,8 @@ class SubAgentManager:
                 "model": model,
                 "messages": effective_messages,
                 "tools": effective_tools if effective_tools else None,
+                "stream": True,
+                "stream_options": {"include_usage": True},
             }
             if temperature is not None:
                 request["temperature"] = temperature
@@ -884,6 +1204,31 @@ class SubAgentManager:
             )
             if not request.get("tools"):
                 request.pop("tools", None)
+            completion_cap = apply_request_completion_cap(
+                request,
+                context_limit=budget["context_limit"],
+                active_tokens=active_tokens,
+                response_budget=budget["max_output_tokens"],
+                reserved_context_size=int(settings.get("reservedContextSize", 50_000)),
+            )
+            if completion_cap < 1:
+                return make_subagent_result(
+                    spec,
+                    session_id,
+                    "budget_exceeded",
+                    summary=last_assistant_reply or "Child context exhausted its model window.",
+                    error="No completion budget remains after child context compaction.",
+                    exit_code=2,
+                    active_tokens=active_tokens,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cached_tokens=total_cached_tokens,
+                    iteration=iteration,
+                    tool_calls_count=tool_calls_count,
+                    artifacts=artifacts,
+                    diffs=diffs,
+                    lifecycle_events=events,
+                )
 
             # LLM invocation with retryable-failure backoff (harness retry
             # policy: 429/5xx/timeout/transport retried with jittered backoff)
@@ -997,6 +1342,25 @@ class SubAgentManager:
             if content:
                 last_assistant_reply = content
 
+            if choice.get("finish_reason") == "length":
+                return make_subagent_result(
+                    spec,
+                    session_id,
+                    "budget_exceeded",
+                    summary=last_assistant_reply,
+                    error="Sub-agent response was truncated before completing its final summary.",
+                    exit_code=2,
+                    active_tokens=active_tokens,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cached_tokens=total_cached_tokens,
+                    iteration=iteration,
+                    tool_calls_count=tool_calls_count,
+                    artifacts=artifacts,
+                    diffs=diffs,
+                    lifecycle_events=events,
+                )
+
             if refusal:
                 return make_subagent_result(
                     spec,
@@ -1028,9 +1392,29 @@ class SubAgentManager:
             if thinking:
                 assistant_msg["reasoning_content"] = thinking
             messages.append(assistant_msg)
+            self._save_subagent_checkpoint(spec, messages)
+            if state is not None:
+                state["streaming_recorded"] = True
 
             if not tool_calls:
                 # Agent concluded with final response
+                if not content.strip():
+                    return make_subagent_result(
+                        spec,
+                        session_id,
+                        "failed",
+                        error="Sub-agent turn ended without a final message.",
+                        exit_code=1,
+                        active_tokens=active_tokens,
+                        total_prompt_tokens=total_prompt_tokens,
+                        total_completion_tokens=total_completion_tokens,
+                        total_cached_tokens=total_cached_tokens,
+                        iteration=iteration,
+                        tool_calls_count=tool_calls_count,
+                        artifacts=artifacts,
+                        diffs=diffs,
+                        lifecycle_events=events,
+                    )
                 return make_subagent_result(
                     spec,
                     session_id,
@@ -1056,8 +1440,20 @@ class SubAgentManager:
 
                 fn_name = tc.get("function", {}).get("name", "")
                 fn_args_raw = tc.get("function", {}).get("arguments", "{}")
+                from coderai.wire.types import ToolCallPart, ToolResultPart
+
+                get_emitter().send(
+                    ToolCallPart(
+                        id=tc.get("id", ""),
+                        name=fn_name,
+                        arguments=fn_args_raw
+                        if isinstance(fn_args_raw, str)
+                        else json.dumps(fn_args_raw),
+                    )
+                )
 
                 # Track examined artifacts/files
+                parsed_args: Any = {}
                 try:
                     parsed_args = (
                         json.loads(fn_args_raw) if isinstance(fn_args_raw, str) else fn_args_raw
@@ -1093,13 +1489,31 @@ class SubAgentManager:
                     )
                     permission_decision = permission_plan["permissions"][0]["permission"]
 
-                denial = subagent_tool_denial(spec, fn_name, permission_decision, is_mutating)
+                denial = subagent_tool_denial(
+                    spec,
+                    fn_name,
+                    permission_decision,
+                    is_mutating,
+                    tdef.resolve_effects(parsed_args)
+                    if tdef
+                    else self._external_effects(spec, fn_name),
+                )
+                mcp_manager = getattr(spec.session_manager, "mcp_manager", None)
+                if (
+                    denial is None
+                    and mcp_manager is not None
+                    and mcp_manager.is_mcp_tool(fn_name)
+                    and not mcp_manager.is_tool_enabled_for_session(spec.parent_session_id, fn_name)
+                ):
+                    denial = (
+                        f"PermissionDenied: MCP tool '{fn_name}' is disabled in the parent session."
+                    )
                 if (
                     denial is None
                     and spec.mode == "read_only"
                     and fn_name in ("Task", "subagent", "subagent_fork")
                 ):
-                    denial = writable_child_denial(parsed_args)
+                    denial = writable_child_denial(parsed_args, self.project_root)
                 if denial is not None:
                     tool_result_content = json.dumps(
                         {"ok": False, "name": fn_name, "error": denial}
@@ -1126,6 +1540,12 @@ class SubAgentManager:
                         "tool_call_id": tc.get("id", ""),
                     }
                 )
+                self._save_subagent_checkpoint(spec, messages)
+                get_emitter().send(
+                    ToolResultPart(
+                        tool_call_id=tc.get("id", ""), output=tool_result_content or "(no output)"
+                    )
+                )
 
         # Exceeded max iterations
         return make_subagent_result(
@@ -1146,80 +1566,61 @@ class SubAgentManager:
             lifecycle_events=events,
         )
 
+    def _external_effects(self, spec: SubAgentSpec, name: str) -> str:
+        from coderai.tools.legacy.policy import external_effects
+
+        return external_effects(
+            name,
+            SimpleNamespace(
+                session_manager=spec.session_manager,
+                project_root=spec.project_root or self.project_root,
+            ),
+        )
+
     def _get_sandboxed_tools(self, spec: SubAgentSpec, model: str) -> list[dict[str, Any]]:
         """Filter tools for subagent execution with deterministic ordering and canonicalization."""
         import copy
         from coderai.prompt import format_tool_definitions
         from coderai.prompt.sections import order_tools
         from coderai.tools.legacy.types import canonicalize_tool_schema
-        from coderai.subagents.registry import is_tool_allowed
         from coderai.tools.legacy.registry import get_tool_registry
 
-        all_tools = get_tools({"model": model, "nonInteractive": True, "childAgent": True})
+        external_tools = None
+        if spec.session_manager is not None:
+            external_definitions = getattr(
+                spec.session_manager, "get_external_tool_definitions", None
+            )
+            if callable(external_definitions):
+                external_tools = external_definitions()
+            mcp_manager = getattr(spec.session_manager, "mcp_manager", None)
+            if mcp_manager is not None:
+                external_tools = [
+                    tool
+                    for tool in external_tools or []
+                    if not mcp_manager.is_mcp_tool(tool.get("function", {}).get("name", ""))
+                    or mcp_manager.is_tool_enabled_for_session(
+                        spec.parent_session_id, tool.get("function", {}).get("name", "")
+                    )
+                ]
+        all_tools = get_tools(
+            {"model": model, "nonInteractive": True, "childAgent": True},
+            external_tools=external_tools,
+        )
         reg = get_tool_registry()
 
         filtered: list[dict[str, Any]] = []
         for tool in all_tools:
             name = tool.get("function", {}).get("name", "")
 
-            # Sub-agents never ask interactive user questions
-            if name == "AskUserQuestion":
+            tdef = reg.get_tool(name)
+            effects = tdef.resolve_effects({}) if tdef else self._external_effects(spec, name)
+            if subagent_tool_denial(spec, name, "allow", bool(tdef and tdef.is_mutating), effects):
                 continue
-
-            # Limit sub-agent recursion
-            if (
-                name in ("Task", "subagent", "subagent_fork", "spawn_teammate")
-                and spec.depth + 1 >= spec.max_depth
-            ):
-                continue
-
-            # Exclude tools check
-            if spec.exclude_tools and is_tool_allowed(name, "allowlist", tuple(spec.exclude_tools)):
-                continue
-
-            # Allowlist check (None = inherit, [] = deny all)
-            if spec.allowed_tools is not None:
-                if not is_tool_allowed(name, "allowlist", tuple(spec.allowed_tools)):
-                    continue
-
-            # Read-only mode disallows mutating tools and shell unless sandbox is read-only
-            if spec.mode == "read_only":
-                tdef = reg.get_tool(name)
-                is_mutating = bool(tdef and tdef.is_mutating)
-
-                if name in ("bash", "pwsh"):
-                    if spec.sandbox_mode != "read-only":
-                        continue
-                elif (
-                    name
-                    in (
-                        "write",
-                        "Write",
-                        "edit",
-                        "Edit",
-                        "str_replace_editor",
-                        "schedule_create",
-                        "schedule_delete",
-                        "spawn_teammate",
-                    )
-                    or name.startswith("terminal_")
-                    or (is_mutating and name not in ("bash", "pwsh"))
-                ):
-                    continue
-                elif name in ("Task", "subagent", "subagent_fork"):
-                    # Restrict tool schema so it only advertises read_only mode
-                    tool = copy.deepcopy(tool)
-                    params = tool.get("function", {}).get("parameters", {}).get("properties", {})
-                    if "mode" in params:
-                        params["mode"]["enum"] = ["read_only"]
-                        params["mode"]["default"] = "read_only"
-
-            if (
-                spec.descriptor
-                and spec.descriptor.tool_filter
-                and not spec.descriptor.tool_filter.is_tool_permitted(name)
-            ):
-                continue
+            if spec.mode == "read_only" and name in {"Task", "subagent", "subagent_fork"}:
+                tool = copy.deepcopy(tool)
+                params = tool.get("function", {}).get("parameters", {}).get("properties", {})
+                if "mode" in params:
+                    params["mode"].update(enum=["read_only"], default="read_only")
 
             filtered.append(tool)
 

@@ -227,12 +227,9 @@ class OpenAIMessageConverter:
             if not content or (isinstance(content, str) and not content.strip()):
                 content = "(no output)"
             elif isinstance(content, str) and len(content) > max_tool_result_chars:
-                head = max_tool_result_chars // 2
-                tail = max_tool_result_chars - head
-                omitted = len(content) - max_tool_result_chars
-                content = (
-                    f"{content[:head]}\n\n...[{omitted} characters omitted]...\n\n{content[-tail:]}"
-                )
+                from coderai.utils.common.tool_payload import prune_tool_payload
+
+                content = prune_tool_payload(content, max_tool_result_chars)
         elif role == "assistant":
             if content is None:
                 content = ""
@@ -250,6 +247,24 @@ class OpenAIMessageConverter:
             tool_call_id = message.get("tool_call_id")
         if tool_call_id:
             base["tool_call_id"] = str(tool_call_id)
+
+        # OpenRouter continuation: pass the model's own reasoning blocks back
+        # unmodified so it reasons from where it left off. Other providers
+        # never see this field.
+        if role == "assistant":
+            from coderai.openrouter import is_openrouter_model
+
+            details: Any = None
+            if isinstance(message, dict):
+                msg_meta = message.get("meta")
+                if isinstance(msg_meta, dict):
+                    details = msg_meta.get("reasoningDetails")
+            else:
+                msg_meta = getattr(message, "meta", None)
+                if isinstance(msg_meta, dict):
+                    details = msg_meta.get("reasoningDetails")
+            if details and is_openrouter_model(model):
+                base["reasoning_details"] = details
 
         thinking = (
             getattr(message, "thinking", None)

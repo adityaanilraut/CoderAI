@@ -7,6 +7,7 @@ from typing import Any
 
 from coderai.teams.manager import get_team_manager
 from coderai.tools.legacy.types import ToolExecutionContext, ToolResult, as_str
+from coderai.tools.legacy.policy import team_scope
 
 
 async def handle_spawn_teammate_tool(
@@ -29,6 +30,8 @@ async def handle_spawn_teammate_tool(
         args.get("allowed_tools") if isinstance(args.get("allowed_tools"), list) else None
     )
 
+    if mode not in {"read_only", "general"}:
+        return ToolResult(ok=False, name="spawn_teammate", error="Invalid teammate mode")
     mgr = get_team_manager()
     teammate = mgr.spawn_teammate(
         name=name,
@@ -62,7 +65,6 @@ async def handle_team_task_create_tool(
     args: dict[str, Any], context: ToolExecutionContext
 ) -> ToolResult:
     """Create a task on the shared team task board."""
-    del context
     title = as_str(args.get("title", "")).strip()
     description = as_str(args.get("description", "")).strip()
 
@@ -78,6 +80,30 @@ async def handle_team_task_create_tool(
     dependencies = args.get("dependencies") if isinstance(args.get("dependencies"), list) else None
 
     mgr = get_team_manager()
+    scope = team_scope(context)
+    if dependencies and any(
+        (task := mgr.task_board.get_task(dep)) is None or task.owner_scope != scope
+        for dep in dependencies
+    ):
+        return ToolResult(
+            ok=False,
+            name="team_task_create",
+            error=f"Unknown task dependency in this team: {dependencies!r}",
+        )
+    if assigned_to:
+        teammate = next(
+            (
+                t
+                for t in mgr.list_teammates()
+                if t.owner_scope == scope and assigned_to in {t.teammate_id, t.name}
+            ),
+            None,
+        )
+        if teammate is None:
+            return ToolResult(
+                ok=False, name="team_task_create", error="Unknown assignee in this team."
+            )
+        assigned_to = teammate.teammate_id
     from coderai.teams.deadlock import CycleDetectedError
 
     try:
@@ -87,6 +113,7 @@ async def handle_team_task_create_tool(
             assigned_to=assigned_to,
             priority=priority,
             dependencies=dependencies,
+            owner_scope=scope,
         )
     except (CycleDetectedError, KeyError, ValueError) as e:
         return ToolResult(
@@ -118,7 +145,6 @@ async def handle_team_task_get_tool(
     args: dict[str, Any], context: ToolExecutionContext
 ) -> ToolResult:
     """Retrieve details of a task from the shared team task board."""
-    del context
     task_id = as_str(args.get("task_id", "")).strip()
     if not task_id:
         return ToolResult(
@@ -129,7 +155,7 @@ async def handle_team_task_get_tool(
 
     mgr = get_team_manager()
     task = mgr.task_board.get_task(task_id)
-    if not task:
+    if not task or task.owner_scope != team_scope(context):
         return ToolResult(
             ok=False,
             name="team_task_get",
@@ -164,12 +190,15 @@ async def handle_team_task_list_tool(
     args: dict[str, Any], context: ToolExecutionContext
 ) -> ToolResult:
     """List tasks on the shared team task board with optional filters."""
-    del context
     status = as_str(args.get("status", "")).strip() or None
     assigned_to = as_str(args.get("assigned_to", "")).strip() or None
 
     mgr = get_team_manager()
-    tasks = mgr.task_board.list_tasks(status=status, assigned_to=assigned_to)
+    tasks = [
+        t
+        for t in mgr.task_board.list_tasks(status=status, assigned_to=assigned_to)
+        if t.owner_scope == team_scope(context)
+    ]
 
     if not tasks:
         return ToolResult(
@@ -202,7 +231,6 @@ async def handle_team_task_update_tool(
     args: dict[str, Any], context: ToolExecutionContext
 ) -> ToolResult:
     """Update status, assignment, result, or notes of a task on the shared task board."""
-    del context
     task_id = as_str(args.get("task_id", "")).strip()
     if not task_id:
         return ToolResult(
@@ -215,9 +243,35 @@ async def handle_team_task_update_tool(
     assigned_to = as_str(args.get("assigned_to", "")).strip() if "assigned_to" in args else None
     result = as_str(args.get("result", "")).strip() if "result" in args else None
     notes = as_str(args.get("notes", "")).strip() if "notes" in args else None
-    expected_revision_raw = args.get("expected_revision") or args.get("revision")
+    expected_revision_raw = args.get("expected_revision", args.get("revision"))
 
     mgr = get_team_manager()
+    scope = team_scope(context)
+    task = mgr.task_board.get_task(task_id)
+    if task is None or task.owner_scope != scope:
+        return ToolResult(ok=False, name="team_task_update", error="Unknown task in this team.")
+    dependencies = args.get("dependencies")
+    if dependencies is not None and any(
+        (dep_task := mgr.task_board.get_task(dep)) is None or dep_task.owner_scope != scope
+        for dep in dependencies
+    ):
+        return ToolResult(
+            ok=False, name="team_task_update", error="Unknown dependency in this team."
+        )
+    if assigned_to:
+        teammate = next(
+            (
+                t
+                for t in mgr.list_teammates()
+                if t.owner_scope == scope and assigned_to in {t.teammate_id, t.name}
+            ),
+            None,
+        )
+        if teammate is None:
+            return ToolResult(
+                ok=False, name="team_task_update", error="Unknown assignee in this team."
+            )
+        assigned_to = teammate.teammate_id
     try:
         expected_revision = (
             int(expected_revision_raw) if expected_revision_raw is not None else None
@@ -229,6 +283,7 @@ async def handle_team_task_update_tool(
             result=result,
             notes=notes,
             expected_revision=expected_revision,
+            dependencies=dependencies,
         )
     except (KeyError, ValueError) as e:
         return ToolResult(
@@ -263,7 +318,6 @@ async def handle_team_task_update_tool(
 
 async def handle_wait_agent_tool(args: dict[str, Any], context: ToolExecutionContext) -> ToolResult:
     """Wait for completion or message settlement from spawned teammates or subagents."""
-    del context
     agent_id_raw = (
         args.get("agent_id") or args.get("agent_ids") or args.get("id") or args.get("teammate_id")
     )
@@ -277,18 +331,56 @@ async def handle_wait_agent_tool(args: dict[str, Any], context: ToolExecutionCon
     try:
         timeout_seconds = float(args.get("timeout_seconds", 60.0))
     except (ValueError, TypeError):
-        timeout_seconds = 60.0
-    if not math.isfinite(timeout_seconds):
-        timeout_seconds = 60.0
+        return ToolResult(ok=False, name="wait_agent", error="Invalid wait timeout")
+    if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
+        return ToolResult(
+            ok=False, name="wait_agent", error="Wait timeout must be finite and nonnegative"
+        )
     timeout_seconds = min(max(timeout_seconds, 0.0), 600.0)
 
     wait_for = str(args.get("wait_for") or "completion").strip().lower()
     if wait_for not in ("completion", "message", "any_settlement"):
-        wait_for = "completion"
+        return ToolResult(ok=False, name="wait_agent", error="Invalid wait mode")
 
     mgr = get_team_manager()
+    from coderai.subagents.core import get_agent_registry
+    from types import SimpleNamespace
+
+    scope = team_scope(context)
+    if not isinstance(agent_id_raw, (str, list, tuple)) or (
+        not isinstance(agent_id_raw, str) and any(not isinstance(aid, str) for aid in agent_id_raw)
+    ):
+        return ToolResult(ok=False, name="wait_agent", error="Agent IDs must be strings")
+    targets = [agent_id_raw] if isinstance(agent_id_raw, str) else list(agent_id_raw)
+    resolved = []
+    for target in targets:
+        teammate = next(
+            (
+                t
+                for t in mgr.list_teammates()
+                if t.owner_scope == scope and target in {t.teammate_id, t.name}
+            ),
+            None,
+        )
+        handle = get_agent_registry().get(target)
+        if teammate:
+            resolved.append(teammate.teammate_id)
+        elif (
+            handle
+            and team_scope(
+                SimpleNamespace(
+                    session_id=handle.parent_session_id,
+                    project_root=getattr(handle.spec, "project_root", None) or context.project_root,
+                    session_manager=context.session_manager,
+                )
+            )
+            == scope
+        ):
+            resolved.append(target)
+        else:
+            return ToolResult(ok=False, name="wait_agent", error="Unknown agent in this team.")
     res = await mgr.wait_agent(
-        agent_ids=agent_id_raw,
+        agent_ids=resolved,
         timeout_seconds=timeout_seconds,
         wait_for=wait_for,
     )

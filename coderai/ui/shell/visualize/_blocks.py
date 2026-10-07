@@ -214,16 +214,19 @@ class _ContentBlock:
                 pass
             self._committed_len += 1
 
-    def _compose_spinner(self) -> Spinner:
+    def _compose_labeled_spinner(self, label: str) -> Spinner:
         elapsed = time.monotonic() - self._start_time
         elapsed_str = format_elapsed(elapsed)
         count_str = f"{format_token_count(int(self._token_count))} tokens"
         self._spinner.text = Text.assemble(
-            ("Composing...", ""),
+            (label, ""),
             (f" {elapsed_str}", "grey50"),
             (f" · {count_str}", "grey50"),
         )
         return self._spinner
+
+    def _compose_spinner(self) -> Spinner:
+        return self._compose_labeled_spinner("Composing...")
 
     def _compose_thinking_stream(self) -> RenderableType:
         spinner = self._compose_thinking_spinner()
@@ -234,15 +237,7 @@ class _ContentBlock:
         return Group(spinner, Text(preview, style="grey50 italic"))
 
     def _compose_thinking_spinner(self) -> Spinner:
-        elapsed = time.monotonic() - self._start_time
-        elapsed_str = format_elapsed(elapsed)
-        count_str = f"{format_token_count(int(self._token_count))} tokens"
-        self._spinner.text = Text.assemble(
-            ("Thinking...", ""),
-            (f" {elapsed_str}", "grey50"),
-            (f" · {count_str}", "grey50"),
-        )
-        return self._spinner
+        return self._compose_labeled_spinner("Thinking...")
 
     def _build_preview(self, text: str) -> str:
         max_width = console.width - 2 if getattr(console, "width", 0) else 78

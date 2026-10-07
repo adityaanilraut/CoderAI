@@ -11,12 +11,21 @@ corrupt files read as ``None`` so one bad instance never breaks listing.
 from __future__ import annotations
 
 import time
+import os
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from coderai.utils.io import atomic_json_write
+from coderai.utils.storage import (
+    owned_path,
+    storage_id,
+    read_bytes,
+    write_bytes,
+    remove_path,
+    storage_lock,
+    parent_directory,
+)
 from coderai.log import logger
 
 SubagentStatus = Literal[
@@ -59,28 +68,33 @@ class SubagentInstanceRecord:
     updated_at: float
     last_task_id: str | None = None
     launch_spec: SubagentLaunchSpec | None = None
+    owner_pid: int | None = None
 
 
 def new_agent_id(prefix: str = "agt") -> str:
-    """Fresh instance id (``agt_<12 hex>``)."""
-    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+    """Fresh instance id (``agt_<32 hex>``)."""
+    return f"{prefix}_{uuid.uuid4().hex}"
 
 
 class SubagentStore:
     """Filesystem-backed instance registry scoped to one session."""
 
     def __init__(self, session_dir: str | Path) -> None:
-        self._session_dir = Path(session_dir)
+        raw = Path(session_dir)
+        self._session_dir = raw.parent.resolve() / raw.name
+        if self._session_dir.is_symlink():
+            raise ValueError("Session storage must not be a symlink")
 
     # -- paths ----------------------------------------------------------
     @property
     def root(self) -> Path:
-        return self._session_dir / "subagents"
+        return owned_path(self._session_dir, "subagents")
 
     def instance_dir(self, agent_id: str, *, create: bool = False) -> Path:
-        path = self.root / str(agent_id)
+        path = owned_path(self.root, storage_id(agent_id))
         if create:
-            path.mkdir(parents=True, exist_ok=True)
+            with parent_directory(path / "meta.json", create=True):
+                pass
         return path
 
     def meta_path(self, agent_id: str) -> Path:
@@ -109,10 +123,7 @@ class SubagentStore:
         now = time.time()
         self.instance_dir(agent_id, create=True)
         for name in ("context.jsonl", "wire.jsonl", "prompt.txt", "output"):
-            try:
-                (self.instance_dir(agent_id) / name).touch(exist_ok=True)
-            except OSError:
-                pass
+            write_bytes(self.instance_dir(agent_id) / name, b"", append=True)
         record = SubagentInstanceRecord(
             agent_id=agent_id,
             subagent_type=subagent_type,
@@ -120,6 +131,7 @@ class SubagentStore:
             description=description,
             created_at=now,
             updated_at=now,
+            owner_pid=os.getpid(),
             launch_spec=SubagentLaunchSpec(
                 agent_id=agent_id,
                 subagent_type=subagent_type,
@@ -133,7 +145,9 @@ class SubagentStore:
 
     def write_instance(self, record: SubagentInstanceRecord) -> None:
         self.instance_dir(record.agent_id, create=True)
-        atomic_json_write(asdict(record), self.meta_path(record.agent_id))
+        import json
+
+        write_bytes(self.meta_path(record.agent_id), json.dumps(asdict(record)).encode("utf-8"))
 
     def update_instance(
         self,
@@ -143,6 +157,12 @@ class SubagentStore:
         last_task_id: str | None = None,
     ) -> SubagentInstanceRecord | None:
         """Patch status/task fields (validates status; returns updated record)."""
+        with storage_lock(self.meta_path(agent_id)):
+            return self._update_instance(agent_id, status=status, last_task_id=last_task_id)
+
+    def _update_instance(
+        self, agent_id: str, *, status: str | None, last_task_id: str | None
+    ) -> SubagentInstanceRecord | None:
         record = self.get_instance(agent_id)
         if record is None:
             return None
@@ -157,6 +177,7 @@ class SubagentStore:
             updated_at=time.time(),
             last_task_id=last_task_id if last_task_id is not None else record.last_task_id,
             launch_spec=record.launch_spec,
+            owner_pid=record.owner_pid,
         )
         self.write_instance(updated)
         return updated
@@ -165,9 +186,19 @@ class SubagentStore:
         """Persist the launch prompt (best-effort)."""
         try:
             self.instance_dir(agent_id, create=True)
-            self.prompt_path(agent_id).write_text(prompt, encoding="utf-8")
+            write_bytes(self.prompt_path(agent_id), prompt.encode("utf-8"))
         except OSError as exc:
             logger.debug("Subagent prompt write failed: {error}", error=exc)
+
+    def write_context(self, agent_id: str, messages: list[dict[str, Any]]) -> None:
+        """Atomically replace a child's independent conversation checkpoint."""
+        import json
+
+        content = "".join(json.dumps(message, ensure_ascii=False) + "\n" for message in messages)
+        write_bytes(self.context_path(agent_id), content.encode("utf-8"))
+
+    def write_output(self, agent_id: str, output: str) -> None:
+        write_bytes(self.output_path(agent_id), output.encode("utf-8"))
 
     # -- reads ----------------------------------------------------------
     def get_instance(self, agent_id: str) -> SubagentInstanceRecord | None:
@@ -177,7 +208,9 @@ class SubagentStore:
         try:
             import json
 
-            data = json.loads(meta.read_text(encoding="utf-8"))
+            data = json.loads(read_bytes(meta, limit=1_000_000))
+            if not isinstance(data, dict) or data.get("agent_id") != agent_id:
+                raise ValueError("Invalid subagent record identity")
             return _record_from_dict(data)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             logger.debug("Subagent record unreadable: {error}", error=exc)
@@ -194,32 +227,34 @@ class SubagentStore:
             return []
         records: list[SubagentInstanceRecord] = []
         for child in sorted(self.root.iterdir()):
-            if child.is_dir():
+            if child.is_dir() and not child.is_symlink():
                 record = self.get_instance(child.name)
                 if record is not None:
                     records.append(record)
         return records
 
     def delete_instance(self, agent_id: str) -> None:
-        import shutil
+        remove_path(self.instance_dir(agent_id), tree=True)
 
-        target = self.instance_dir(agent_id)
-        if target.is_dir():
-            shutil.rmtree(target, ignore_errors=True)
-
-    def mark_stale_foreground_failed(self) -> list[str]:
-        """Fail ``running_foreground`` leftovers from a crashed process.
-
-        Cleans up dangling runs on startup; returns the failed agent ids.
-        """
-        failed: list[str] = []
+    def recover_stale_instances(self, live_agent_ids: set[str]) -> list[str]:
+        """Fail interrupted native runs, preserving workers owned by live processes."""
+        failed = []
         for record in self.list_instances():
-            if record.status == "running_foreground":
+            if (
+                record.status not in {"running_foreground", "running_background"}
+                or record.agent_id in live_agent_ids
+            ):
+                continue
+            if record.owner_pid is not None and record.owner_pid != os.getpid():
                 try:
-                    self.update_instance(record.agent_id, status="failed")
-                    failed.append(record.agent_id)
-                except (OSError, ValueError):
+                    os.kill(record.owner_pid, 0)
                     continue
+                except PermissionError:
+                    continue
+                except ProcessLookupError:
+                    pass
+            self.update_instance(record.agent_id, status="failed")
+            failed.append(record.agent_id)
         return failed
 
 
@@ -246,4 +281,7 @@ def _record_from_dict(data: dict[str, Any]) -> SubagentInstanceRecord:
         updated_at=float(data.get("updated_at") or 0.0),
         last_task_id=data.get("last_task_id"),
         launch_spec=spec,
+        owner_pid=data.get("owner_pid")
+        if isinstance(data.get("owner_pid"), int) and data["owner_pid"] > 0
+        else None,
     )

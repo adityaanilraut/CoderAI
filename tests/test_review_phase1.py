@@ -25,7 +25,7 @@ from coderai.tools.file.replace import handle_edit_tool
 from coderai.tools.legacy.executor import ToolExecutor
 from coderai.tools.legacy.registry import ToolRegistry
 from coderai.tools.legacy.sanitizer import sanitize_text
-from coderai.tools.legacy.types import ToolDefinition, ToolResult
+from coderai.tools.legacy.types import ToolDefinition, ToolResult, ToolExecutionContext
 from coderai.tools.todo import handle_todo_write_tool
 from coderai.utils.aioqueue import Queue
 
@@ -454,7 +454,7 @@ async def test_team_task_create_unknown_dependency_is_tool_error() -> None:
 
     result = await handle_team_task_create_tool(
         {"title": "phase1", "dependencies": ["task_missing"]},
-        MagicMock(),
+        ToolExecutionContext(session_id="phase1", project_root="/tmp"),
     )
     assert result.ok is False
     assert "task_missing" in (result.error or "")
@@ -467,15 +467,17 @@ async def test_team_task_update_bad_revision_is_tool_error() -> None:
 
     result = await handle_team_task_update_tool(
         {"task_id": "task_missing", "expected_revision": "nope"},
-        MagicMock(),
+        ToolExecutionContext(session_id="phase1", project_root="/tmp"),
     )
     assert result.ok is False
     assert result.error
 
 
 @pytest.mark.asyncio
-async def test_wait_agent_clamps_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """WF-A15: negative, infinite, and NaN timeouts stay inside 0–600 seconds."""
+async def test_wait_agent_rejects_invalid_timeout_and_caps_valid_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed deadlines fail; valid long waits retain the public cap."""
     from coderai.teams.manager import TeamManager
     from coderai.teams.tools import handle_wait_agent_tool
 
@@ -492,6 +494,14 @@ async def test_wait_agent_clamps_timeout(monkeypatch: pytest.MonkeyPatch) -> Non
         return {"ok": True, "status": "settled", "elapsed_seconds": 0, "agents": []}
 
     monkeypatch.setattr(TeamManager, "wait_agent", _fake_wait)
+    from coderai.teams.models import Teammate
+    from coderai.tools.legacy.types import ToolExecutionContext
+    from coderai.tools.legacy.policy import team_scope
+
+    context = ToolExecutionContext("wait-owner", ".")
+    team = TeamManager()
+    team._teammates["agt"] = Teammate("agt", "test", "coder", owner_scope=team_scope(context))
+    monkeypatch.setattr("coderai.teams.tools.get_team_manager", lambda: team)
     for raw, expected in (
         (-5, 0.0),
         (float("inf"), 60.0),
@@ -500,11 +510,14 @@ async def test_wait_agent_clamps_timeout(monkeypatch: pytest.MonkeyPatch) -> Non
     ):
         result = await handle_wait_agent_tool(
             {"agent_id": "agt", "timeout_seconds": raw},
-            MagicMock(),
+            context,
         )
-        assert result.ok is True
-        assert math.isfinite(seen[-1])
-        assert seen[-1] == expected
+        if raw < 0 or not math.isfinite(raw):
+            assert result.ok is False
+        else:
+            assert result.ok is True
+            assert math.isfinite(seen[-1])
+            assert seen[-1] == expected
 
 
 def test_effort_xhigh_is_accepted() -> None:

@@ -130,6 +130,7 @@ def handle_todo_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
             mgr = None
             if isinstance(context, dict):
                 session_id = context.get("session_id")
+                mgr = context.get("manager") or context.get("session_manager")
             else:
                 session_id = getattr(context, "session_id", None)
                 mgr = getattr(context, "manager", None) or getattr(context, "session_manager", None)
@@ -139,14 +140,15 @@ def handle_todo_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 state = mgr.get_session_state(session_id)
                 state.todos = [
                     TodoItemState(
-                        title=str(t.get("content", ""))[:500],
-                        status="in_progress"
-                        if t.get("status") == "in_progress"
-                        else ("done" if t.get("status") in ("completed", "done") else "pending"),
+                        id=str(t.get("id", "")),
+                        title=str(t.get("content", "")),
+                        status=t["status"],
                     )
                     for t in normalized
                 ]
                 mgr._save_session_state(session_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            result.ok = False
+            result.error = f"TodoPersistenceError: {exc}"
+            result.metadata = {**meta, "code": "TODO_PERSISTENCE_FAILED", "retryable": True}
     return result

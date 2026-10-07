@@ -99,7 +99,7 @@ class _SlowClient:
 def _cli_process(payload: dict):
     """Fake the async process contract used by external CLI drivers."""
 
-    async def communicate():
+    async def communicate(input=None):
         return json.dumps(payload).encode(), b""
 
     return NS(returncode=0, communicate=communicate)
@@ -309,13 +309,13 @@ async def test_subagent_claude_driver_config_and_execution(
         assert args == (
             "/fake/bin/claude",
             "-p",
-            "Find todos",
             "--output-format",
             "json",
             "--permission-mode",
             "acceptEdits",
         )
         assert kwargs["cwd"] == str(tmp_path)
+        assert kwargs["stdin"] == asyncio.subprocess.PIPE
         return _cli_process({"result": "Found 3 files"})
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake)
@@ -338,13 +338,14 @@ async def test_subagent_codex_driver_config_and_execution(
         assert args == (
             "/fake/bin/codex",
             "exec",
-            "Refactor module",
             "--json",
-            "--approval-policy",
-            "on-request",
-            "--auto-approve",
+            "-c",
+            'approval_policy="never"',
+            "--approve-for-me",
+            "-",
         )
         assert kwargs["cwd"] == str(tmp_path)
+        assert kwargs["stdin"] == asyncio.subprocess.PIPE
         return _cli_process({"output": "Refactored module"})
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake)

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import contextlib
+import asyncio
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -13,6 +14,13 @@ import acp
 from coderai.kaos.path import KaosPath
 
 from coderai.acp.engine import SessionManagerEngine
+from coderai.acp.config_options import (
+    ACP_MODE_IDS,
+    config_options,
+    mode_id,
+    mode_state,
+    thinking_values,
+)
 from coderai.acp.kaos import ACPKaos
 from coderai.acp.mcp import acp_mcp_servers_to_mcp_config
 from coderai.acp.session import (
@@ -113,6 +121,52 @@ class ACPServer:
     def on_connect(self, conn: acp.Client) -> None:
         logger.info("ACP client connected")
         self.conn = conn
+
+    async def close(self) -> None:
+        """Release all session resources when the ACP connection shuts down."""
+        sessions = list(self.sessions.values())
+        self.sessions.clear()
+
+        async def close_session(session: ACPSession) -> None:
+            await session.cancel()
+            await session.cli.close()
+
+        await asyncio.gather(
+            *(close_session(session) for session, _ in sessions), return_exceptions=True
+        )
+        self._terminal_bridges.clear()
+        self.conn = None
+
+    def _response_state(self, session_id: str) -> dict[str, Any]:
+        session, model = self.sessions[session_id]
+        state = getattr(session.cli.session, "state", None)
+        config = session.cli.config
+        return {
+            "modes": mode_state(state),
+            "models": acp.schema.SessionModelState(
+                available_models=_expand_llm_models(getattr(config, "models", None) or {}),
+                current_model_id=model.to_acp_model_id(),
+            ),
+            "config_options": config_options(config, model.model_key, model.thinking, state),
+        }
+
+    def _restore_controls(self, session: ACPSession, model: _ModelIDConv) -> _ModelIDConv:
+        from coderai.session_state import SessionState
+
+        state = getattr(getattr(session.cli, "session", None), "state", None)
+        if not isinstance(state, SessionState):
+            return model
+        key = state.acp_model_key or model.model_key
+        thinking = state.acp_thinking if state.acp_thinking is not None else model.thinking
+        models = getattr(session.cli.config, "models", None) or {}
+        if key in models:
+            values = thinking_values(models[key])
+            thinking = bool(thinking or values == ["on"])
+            session.cli.set_model(key)
+            session.cli.set_thinking(thinking)
+            model = _ModelIDConv(key, thinking)
+        session.cli.set_mode(mode_id(state))
+        return model
 
     async def initialize(
         self,
@@ -252,6 +306,7 @@ class ACPServer:
         acp_kaos = ACPKaos(self.conn, session.id, self.client_capabilities)
         acp_session = ACPSession(session.id, engine, self.conn, kaos=acp_kaos)
         model_id_conv = _ModelIDConv(config.default_model or "", bool(config.default_thinking))
+        model_id_conv = self._restore_controls(acp_session, model_id_conv)
         self.sessions[session.id] = (acp_session, model_id_conv)
 
         # Advertise the live CoderAI slash catalog (Stack A), not the retired
@@ -276,20 +331,7 @@ class ACPServer:
             logger.warning("Failed to publish available commands for %s", session.id)
         return acp.NewSessionResponse(
             session_id=session.id,
-            modes=acp.schema.SessionModeState(
-                available_modes=[
-                    acp.schema.SessionMode(
-                        id="default",
-                        name="Default",
-                        description="The default mode.",
-                    ),
-                ],
-                current_mode_id="default",
-            ),
-            models=acp.schema.SessionModelState(
-                available_models=_expand_llm_models(config.models),
-                current_model_id=model_id_conv.to_acp_model_id(),
-            ),
+            **self._response_state(session.id),
         )
 
     async def _setup_session(
@@ -319,33 +361,64 @@ class ACPServer:
         # fallback for sessions created before the binding was persisted.
         bound = False
         stored_id = load_engine_session_id(session.dir)
+        from coderai.acp.session import engine_session_id_path
+
+        if stored_id is None and engine_session_id_path(session.dir).exists():
+            raise acp.RequestError.invalid_params(
+                {"session_id": "Persisted engine binding is corrupt"}
+            )
         if stored_id is not None and engine.manager.get_session(stored_id) is not None:
             engine.bind_session(stored_id)
             bound = True
         if not bound and engine.manager.get_session(session.id) is not None:
             engine.bind_session(session.id)
+            bound = True
+        if stored_id is not None and not bound:
+            raise acp.RequestError.invalid_params(
+                {"session_id": "Persisted engine binding is missing or corrupt"}
+            )
+        if not bound and (
+            session.context_file.stat().st_size > 0 or not session.wire_file.is_empty()
+        ):
+            raise acp.RequestError.invalid_params(
+                {"session_id": "Conversation has no valid engine binding"}
+            )
         config = engine.config
         acp_kaos = ACPKaos(self.conn, session.id, self.client_capabilities)
         acp_session = ACPSession(session.id, engine, self.conn, kaos=acp_kaos)
         model_id_conv = _ModelIDConv(config.default_model or "", bool(config.default_thinking))
+        model_id_conv = self._restore_controls(acp_session, model_id_conv)
         self.sessions[session.id] = (acp_session, model_id_conv)
 
         return acp_session, model_id_conv
 
+    def _check_loaded_workspace(self, cwd: str, session_id: str) -> None:
+        entry = self.sessions.get(session_id)
+        if (
+            entry is not None
+            and Path(str(entry[0].cli.session.work_dir)).resolve() != Path(cwd).resolve()
+        ):
+            raise acp.RequestError.invalid_params({"cwd": "Session belongs to another workspace"})
+
     async def load_session(
         self, cwd: str, session_id: str, mcp_servers: list[MCPServer] | None = None, **kwargs: Any
-    ) -> None:
+    ) -> acp.schema.LoadSessionResponse:
         logger.info("Loading session: %s for working directory: %s", session_id, cwd)
+        self._check_auth()
+        self._check_loaded_workspace(cwd, session_id)
         if session_id in self.sessions:
             logger.warning("Session already loaded: %s", session_id)
-            return
-
-        self._check_auth()
+            loaded = self.sessions[session_id][0]
+            if loaded._turn_state is not None:
+                raise acp.RequestError.invalid_request({"error": "Session has an active turn"})
+            await loaded.replay_history(loaded.cli.session.wire_file)
+            return acp.schema.LoadSessionResponse(**self._response_state(session_id))
 
         acp_session, _ = await self._setup_session(cwd, session_id, mcp_servers)
         wire_file = getattr(getattr(acp_session.cli, "session", None), "wire_file", None)
         if wire_file is not None:
             await acp_session.replay_history(wire_file)
+        return acp.schema.LoadSessionResponse(**self._response_state(session_id))
 
     async def resume_session(
         self, cwd: str, session_id: str, mcp_servers: list[MCPServer] | None = None, **kwargs: Any
@@ -354,26 +427,12 @@ class ACPServer:
 
         self._check_auth()
 
+        self._check_loaded_workspace(cwd, session_id)
         if session_id not in self.sessions:
             await self._setup_session(cwd, session_id, mcp_servers)
 
-        acp_session, model_id_conv = self.sessions[session_id]
-        config = acp_session.cli.config
         return acp.schema.ResumeSessionResponse(
-            modes=acp.schema.SessionModeState(
-                available_modes=[
-                    acp.schema.SessionMode(
-                        id="default",
-                        name="Default",
-                        description="The default mode.",
-                    ),
-                ],
-                current_mode_id="default",
-            ),
-            models=acp.schema.SessionModelState(
-                available_models=_expand_llm_models(config.models),
-                current_model_id=model_id_conv.to_acp_model_id(),
-            ),
+            **self._response_state(session_id),
         )
 
     async def fork_session(
@@ -381,6 +440,7 @@ class ACPServer:
     ) -> acp.schema.ForkSessionResponse:
         logger.info("Forking session: %s for working directory: %s", session_id, cwd)
         self._check_auth()
+        self._check_loaded_workspace(cwd, session_id)
         if self.conn is None:
             raise acp.RequestError.invalid_request({"connection": "ACP client not connected"})
         if self.client_capabilities is None:
@@ -390,11 +450,33 @@ class ACPServer:
         # Validate the parent before creating anything: forking an unknown
         # session must not leave an orphan session behind.
         parent_session = self.sessions.get(session_id)
-        if parent_session is None and await Session.find(work_dir, session_id) is None:
+        parent = await Session.find(work_dir, session_id)
+        if parent is None:
             logger.error("Session not found: %s", session_id)
             raise acp.RequestError.invalid_params({"session_id": "Session not found"})
 
         forked_session = await Session.create(work_dir)
+        # The facade store supplies session discovery and ACP history replay;
+        # cloning only the engine store silently loses both after a restart.
+        try:
+            await asyncio.to_thread(
+                shutil.copyfile, parent.context_file, forked_session.context_file
+            )
+            if parent.wire_file.path.exists():
+                await asyncio.to_thread(
+                    shutil.copyfile, parent.wire_file.path, forked_session.wire_file.path
+                )
+                from coderai.wire.file import WireFile
+
+                forked_session.wire_file = WireFile(forked_session.wire_file.path)
+            forked_session.state = parent.state.model_copy(deep=True)
+            from coderai.session_state import save_session_state
+
+            save_session_state(forked_session.state, forked_session.dir)
+            await forked_session.refresh()
+        except BaseException:
+            await forked_session.delete()
+            raise
 
         mcp_config = acp_mcp_servers_to_mcp_config(mcp_servers or [])
         engine = _build_engine(forked_session, mcp_configs=[mcp_config])
@@ -444,39 +526,36 @@ class ACPServer:
                 forked_id = engine.manager.fork_session(source_id)
             except Exception as exc:
                 logger.warning("SessionManager fork failed: %s", exc)
+                self.sessions.pop(forked_session.id, None)
+                await forked_session.delete()
+                raise acp.RequestError.internal_error({"error": "Session fork failed"}) from exc
         if forked_id:
             engine.bind_session(forked_id)
             save_engine_session_id(forked_session.dir, forked_id)
-        else:
-            logger.warning(
-                "Forked ACP session %s started without conversation history",
-                forked_session.id,
+        elif (
+            parent is None
+            or source_id
+            or parent.context_file.stat().st_size > 0
+            or not parent.wire_file.is_empty()
+        ):
+            self.sessions.pop(forked_session.id, None)
+            await forked_session.delete()
+            raise acp.RequestError.invalid_params(
+                {"session_id": "Source conversation could not be forked"}
             )
+
+        model_id_conv = self._restore_controls(acp_session, model_id_conv)
+        self.sessions[forked_session.id] = (acp_session, model_id_conv)
 
         return acp.schema.ForkSessionResponse(
             session_id=forked_session.id,
-            modes=acp.schema.SessionModeState(
-                available_modes=[
-                    acp.schema.SessionMode(
-                        id="default",
-                        name="Default",
-                        description="The default mode.",
-                    ),
-                ],
-                current_mode_id="default",
-            ),
-            models=acp.schema.SessionModelState(
-                available_models=_expand_llm_models(config.models),
-                current_model_id=model_id_conv.to_acp_model_id(),
-            ),
+            **self._response_state(forked_session.id),
         )
 
     async def list_sessions(
         self, cursor: str | None = None, cwd: str | None = None, **kwargs: Any
     ) -> acp.schema.ListSessionsResponse:
         logger.info("Listing sessions for working directory: %s", cwd)
-        if cwd is None:
-            return acp.schema.ListSessionsResponse(sessions=[], next_cursor=None)
         offset = 0
         if cursor is not None:
             try:
@@ -485,8 +564,11 @@ class ACPServer:
                 raise acp.RequestError.invalid_params(
                     {"cursor": "Cursor must be an integer offset"}
                 ) from err
-        work_dir = KaosPath.unsafe_from_local_path(Path(cwd))
-        sessions = await Session.list(work_dir)
+        if cwd is None:
+            sessions = await Session.list_all()
+        else:
+            work_dir = KaosPath.unsafe_from_local_path(Path(cwd))
+            sessions = await Session.list(work_dir)
         page = sessions[offset : offset + _SESSION_LIST_PAGE_SIZE]
         next_cursor = (
             str(offset + _SESSION_LIST_PAGE_SIZE)
@@ -496,7 +578,7 @@ class ACPServer:
         return acp.schema.ListSessionsResponse(
             sessions=[
                 acp.schema.SessionInfo(
-                    cwd=cwd,
+                    cwd=str(s.work_dir),
                     session_id=s.id,
                     title=s.title,
                     updated_at=datetime.fromtimestamp(s.updated_at).astimezone().isoformat(),
@@ -508,13 +590,62 @@ class ACPServer:
 
     async def set_config_option(
         self, config_id: str, session_id: str, value: str, **kwargs: Any
-    ) -> acp.schema.SetSessionConfigOptionResponse | None:
-        """No configuration options are advertised by this server."""
-        raise acp.RequestError.method_not_found("session/set_config_option")
+    ) -> acp.schema.SetSessionConfigOptionResponse:
+        if session_id not in self.sessions:
+            raise acp.RequestError.invalid_params({"session_id": "Session not found"})
+        if config_id == "mode":
+            await self.set_session_mode(value, session_id)
+        elif config_id == "model":
+            _, selected = self.sessions[session_id]
+            models = self.sessions[session_id][0].cli.config.models
+            supported = thinking_values(models.get(value))
+            thinking = selected.thinking if "off" in supported else supported == ["on"]
+            await self.set_session_model(
+                _ModelIDConv(value, thinking).to_acp_model_id(), session_id
+            )
+        elif config_id == "thinking":
+            live, selected = self.sessions[session_id]
+            models = getattr(live.cli.config, "models", None) or {}
+            if value not in thinking_values(models.get(selected.model_key)):
+                raise acp.RequestError.invalid_params({"value": "Unsupported thinking value"})
+            await self.set_session_model(
+                _ModelIDConv(selected.model_key, value == "on").to_acp_model_id(), session_id
+            )
+        else:
+            raise acp.RequestError.invalid_params({"config_id": "Unknown configuration option"})
+        options = self._response_state(session_id)["config_options"]
+        return acp.schema.SetSessionConfigOptionResponse(config_options=options)
 
     async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> None:
-        if mode_id != "default":
-            raise acp.RequestError.invalid_params({"mode_id": "Only default mode is supported"})
+        if session_id not in self.sessions:
+            raise acp.RequestError.invalid_params({"session_id": "Session not found"})
+        if mode_id not in ACP_MODE_IDS:
+            raise acp.RequestError.invalid_params({"mode_id": "Unknown mode"})
+        live, _ = self.sessions[session_id]
+        if live._turn_state is not None:
+            raise acp.RequestError.invalid_request({"error": "Cannot change mode during a turn"})
+        live.cli.set_mode(mode_id)
+        state = live.cli.session.state
+        state.plan_mode = mode_id == "plan"
+        state.approval.yolo = mode_id == "yolo"
+        state.approval.afk = mode_id == "auto"
+        from coderai.session_state import save_session_state
+
+        save_session_state(state, live.cli.session.dir)
+        if self.conn is not None:
+            await self.conn.session_update(
+                session_id=session_id,
+                update=acp.schema.CurrentModeUpdate(
+                    session_update="current_mode_update", current_mode_id=mode_id
+                ),
+            )
+            await self.conn.session_update(
+                session_id=session_id,
+                update=acp.schema.ConfigOptionUpdate(
+                    session_update="config_option_update",
+                    config_options=self._response_state(session_id)["config_options"],
+                ),
+            )
 
     async def set_session_model(self, model_id: str, session_id: str, **kwargs: Any) -> None:
         logger.info("Setting session model to %s for session: %s", model_id, session_id)
@@ -551,6 +682,21 @@ class ACPServer:
         if callable(set_thinking):
             set_thinking(model_id_conv.thinking)
         self.sessions[session_id] = (acp_session, model_id_conv)
+        from coderai.session_state import SessionState, save_session_state
+
+        state = getattr(getattr(engine, "session", None), "state", None)
+        if isinstance(state, SessionState):
+            state.acp_model_key = model_id_conv.model_key
+            state.acp_thinking = model_id_conv.thinking
+            save_session_state(state, engine.session.dir)
+        if self.conn is not None:
+            await self.conn.session_update(
+                session_id=session_id,
+                update=acp.schema.ConfigOptionUpdate(
+                    session_update="config_option_update",
+                    config_options=self._response_state(session_id)["config_options"],
+                ),
+            )
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> acp.AuthenticateResponse | None:
         if method_id == "login":
@@ -617,15 +763,20 @@ class ACPServer:
         """Per-ACP-session terminal bridge (lazily created, session-scoped)."""
         from coderai.acp.terminal import TerminalBridge
 
+        entry = self.sessions.get(session_id)
+        if entry is None:
+            raise acp.RequestError.invalid_params(
+                {"session_id": "Session must be loaded before terminal access"}
+            )
         bridge = self._terminal_bridges.get(session_id)
         if bridge is None:
-            work_dir = "."
-            entry = self.sessions.get(session_id)
-            if entry is not None:
-                with contextlib.suppress(Exception):
-                    work_dir = str(entry[0].cli.session.work_dir)
-            bridge = TerminalBridge(session_id, work_dir=work_dir)
+            engine = entry[0].cli
+            work_dir = str(engine.session.work_dir)
+            settings = engine.manager.get_resolved_settings()
+            sandbox_mode = (settings.get("permissions") or {}).get("sandbox") or "workspace-write"
+            bridge = TerminalBridge(session_id, work_dir=work_dir, sandbox_mode=sandbox_mode)
             self._terminal_bridges[session_id] = bridge
+
         return bridge
 
     async def _terminal_ext_method(self, operation: str, params: dict[str, Any]) -> dict[str, Any]:

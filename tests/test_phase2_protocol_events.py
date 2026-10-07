@@ -288,7 +288,7 @@ async def test_real_manager_acp_cancel_permission_pause_closes_adapter(tmp_path)
         "id": "call",
         "function": {
             "name": "bash",
-            "arguments": '{"command":"true","sandbox_permissions":"danger-full-access","justification":"need"}',
+            "arguments": '{"command":"true","sideEffects":[],"sandbox_permissions":"danger-full-access","justification":"need"}',
         },
     }
     mgr = manager(tmp_path / "project", lambda **kw: response(calls=[call]))

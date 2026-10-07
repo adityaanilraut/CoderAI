@@ -99,6 +99,28 @@ def private_root() -> pathlib.Path:
     return _default_root
 
 
+def resolve_spill_root(context: Any) -> pathlib.Path | None:
+    """Keep tool results alongside persisted sessions so resumed pointers remain valid."""
+
+    def get(key: str) -> Any:
+        return context.get(key) if isinstance(context, dict) else getattr(context, key, None)
+
+    manager = get("session_manager")
+    store = getattr(manager, "session_store", None)
+    project_dir = getattr(store, "project_dir", None)
+    if isinstance(project_dir, (str, pathlib.Path)):
+        return pathlib.Path(project_dir) / "tool-results"
+    project_root = get("project_root")
+    if not isinstance(project_root, (str, pathlib.Path)) or not str(project_root):
+        return None
+    try:
+        from coderai.soul.session.store import JsonlSessionStore
+
+        return JsonlSessionStore(str(project_root), cleanup=False).project_dir / "tool-results"
+    except OSError:
+        return None
+
+
 def session_dir(root: pathlib.Path, session_id: str) -> pathlib.Path:
     digest = sha256(session_id.encode("utf-8")).hexdigest()[:12]
     return root / f"session-{digest}"
@@ -131,9 +153,13 @@ def save_text(
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     fd = os.open(str(path), flags, 0o600)
     try:
-        os.write(fd, data)
-    finally:
-        os.close(fd)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
     digest = sha256(data).hexdigest()
     return SpillRef(locator=str(path), bytes=len(data), sha256=digest)
 

@@ -107,6 +107,12 @@ def check_file_write_access(context: Any, file_path: str) -> str | None:
     ws_root = context_value(context, "project_root")
     ws_str = ws_root if isinstance(ws_root, (str, pathlib.Path)) else "."
 
+    if context_value(context, "plan_mode", False):
+        from coderai.tools.legacy.policy import is_owned_plan_file
+
+        if not is_owned_plan_file(context, {"file_path": str(raw)}):
+            return "PermissionDenied: only this session's plan file may be edited in plan mode."
+
     # Clamp relative paths against the effective root before any check so
     # `../` escapes cannot slip past either gate as a raw string.
     candidate = str(raw)
@@ -114,10 +120,21 @@ def check_file_write_access(context: Any, file_path: str) -> str | None:
         candidate = str(pathlib.Path(str(isolated_root or ws_str)) / candidate)
 
     if isolated_root:
+        if context_value(context, "plan_mode", False):
+            from coderai.tools.legacy.policy import is_owned_plan_file
+
+            if is_owned_plan_file(context, {"file_path": candidate}):
+                return None
         valid, resolved, err = validate_sandboxed_path(candidate, root=isolated_root)
         if not valid:
             return err
         candidate = str(resolved)
+
+    if context_value(context, "plan_mode", False):
+        from coderai.tools.legacy.policy import is_owned_plan_file
+
+        if is_owned_plan_file(context, {"file_path": candidate}):
+            return None
 
     allowed, error = check_sandbox_path_access(
         candidate,
@@ -139,7 +156,26 @@ def write_file_with_callbacks(
     after = context_value(context, "on_after_file_mutation")
     if callable(before):
         before(file_path)
-    bytes_written = write_text_file(file_path, content, encoding, line_endings)
+    from coderai.tools.legacy.observation import get_observation_tracker
+
+    tracker = get_observation_tracker()
+    sid = context_value(context, "session_id") or "default"
+    observed = tracker.get(sid, file_path)
+    if observed:
+        allowed, error = tracker.check_mutation_allowed(sid, file_path)
+        if not allowed:
+            raise OSError(error)
+    cancellation = context_value(context, "cancellation_event")
+    if cancellation is not None and cancellation.is_set():
+        raise OSError("TOOL_CANCELLED: file mutation cancelled before commit")
+    bytes_written = write_text_file(
+        file_path,
+        content,
+        encoding,
+        line_endings,
+        expected_identity=observed.identity if observed else None,
+        expected_digest=observed.digest if observed else None,
+    )
     if callable(after):
         after(file_path)
     return bytes_written

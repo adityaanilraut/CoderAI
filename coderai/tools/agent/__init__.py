@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from typing import Any
 
 from coderai.subagents.core import (
@@ -54,11 +55,55 @@ def _extract_seed_messages(context: ToolExecutionContext) -> list[dict[str, Any]
                 content = (
                     getattr(m, "content", "") if hasattr(m, "content") else m.get("content", "")
                 )
-                if role and role != "system" and content:
-                    seed_messages.append({"role": str(role), "content": str(content)})
+                if role and role != "system":
+                    message = {"role": str(role), "content": copy.deepcopy(content)}
+                    tool_calls = (
+                        getattr(m, "tool_calls", None)
+                        if hasattr(m, "role")
+                        else m.get("tool_calls")
+                    )
+                    tool_call_id = (
+                        getattr(m, "tool_call_id", None)
+                        if hasattr(m, "role")
+                        else m.get("tool_call_id")
+                    )
+                    if tool_calls:
+                        from coderai.subagents.core import _normalize_subagent_tool_calls
+
+                        message["tool_calls"] = _normalize_subagent_tool_calls(tool_calls)
+                    if tool_call_id:
+                        message["tool_call_id"] = tool_call_id
+                    if role == "tool" and not tool_call_id:
+                        message = {"role": "user", "content": f"[Inherited tool output]\n{content}"}
+                    seed_messages.append(message)
         except Exception:
             pass
+    pending: set[str] = set()
+    pending_start: int | None = None
+    for index, message in enumerate(seed_messages):
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            if not pending:
+                pending_start = index
+            pending.update(str(call.get("id", "")) for call in message["tool_calls"])
+        elif message.get("role") == "tool":
+            pending.discard(str(message.get("tool_call_id", "")))
+            if not pending:
+                pending_start = None
+    # Fork is invoked while the parent tool group is still in flight. The
+    # child's independent snapshot must not contain unanswered parent calls.
+    if pending and pending_start is not None:
+        seed_messages = seed_messages[:pending_start]
     return seed_messages
+
+
+def _child_manager(context: ToolExecutionContext) -> SubAgentManager:
+    """Carry the parent's resolved permission policy into every launch path."""
+    resolver = getattr(context.session_manager, "get_resolved_settings", None)
+    return SubAgentManager(
+        project_root=context.project_root,
+        create_openai_client=context.create_openai_client,
+        get_resolved_settings=resolver if callable(resolver) else None,
+    )
 
 
 def _start_subagent_job(
@@ -173,10 +218,7 @@ async def handle_subagent_fork_tool(
 
     seed_messages = _extract_seed_messages(context)
 
-    manager = SubAgentManager(
-        project_root=context.project_root,
-        create_openai_client=context.create_openai_client,
-    )
+    manager = _child_manager(context)
     spec = build_spec(
         context=context,
         args=args,
@@ -234,10 +276,7 @@ async def handle_continuable_subagent_tool(
             name="subagent",
             error=f"RecursionLimitError: sub-agent depth cannot exceed {max_depth}.",
         )
-    manager = SubAgentManager(
-        project_root=context.project_root,
-        create_openai_client=context.create_openai_client,
-    )
+    manager = _child_manager(context)
     spec = build_spec(
         context=context,
         args=args,
@@ -425,10 +464,7 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
             error="SubAgentExecutionError: Client factory not available in execution context.",
         )
 
-    manager = SubAgentManager(
-        project_root=context.project_root,
-        create_openai_client=context.create_openai_client,
-    )
+    manager = _child_manager(context)
 
     from coderai.tools.agent import _derive_depth
 

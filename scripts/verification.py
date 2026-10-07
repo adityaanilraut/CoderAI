@@ -22,12 +22,29 @@ ROOT = Path(__file__).resolve().parents[1]
 SCOPES = ("coderai", "tests", "tests_e2e", "scripts", "sdks/coderai-sdk", "examples")
 SUITES = {
     "main": ("tests/test_*.py",),
+    "ui": (
+        "tests/test_shell_ui_*.py",
+        "tests/test_shell_controller.py",
+        "tests/test_shell_lifecycle_parity.py",
+        "tests/test_ui_*.py",
+        "tests/test_cli.py",
+        "tests/test_config_setup.py",
+        "tests/test_approval_yolo.py",
+        "tests/test_phase4_ui.py",
+        "tests/test_phase5_rendering.py",
+        "tests/test_search_rendering.py",
+    ),
     "wire": ("tests_e2e/test_*.py",),
     "sdk": ("sdks/coderai-sdk/tests/test_*.py",),
     "jev": ("tests/test_jev_calibration.py",),
     # Windows probes portable boundaries; the full suite includes POSIX PTYs,
     # chmod/umask and signal contracts covered by required Linux/macOS jobs.
     "windows": (
+        "tests/test_tool_roadmap_policy.py",
+        "tests/test_tool_roadmap_files.py",
+        "tests/test_tool_roadmap_processes.py",
+        "tests/test_shell_controller.py",
+        "tests/test_shell_ui_repairs.py",
         "tests/test_cli.py",
         "tests/test_cli_subagent_process.py",
         "tests/test_approval_identity.py",
@@ -44,6 +61,9 @@ SUITES = {
         "sdks/coderai-sdk/tests/test_sdk*.py",
     ),
     "security": (
+        "tests/test_tool_roadmap_policy.py",
+        "tests/test_tool_roadmap_files.py",
+        "tests/test_tool_roadmap_processes.py",
         "tests/test_security*.py",
         "tests/test_phase1_*.py",
         "tests/test_phase2_runtime_ownership.py",
@@ -54,6 +74,9 @@ SUITES = {
     ),
 }
 REQUIRED_FILES = {
+    "tests/test_shell_controller.py",
+    "tests/test_shell_ui_repairs.py",
+    "tests/test_shell_ui_pty.py",
     "tests/test_jev_calibration.py",
     "tests/test_local_kaos.py",
     "tests/test_approval_identity.py",

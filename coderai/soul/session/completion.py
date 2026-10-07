@@ -90,6 +90,10 @@ def format_completion_response(resp: Any, reasoning_key: str | None = None) -> d
         return resp
 
     message = getattr(resp.choices[0], "message", None)
+    if isinstance(message, dict):
+        details = message.get("reasoning_details")
+    else:
+        details = getattr(message, "reasoning_details", None)
     result: dict[str, Any] = {
         "choices": [
             {
@@ -97,6 +101,7 @@ def format_completion_response(resp: Any, reasoning_key: str | None = None) -> d
                     "content": getattr(message, "content", None) or "",
                     "tool_calls": pydantic_tool_calls(message),
                     "reasoning_content": extract_reasoning_content(message, reasoning_key),
+                    "reasoning_details": details,
                     "refusal": getattr(message, "refusal", None),
                 }
             }
@@ -108,9 +113,39 @@ def format_completion_response(resp: Any, reasoning_key: str | None = None) -> d
     return result
 
 
+def _create_with_reasoning_retry(client: Any, request: dict[str, Any]) -> Any:
+    """Recover once when stale/missing OpenRouter metadata disabled mandatory reasoning."""
+    try:
+        return client.chat.completions.create(**request)
+    except Exception as error:
+        from coderai.openrouter import is_openrouter_model
+
+        extra_body = request.get("extra_body")
+        if not isinstance(extra_body, dict):
+            raise
+        reasoning = extra_body.get("reasoning")
+        if not isinstance(reasoning, dict):
+            raise
+        disabled = reasoning.get("enabled") is False or reasoning.get("effort") == "none"
+        if not (
+            getattr(error, "status_code", None) == 400
+            and "reasoning is mandatory" in str(error).lower()
+            and disabled
+            and is_openrouter_model(
+                str(request.get("model") or ""), str(getattr(client, "base_url", "") or "")
+            )
+        ):
+            raise
+        retry_reasoning = {**reasoning, "enabled": True, "exclude": True}
+        if retry_reasoning.get("effort") == "none":
+            retry_reasoning.pop("effort")
+        retry_request = {**request, "extra_body": {**extra_body, "reasoning": retry_reasoning}}
+        return client.chat.completions.create(**retry_request)
+
+
 def call_sync(client: Any, request: dict[str, Any]) -> dict[str, Any]:
     """Execute a synchronous completion request."""
-    resp = client.chat.completions.create(**request)
+    resp = _create_with_reasoning_retry(client, request)
     return format_completion_response(
         resp, reasoning_key_for_model(str(request.get("model") or ""))
     )
@@ -133,8 +168,16 @@ def call_stream_or_sync(
     reasoning_key = reasoning_key_for_model(str(request.get("model") or ""))
     try:
         try:
-            resp = client.chat.completions.create(**stream_req)
+            if is_cancelled and is_cancelled():
+                from coderai.soul.session.manager import SessionInterrupted
+
+                raise SessionInterrupted("Completion cancelled")
+            resp = _create_with_reasoning_retry(client, stream_req)
         except Exception as err:
+            if is_cancelled and is_cancelled():
+                from coderai.soul.session.manager import SessionInterrupted
+
+                raise SessionInterrupted("Completion cancelled") from err
             err_msg = str(err).lower()
             if "reasoning_effort" in err_msg or "stream_options" in err_msg:
                 retry_req = dict(stream_req)
@@ -149,7 +192,16 @@ def call_stream_or_sync(
                             retry_req["extra_body"].pop("reasoning_effort", None)
                             if not retry_req["extra_body"]:
                                 retry_req.pop("extra_body", None)
-                resp = client.chat.completions.create(**retry_req)
+                resp = _create_with_reasoning_retry(client, retry_req)
+            elif "reasoning_details" in err_msg:
+                retry_req = dict(stream_req)
+                retry_req["messages"] = [
+                    {k: v for k, v in msg.items() if k != "reasoning_details"}
+                    if isinstance(msg, dict)
+                    else msg
+                    for msg in retry_req.get("messages") or []
+                ]
+                resp = _create_with_reasoning_retry(client, retry_req)
             else:
                 raise
 

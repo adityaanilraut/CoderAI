@@ -16,6 +16,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
 
@@ -59,6 +60,7 @@ def execute_hook_command(
     project_root: str,
     timeout_s: float = DEFAULT_HOOK_TIMEOUT_SECONDS,
     env_vars: dict[str, str] | None = None,
+    cancellation_event: threading.Event | None = None,
 ) -> HookOutput:
     """Execute a single hook shell command with a JSON payload on stdin."""
     run_env = _scrubbed_env()
@@ -80,23 +82,46 @@ def execute_hook_command(
 
     timeout_s = clamp_hook_timeout(timeout_s)
     start_time = time.time()
+    proc: subprocess.Popen[str] | None = None
+    settled = threading.Event()
+    watcher: threading.Thread | None = None
+    from coderai.utils.subprocess_env import kill_process_tree
+
+    def watch_cancellation() -> None:
+        while not settled.wait(0.05):
+            if cancellation_event is not None and cancellation_event.is_set():
+                if proc is not None:
+                    kill_process_tree(proc.pid)
+                return
+
     try:
-        proc = subprocess.run(
+        if cancellation_event is not None and cancellation_event.is_set():
+            return HookOutput(decision="deny", reason="Hook execution cancelled", exit_code=-1)
+        proc = subprocess.Popen(
             command,
-            input=json.dumps(payload, ensure_ascii=False) + "\n",
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_s,
             cwd=project_root,
             shell=True,
             env=run_env,
-            start_new_session=True,
+            start_new_session=sys.platform != "win32",
+        )
+        if cancellation_event is not None:
+            watcher = threading.Thread(target=watch_cancellation, daemon=True)
+            watcher.start()
+        stdout_text, stderr_text = proc.communicate(
+            input=json.dumps(payload, ensure_ascii=False) + "\n", timeout=timeout_s
         )
         elapsed_ms = (time.time() - start_time) * 1000.0
-        stdout = (proc.stdout or "").strip()
-        stderr = (proc.stderr or "").strip()
+        stdout = (stdout_text or "").strip()
+        stderr = (stderr_text or "").strip()
         return _decode_hook_output(stdout, stderr, proc.returncode, elapsed_ms, collector, span)
     except subprocess.TimeoutExpired:
+        if proc is not None:
+            kill_process_tree(proc.pid)
+            proc.communicate()
         elapsed_ms = (time.time() - start_time) * 1000.0
         return HookOutput(
             decision="deny",
@@ -105,6 +130,9 @@ def execute_hook_command(
             duration_ms=elapsed_ms,
         )
     except Exception as exc:
+        if proc is not None:
+            kill_process_tree(proc.pid)
+            proc.wait()
         elapsed_ms = (time.time() - start_time) * 1000.0
         return HookOutput(
             decision="deny",
@@ -112,6 +140,10 @@ def execute_hook_command(
             exit_code=-1,
             duration_ms=elapsed_ms,
         )
+    finally:
+        settled.set()
+        if watcher is not None:
+            watcher.join(timeout=0.1)
 
 
 def _decode_hook_output(
@@ -254,7 +286,7 @@ async def execute_hook_command_async(
             stderr=asyncio.subprocess.PIPE,
             cwd=project_root,
             env=run_env,
-            start_new_session=True,
+            start_new_session=sys.platform != "win32",
         )
         input_data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
         try:
@@ -262,21 +294,16 @@ async def execute_hook_command_async(
                 proc.communicate(input=input_data),
                 timeout=timeout_s,
             )
-        except (asyncio.TimeoutError, TimeoutError, asyncio.CancelledError):
+        except (asyncio.TimeoutError, TimeoutError, asyncio.CancelledError) as exc:
             try:
-                import os as _os
-                import signal as _sig
+                from coderai.utils.bounded_process import terminate_owned_process
 
-                if sys.platform != "win32" and hasattr(_os, "killpg"):
-                    try:
-                        _os.killpg(_os.getpgid(proc.pid), _sig.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                else:
-                    proc.kill()
+                terminate_owned_process(proc.pid)
                 await proc.wait()
             except Exception:
                 pass
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             elapsed_ms = (time.time() - start_time) * 1000.0
             return HookOutput(
                 decision="deny",
@@ -312,6 +339,7 @@ def run_hook_point(
     project_root: str,
     settings: dict[str, Any] | None = None,
     timeout_s: float = DEFAULT_HOOK_TIMEOUT_SECONDS,
+    cancellation_event: threading.Event | None = None,
 ) -> MergedHookOutcome:
     """Run all configured hooks matching the lifecycle point and target name synchronously."""
     point_name = normalize_hook_point(point)
@@ -384,6 +412,7 @@ def run_hook_point(
                 payload=payload,
                 project_root=project_root,
                 timeout_s=hook_timeout,
+                cancellation_event=cancellation_event,
             )
             outputs.append(out)
 
@@ -446,28 +475,58 @@ async def run_hook_point_async(
     payload["hook_event_name"] = point_name
     payload["cwd"] = project_root
 
+    wire = None
+    try:
+        from coderai.wire.emitter import get_emitter
+
+        wire = get_emitter()
+        wire.hook_triggered(point_name, target_name, max(1, len(entries)))
+    except Exception:
+        pass
+    started = time.monotonic()
+    merged = MergedHookOutcome(decision="deny", reason="Hook execution interrupted")
     outputs: list[HookOutput] = []
-    for entry in entries:
-        matcher = str(entry.get("matcher") or "*")
-        if not matches_hook_pattern(matcher, target_name):
-            continue
-
-        hooks = entry.get("hooks") or entry.get("commands") or (entry if "command" in entry else [])
-        if isinstance(hooks, (str, dict)):
-            hooks = [hooks]
-
-        for hook in hooks:
-            command = hook.get("command") if isinstance(hook, dict) else hook
-            if not isinstance(command, str) or not command.strip():
+    try:
+        for entry in entries:
+            matcher = str(entry.get("matcher") or "*")
+            if not matches_hook_pattern(matcher, target_name):
                 continue
-            hook_timeout_raw: Any = hook.get("timeout") if isinstance(hook, dict) else None
-            hook_timeout = float(hook_timeout_raw) if hook_timeout_raw else timeout_s
-            out = await execute_hook_command_async(
-                command=command,
-                payload=payload,
-                project_root=project_root,
-                timeout_s=hook_timeout,
-            )
-            outputs.append(out)
 
-    return merge_hook_outputs(outputs)
+            hooks = (
+                entry.get("hooks") or entry.get("commands") or (entry if "command" in entry else [])
+            )
+            if isinstance(hooks, (str, dict)):
+                hooks = [hooks]
+
+            for hook in hooks:
+                command = hook.get("command") if isinstance(hook, dict) else hook
+                if not isinstance(command, str) or not command.strip():
+                    continue
+                hook_timeout_raw: Any = hook.get("timeout") if isinstance(hook, dict) else None
+                hook_timeout = float(hook_timeout_raw) if hook_timeout_raw else timeout_s
+                out = await execute_hook_command_async(
+                    command=command,
+                    payload=payload,
+                    project_root=project_root,
+                    timeout_s=hook_timeout,
+                )
+                outputs.append(out)
+
+        merged = merge_hook_outputs(outputs)
+        return merged
+    finally:
+        if wire is not None:
+            try:
+                from coderai.wire.types import HookResolved
+
+                wire.send(
+                    HookResolved(
+                        event=point_name,
+                        target=target_name,
+                        action="block" if merged.decision == "deny" else "allow",
+                        reason=merged.reason or "",
+                        duration_ms=int((time.monotonic() - started) * 1000),
+                    )
+                )
+            except Exception:
+                pass

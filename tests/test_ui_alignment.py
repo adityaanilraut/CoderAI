@@ -24,7 +24,10 @@ def test_token_usage_commands_and_aliases_render_the_same_breakdown(monkeypatch)
         assert command.func(ctx, "") is dispatch.SlashAction.HANDLED
     assert calls == [(ctx.console, ctx.mgr, ctx.session_id)] * 5
     assert dispatch.registry.find_command("tokens").description == "Show token usage breakdown."
-    assert dispatch.registry.find_command("usage").description == "Show API usage / quota."
+    assert (
+        dispatch.registry.find_command("usage").description
+        == "Show local token usage; provider quota is unavailable."
+    )
 
 
 from coderai.ui.shell.slash import _help_command_column_width, _render_plain_overview
@@ -53,7 +56,7 @@ def _bracket_columns(text: str) -> list[int]:
     return cols
 
 
-def test_welcome_pairs_share_a_row(tmp_path: Path) -> None:
+def test_welcome_stacks_complete_values(tmp_path: Path) -> None:
     buf = io.StringIO()
     console = Console(file=buf, width=80, force_terminal=True, color_system="standard")
     render_welcome_screen(
@@ -65,9 +68,11 @@ def test_welcome_pairs_share_a_row(tmp_path: Path) -> None:
         reasoning_effort="high",
     )
     rendered = _ANSI.sub("", buf.getvalue())
-    assert any("Agent:" in line and "Reasoning:" in line for line in rendered.splitlines())
+    assert any("Agent:" in line and "architect" in line for line in rendered.splitlines())
+    assert any("Reasoning:" in line and "High" in line for line in rendered.splitlines())
     assert any("Plan Mode:" in line and "ON" in line for line in rendered.splitlines())
-    assert any("Model:" in line and "Status:" in line for line in rendered.splitlines())
+    assert any("Model:" in line and "claude-3-7-sonnet" in line for line in rendered.splitlines())
+    assert "Status:" in rendered
 
 
 def test_toolbar_uses_a_single_separator() -> None:
@@ -181,6 +186,8 @@ def test_help_descriptions_share_a_column(capsys) -> None:  # type: ignore[no-un
 def test_task_browser_panes_fit_the_terminal() -> None:
     for cols in (40, 60, 80, 120, 200):
         left, detail, preview = task_browser_widths(cols)
-        usable = max(48, cols)
-        assert left + detail + preview + 2 <= usable
-        assert min(left, detail, preview) >= 12
+        if cols < 80:
+            assert (left, detail, preview) == (cols, 0, 0)
+        else:
+            assert left + detail + preview + 2 <= cols
+            assert min(left, detail, preview) >= 12

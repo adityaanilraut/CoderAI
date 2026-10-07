@@ -174,7 +174,7 @@ def deserialize_message(d: dict[str, Any], session_id: str) -> SessionMessage | 
             )
         elif event_type == TOOL_RESULT:
             return SessionMessage(
-                id=uuid.uuid4().hex,
+                id=data.get("id") or f"{session_id}:event:{d.get('seq')}",
                 session_id=session_id,
                 role="tool",
                 content=data.get("content") or "",
@@ -288,20 +288,3 @@ def accumulate_usage_per_model(
 
 def total_tokens(usage: dict[str, Any] | None) -> int:
     return usage.get("total_tokens", 0) if usage else 0
-
-
-def copy_message_with(m: SessionMessage, **changes: Any) -> SessionMessage:
-    return SessionMessage(
-        id=m.id,
-        session_id=m.session_id,
-        role=m.role,
-        content=m.content,
-        tool_calls=m.tool_calls,
-        tool_call_id=m.tool_call_id,
-        thinking=m.thinking,
-        compacted=changes.get("compacted", m.compacted),
-        visible=m.visible,
-        create_time=m.create_time,
-        update_time=changes.get("update_time", m.update_time),
-        meta=m.meta,
-    )

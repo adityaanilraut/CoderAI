@@ -76,3 +76,46 @@ def test_settings_and_overlays_preserve_different_empty_value_policies():
     }
     assert base["env"] == {"A": "a", "bad": 1}
     assert _merge_mcp_server_config({}, {}) is None
+
+
+def test_workspace_mcp_files_precedence_and_git_root_cwd(tmp_path, monkeypatch):
+    from coderai.config import resolve_current_settings
+    from coderai.mcp.files import load_workspace_mcp_servers
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CODERAI_SHARE_DIR", str(tmp_path / "share"))
+    monkeypatch.delenv("CODERAI_MCP_CONFIG_FILES", raising=False)
+    monkeypatch.delenv("CODERAI_MCP_CONFIG_JSON", raising=False)
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    cwd = root / "nested"
+    (cwd / ".coderai").mkdir(parents=True)
+    (root / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "root": {"command": "root-server", "cwd": "tools"},
+                    "same": {"command": "root-same"},
+                }
+            }
+        )
+    )
+    (cwd / ".coderai" / "mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "same": {"command": "local-server"},
+                }
+            }
+        )
+    )
+    servers = load_workspace_mcp_servers(cwd)
+    assert servers["root"]["cwd"] == str(root / "tools")
+    assert servers["same"]["command"] == "local-server"
+    trusted = resolve_current_settings(str(cwd), trusted=True)
+    assert trusted["mcpServers"]["same"]["command"] == "local-server"
+    untrusted = resolve_current_settings(str(cwd), trusted=False)
+    assert not untrusted["mcpServers"]
+    monkeypatch.setenv("CODERAI_MCP_CONFIG_JSON", '{"same":{"command":"explicit-server"}}')
+    overridden = resolve_current_settings(str(cwd), trusted=True)
+    assert overridden["mcpServers"]["same"]["command"] == "explicit-server"

@@ -31,11 +31,11 @@ from pathlib import Path
 from typing import Any
 
 from coderai.utils.subprocess_env import build_shell_env, kill_process_tree
+from coderai.utils.bounded_process import terminate_owned_process
 
 logger = logging.getLogger(__name__)
 
 _SIGTERM = getattr(signal, "SIGTERM", signal.SIGTERM)
-_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
 async def run_background_task_worker(
@@ -82,33 +82,37 @@ async def run_background_task_worker(
                 logger.debug("Background worker heartbeat callback failed", exc_info=True)
 
     def _terminate_process(force: bool = False) -> None:
-        if process is None or process.returncode is not None:
+        if process is None:
             return
         try:
-            kill_process_tree(process.pid, _SIGKILL if force else _SIGTERM)
+            if force:
+                terminate_owned_process(process.pid)
+            elif process.returncode is None:
+                kill_process_tree(process.pid, _SIGTERM)
         except Exception:
             logger.debug("Background worker terminate failed", exc_info=True)
 
     async def _control_loop() -> None:
         nonlocal cancel_requested
-        if is_cancelled is None:
-            return
         kill_sent_at: float | None = None
         while not stop_event.is_set():
             await asyncio.sleep(control_poll_interval_s)
             try:
-                cancelled = bool(is_cancelled())
+                job = store.get(job_id, session_id)
+                cancelled = bool(is_cancelled and is_cancelled()) or (
+                    job is not None and job.status in ("stopping", "killed")
+                )
             except Exception:
                 cancelled = False
             if not cancelled:
                 continue
             cancel_requested = True
             _terminate_process(force=False)
-            kill_sent_at = kill_sent_at or time.time()
+            kill_sent_at = kill_sent_at or time.monotonic()
             if (
                 process is not None
                 and process.returncode is None
-                and time.time() - kill_sent_at >= kill_grace_period_s
+                and time.monotonic() - kill_sent_at >= kill_grace_period_s
             ):
                 _terminate_process(force=True)
 
@@ -151,10 +155,33 @@ async def run_background_task_worker(
                     except TimeoutError:
                         _terminate_process(force=True)
                         returncode = await process.wait()
+    except asyncio.CancelledError:
+        cancel_requested = True
+        _terminate_process(force=False)
+        if process is not None:
+            try:
+                await asyncio.wait_for(process.wait(), timeout=kill_grace_period_s)
+            except TimeoutError:
+                _terminate_process(force=True)
+                await process.wait()
+        store.kill(job_id, session_id, reason="Worker cancelled")
+        store.complete(
+            job_id,
+            ok=False,
+            exit_code=process.returncode if process is not None else None,
+            detail="Worker cancelled",
+        )
+        raise
     except Exception as exc:
+        _terminate_process(force=True)
+        if process is not None:
+            await process.wait()
         logger.exception("Background task worker failed")
         return store.complete(job_id, ok=False, detail=str(exc))
     finally:
+        if cancel_requested or timed_out:
+            # The shell may exit on TERM while descendants ignore it.
+            _terminate_process(force=True)
         stop_event.set()
         for task in (heartbeat_task, control_task):
             if task is not None:

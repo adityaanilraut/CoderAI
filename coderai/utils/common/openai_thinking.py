@@ -10,8 +10,8 @@ ReasoningEffortLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh
 DEFAULT_REASONING_KEY = "reasoning_content"
 
 _OFF_ALIASES = {"off", "none", "disabled", "false", "0", "disable"}
-# GPT-6: Sol/Luna support none/low/medium/high/xhigh/max; Astra supports
-# low/medium/high/xhigh/max (no none — low is the minimum).
+# Luna supports none/low/medium/high/xhigh. Its maximum is xhigh.
+# Astra has no none; low is its minimum.
 _OPENAI_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
 
 # Provider-specific thinking token budgets mapped from effort levels
@@ -73,9 +73,40 @@ def build_thinking_request_options(
     has_tools: bool = False,
 ) -> dict:
     """Build provider-appropriate thinking and reasoning-effort options for OpenAI-compatible client calls."""
-    del base_url
     m = model.strip().lower()
     effort = normalize_reasoning_effort(reasoning_effort)
+    is_openrouter = (
+        (bool(base_url) and "openrouter.ai" in str(base_url))
+        or m.startswith("openrouter/")
+        or m.endswith(":free")
+    )
+
+    # 0. OpenRouter native reasoning object (author/model slugs resolve here too
+    # via base_url). Effort subset only: unknown levels omit effort (= provider
+    # default full reasoning) rather than risking a 400 on an invalid value.
+    if is_openrouter:
+        from coderai.openrouter import get_openrouter_model_metadata
+
+        metadata = get_openrouter_model_metadata(model) or {}
+        capabilities = metadata.get("reasoning")
+        mandatory = isinstance(capabilities, dict) and capabilities.get("mandatory") is True
+        if not thinking_enabled or effort == "off":
+            if mandatory:
+                return {"extra_body": {"reasoning": {"enabled": True, "exclude": True}}}
+            return {"extra_body": {"reasoning": {"enabled": False}}}
+        or_effort = {"minimal": "low", "low": "low", "medium": "medium"}.get(effort)
+        if effort in ("high", "xhigh"):
+            or_effort = "high"
+        if isinstance(capabilities, dict):
+            supported = capabilities.get("supported_efforts", [])
+            if supported is None or (isinstance(supported, list) and effort in supported):
+                or_effort = effort if effort not in ("auto", "adaptive") else None
+            elif not isinstance(supported, list) or or_effort not in supported:
+                or_effort = None
+        body: dict[str, Any] = {"enabled": True}
+        if or_effort:
+            body["effort"] = or_effort
+        return {"extra_body": {"reasoning": body}}
 
     is_gpt = (
         m.startswith("gpt-5")
@@ -105,8 +136,12 @@ def build_thinking_request_options(
             return {"reasoning_effort": "low"}
         effective_effort = "low" if effort == "minimal" else effort
         if is_gpt:
-            # GPT-5.6/6 wire supports none/low/medium/high/xhigh/max.
+            # Models accept a subset of the internal effort labels.
             openai_effort = effective_effort if effective_effort in _OPENAI_EFFORTS else "high"
+            # Luna rejects the internal maximum label. Use its highest supported
+            # effort rather than letting the compatibility retry disable reasoning.
+            if "luna" in m and openai_effort == "max":
+                openai_effort = "xhigh"
             # Internal "off" maps to wire "none" for Sol/Luna.
             if openai_effort == "off":
                 openai_effort = "none"

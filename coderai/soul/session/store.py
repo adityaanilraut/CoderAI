@@ -5,12 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import pathlib
-import shutil
-import uuid
-from collections.abc import Iterable
+import re
 from typing import Any
 
 from coderai.events import SessionEvent, legacy_message_to_event
+from coderai.utils.storage import owned_path, storage_id, read_bytes, write_bytes, parent_directory
 
 
 def get_project_code(project_root: str) -> str:
@@ -23,9 +22,6 @@ def get_project_code(project_root: str) -> str:
 
 class JsonlSessionStore:
     """Own the session index and mixed legacy/event JSONL logs for one project."""
-
-    # Orphaned atomic-write temp files match this suffix shape.
-    _ORPHAN_TMP_SUFFIX = ".tmp-"
 
     def __init__(self, project_root: str, *, max_entries: int = 50, cleanup: bool = True) -> None:
         self.project_root = str(pathlib.Path(project_root).resolve())
@@ -43,7 +39,11 @@ class JsonlSessionStore:
             return 0
         for path in entries:
             name = path.name
-            if self._ORPHAN_TMP_SUFFIX not in name or not path.is_file():
+            # Accept both legacy and shared atomic-writer crash leftovers.
+            if (
+                not re.search(r"(?:\.tmp-[0-9a-f]+|\.[0-9a-f]{12,16}\.tmp)$", name)
+                or not path.is_file()
+            ):
                 continue
             try:
                 path.unlink()
@@ -53,58 +53,49 @@ class JsonlSessionStore:
         return removed
 
     def _resolve_storage(self) -> tuple[pathlib.Path, pathlib.Path]:
-        local_dir = pathlib.Path(self.project_root) / ".coderai" / "sessions"
+        local_dir = owned_path(pathlib.Path(self.project_root), ".coderai", "sessions")
         from coderai.share import get_share_dir
 
-        global_dir = get_share_dir() / "projects" / get_project_code(self.project_root)
+        global_dir = owned_path(
+            get_share_dir().resolve(), "projects", get_project_code(self.project_root)
+        )
         try:
             if (
                 not (local_dir / "sessions-index.json").exists()
                 and (global_dir / "sessions-index.json").exists()
             ):
                 self._migrate(global_dir, local_dir)
-            local_dir.mkdir(parents=True, exist_ok=True)
+            with parent_directory(local_dir / "sessions-index.json", create=True):
+                pass
             return local_dir, local_dir / "sessions-index.json"
-        except (OSError, PermissionError):
-            global_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            with parent_directory(global_dir / "sessions-index.json", create=True):
+                pass
             return global_dir, global_dir / "sessions-index.json"
 
     @staticmethod
     def _migrate(source: pathlib.Path, destination: pathlib.Path) -> None:
-        """Copy legacy global session data into project-local storage."""
+        """Migrate completely before selecting the project-local session index."""
         if not source.is_dir():
             return
-        try:
-            destination.mkdir(parents=True, exist_ok=True)
-            source_index = source / "sessions-index.json"
-            destination_index = destination / "sessions-index.json"
-            if source_index.exists() and not destination_index.exists():
-                shutil.copy2(source_index, destination_index)
-            for source_log in source.glob("*.jsonl"):
-                destination_log = destination / source_log.name
-                if not destination_log.exists():
-                    shutil.copy2(source_log, destination_log)
-            for directory_name in ("file-history", "images"):
-                source_directory = source / directory_name
-                destination_directory = destination / directory_name
-                if source_directory.exists() and not destination_directory.exists():
-                    shutil.copytree(source_directory, destination_directory)
-        except (OSError, shutil.Error):
-            # Storage selection will fall back to the global directory if local setup fails.
-            return
+        from coderai.cli.migrate import migrate_sessions
+
+        # Function-local import avoids a cycle: the explicit CLI uses this
+        # module's stable project-code helper to find the legacy store.
+        migrate_sessions(source, destination.parent.parent)
 
     def storage_paths(self) -> dict[str, pathlib.Path]:
         return {"project_dir": self.project_dir, "index_path": self.index_path}
 
     def messages_path(self, session_id: str) -> pathlib.Path:
-        return self.project_dir / f"{session_id}.jsonl"
+        return owned_path(self.project_dir) / f"{storage_id(session_id)}.jsonl"
 
     def load_index(self) -> dict[str, Any]:
         empty = {"version": 1, "entries": [], "originalPath": self.project_root}
         if not self.index_path.exists():
             return empty
         try:
-            data = json.loads(self.index_path.read_text(encoding="utf-8", errors="replace"))
+            data = json.loads(read_bytes(self.index_path, limit=4_000_000).decode("utf-8"))
         except (OSError, ValueError, TypeError):
             return empty
         if not isinstance(data, dict):
@@ -132,30 +123,23 @@ class JsonlSessionStore:
                 reverse=True,
             )[: self.max_entries]
         index["entries"] = entries
-        self._replace_text(self.index_path, [json.dumps(index, indent=2)])
-
-    @staticmethod
-    def _replace_text(target: pathlib.Path, chunks: Iterable[str]) -> None:
-        """Replace session text, retaining umask modes and recoverable orphan names.
-
-        Unlike the general atomic writer, session replacement leaves failed
-        writes for cleanup_orphan_tmps and does not preserve the old inode mode.
-        """
-        tmp = target.with_suffix(f".tmp-{uuid.uuid4().hex[:8]}")
-        with tmp.open("w", encoding="utf-8") as stream:
-            for chunk in chunks:
-                stream.write(chunk)
-        tmp.replace(target)
+        write_bytes(self.index_path, json.dumps(index, indent=2).encode("utf-8"))
 
     def append_row(self, session_id: str, row: dict[str, Any]) -> None:
         self.project_dir.mkdir(parents=True, exist_ok=True)
-        with self.messages_path(session_id).open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+        write_bytes(
+            self.messages_path(session_id),
+            (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"),
+            append=True,
+        )
 
     def replace_rows(self, session_id: str, rows: list[dict[str, Any]]) -> None:
         self.project_dir.mkdir(parents=True, exist_ok=True)
         target = self.messages_path(session_id)
-        self._replace_text(target, (json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
+        write_bytes(
+            target,
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows).encode("utf-8"),
+        )
 
     def read_rows(self, session_id: str) -> list[dict[str, Any]]:
         path = self.messages_path(session_id)
@@ -163,7 +147,9 @@ class JsonlSessionStore:
             return []
         rows: list[dict[str, Any]] = []
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = (
+                read_bytes(path, limit=128_000_000).decode("utf-8", errors="replace").splitlines()
+            )
         except OSError:
             return []
         for line in lines:
@@ -184,7 +170,9 @@ class JsonlSessionStore:
         try:
             return [
                 line.strip()
-                for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+                for line in read_bytes(path, limit=128_000_000)
+                .decode("utf-8", errors="replace")
+                .splitlines()
                 if line.strip()
             ]
         except OSError:
@@ -193,7 +181,7 @@ class JsonlSessionStore:
     def write_raw_lines(self, session_id: str, lines: list[str]) -> None:
         self.project_dir.mkdir(parents=True, exist_ok=True)
         target = self.messages_path(session_id)
-        self._replace_text(target, (line + "\n" for line in lines))
+        write_bytes(target, "".join(line + "\n" for line in lines).encode("utf-8"))
 
     def list_events(self, session_id: str) -> list[SessionEvent]:
         """Read event rows and adapt legacy message rows without rewriting the log."""
@@ -207,20 +195,6 @@ class JsonlSessionStore:
             except (ValueError, TypeError, KeyError):
                 continue
         return events
-
-    def delete_log(self, session_id: str) -> bool:
-        path = self.messages_path(session_id)
-        if not path.exists():
-            return False
-        try:
-            path.unlink()
-        except OSError:
-            return False
-        return True
-
-    def replay_events(self, session_id: str) -> list[SessionEvent]:
-        """Deterministically replay and reconstruct event-sourced sequence from log."""
-        return self.list_events(session_id)
 
     def validate_and_repair_invariants(self, session_id: str) -> list[str]:
         """Validate session invariants from event stream and automatically synthesize missing aborts if needed."""
@@ -255,6 +229,8 @@ class JsonlSessionStore:
                                 "role": "tool",
                                 "content": json.dumps(
                                     {
+                                        "ok": False,
+                                        "name": (tc.get("function") or {}).get("name", "tool"),
                                         "error": TOOL_ABORTED_BEFORE_DISPATCH,
                                         "message": "Self-healing repair synthesized aborted tool result.",
                                     }
@@ -284,6 +260,8 @@ class JsonlSessionStore:
                             "role": "tool",
                             "content": json.dumps(
                                 {
+                                    "ok": False,
+                                    "name": (tc.get("function") or {}).get("name", "tool"),
                                     "error": TOOL_ABORTED_BEFORE_DISPATCH,
                                     "message": "Self-healing repair synthesized aborted tool result.",
                                 }

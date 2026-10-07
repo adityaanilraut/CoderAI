@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import stat
-from pathlib import Path
 
 import pytest
 
@@ -32,7 +31,7 @@ def _replacement(store, kind):
 
 
 @pytest.mark.parametrize("kind", ["index", "rows", "raw"])
-def test_replacement_preserves_serialization_and_umask(tmp_path, kind):
+def test_replacement_preserves_serialization_and_private_permissions(tmp_path, kind):
     store = JsonlSessionStore(str(tmp_path))
     target, write, content = _replacement(store, kind)
     target.write_text("old", encoding="utf-8")
@@ -42,32 +41,31 @@ def test_replacement_preserves_serialization_and_umask(tmp_path, kind):
         write()
     finally:
         os.umask(previous)
-    assert target.read_bytes() == content.replace("\n", os.linesep).encode("utf-8")
-    # Session replacements historically create a fresh inode using the process umask.
+    assert target.read_bytes() == content.encode("utf-8")
+    # Shared session writes explicitly keep index and logs private.
     if os.name == "posix":
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
     else:
         # Windows exposes the writable bit rather than POSIX umask permissions.
         assert target.stat().st_mode & stat.S_IWRITE
     assert not list(store.project_dir.glob("*.tmp-*"))
+    assert not list(store.project_dir.glob("*.tmp"))
 
 
 @pytest.mark.parametrize("kind", ["index", "rows", "raw"])
-def test_failed_replace_keeps_old_target_and_recoverable_orphan(tmp_path, monkeypatch, kind):
+def test_failed_replace_keeps_old_target_and_cleans_temporary(tmp_path, monkeypatch, kind):
     store = JsonlSessionStore(str(tmp_path))
-    target, write, content = _replacement(store, kind)
+    target, write, _content = _replacement(store, kind)
     target.write_text("old", encoding="utf-8")
 
-    def fail_replace(path, destination):
-        assert Path(destination) == target
+    def fail_replace(path, destination, **kwargs):
+        assert destination == (target.name if kwargs.get("dst_dir_fd") is not None else str(target))
         raise OSError("replace failed")
 
-    monkeypatch.setattr(Path, "replace", fail_replace)
+    monkeypatch.setattr(os, "replace", fail_replace)
     with pytest.raises(OSError, match="replace failed"):
         write()
     assert target.read_text() == "old"
-    orphans = list(store.project_dir.glob("*.tmp-*"))
-    assert len(orphans) == 1
-    assert orphans[0].read_text(encoding="utf-8") == content
-    assert store.cleanup_orphan_tmps() == 1
+    assert not list(store.project_dir.glob("*.tmp"))
+    assert store.cleanup_orphan_tmps() == 0
     assert target.read_text() == "old"

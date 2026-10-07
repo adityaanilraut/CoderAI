@@ -41,6 +41,7 @@ class CliSubagentDriver:
         cwd: str,
         env: dict[str, str] | None = None,
         backend_name: str = "cli_subagent",
+        input_data: bytes | None = None,
     ) -> dict[str, Any]:
         """Execute the CLI subprocess and return a structured subagent response dict."""
         run_env = os.environ.copy()
@@ -58,11 +59,18 @@ class CliSubagentDriver:
                 stderr=asyncio.subprocess.PIPE,
                 env=run_env,
                 start_new_session=True,
+                stdin=asyncio.subprocess.PIPE if input_data is not None else None,
             )
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=self.timeout_seconds,
+            from coderai.utils.bounded_process import bounded_communicate
+
+            collect = (
+                bounded_communicate(proc, input_data or b"", stdout_limit=4_000_000)
+                if hasattr(proc, "stdout") and hasattr(proc, "stderr")
+                else proc.communicate(input=input_data)
+                if input_data is not None
+                else proc.communicate()
             )
+            stdout_b, stderr_b = await asyncio.wait_for(collect, timeout=self.timeout_seconds)
             elapsed = time.time() - start_time
             stdout = stdout_b.decode("utf-8", errors="replace").strip()
             stderr = stderr_b.decode("utf-8", errors="replace").strip()
@@ -111,6 +119,8 @@ class CliSubagentDriver:
                 await stop_process(proc)
             raise
         except Exception as e:
+            if proc is not None and proc.returncode is None:
+                await stop_process(proc)
             return {
                 "ok": False,
                 "backend": backend_name,

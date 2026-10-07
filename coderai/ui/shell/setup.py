@@ -16,9 +16,6 @@ from rich.table import Table
 
 from coderai.ui.shell.console import PANEL_BORDER_STYLE, PANEL_PADDING
 from coderai.ui.shell.session_picker import select_with_arrows
-from coderai.utils.common.model_capabilities import (
-    get_model_badges,
-)
 from coderai.llm import clear_client_pool, probe_provider_connectivity
 from coderai.config import (
     DEFAULT_BASE_URL,
@@ -425,58 +422,19 @@ def configure_custom_endpoint_interactive(
 
 def select_and_save_model_interactive(console: Any | None, project_root: str = ".") -> str:
     """Prompt user to select a default model and save it to configuration."""
-    from coderai.ui.shell.session_picker import get_available_models
+    from coderai.ui.shell.session_picker import select_model_interactive
 
     resolved = resolve_current_settings(project_root)
     current_model = resolved.get("model", DEFAULT_MODEL)
 
-    all_models = get_available_models(current_model)
-    items: list[tuple[str, str, str]] = []
-    default_idx = 0
-    for idx, (name, desc, category) in enumerate(all_models):
-        badges = get_model_badges(name)
-        badges_str = " ".join(f"[{b}]" for b in badges)
-        items.append((name, f"{name:<26} {badges_str}", f"[{category}] {desc}"))
-        if name == current_model:
-            default_idx = idx
+    chosen_model = select_model_interactive(console, current_model)
 
-    items.append(
-        (
-            "cancel",
-            "Cancel (Keep Current Model)",
-            f"Retain '{current_model}' and return without changes",
-        )
-    )
-
-    res = select_with_arrows(
-        console,
-        items,
-        title=f"Select Default Model (Current: {current_model})",
-        default_idx=default_idx,
-        allow_custom=True,
-        allow_cancel=True,
-    )
-
-    if res is None or (isinstance(res, int) and items[res][0] == "cancel"):
+    if chosen_model == current_model:
         if console is not None and _RICH:
             console.print(
                 f"  [dim]Model selection cancelled. Retaining current model '{current_model}'.[/dim]"
             )
         return current_model
-
-    chosen_model = current_model
-    if isinstance(res, int) and 0 <= res < len(all_models):
-        chosen_model = all_models[res][0]
-    elif isinstance(res, str) and res.strip():
-        val = res.strip()
-        from coderai.ui.shell.prompt import fuzzy_filter
-
-        model_names = [name for name, _, _ in all_models]
-        fuzzy_models = fuzzy_filter(val, model_names, limit=1)
-        if fuzzy_models:
-            chosen_model = fuzzy_models[0]
-        else:
-            chosen_model = val
 
     if chosen_model != current_model:
         scope = prompt_save_scope(console)
@@ -523,6 +481,13 @@ def run_connectivity_test_interactive(
         timeout=12.0,
     )
 
+    from coderai.ui.shell.model_details import record_connection
+
+    try:
+        routing = {"baseURL": base_url, "apiKey": api_key}
+        record_connection(project_root, active_model, routing, success)
+    except (OSError, ValueError):
+        pass
     if console is not None and _RICH:
         if success:
             console.print("\n  [bold green]✓ Connection Verified![/]")
@@ -637,7 +602,10 @@ def run_quick_setup_wizard(
 
         if console is not None and _RICH:
             console.print("  [bold cyan]Validating Provider Connection...[/]")
-        run_connectivity_test_interactive(console, project_root, model_override=chosen_model)
+        if not run_connectivity_test_interactive(
+            console, project_root, model_override=chosen_model
+        ):
+            return
         if console is not None and _RICH:
             console.print(
                 "  [bold green]● Setup complete![/] You are ready to start pair-programming with CoderAI.\n"
@@ -668,7 +636,8 @@ def run_quick_setup_wizard(
     # Step 4: Test Connection
     if console is not None and _RICH:
         console.print("  [bold cyan]Step 3/3: Validating Provider Connection...[/]")
-    run_connectivity_test_interactive(console, project_root, model_override=chosen_model)
+    if not run_connectivity_test_interactive(console, project_root, model_override=chosen_model):
+        return
 
     # If active session manager is attached, update its model dynamically
     if mgr is not None:

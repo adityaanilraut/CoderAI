@@ -11,6 +11,7 @@ per ACP session so concurrent sessions cannot touch each other's terminals.
 from __future__ import annotations
 
 from typing import Any
+import math
 
 from coderai.utils.logging import logger
 
@@ -27,7 +28,7 @@ def _clamp_timeout_ms(value: Any, default: int) -> float:
         timeout_ms = float(value)
     except (TypeError, ValueError):
         return default / 1000.0
-    if timeout_ms <= 0:
+    if not math.isfinite(timeout_ms) or timeout_ms <= 0:
         return default / 1000.0
     return min(timeout_ms, _MAX_TIMEOUT_MS) / 1000.0
 
@@ -46,6 +47,7 @@ class TerminalBridge:
         acp_session_id: str,
         work_dir: str = ".",
         manager: Any = None,
+        sandbox_mode: str | None = None,
     ) -> None:
         self._acp_session_id = acp_session_id
         self._work_dir = work_dir or "."
@@ -54,6 +56,7 @@ class TerminalBridge:
 
             manager = get_terminal_manager()
         self._manager = manager
+        self._sandbox_mode = sandbox_mode
         self._owned: set[str] = set()
 
     # -- helpers ---------------------------------------------------------
@@ -92,9 +95,12 @@ class TerminalBridge:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        if len(self._owned) >= 16:
+            return {"error": "Terminal limit reached for this session"}
         try:
             term = self._manager.open_session(
                 command=command,
+                sandbox_mode=self._sandbox_mode,
                 name=self._prefix(name or ""),
                 cwd=cwd or self._work_dir,
                 env=dict(env) if isinstance(env, dict) else None,
@@ -119,6 +125,8 @@ class TerminalBridge:
         submit: bool = True,
         timeout_ms: Any = None,
     ) -> dict[str, Any]:
+        if not isinstance(text, str) or len(text.encode("utf-8")) > 65536:
+            return {"error": "Terminal input exceeds 64 KiB"}
         term = self._lookup(session_id)
         if term is None:
             return {"error": f"Terminal session `{session_id}` not found."}

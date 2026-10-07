@@ -64,7 +64,7 @@ def build_session_manager(
             if spec.model and not model:
                 resolved["model"] = spec.model
                 model = spec.model
-            if spec.allowed_tools:
+            if spec.allowed_tools is not None:
                 resolved["allowedTools"] = list(spec.allowed_tools)
         except Exception as exc:
             import sys
@@ -119,4 +119,7 @@ async def close_session_manager(manager: SessionManager) -> None:
     except Exception:
         pass
 
+    executor = getattr(manager, "tool_executor", None)
+    if executor is not None and hasattr(executor, "aclose"):
+        await executor.aclose()
     await manager.mcp_manager.disconnect()

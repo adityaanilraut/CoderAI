@@ -70,7 +70,7 @@ def test_sync_overflow_is_explicit_for_control_messages_and_other_subscribers():
 
 def test_wire_nowait_does_not_hide_overflow_as_an_empty_queue():
     wire = Wire(history_limit=0, queue_limit=1)
-    subscriber = wire.ui_side(merge=False, replay=False)
+    subscriber = wire.ui_side(merge=False, replay=False, lossless=True)
     wire.soul_side.send(TurnBegin())
     with pytest.raises(BroadcastQueueOverflow):
         wire.soul_side.send(ApprovalRequest(id="control"))

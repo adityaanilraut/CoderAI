@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import html
 from urllib.parse import urlparse
 
 TIMEOUT = 5.0
@@ -69,7 +70,9 @@ async def collect_git_context(work_dir: str) -> str:
 
     if len(sections) <= 1:
         return ""
-    return "<git-context>\n" + "\n".join(sections) + "\n</git-context>"
+    # Git fields are repository data, never trusted agent instructions.
+    body = html.escape("\n".join(section[:8192] for section in sections)[:16384], quote=False)
+    return "<git-context>\n" + body + "\n</git-context>"
 
 
 async def _run_git(args: list[str], cwd: str, timeout: float = TIMEOUT) -> str | None:
@@ -85,11 +88,15 @@ async def _run_git(args: list[str], cwd: str, timeout: float = TIMEOUT) -> str |
         )
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except (TimeoutError, asyncio.TimeoutError):
+        except (TimeoutError, asyncio.CancelledError):
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
+            await proc.wait()
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
             return None
         if proc.returncode != 0:
             return None

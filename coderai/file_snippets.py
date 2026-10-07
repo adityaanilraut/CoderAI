@@ -26,6 +26,8 @@ class FileState:
     is_partial_view: bool = False
     encoding: str = "utf8"
     line_endings: str = "LF"
+    raw_digest: str | None = None
+    file_identity: tuple[int, int, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,8 @@ class SessionStateManager:
                 is_partial_view=state.get("is_partial_view", False),
                 encoding=state.get("encoding", "utf8"),
                 line_endings=state.get("line_endings", "LF"),
+                raw_digest=state.get("raw_digest"),
+                file_identity=state.get("file_identity"),
             ),
         )
 

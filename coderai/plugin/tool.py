@@ -17,6 +17,12 @@ from typing import Any
 from coderai.plugin import PLUGIN_JSON, PluginSpec, PluginToolSpec, parse_plugin_json
 from coderai.plugin.manager import get_plugins_dir
 from coderai.tools.legacy.types import ToolResult
+from coderai.tools.legacy.schema import validate_json_schema_value
+from coderai.utils.bounded_process import (
+    bounded_communicate,
+    OutputLimitError,
+    terminate_owned_process,
+)
 
 PLUGIN_TOOL_TIMEOUT_S = 120.0
 
@@ -95,6 +101,14 @@ async def run_plugin_tool(
     if located is None:
         return ToolResult(ok=False, name=name, error=f"Unknown plugin tool: {name}")
     spec, tool_spec, child = located
+    errors = validate_json_schema_value(tool_spec.parameters or {"type": "object"}, args)
+    if errors:
+        return ToolResult(
+            ok=False,
+            name=name,
+            error="; ".join(errors),
+            metadata={"code": "INVALID_TOOL_ARGUMENTS", "retryable": False},
+        )
     if not tool_spec.command:
         return ToolResult(ok=False, name=name, error=f"Plugin tool '{name}' has no command.")
     env = _clean_env()
@@ -110,24 +124,37 @@ async def run_plugin_tool(
             stderr=asyncio.subprocess.PIPE,
             cwd=str(child),
             env=env,
+            start_new_session=os.name != "nt",
         )
     except Exception as exc:
         return ToolResult(ok=False, name=name, error=f"Plugin tool '{name}' failed to start: {exc}")
     try:
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input=json.dumps(args or {}, ensure_ascii=False).encode("utf-8")),
+            bounded_communicate(proc, json.dumps(args or {}, ensure_ascii=False).encode("utf-8")),
             timeout=timeout_s,
+        )
+    except OutputLimitError as exc:
+        terminate_owned_process(proc.pid)
+        await proc.wait()
+        return ToolResult(
+            ok=False,
+            name=name,
+            error=str(exc),
+            metadata={"code": "TOOL_OUTPUT_OVERFLOW", "retryable": True},
         )
     except (asyncio.TimeoutError, TimeoutError):
         with suppress(Exception):
-            proc.kill()
+            terminate_owned_process(proc.pid)
             await proc.wait()
         return ToolResult(
-            ok=False, name=name, error=f"Plugin tool '{name}' timed out after {timeout_s}s."
+            ok=False,
+            name=name,
+            error=f"Plugin tool '{name}' timed out after {timeout_s}s.",
+            metadata={"code": "TOOL_TIMEOUT", "timed_out": True, "retryable": True},
         )
     except asyncio.CancelledError:
         with suppress(Exception):
-            proc.kill()
+            terminate_owned_process(proc.pid)
             await proc.wait()
         raise
     output = stdout.decode("utf-8", errors="replace").strip()

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import logging
+import fnmatch
 import os
 import re
+
+from coderai.utils.storage import read_bytes
 from pathlib import Path
 from typing import Any
 
 from coderai.subagents.models import BUILTIN_SUBAGENT_TYPES, SubagentTypeDefinition, ToolPolicyMode
 
 logger = logging.getLogger(__name__)
+MAX_AGENT_SPEC_BYTES = 256_000
 
 # Map common tool aliases between PascalCase and snake_case (CoderAI Core)
 TOOL_ALIASES: dict[str, set[str]] = {
@@ -31,9 +35,21 @@ TOOL_ALIASES: dict[str, set[str]] = {
     "askuserquestion": {"askuserquestion", "ask_user_question"},
     "todo_write": {"todo_write", "settodolist", "set_todo_list", "update_plan"},
     "settodolist": {"todo_write", "settodolist", "set_todo_list", "update_plan"},
-    "subagent": {"subagent", "agent"},
-    "agent": {"subagent", "agent"},
+    "subagent": {"subagent", "agent", "task"},
+    "agent": {"subagent", "agent", "task"},
+    "task": {"subagent", "agent", "task"},
 }
+
+
+def normalize_tool_list(raw: Any) -> tuple[str, ...] | None:
+    """Validate capability input while preserving inheritance versus deny-all."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, (list, tuple)) or any(not isinstance(item, str) for item in raw):
+        raise ValueError("Tool policy must contain only strings")
+    return tuple(dict.fromkeys(item.strip() for item in raw if item.strip()))
 
 
 def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str] | None:
@@ -41,7 +57,7 @@ def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str] | None:
     fm_pattern = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
     match = fm_pattern.match(content)
     if not match:
-        return {}, content.strip()
+        return None
     fm_text, body = match.group(1), match.group(2).strip()
     try:
         import yaml  # type: ignore[import-untyped]
@@ -59,8 +75,8 @@ def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str] | None:
 def parse_markdown_agent_spec(file_path: Path) -> SubagentTypeDefinition | None:
     """Parse a Markdown agent role spec (.md with YAML frontmatter)."""
     try:
-        content = file_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        content = read_bytes(file_path.absolute(), limit=MAX_AGENT_SPEC_BYTES).decode("utf-8")
+    except (OSError, ValueError, UnicodeError):
         return None
 
     parsed = _parse_frontmatter(content)
@@ -70,41 +86,27 @@ def parse_markdown_agent_spec(file_path: Path) -> SubagentTypeDefinition | None:
 
     name = str(meta.get("name") or file_path.stem).strip().lower()
     description = str(meta.get("description") or f"Specialized {name} agent").strip()
-    tools_meta = meta.get("tools")
-    allowed_tools: tuple[str, ...] | None = None
-    if isinstance(tools_meta, (list, tuple)):
-        allowed_tools = tuple(str(t).strip() for t in tools_meta if t and str(t).strip())
-    elif isinstance(tools_meta, str):
-        allowed_tools = tuple(x.strip() for x in tools_meta.split(",") if x.strip())
-    elif tools_meta is not None:
-        allowed_tools = ()
-
+    try:
+        allowed_tools = normalize_tool_list(meta.get("tools"))
+        exclude_tools = normalize_tool_list(meta.get("exclude_tools")) or ()
+    except ValueError as exc:
+        logger.warning("Invalid tool policy in %s: %s", file_path, exc)
+        return None
     raw_mode = meta.get("mode")
-    if raw_mode:
-        mode = str(raw_mode).strip().lower()
-    elif allowed_tools is not None and (
-        len(allowed_tools) == 0
-        or all(
-            t.lower() in ("read", "readfile", "read_file", "grep", "glob", "websearch", "webfetch")
-            for t in allowed_tools
-        )
-    ):
-        mode = "read_only"
+    if raw_mode is not None:
+        if not isinstance(raw_mode, str) or raw_mode.strip().lower() not in {
+            "read_only",
+            "general",
+        }:
+            logger.warning("Invalid agent mode in %s", file_path)
+            return None
+        mode = raw_mode.strip().lower()
     else:
-        mode = "general"
-
+        mode = "read_only"
+    if allowed_tools is None and raw_mode is None:
+        allowed_tools = ("read", "grep", "glob")
     raw_model = meta.get("model")
     model = str(raw_model).strip() if raw_model else None
-
-    raw_exclude = meta.get("exclude_tools")
-    if raw_exclude is None:
-        exclude_tools: tuple[str, ...] = ()
-    elif isinstance(raw_exclude, str):
-        exclude_tools = (raw_exclude.strip(),) if raw_exclude.strip() else ()
-    elif isinstance(raw_exclude, (list, tuple)):
-        exclude_tools = tuple(str(t).strip() for t in raw_exclude if t and str(t).strip())
-    else:
-        exclude_tools = ()
 
     raw_bg = meta.get("supports_background", True)
     if isinstance(raw_bg, str):
@@ -149,21 +151,24 @@ def discover_custom_agents(project_root: str | None = None) -> dict[str, Subagen
         ]
     )
 
-    cwd = Path.cwd().resolve()
-    if cwd != root and cwd != home:
-        candidate_dirs.extend(
-            [
-                cwd / ".coderai" / "agents",
-                cwd / ".agents" / "agents",
-            ]
-        )
-
     for cdir in candidate_dirs:
         if not cdir.is_dir():
             continue
         for md_file in sorted(cdir.glob("*.md")):
-            if md_file.is_file() and not md_file.name.startswith("."):
+            if md_file.is_file() and not md_file.is_symlink() and not md_file.name.startswith("."):
                 defn = parse_markdown_agent_spec(md_file)
+                if defn and cdir.is_relative_to(root):
+                    from coderai.trust import is_project_trusted
+
+                    if not is_project_trusted(str(root)) and (
+                        defn.mode == "general"
+                        or defn.allowed_tools is None
+                        or "*" in defn.allowed_tools
+                    ):
+                        logger.warning(
+                            "Ignoring unrestricted role in untrusted project: %s", md_file
+                        )
+                        continue
                 if defn and defn.name not in discovered:
                     discovered[defn.name] = defn
     return discovered
@@ -273,6 +278,22 @@ def get_subagent_definition(
     return None
 
 
+def intersect_tool_lists(
+    first: list[str] | tuple[str, ...] | None,
+    second: list[str] | tuple[str, ...] | None,
+) -> tuple[str, ...] | None:
+    """Intersect inheritance or pattern allowlists without widening either policy."""
+    first = normalize_tool_list(first)
+    second = normalize_tool_list(second)
+    if first is None:
+        return second
+    if second is None:
+        return first
+    narrowed = [name for name in first if is_tool_allowed(name, "allowlist", second)]
+    narrowed.extend(name for name in second if is_tool_allowed(name, "allowlist", first))
+    return tuple(dict.fromkeys(narrowed))
+
+
 def resolve_tool_policy(
     subagent_type: str | None,
     requested: list[str] | tuple[str, ...] | None = None,
@@ -281,21 +302,23 @@ def resolve_tool_policy(
     """Resolve the effective tool policy for a subagent launch.
 
     Returns ``(mode, tools)`` where ``inherit`` means no restriction.
-    An explicit ``requested`` allowlist always wins. Deny-by-default: an
+    An explicit ``requested`` allowlist narrows the role policy. Deny-by-default: an
     explicitly named but unknown subagent type resolves to an empty
     allowlist (nothing permitted) instead of unrestricted ``inherit``; only
     an absent type (no restriction requested) inherits.
     """
-    if requested is not None:
-        return "allowlist", tuple(requested)
+    requested_tools = normalize_tool_list(requested)
     if not subagent_type:
+        if requested_tools is not None:
+            return "allowlist", requested_tools
         return "inherit", ()
     definition = get_subagent_definition(subagent_type, project_root)
     if definition is None:
         return "allowlist", ()
     if definition.allowed_tools is None:
-        return "inherit", ()
-    return "allowlist", tuple(definition.allowed_tools)
+        return ("allowlist", requested_tools) if requested_tools is not None else ("inherit", ())
+    narrowed = intersect_tool_lists(definition.allowed_tools, requested_tools)
+    return "allowlist", narrowed if narrowed is not None else ()
 
 
 def is_tool_allowed(tool_name: str, mode: ToolPolicyMode, tools: tuple[str, ...]) -> bool:
@@ -308,9 +331,15 @@ def is_tool_allowed(tool_name: str, mode: ToolPolicyMode, tools: tuple[str, ...]
     # Direct match or alias match
     known_aliases = TOOL_ALIASES.get(t_clean, {t_clean})
     for allowed in tools:
+        if not isinstance(allowed, str):
+            raise ValueError("Tool policies require string entries")
         a_clean = allowed.strip().lower()
         allowed_aliases = TOOL_ALIASES.get(a_clean, {a_clean})
-        if t_clean == a_clean or (known_aliases & allowed_aliases):
+        if (
+            t_clean == a_clean
+            or (known_aliases & allowed_aliases)
+            or fnmatch.fnmatchcase(t_clean, a_clean)
+        ):
             return True
     return False
 

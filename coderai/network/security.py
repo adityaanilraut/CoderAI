@@ -28,6 +28,17 @@ class NetworkPolicy:
         if not settings:
             return cls()
         net_cfg = settings.get("network") or {}
+        if not isinstance(net_cfg, dict):
+            raise ValueError("network settings must be an object.")
+        for key in ("allowedDomains", "allowed_domains", "blockedDomains", "blocked_domains"):
+            value = net_cfg.get(key, [])
+            if not isinstance(value, list) or any(
+                not isinstance(domain, str) or not domain.strip() for domain in value
+            ):
+                raise ValueError(f"network.{key} must be an array of non-empty domain patterns.")
+        for key in ("allowPrivateIps", "enforceSsrfProtection"):
+            if key in net_cfg and not isinstance(net_cfg[key], bool):
+                raise ValueError(f"network.{key} must be a boolean.")
         return cls(
             allowed_domains=list(
                 net_cfg.get("allowedDomains") or net_cfg.get("allowed_domains") or []

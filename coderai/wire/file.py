@@ -120,30 +120,25 @@ class WireFile:
             yield rec
 
     def append_record_sync(self, record: WireMessageRecord) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        from coderai.utils.storage import write_bytes
+
         needs_header = not self.path.exists() or self.path.stat().st_size == 0
-        with self.path.open("a", encoding="utf-8") as f:
-            if needs_header:
-                f.write(
-                    json.dumps(
-                        {"type": "metadata", "protocol_version": self.protocol_version},
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-            f.write(
-                json.dumps(
-                    {
-                        "timestamp": record.timestamp,
-                        "message": {
-                            "type": record.message.type,
-                            "payload": record.message.payload,
-                        },
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
+        lines: list[dict[str, Any]] = []
+        if needs_header:
+            lines.append({"type": "metadata", "protocol_version": self.protocol_version})
+        lines.append(
+            {
+                "timestamp": record.timestamp,
+                "message": {"type": record.message.type, "payload": record.message.payload},
+            }
+        )
+        write_bytes(
+            self.path,
+            ("".join(json.dumps(line, ensure_ascii=False) + "\n" for line in lines)).encode(
+                "utf-8"
+            ),
+            append=True,
+        )
 
     def append_message_sync(self, msg: Any, *, timestamp: float | None = None) -> None:
         record = WireMessageRecord.from_wire_message(

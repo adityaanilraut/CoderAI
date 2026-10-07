@@ -267,6 +267,19 @@ def get_configured_provider_keys(project_root: str = ".") -> dict[str, dict[str,
             key_val = env_map.get("JEV_API_KEY") or os.getenv("JEV_API_KEY")
 
         is_configured = bool(key_val and key_val.strip())
+        extra_models: list[str] = []
+        if prov_key == "openrouter":
+            # ponytail: cache-only read so /setup status never blocks on network.
+            try:
+                from coderai.openrouter import get_openrouter_free_models
+
+                extra_models = [
+                    name
+                    for name, _, _ in get_openrouter_free_models(allow_network=False)
+                    if name not in info["models"]
+                ]
+            except Exception:
+                extra_models = []
         status_map[prov_key] = {
             "name": info["name"],
             "env_var": var_name,
@@ -276,7 +289,7 @@ def get_configured_provider_keys(project_root: str = ".") -> dict[str, dict[str,
             "default_base_url": info["default_base_url"],
             "default_model": info["default_model"],
             "doc_url": info["doc_url"],
-            "models": info["models"],
+            "models": list(info["models"]) + extra_models,
         }
 
     # Custom endpoint check

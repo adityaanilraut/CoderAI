@@ -1,72 +1,26 @@
----
+Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.
 
-The above is a list of messages in an agent conversation. You are now given a task to compact this conversation context according to specific priorities and rules.
+Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.
 
-**Compression Priorities (in order):**
-1. **Current Task State**: What is being worked on RIGHT NOW
-2. **Errors & Solutions**: All encountered errors and their resolutions
-3. **Code Evolution**: Final working versions only (remove intermediate attempts)
-4. **System Context**: Project structure, dependencies, environment setup
-5. **Design Decisions**: Architectural choices and their rationale
-6. **TODO Items**: Unfinished tasks and known issues
+## Primary Request and Intent
+- [the user's original and evolving goals; quote verbatim where the exact wording matters; include all explicit user messages]
 
-**Compression Rules:**
-- MUST KEEP: Error messages, stack traces, working solutions, current task
-- MERGE: Similar discussions into single summary points
-- REMOVE: Redundant explanations, failed attempts (keep lessons learned), verbose comments
-- CONDENSE: Long code blocks → keep signatures + key logic only
+## Key Technical Concepts
+- [technologies, frameworks, patterns, runtime versions, and conventions in play]
 
-**Special Handling:**
-- For code: Keep full version if < 20 lines, otherwise keep signature + key logic
-- For errors: Keep full error message + final solution
-- For discussions: Extract decisions and action items only
+## Files and Code Sections
+- [exact file paths, functions, and line numbers examined, modified, or created]
 
-**Required Output Structure:**
+## Errors and Fixes
+- [all encountered error messages, stack traces, root causes, and verified fixes]
 
-<current_focus>
-[What we're working on now]
-</current_focus>
+## Critical Decisions & Constraints
+- [architectural, design, and implementation decisions made, plan-mode state, and plan file path if active]
 
-<environment>
-- [Key setup/config points]
-- ...more...
-</environment>
+## State of Progress & Completed Tasks
+- [completed tasks, modified files, verified behaviors, loaded skills, background job IDs, subagent IDs, and todo state]
 
-<completed_tasks>
-- [Task]: [Brief outcome]
-- ...more...
-</completed_tasks>
+## Pending Work & Next Steps
+- [immediate next actions and known open questions]
 
-<active_issues>
-- [Issue]: [Status/Next steps]
-- ...more...
-</active_issues>
-
-<code_state>
-
-<file>
-[filename]
-
-**Summary:**
-[What this code file does]
-
-**Key elements:**
-- [Important functions/classes]
-- ...more...
-
-**Latest version:**
-[Critical code snippets in this file]
-</file>
-
-<file>
-[filename]
-...Similar as above...
-</file>
-
-...more files...
-</code_state>
-
-<important_context>
-- [Any crucial information not covered above]
-- ...more...
-</important_context>
+Do not include conversational filler before or after the summary.

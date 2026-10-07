@@ -24,12 +24,15 @@ dependencies = [
     "rich>=13.7.0",
     "openai>=1.10.0",
     "requests>=2.31.0",
+    "pypdf>=6.19,<7",
     "pyyaml>=6.0",
     "prompt-toolkit>=3.0.52",
     "pydantic>=2.0",
+    "jsonschema>=4.26,<5",
+    "referencing>=0.37,<1",
+    "pathspec>=1.1,<2",
     "tomlkit>=0.12.0",
     "certifi>=2024.0.0",
-    "tenacity>=8.0.0",
     # loguru is required (also pulled in by kosong).
     # Core engine deps (kosong 0.56.x, bundled local KAOS,
     # fastmcp-slim 3.2.x, agent-client-protocol 0.8.x).
@@ -43,8 +46,21 @@ dependencies = [
     "agent-client-protocol>=0.8,<0.9",
     # Telemetry transport (async).
     "aiohttp>=3.10",
+    "multidict>=6.9.1,<7",
     # Reject the vulnerable transitive JWT versions used by MCP authentication.
     "PyJWT>=2.15.0,<3",
+    # Direct imports that previously resolved only transitively (kept explicit
+    # so a parent dropping them cannot silently break the wheel): loguru via
+    # kosong, pygments + markdown-it-py via rich, urllib3 via requests.
+    "loguru>=0.7.3",
+    "pygments>=2.21.0",
+    "markdown-it-py>=4.2.0",
+    "urllib3>=2.8.0",
+    # NOTE: keyring (coderai/auth/oauth.py) and setproctitle
+    # (coderai/utils/proctitle.py) stay soft-optional by design — both import
+    # behind try/except and degrade gracefully (file-store fallback / no-op).
+    # keyring currently arrives via fastmcp-slim[client]; declare it explicitly
+    # before ever dropping that extra (silent OAuth-token regression otherwise).
 ]
 
 [project.optional-dependencies]
@@ -69,8 +85,6 @@ dev = [
     "types-requests==2.33.0.20260906",
     "types-PyYAML==6.0.12.20260906",
     "pip-audit==2.10.1",
-    # Binary packaging (coderai.spec + scripts/verify_binary.py).
-    "pyinstaller>=6.0",
 ]
 
 [project.urls]
@@ -128,14 +142,11 @@ exclude = ["tests/"]
 # Remaining debt is explicit and budgeted in docs/type-suppression-budget.json.
 [[tool.mypy.overrides]]
 module = [
-    "coderai.background.agent_runner",
     "coderai.background.summary",
     "coderai.cli.info",
     "coderai.llm",
     "coderai.soul.coderaisoul",
-    "coderai.soul.compaction",
     "coderai.soul.message",
-    "coderai.subagents.runner",
     "coderai.tools",
     "coderai.tools.ask_user",
     "coderai.tools.background",

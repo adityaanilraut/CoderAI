@@ -114,7 +114,7 @@ def test_agents_send_queues_inbox() -> None:
     assert cmd_agents(_ctx(mgr, "s1"), "send agt_1 hello there") == SlashAction.HANDLED
     handle = registry.get("agt_1")
     assert handle is not None
-    assert handle.inbox == ["hello there"]
+    assert list(handle.inbox) == ["hello there"]
 
 
 def test_telemetry_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -73,7 +73,12 @@ def parse_plugin_json(path: Path) -> PluginSpec:
     if data.get("inject") and not data.get("config_file"):
         raise PluginError(f"'inject' requires 'config_file' in {path}")
     try:
-        return PluginSpec.model_validate(data)
+        spec = PluginSpec.model_validate(data)
+        from coderai.tools.legacy.schema import assert_supported_json_schema
+
+        for tool in spec.tools:
+            assert_supported_json_schema(tool.parameters or {"type": "object"}, tool.name)
+        return spec
     except Exception as exc:
         raise PluginError(f"Invalid plugin.json schema in {path}: {exc}") from exc
 

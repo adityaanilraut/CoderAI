@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import html
 from typing import Any
 
 from coderai.orchestration import status_to_stop_reason
@@ -71,17 +72,29 @@ class SubAgentResult:
             f"### Sub-Agent Task Result [{self.task_id}] — {status_badge}",
             f"**Status**: `{self.status}` | **Exit Code**: `{self.exit_code}` | **Iterations**: `{self.iterations}` | **Tokens**: `{self.total_tokens}`",
         ]
+
+        def quote_output(value: str, limit: int = 65536) -> str:
+            from coderai.tools.legacy.sanitizer import sanitize_text
+
+            clean, _ = sanitize_text(value[:limit])
+            return "\n".join("> " + html.escape(line, quote=False) for line in clean.splitlines())
+
+        def inline_path(value: Any) -> str:
+            return (
+                html.escape(str(value)[:1024], quote=False).replace("`", "\\`").replace("\n", " ")
+            )
+
         if self.error:
-            lines.append(f"\n> ❌ **Error**: {self.error}\n")
-        lines.append("\n**Findings & Summary**:")
-        lines.append(self.summary.strip() or "No summary provided.")
+            lines.append("\n**Error reported by child**:\n" + quote_output(self.error, 4096))
+        lines.append("\n**Findings & Summary (child output)**:")
+        lines.append(quote_output(self.summary.strip() or "No summary provided."))
         if self.artifacts:
             lines.append("\n**Artifacts/Files Examined**:")
             for art in self.artifacts:
-                lines.append(f"- `{art}`")
+                lines.append(f"- `{inline_path(art)}`")
         if self.diffs:
             lines.append(f"\n**Files Modified ({len(self.diffs)})**:")
             for d in self.diffs:
                 fp = d.get("file_path", "unknown")
-                lines.append(f"- `{fp}`")
+                lines.append(f"- `{inline_path(fp)}`")
         return "\n".join(lines)

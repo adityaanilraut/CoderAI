@@ -23,15 +23,11 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from coderai.share import get_share_dir
+from coderai.share import secure_share_subdir
 
 
 def oauth_token_dir() -> Path:
-    path = get_share_dir() / "mcp-oauth"
-    path.mkdir(parents=True, exist_ok=True)
-    with suppress(OSError):
-        path.chmod(0o700)
-    return path
+    return secure_share_subdir("mcp-oauth")
 
 
 def server_token_path(server_name: str) -> Path:
@@ -117,19 +113,3 @@ def apply_bearer_auth(config: dict[str, Any], server_name: str) -> dict[str, Any
     if not token:
         return config
     return {**config, "headers": {**headers, "Authorization": f"Bearer {token}"}}
-
-
-def create_mcp_oauth(server_url: str) -> Any:
-    """Create fastmcp OAuth adapter for server URL if available."""
-    try:
-        from fastmcp.client.auth.oauth import OAuth
-
-        return OAuth(mcp_url=server_url)
-    except Exception:
-        return None
-
-
-async def has_mcp_oauth_tokens(server_url: str) -> bool:
-    """Check whether OAuth tokens exist for this MCP server."""
-    token = _token_from_file(server_token_path(server_url))
-    return token is not None

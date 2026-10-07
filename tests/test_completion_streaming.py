@@ -33,6 +33,110 @@ def _client(stream):
     return NS(chat=NS(completions=NS(create=lambda **kwargs: stream)))
 
 
+@pytest.mark.parametrize("streaming", [True, False])
+def test_mandatory_reasoning_400_retries_without_mutating_request(streaming):
+    import copy
+
+    import httpx
+    from openai import BadRequestError
+
+    from coderai.soul.session.completion import call_sync
+
+    sent = []
+    response = {"choices": [{"message": {"content": "Hi"}}]}
+    error = BadRequestError(
+        "Reasoning is mandatory for this endpoint and cannot be disabled.",
+        response=httpx.Response(
+            400, request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+        ),
+        body={
+            "error": {"message": "Reasoning is mandatory for this endpoint and cannot be disabled."}
+        },
+    )
+
+    def create(**kwargs):
+        sent.append(kwargs)
+        if len(sent) == 1:
+            raise error
+        return response
+
+    client = NS(base_url="https://openrouter.ai/api/v1", chat=NS(completions=NS(create=create)))
+    request = {
+        "model": "liquid/lfm-2.5-2.6b:free",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 2048,
+        "extra_body": {"reasoning": {"enabled": False}, "provider": {"sort": "latency"}},
+    }
+    original = copy.deepcopy(request)
+    run = call_stream_or_sync if streaming else call_sync
+    assert run(client, request) == response
+    assert len(sent) == 2
+    assert sent[1]["extra_body"] == {
+        "reasoning": {"enabled": True, "exclude": True},
+        "provider": {"sort": "latency"},
+    }
+    assert sent[1]["messages"] == original["messages"]
+    assert sent[1]["max_tokens"] == 2048
+    assert request == original
+
+
+@pytest.mark.parametrize(
+    "host,status,reasoning",
+    [
+        ("openrouter.ai", 400, {"enabled": True}),
+        ("openrouter.ai", 401, {"enabled": False}),
+        ("example.com", 400, {"enabled": False}),
+    ],
+)
+def test_mandatory_reasoning_retry_does_not_mask_other_failures(host, status, reasoning):
+    import httpx
+    from openai import APIStatusError
+
+    calls = []
+    error = APIStatusError(
+        "Reasoning is mandatory for this endpoint and cannot be disabled.",
+        response=httpx.Response(
+            status, request=httpx.Request("POST", f"https://{host}/api/v1/chat/completions")
+        ),
+        body=None,
+    )
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        raise error
+
+    client = NS(base_url=f"https://{host}/api/v1", chat=NS(completions=NS(create=create)))
+    with pytest.raises(APIStatusError) as caught:
+        call_stream_or_sync(client, {"model": "test", "extra_body": {"reasoning": reasoning}})
+    assert caught.value is error
+    assert len(calls) == 1
+
+
+def test_mandatory_reasoning_retry_is_bounded():
+    import httpx
+    from openai import BadRequestError
+
+    calls = []
+    error = BadRequestError(
+        "Reasoning is mandatory for this endpoint and cannot be disabled.",
+        response=httpx.Response(
+            400, request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+        ),
+        body=None,
+    )
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        raise error
+
+    client = NS(base_url="https://openrouter.ai/api/v1", chat=NS(completions=NS(create=create)))
+    with pytest.raises(BadRequestError):
+        call_stream_or_sync(
+            client, {"model": "test", "extra_body": {"reasoning": {"enabled": False}}}
+        )
+    assert len(calls) == 2
+
+
 def test_stream_assembly_preserves_callback_order_and_tool_fragments():
     stream = Stream(
         [
@@ -80,6 +184,7 @@ def test_stream_assembly_preserves_callback_order_and_tool_fragments():
         {"id": "b", "type": "function", "function": {"name": "read", "arguments": '{"x":1}'}},
     ]
     assert result["usage"]["total_tokens"] == 6
+    assert result["_usage_source"] == "provider-reported"
 
 
 def test_stream_failure_attaches_partial_content_without_end_notification():
@@ -119,3 +224,25 @@ def test_callback_failure_does_not_abort_stream():
     )
     assert result["choices"][0]["message"]["content"] == "text"
     assert result["usage"]["completion_tokens"] == 2
+    assert result["_usage_source"] == "estimated"
+
+
+def test_stream_timing_ignores_empty_deltas_and_records_reasoning_then_tool(monkeypatch):
+    times = iter([10.0, 12.0])
+    monkeypatch.setattr("coderai.soul.session.streaming.time.time", lambda: next(times))
+    result = call_stream_or_sync(
+        _client(
+            Stream(
+                [
+                    _chunk(content=""),
+                    _chunk(reasoning_content="thinking"),
+                    _chunk(content="answer"),
+                    _chunk(
+                        tool_calls=[NS(index=0, id="c", function=NS(name="read", arguments="{}"))]
+                    ),
+                ]
+            )
+        ),
+        {"model": "test"},
+    )
+    assert result["_stream_timing"] == {"first_token_at": 10.0, "first_tool_call_at": 12.0}

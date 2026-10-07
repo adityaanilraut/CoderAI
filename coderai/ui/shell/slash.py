@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
+from coderai.sandbox import SANDBOX_MODES
+from coderai.ui.shell.shortcuts import shortcut_help
 
 from coderai.utils.slashcmd import (
     SlashCommand,
@@ -17,13 +19,44 @@ __all__ = [
 ]
 
 _COMMANDS = (
+    SlashCommand("stop", "Interrupt the active turn; pause queued prompts", "Planning & Safety"),
+    SlashCommand(
+        "steer", "Steer the active turn with text (send normally when idle)", "Input & Media"
+    ),
+    SlashCommand(
+        "queue",
+        "List, reorder, remove, clear, or resume queued prompts",
+        "Input & Media",
+        subcommands=("list", "edit", "remove", "move", "clear", "run"),
+    ),
+    SlashCommand(
+        "retry", "Retry the last failed submission in the current workspace", "Planning & Safety"
+    ),
+    SlashCommand(
+        "output", "Inspect complete tool output by message or tool ID", "Tools & Analytics"
+    ),
+    SlashCommand("activity", "Inspect foreground work, jobs, and subagents", "Diagnostics"),
+    SlashCommand("attach", "Prepare a quoted file mention in the composer", "Input & Media"),
+    SlashCommand(
+        "attachments",
+        "Review or remove draft files and images",
+        "Input & Media",
+        subcommands=("edit", "remove", "clear"),
+    ),
+    SlashCommand(
+        "display",
+        "Persist detail and accessibility preferences",
+        "Utilities",
+        subcommands=("compact", "verbose", "accessible", "animated"),
+    ),
     SlashCommand("new", "Start a fresh session", "Session Management"),
     SlashCommand("init", "Initialize or update AGENTS.md guidelines", "Session Management"),
     SlashCommand(
         "sessions",
-        "Browse, resume, delete, or fork sessions",
+        "Search all saved sessions and resume a selection",
         "Session Management",
         aliases=("resume",),
+        subcommands=("manage", "pin", "unpin", "archive", "unarchive", "tree"),
     ),
     SlashCommand("fork", "Fork the current or specified session", "Session Management"),
     SlashCommand("delete", "Delete a saved session", "Session Management", ("rm",)),
@@ -36,7 +69,12 @@ _COMMANDS = (
     SlashCommand("feedback", "Submit feedback (falls back to GitHub Issues)", "Help & Info"),
     SlashCommand("reload", "Reload configuration without exiting", "Help & Info"),
     SlashCommand("debug", "Show context debug info (msgs/tokens/checkpoints)", "Help & Info"),
-    SlashCommand("usage", "Show API usage / quota", "Help & Info", ("status", "quota")),
+    SlashCommand(
+        "usage",
+        "Show locally recorded usage; provider quota is unavailable",
+        "Help & Info",
+        ("status", "quota"),
+    ),
     SlashCommand(
         "plan",
         "Toggle or apply Plan Mode",
@@ -67,7 +105,13 @@ _COMMANDS = (
         ("auth", "keys", "configure"),
         ("quick", "keys", "models", "provider", "test", "status"),
     ),
-    SlashCommand("model", "Select or switch the active model", "Models & Reasoning"),
+    SlashCommand(
+        "model",
+        "Select or switch the active model",
+        "Models & Reasoning",
+        aliases=("models",),
+        subcommands=("favorites", "recent", "favorite", "unfavorite", "verify", "refresh"),
+    ),
     SlashCommand(
         "effort",
         "Select reasoning effort",
@@ -125,6 +169,9 @@ _COMMANDS = (
     ),
     SlashCommand("tokens", "Show token usage", "Tools & Analytics", ("cost",)),
     SlashCommand(
+        "tools", "Inspect effective tools, schemas, and restrictions", "Tools & Analytics"
+    ),
+    SlashCommand(
         "compact", "Compress conversation context", "Tools & Analytics", subcommands=("keep",)
     ),
     SlashCommand("history", "Show the session timeline", "Tools & Analytics"),
@@ -135,19 +182,13 @@ _COMMANDS = (
         "Show or set the permission preset",
         "Tools & Analytics",
         ("permissions",),
-        (
-            "read-only",
-            "workspace-write",
-            "danger-full-access",
-            "local-network-read",
-            "unrestricted-read",
-        ),
+        SANDBOX_MODES,
     ),
     SlashCommand(
         "goal",
         "List or update session goals",
         "Tools & Analytics",
-        subcommands=("list", "add", "done", "cancel", "start"),
+        subcommands=("list", "add", "start", "pause", "done", "cancel"),
     ),
     SlashCommand("image", "Attach an image for analysis", "Input & Media"),
     SlashCommand("editor", "Compose a prompt in $EDITOR", "Input & Media", ("edit",)),
@@ -166,7 +207,9 @@ _COMMANDS = (
     ),
     SlashCommand("upgrade", "Check for and install CoderAI updates", "Utilities"),
     SlashCommand("hooks", "Show configured hooks", "Utilities"),
-    SlashCommand("btw", "Side question (BTW modal)", "Utilities", ("side",)),
+    SlashCommand(
+        "btw", "Ask a side question without changing conversation history", "Utilities", ("side",)
+    ),
     SlashCommand("help", "Show command help", "Utilities", ("?", "h")),
     SlashCommand("exit", "Exit CoderAI", "Utilities", ("quit",)),
 )
@@ -304,21 +347,22 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
     },
     "goal": {
         "title": "Session Goals",
-        "syntax": "/goal [list|add <title>|done <id>|cancel <id>|start <id>]",
-        "summary": "Manage session goals and milestone tracking.",
+        "syntax": "/goal [list|add <objective>|start <id>|pause <id>|done <id>|cancel <id>]",
+        "summary": "Save session goals and run bounded attempts.",
         "description": (
             "Track high-level goals and progress for the current session.\n"
             "• /goal                      — List all goals for active session\n"
-            "• /goal add <title>          — Add a new goal\n"
+            "• /goal add <objective>      — Save a pending goal\n"
             "• /goal done <id>            — Mark goal as completed\n"
             "• /goal cancel <id>          — Cancel goal\n"
-            "• /goal start <id>           — Mark goal in-progress"
+            "• /goal start <id>           — Run or resume a goal within its round budget\n"
+            "• /goal pause <id>           — Pause goal execution"
         ),
         "examples": [
             "/goal",
             "/goal add Refactor database migration logic",
-            "/goal done 1",
-            "/goal cancel 2",
+            "/goal done a1b2c3d4",
+            "/goal cancel a1b2c3d4",
         ],
     },
     "mcp": {
@@ -344,8 +388,7 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
             "• read-only            — Only allow read tools; ask before modifications\n"
             "• workspace-write      — Allow workspace edits; ask for external/dangerous commands\n"
             "• danger-full-access   — Allow all tools without confirmation prompts\n"
-            "• local-network-read   — Allow local network read operations\n"
-            "• unrestricted-read    — Unrestricted read across filesystem"
+            "Changes are saved to the project and apply to new sessions."
         ),
         "examples": [
             "/permission",
@@ -430,7 +473,7 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "summary": "Attach an image file for vision analysis accompanying your turn.",
         "description": (
             "Encodes and attaches an image (PNG, JPEG, WebP, GIF) to your message with multimodal support.\n"
-            "You can also mention image files directly in your prompts."
+            "Quoted paths support spaces. In the interactive shell, the image and prompt return to the composer for review; Enter submits. Ctrl-T reviews or removes files and images."
         ),
         "examples": [
             "/image docs/diagram.png Explain this architectural design",
@@ -453,7 +496,7 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "summary": "Compose or edit your prompt in your configured $EDITOR (nano, vim, vi, code, etc.).",
         "description": (
             "Opens your system default or configured $EDITOR in a temporary markdown file.\n"
-            "When you save and close the editor, the content is automatically submitted as your prompt."
+            "When you save and close the editor, the content returns to the composer for review and submission."
         ),
         "examples": ["/editor", "/edit"],
     },
@@ -461,24 +504,15 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "title": "Multiline Paste Mode",
         "syntax": "/paste",
         "summary": "Enter multiline paste mode for long code snippets or text blocks.",
-        "description": (
-            "Enters dedicated multiline capture mode. Paste text freely and type ':::' on a new line "
-            "or press Ctrl-D to complete input.\n"
-            'Tip: You can also wrap prompts directly in """ triple quotes """ or ``` code fences.'
-        ),
+        "description": "Returns pasted text to the composer for review. Ctrl-J inserts a newline; Enter finishes capture. Large pastes collapse visually while preserving the full submitted text. Esc, Ctrl-C, and EOF cancel capture.",
         "examples": ["/paste"],
     },
     "model": {
-        "title": "Model Selection",
-        "syntax": "/model [name]",
-        "summary": "Select or switch active LLM model.",
-        "description": "Opens interactive curated model menu or switches to specified model identifier directly.",
-        "examples": [
-            "/model",
-            "/model deepseek-v4-pro",
-            "/model gemini-2.5-pro",
-            "/model claude-3-7-sonnet",
-        ],
+        "title": "Model",
+        "syntax": "/model [provider|model ID|favorites|recent|favorite [id]|unfavorite [id]|verify|refresh]",
+        "summary": "Compare configured providers, cached capabilities, estimated pricing, and context limits",
+        "description": "Compare configured providers, cached capabilities, estimated pricing, and context limits. Favorite and recent collections are workspace-specific. /model verify explicitly tests the active connection; menu rendering never probes providers.",
+        "examples": ["/model"],
     },
     "effort": {
         "title": "Reasoning Effort Selection",
@@ -502,32 +536,24 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "examples": ["/reasoning", "/reasoning max"],
     },
     "sessions": {
-        "title": "Saved Sessions Browser",
-        "syntax": "/sessions [search_query]",
-        "summary": "Paginated interactive session browser with search filter, resume, delete, and fork.",
-        "description": (
-            "Browse saved workspace sessions.\n"
-            "Interactive controls:\n"
-            "• <num>       — Resume session\n"
-            "• d <num>     — Delete session\n"
-            "• f <num>     — Fork session\n"
-            "• s <query>   — Filter sessions\n"
-            "• n / p       — Next / previous page"
-        ),
-        "examples": ["/sessions", "/sessions auth", "/sessions refactor"],
+        "title": "Sessions",
+        "syntax": "/sessions [search|manage [id]|pin|unpin|archive|unarchive|tree]",
+        "summary": "Search saved sessions or resume an ID",
+        "description": "Search saved sessions or resume an ID. Pin/archive actions accept an ID (default: current). Filters: status:ready, after:YYYY-MM-DD, before:YYYY-MM-DD, pinned:true, archived:only or archived:all, fork:<id>. Add tree to navigate fork ancestry. /sessions manage <id> opens organization actions.",
+        "examples": ["/sessions"],
     },
     "undo": {
-        "title": "Undo & Checkpoint Rollback",
+        "title": "Undo",
         "syntax": "/undo",
-        "summary": "Interactive turn and checkpoint rollback (revert files, conversation, or both).",
-        "description": "Revert code and conversation history to any previous turn checkpoint.",
+        "summary": "Choose a checkpoint and restoration scope, inspect the affected files and conversation messages, then confirm",
+        "description": "Choose a checkpoint and restoration scope, inspect the affected files and conversation messages, then confirm. Unavailable file checkpoints cannot be selected. Esc cancels.",
         "examples": ["/undo"],
     },
     "diff": {
-        "title": "Diff Preview",
+        "title": "Diff",
         "syntax": "/diff",
-        "summary": "Display syntax-highlighted unified diff of changes made during the session.",
-        "description": "Renders git diff of workspace modifications since session start.",
+        "summary": "Browse complete session changes by file and hunk",
+        "description": "Browse complete session changes by file and hunk. Enter opens searchable full output; Ctrl-F searches; Esc returns. Counts always describe the complete diff.",
         "examples": ["/diff"],
     },
     "review": {
@@ -585,7 +611,7 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "title": "Turn Timeline History",
         "syntax": "/history",
         "summary": "View turn-by-turn conversation timeline.",
-        "description": "Displays chronological timeline of user prompts, tool executions, and tokens.",
+        "description": "Search the full persisted transcript, including complete messages, tool results, reasoning, and compaction boundaries. Enter opens a message; Ctrl-F searches inside it. Esc returns without losing the browser query and selection.",
         "examples": ["/history"],
     },
     "skills": {
@@ -669,31 +695,21 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "title": "Keyboard Shortcuts & Controls",
         "syntax": "/help shortcuts",
         "summary": "Key bindings and interactive controls cheatsheet.",
-        "description": (
-            "• Ctrl-C       — Interrupt active generation or cancel current input line\n"
-            "• Ctrl-D       — Exit CoderAI REPL session gracefully\n"
-            "• Ctrl-R       — Reverse history search (interactive readline history search)\n"
-            "• Ctrl-L       — Clear terminal screen and redraw status bar\n"
-            "• Tab          — Autocomplete slash commands, models, sub-arguments, and @file paths\n"
-            "• Shift-Tab    — Toggle Plan Mode / Build Mode\n"
-            "• @<filename>  — Mention workspace file with optional line slice (@file.py:10-40)\n"
-            "• \"\"\" or '''   — Multiline block input delimiter\n"
-            "• \\ at end     — Line continuation"
-        ),
+        "description": shortcut_help(),
         "examples": ["/help shortcuts"],
     },
     "theme": {
         "title": "Theme Switch",
         "syntax": "/theme [dark|light]",
-        "summary": "Switch terminal theme (dark/light) for diff background colors.",
-        "description": "Toggles diff background colors via theme.set_active_theme. • /theme dark — dark diff bg • /theme light — light diff bg • /theme — show current",
+        "summary": "Switch and persist the terminal theme (dark/light).",
+        "description": "Themes apply to the composer, focused browsers, output inspector, transcript, semantic statuses, and diffs. /theme with no argument shows the current theme.",
         "examples": ["/theme", "/theme dark", "/theme light"],
     },
     "btw": {
         "title": "Side Question (BTW)",
         "syntax": "/btw <question>",
-        "summary": "Ask a side question without interrupting current turn (BTW modal).",
-        "description": "Routes to PromptPlaceholderManager + BtwPanel (modal_priority=5). While streaming, queues as BTW modal not ❯ queue. Resolves via TextPart/ImageURLPart wrap_media_part.",
+        "summary": "Ask a side question without changing conversation history.",
+        "description": "Start when the foreground turn is idle. The composer remains available; /stop interrupts the side question and Enter queues a follow-up.",
         "examples": ["/btw What does this error mean?", "/btw Summarize the file"],
     },
     "login": {
@@ -749,14 +765,14 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "title": "API Usage",
         "syntax": "/usage (aliases: /status, /quota)",
         "summary": "Show token consumption against the context window.",
-        "description": "Progress-bar usage panel using local token accounting.",
+        "description": "Local token accounting and estimated cost. This command does not retrieve provider account quota.",
         "examples": ["/usage"],
     },
     "task": {
         "title": "Task Browser",
         "syntax": "/task",
         "summary": "Open the interactive background-task browser.",
-        "description": "Three-column TUI: list | detail | output preview. Enter/O output, S stop, Tab filter, R refresh, Q exit.",
+        "description": "Inspect foreground work, owned jobs, and subagents. Type to search; arrows select; Enter opens; Tab switches details; Esc returns. A selected job offers full output and explicit cancellation. Below 80 columns, one pane is shown.",
         "examples": ["/task"],
     },
     "agent": {
@@ -841,132 +857,76 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Grouped command definitions for clean, categorized presentation
-HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
-    (
-        "Session Management",
+# The canonical catalog drives help, aliases, and completion. Contextual
+# documentation adds syntax/examples, but cannot hide catalog commands.
+COMMAND_HELP_DETAILS.update(
+    {
+        "stop": {
+            "syntax": "/stop",
+            "description": "Interrupt owned foreground work and pause the queue. /queue run resumes queued prompts.",
+        },
+        "steer": {
+            "syntax": "/steer <text>",
+            "description": "Inject text into the running agent turn. Ctrl-S does the same from the composer. When idle, it submits normally. Shell and utility commands cannot accept steering.",
+        },
+        "queue": {
+            "syntax": "/queue [list|edit <n>|remove <n>|move <from> <to>|clear|run]",
+            "description": "Enter during generation prepares and queues a follow-up. Indices start at 1. Queued turns run sequentially; cancellation pauses them until /queue run or a new submission.",
+        },
+        "retry": {
+            "syntax": "/retry",
+            "description": "Resubmit the last failed or interrupted input with its images and skills. The current workspace is used; partial changes are retained.",
+        },
+        "output": {
+            "syntax": "/output [message-id|tool-id|search]",
+            "description": "Inspect complete tool results. Ctrl-E opens the browser while preserving the draft. Ctrl-F searches full output; Esc returns to the browser, then to the composer.",
+        },
+        "activity": {
+            "syntax": "/activity",
+            "description": "Show foreground status, pending interactions, owned jobs, and subagents. Enter opens details and actions. Background execution continues while browsing.",
+        },
+        "attach": {
+            "syntax": "/attach <quoted-file-path>",
+            "description": "Resolve a file and add its mention to the composer. Duplicate basenames require an explicit choice. Line ranges use a trailing :start-end.",
+        },
+        "attachments": {
+            "syntax": "/attachments [edit|remove <n>|clear]",
+            "description": "Ctrl-T opens the tray from the current draft. Review paths, ranges, sizes, and image dimensions; selection removes that attachment while retaining the rest of the draft. Indices start at 1; images precede files.",
+        },
+        "display": {
+            "syntax": "/display [compact|verbose|accessible|animated]",
+            "description": "Persist output detail and accessibility preferences. Accessible mode uses static text, numbered choices, ASCII markers, and no animated preview. NO_COLOR removes colors without disabling controls.",
+        },
+    }
+)
+for name, details in COMMAND_HELP_DETAILS.items():
+    command = COMMAND_CATALOG.get(name)
+    if command:
+        details.setdefault("title", command.name.capitalize())
+        details.setdefault("summary", command.summary)
+        details.setdefault("examples", [f"/{name}"])
+
+
+def _catalog_help_groups() -> list[tuple[str, list[tuple[str, str, str]]]]:
+    groups: dict[str, list[tuple[str, str, str]]] = {}
+    for command in _COMMANDS:
+        syntax = COMMAND_HELP_DETAILS.get(command.name, {}).get("syntax", f"/{command.name}")
+        suffix = str(syntax).removeprefix(f"/{command.name}").strip()
+        if suffix.startswith("(alias"):
+            suffix = ""
+        groups.setdefault(command.category, []).append(
+            (str(command.display_name), suffix, command.summary)
+        )
+    groups.setdefault("Models & Reasoning", []).extend(
         [
-            ("/new", "", "Start a fresh session in the workspace"),
-            (
-                "/sessions, /resume",
-                "[query|id]",
-                "Interactive session browser (resume, delete, fork, search)",
-            ),
-            ("/fork", "[id]", "Fork current or target session into new branch"),
-            ("/delete, /rm", "<id>", "Delete a saved session from workspace"),
-            ("/rename", "[title]", "Rename active or specified session summary"),
-            ("/export", "[file]", "Export session history to Markdown or JSON"),
-            ("/init", "", "Initialize or update AGENTS.md contributor guidelines"),
-            ("/reset", "", "Clear conversation context and reset session state"),
-            ("/btw", "<question>", "Side question (BTW modal, not queued)"),
-        ],
-    ),
-    (
-        "Planning & Safety",
-        [
-            (
-                "/plan",
-                "[on|off|view|clear|apply|reset]",
-                "Toggle Plan Mode (strict read-only safety boundary)",
-            ),
-            ("/undo", "", "Interactive turn & checkpoint rollback (code, conversation, or both)"),
-            ("/diff", "", "Show syntax-highlighted diff of changes"),
-            (
-                "/review",
-                "[base] [--all]",
-                "Review changes: Jev triage, model review, Jev comment gate",
-            ),
-            ("/continue", "", "Continue bounded multi-step agent execution"),
-            ("/yolo", "", "Toggle YOLO auto-approve all actions"),
-            ("/afk", "", "Toggle AFK auto-dismiss questions & approvals"),
-            ("/add-dir, /add_dir", "<path>", "Add additional directory to workspace"),
-        ],
-    ),
-    (
-        "Models & Reasoning",
-        [
-            ("/model", "[name]", "Interactive model selector or switch directly"),
-            (
-                "/effort",
-                "[level]",
-                "Interactive reasoning effort selector (low..max incl. xhigh, off)",
-            ),
-            ("/thinking, /raw", "", "Toggle full reasoning trace or summary (lite/normal)"),
-            ("/setup, /keys", "", "Configure API keys, providers, local endpoints & default model"),
-            ("/skills", "", "Explore active and discovered workspace skills"),
-            ("/skill", "<name>", "Load a skill into the current session"),
-            ("/skill:<name>", "", "Load a skill directly by colon dispatch"),
-            ("/flow:<name>", "", "Run a flow skill by colon dispatch"),
-            ("/agent, /role", "[name]", "View or switch active agent role / persona"),
-        ],
-    ),
-    (
-        "Diagnostics & Tools",
-        [
-            ("/doctor", "", "Run comprehensive system health checks & connectivity"),
-            (
-                "/permission, /permissions",
-                "",
-                "Show or set permission preset (read-only, workspace-write, danger-full-access)",
-            ),
-            (
-                "/mcp",
-                "[subcommand]",
-                "Inspect MCP servers/tools, /mcp prompts, /mcp resources, /mcp reconnect",
-            ),
-            ("/goal", "[add|done] ...", "List or update session goals"),
-            ("/jobs, /job", "[subcmd]", "Inspect and manage background bash jobs"),
-            ("/schedule", "[subcmd]", "Manage session-scoped reminders and timers"),
-            ("/agents, /subagents", "", "Inspect subagent hierarchy, tree, and reports"),
-            ("/tokens, /cost", "", "View detailed token usage and context analytics"),
-            ("/compact", "", "Compress history to free up active context tokens"),
-            ("/history", "", "View turn-by-turn conversation timeline"),
-            ("/context", "", "Inspect live context window utilization"),
-            ("/import", "<file>", "Import context from a file into active session"),
-            ("/config, /settings", "", "Inspect resolved workspace & user settings"),
-            ("/teams", "", "Inspect active agent team members and status"),
-        ],
-    ),
-    (
-        "Input & Media",
-        [
-            ("/image", "<path> [prompt]", "Attach image file for multimodal vision analysis"),
-            ("/editor, /edit", "", "Open external $EDITOR (nano, vim, vi) to compose prompt"),
-            ("/paste", "", "Enter multiline paste mode until ':::' or Ctrl-D"),
-        ],
-    ),
-    (
-        "Utilities & Controls",
-        [
-            ("/clear", "", "Clear terminal screen and redraw status"),
-            ("/help, /?", "[command]", "Show command help menu or detailed contextual help"),
-            ("/theme", "[dark|light]", "Switch diff theme (dark/light)"),
-            ("/task", "", "Interactive background-task browser (list/detail/output)"),
-            ("/upgrade", "", "Upgrade coderai-agent via pip"),
-            ("/web-vis, /browser", "", "Pure CLI notice for removed web/browser UI"),
-            ("/exit, /quit", "", "Exit CoderAI session with summary card"),
-        ],
-    ),
-    (
-        "Help & Info",
-        [
-            ("/version", "", "Show CLI version"),
-            ("/changelog", "", "Show recent changelog (/release-notes)"),
-            ("/feedback", "[text]", "Submit feedback (falls back to GitHub Issues)"),
-            ("/reload", "", "Reload configuration without exiting"),
-            ("/debug", "", "Context debug info (msgs/tokens/checkpoints)"),
-            ("/usage", "", "API usage / quota (/status, /quota)"),
-            ("/hooks", "", "Show configured hooks"),
-        ],
-    ),
-    (
-        "Account",
-        [
-            ("/login", "", "Log in / configure API platform (OAuth or key)"),
-            ("/logout", "", "Log out: clear stored credentials"),
-        ],
-    ),
-]
+            ("/skill:<name>", "", "Load a discovered skill"),
+            ("/flow:<name>", "", "Run a flow skill under foreground cancellation ownership"),
+        ]
+    )
+    return list(groups.items())
+
+
+HELP_GROUPS = _catalog_help_groups()
 
 
 def render_help(cmd_name: str | None = None, console: Any | None = None) -> None:
@@ -1128,7 +1088,7 @@ def _render_plain_overview() -> None:
             print(f"  {full_cmd:<{cmd_width}}  {desc}")
 
     print(
-        "\nShortcuts: Tab complete · Ctrl-R history search · Ctrl-C interrupt · Ctrl-D exit · @file context"
+        "\nShortcuts: Tab complete · Ctrl-R history search · Ctrl-S steer · Ctrl-T attachments · Ctrl-C interrupt · Ctrl-D exit · @file context"
     )
     print("Type /help <command> for detailed syntax and examples (e.g. /help goal, /help plan).\n")
 

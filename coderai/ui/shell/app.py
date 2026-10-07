@@ -64,9 +64,9 @@ except Exception:
 
 def error_callout(console: Any | None, title: str, detail: str, hint: str = "") -> None:
     """Standardized error panel: red border, actionable hint."""
-    msg = f"[bold red]✗ {title}[/]\n[white]{detail}[/]"
+    msg = f"[bold red]✗ {escape(title)}[/]\n{escape(detail)}"
     if hint:
-        msg += f"\n[dim]→ {hint}[/]"
+        msg += f"\n[dim]→ {escape(hint)}[/]"
     eff = console if console is not None else globals().get("console")
     if eff is not None and _RICH:
         from rich.panel import Panel
@@ -256,6 +256,30 @@ def _prompt_permissions(
     replies: list[dict[str, Any]] = []
     always_allows: list[str] = []
 
+    # Collapse identical concurrent requests so one approval covers all of
+    # them (e.g. agent batches 4x the same bash call -> 1 panel, not 4).
+    # ponytail: key on visible decision fields only; fan-out below.
+    _groups: list[list[dict[str, Any]]] = []
+    _by_key: dict[tuple[Any, ...], int] = {}
+    _unique: list[dict[str, Any]] = []
+    for _req in requests or []:
+        _key = (
+            _req.get("name"),
+            str(_req.get("command") or "").strip(),
+            tuple(sorted(_req.get("scopes") or [])),
+            bool(_req.get("requiresExplicitApproval")),
+            str(_req.get("description") or ""),
+            str(_req.get("diff_preview") or ""),
+        )
+        if _key in _by_key:
+            _groups[_by_key[_key]].append(_req)
+        else:
+            _by_key[_key] = len(_unique)
+            _unique.append(_req)
+            _groups.append([_req])
+    _dup_counts = [len(_g) for _g in _groups]
+    requests = _unique
+
     for idx, req in enumerate(requests, 1):
         tool_call_id = req.get("toolCallId", "")
         name = req.get("name", "Tool")
@@ -264,6 +288,15 @@ def _prompt_permissions(
         scopes: list[str] = req.get("scopes") or []
         diff_preview = req.get("diff_preview")
         risk_level = req.get("risk_level") or "MODERATE RISK"
+        _dup_n = _dup_counts[idx - 1] if idx - 1 < len(_dup_counts) else 1
+        if _dup_n > 1:
+            _dup_note = f"(×{_dup_n} identical requests — one decision applies to all)"
+            if _dup_note not in str(description):
+                description = f"{description} {_dup_note}" if description else _dup_note
+                try:
+                    req["description"] = description
+                except Exception:
+                    pass
 
         # In Plan Mode, mutating scopes are strictly forced to prompt even with --yes
         is_forced_plan_scope = plan_mode and any(s in PLAN_MODE_FORCE_ASK_SCOPES for s in scopes)
@@ -787,10 +820,34 @@ def _prompt_permissions(
                 )
                 continue
 
+    # Fan-out: one decision per identical group applies to every toolCallId.
+    if any(len(_g) > 1 for _g in _groups):
+        _by_rep: dict[str, dict[str, Any]] = {}
+        for _r in replies:
+            _by_rep[str(_r.get("toolCallId"))] = _r
+        _expanded: list[dict[str, Any]] = []
+        for _rep, _group in zip(requests, _groups):
+            _rep_reply = _by_rep.get(str(_rep.get("toolCallId")))
+            if _rep_reply is None:
+                continue
+            for _member in _group:
+                _mid = str(_member.get("toolCallId"))
+                if _mid == str(_rep.get("toolCallId")):
+                    _expanded.append(_rep_reply)
+                else:
+                    _nr = dict(_rep_reply)
+                    _nr["toolCallId"] = _mid
+                    _expanded.append(_nr)
+        replies = _expanded
+
     return replies, always_allows
 
 
-def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
+class _QuestionCancelled(Exception):
+    """Internal sentinel: dismissing Other must cancel the whole question."""
+
+
+def _prompt_user_questions(questions: list[dict[str, Any]]) -> str | None:
     """Prompt the user interactively — Phase4 QuestionRequestPanel tabs + Space multi-select."""
     # Fallback for tests (isatty==False) keeps original select_with_arrows string "1, 2" parse
     use_panel = bool(console is not None and _RICH and sys.stdin.isatty())
@@ -845,7 +902,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                                     return input(prompt).strip()
                                 except (EOFError, KeyboardInterrupt):
                                     _clear_task_cancellation()
-                                    return ""
+                                    raise _QuestionCancelled()
 
                         def _q_pager() -> None:
                             with _paused_q_live():
@@ -861,7 +918,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                                 break  # free-text question needs line input below
                             key = _read_menu_key()
                             if not key:
-                                break  # not a real TTY after all -> input() fallback
+                                return None
                             if key == "UP":
                                 panel.move_up()
                                 continue
@@ -907,13 +964,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                                         break
                                 continue
                             if key in ("ESCAPE", "CTRL_C", "CTRL_D", "q", "Q"):
-                                _raw_result = (
-                                    "\n".join(f"{k}: {v}" for k, v in panel.get_answers().items())
-                                    if panel.get_answers()
-                                    else "User responded."
-                                )
-                                _raw_done = True
-                                break
+                                return None
                             if key in ("\x05",):
                                 _q_pager()
                                 continue
@@ -935,6 +986,8 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                                 continue
                             # Ignore anything else and re-render.
                             continue
+                except _QuestionCancelled:
+                    return None
                 except Exception:
                     pass
                 if _raw_done:
@@ -944,7 +997,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                     if _raw_result is not None:
                         return _raw_result
                     if not answers_dict:
-                        return "User responded."
+                        return None
                     return "\n".join(f"{k}: {v}" for k, v in answers_dict.items())
             # input() loop fallback (tests/pipes) + typed-word navigation.
             # Real ANSI arrow sequences ("\x1b[A" etc.) are also accepted here
@@ -960,8 +1013,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                     try:
                         final_ans = input("  Your answer: ").strip()
                     except (EOFError, KeyboardInterrupt):
-                        _clear_task_cancellation()
-                        final_ans = ""
+                        return None
                     if final_ans:
                         panel.submit_other(final_ans)
                     else:
@@ -980,8 +1032,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                 try:
                     raw = input(prompt).strip()
                 except (EOFError, KeyboardInterrupt):
-                    _clear_task_cancellation()
-                    raw = ""
+                    return None
                 low = raw.lower()
                 arrow = _normalize_arrow_token(raw)
                 if low in ("ctrl-e", "\x05", "expand") and panel.has_expandable_content:
@@ -1012,11 +1063,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                     continue
                 if arrow == "ESCAPE" or low == "q":
                     # dismiss
-                    return (
-                        "\n".join(f"{k}: {v}" for k, v in panel.get_answers().items())
-                        if panel.get_answers()
-                        else "User responded."
-                    )
+                    return None
                 if not raw and multi and panel._multi_selected:
                     # Enter to submit multi
                     if panel.submit():
@@ -1028,7 +1075,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                         try:
                             other_text = input("  Other value: ").strip()
                         except (EOFError, KeyboardInterrupt):
-                            other_text = ""
+                            return None
                         panel.submit_other(other_text)
                     else:
                         panel.submit()
@@ -1049,7 +1096,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                             try:
                                 other_text = input("  Other value: ").strip()
                             except (EOFError, KeyboardInterrupt):
-                                other_text = ""
+                                return None
                             panel.submit_other(other_text)
                         else:
                             panel.submit()
@@ -1074,7 +1121,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                         try:
                             other_text = input("  Other value: ").strip()
                         except (EOFError, KeyboardInterrupt):
-                            other_text = ""
+                            return None
                     if panel.submit_other(other_text) if has_other else panel.submit():
                         if len(panel.get_answers()) >= len(questions):
                             break
@@ -1091,7 +1138,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
                 continue
             answers_dict = panel.get_answers()
             if not answers_dict:
-                return "User responded."
+                return None
             # Format as "question: answer" lines like before
             return "\n".join(f"{k}: {v}" for k, v in answers_dict.items())
         except Exception:
@@ -1115,8 +1162,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
             try:
                 final_ans = input("  Your answer: ").strip()
             except (EOFError, KeyboardInterrupt):
-                _clear_task_cancellation()
-                final_ans = ""
+                return None
             if final_ans:
                 answers.append(f"{q_text}: {final_ans}")
             continue
@@ -1139,6 +1185,8 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
             allow_custom=True,
         )
 
+        if res is None:
+            return None
         final_ans = ""
         if isinstance(res, int) and 0 <= res < len(options):
             final_ans = options[res].get("label", "")
@@ -1163,7 +1211,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
         if final_ans:
             answers.append(f"{q_text}: {final_ans}")
 
-    return "\n".join(answers) if answers else "User responded."
+    return "\n".join(answers) if len(answers) == len(questions) else None
 
 
 class _StreamState:
@@ -1196,10 +1244,13 @@ class _StreamState:
         self._btw_panel: Any | None = None
         self._live_ref: Any | None = None  # current Live for Ctrl-E pause/resume
         self._btw_pending_queue: list[str] = []  # queued inputs while streaming (QUEUE)
+        self._subagent_activity: Any | None = None
+        self._subagent_live: Any | None = None
         # Collect chunks silently, emit once.
         self.silent: bool = False
 
     def reset(self) -> None:
+        self.stop_subagent_live()
         self.streamed_content.clear()
         self.is_streaming = False
         self.thinking_streamer.reset()
@@ -1221,9 +1272,16 @@ class _StreamState:
             except Exception:
                 pass
 
+    def switch_session(self, session_id: str | None) -> None:
+        if getattr(self, "_session_scope", None) != session_id:
+            self.reset()
+            self._subagent_activity = None
+            self._session_scope = session_id
+
     def on_thinking_chunk(self, chunk: str) -> None:
         if self.silent:
             return
+        self.stop_subagent_live()
         self.stop_spinner()
         self.thinking_streamer.on_chunk(chunk)
 
@@ -1251,6 +1309,7 @@ class _StreamState:
         return None
 
     def on_chunk(self, chunk: str) -> None:
+        self.stop_subagent_live()
         if chunk:
             if self.thinking_streamer.is_active:
                 if self.silent:
@@ -1284,6 +1343,8 @@ class _StreamState:
     def start_spinner(self, message: str) -> None:
         if self.silent:
             return
+        if self._subagent_live is not None:
+            return
         if console is not None and _RICH and hasattr(console, "status"):
             self.stop_spinner()
             try:
@@ -1301,6 +1362,41 @@ class _StreamState:
             except Exception:
                 pass
             self.active_status_spinner = None
+
+    def stop_subagent_live(self) -> None:
+        if self._subagent_live is not None:
+            self._subagent_live.stop()
+            self._subagent_live = None
+
+    def on_subagent_event(self, name: str, payload: dict[str, Any], handle: Any = None) -> None:
+        if self.silent:
+            return
+        from coderai.ui.shell.visualize._subagents import SubagentActivityBlock
+
+        if self._subagent_activity is None:
+            self._subagent_activity = SubagentActivityBlock()
+        self._subagent_activity.update(name, payload, handle)
+        if console is not None and _RICH and getattr(console, "is_terminal", False):
+            self.stop_spinner()
+            if self._subagent_live is None and self._subagent_activity.has_running:
+                from rich.live import Live
+
+                self._subagent_live = Live(
+                    self._subagent_activity,
+                    console=console,
+                    refresh_per_second=10,
+                    transient=True,
+                    vertical_overflow="visible",
+                )
+                self._subagent_live.start()
+            if self._subagent_live is not None:
+                self._subagent_live.refresh()
+                if not self._subagent_activity.has_running:
+                    self.stop_subagent_live()
+                    console.print(self._subagent_activity.render())
+        elif name in ("subagent/start", "subagent/end"):
+            label = getattr(handle, "description", None) or payload.get("id", "")
+            print(f"Subagent {label}: {payload.get('stopReason', 'running')}")
 
     def had_streamed(self) -> bool:
         return bool(self.streamed_content)
@@ -1434,6 +1530,8 @@ class _StreamState:
     def compose_agent_output(self) -> list[Any]:
         """Spinners, content blocks, notifications — pure agent output."""
         blocks: list[Any] = []
+        if self._subagent_activity is not None:
+            blocks.append(self._subagent_activity.render())
         if self._retry_banner is not None:
             blocks.append(self._retry_banner)
         if self._unified_block is not None:
@@ -1457,6 +1555,11 @@ class _StreamState:
 
     def has_expandable_panel(self) -> bool:
         try:
+            if (
+                self._subagent_activity is not None
+                and self._subagent_activity.has_expandable_content
+            ):
+                return True
             if self._current_approval_panel is not None and getattr(
                 self._current_approval_panel, "has_expandable_content", False
             ):
@@ -1484,6 +1587,15 @@ class _StreamState:
                 from coderai.ui.shell.visualize._question_panel import show_question_body_in_pager
 
                 show_question_body_in_pager(self._current_question_panel)
+                return True
+            if (
+                self._subagent_activity is not None
+                and self._subagent_activity.has_expandable_content
+            ):
+                self.stop_subagent_live()
+                if console is not None:
+                    with console.pager(styles=True):
+                        console.print(self._subagent_activity.render(expanded=True))
                 return True
         except Exception:
             pass
@@ -1688,6 +1800,9 @@ async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes:
 
             if questions:
                 answers_text = await asyncio.to_thread(_prompt_user_questions, questions)
+                if answers_text is None:
+                    mgr.interrupt_session(session_id)
+                    return
                 _STREAM_STATE.reset()
                 await mgr.reply_session(session_id, user_prompt=answers_text)
                 continue
@@ -1734,6 +1849,15 @@ async def _run_interactive(
     """Interactive REPL with rich welcome screen, dynamic status bar, and command selectors."""
     global _THINKING_EXPANDED
 
+    if (
+        os.getenv("CODERAI_SHELL_CONTROLLER", "1") == "1"
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+    ):
+        from coderai.ui.shell.controller import run_shell
+
+        return await run_shell(mgr, console, yes, resume, fork, last, plan_mode, initial_prompt)
+
     session_id: str | None = None
     active_plan_mode = plan_mode
     pending_skills: list[str] = []
@@ -1772,7 +1896,7 @@ async def _run_interactive(
     # 3. Handle --resume
     elif resume is not None:
         if resume is True:
-            sessions = mgr.list_sessions()[:15]
+            sessions = mgr.list_sessions()
             if not sessions:
                 print("No saved sessions found.")
             else:
@@ -1901,6 +2025,35 @@ async def _run_interactive(
 
     _remove_sigint = install_sigint_handler(loop, _async_sigint)
 
+    from coderai.orchestration import get_orchestration_event_bus
+    from coderai.subagents.core import get_agent_registry
+
+    def _on_subagent_event(name: str, payload: dict[str, Any]) -> None:
+        if name not in ("subagent/start", "subagent/end", "subagent/activity"):
+            return
+        registry = get_agent_registry()
+        handle = registry.get(str(payload.get("id") or ""))
+        if handle is None:
+            handle = next(
+                (h for h in registry.list() if h.run_session_id == payload.get("id")), None
+            )
+        if handle is None or getattr(handle.manager, "project_root", None) != mgr.project_root:
+            return
+        root = handle
+        seen: set[str] = set()
+        while root.parent_agent_id and root.id not in seen:
+            seen.add(root.id)
+            parent = registry.get(root.parent_agent_id)
+            if parent is None:
+                break
+            root = parent
+        if session_id is not None and root.parent_session_id != session_id:
+            return
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(_STREAM_STATE.on_subagent_event, name, payload, handle)
+
+    get_orchestration_event_bus().subscribe(_on_subagent_event)
+
     # Phase0: ensure TTY sane and cursor at column 0 before banner
     try:
         ensure_tty_sane()
@@ -1988,6 +2141,7 @@ async def _run_interactive(
 
     try:
         while True:
+            _STREAM_STATE.switch_session(session_id)
             cur_entry = mgr.get_session(session_id) if session_id else None
             tokens_count = cur_entry.active_tokens if cur_entry else 0
             messages_list = mgr.list_session_messages(session_id) if session_id else []
@@ -2228,17 +2382,6 @@ async def _run_interactive(
                     display_command = maybe
                     if console is not None and _RICH:
                         console.print(f"[dim]{escape(display_command)}[/]")
-                    # toast dedup
-                    try:
-                        from coderai.ui.shell.prompt import toast
-
-                        toast(
-                            f"Large paste collapsed → {display_command}",
-                            topic="paste",
-                            duration=3.0,
-                        )
-                    except Exception:
-                        pass
                     # resolved for LLM is original text (expand back)
                     resolved_cmd = pm.resolve_command(display_command)
                     raw_for_llm = resolved_cmd.resolved_text
@@ -2255,7 +2398,13 @@ async def _run_interactive(
                 raw_for_llm = raw
                 display_command = raw
             # Process @file mentions in user input (use resolved text for LLM)
-            effective_prompt, attached_files = expand_file_mentions(raw_for_llm, mgr.project_root)
+            try:
+                effective_prompt, attached_files = expand_file_mentions(
+                    raw_for_llm, mgr.project_root
+                )
+            except (ValueError, OSError) as exc:
+                error_callout(console, "Attachment error", str(exc))
+                continue
             if attached_files:
                 if console is not None and _RICH:
                     console.print(
@@ -2278,7 +2427,7 @@ async def _run_interactive(
             try:
 
                 async def _run_user_turn() -> str | None:
-                    nonlocal session_id
+                    nonlocal session_id, active_plan_mode
                     if session_id is None:
                         s_id = await mgr.create_session(
                             effective_prompt,
@@ -2295,6 +2444,17 @@ async def _run_interactive(
                         )
                     pending_skills.clear()
                     await _drain_pending_interactions(mgr, s_id, yes)
+                    # Agent tools (enter/exit_plan_mode) can flip entry.plan_mode
+                    # without /plan — sync the indicator so it never shows OFF
+                    # while the backend still enforces Plan Mode.
+                    try:
+                        _e = mgr.get_session(s_id)
+                        if _e is not None and bool(_e.plan_mode) != bool(active_plan_mode):
+                            active_plan_mode = bool(_e.plan_mode)
+                            if _ptk_session is not None and hasattr(_ptk_session, "set_plan_mode"):
+                                _ptk_session.set_plan_mode(active_plan_mode)
+                    except Exception:
+                        pass
                     return s_id
 
                 active_turn_task = current_cancellable_task = asyncio.create_task(_run_user_turn())
@@ -2322,7 +2482,7 @@ async def _run_interactive(
                     try:
 
                         async def _run_queued() -> str | None:
-                            nonlocal session_id
+                            nonlocal session_id, active_plan_mode
                             q_id = session_id
                             if q_id is None:
                                 q_id = await mgr.create_session(
@@ -2337,6 +2497,18 @@ async def _run_interactive(
                                 )
                             pending_skills.clear()
                             await _drain_pending_interactions(mgr, q_id, yes)
+                            try:
+                                _qe = mgr.get_session(q_id)
+                                if _qe is not None and bool(_qe.plan_mode) != bool(
+                                    active_plan_mode
+                                ):
+                                    active_plan_mode = bool(_qe.plan_mode)
+                                    if _ptk_session is not None and hasattr(
+                                        _ptk_session, "set_plan_mode"
+                                    ):
+                                        _ptk_session.set_plan_mode(active_plan_mode)
+                            except Exception:
+                                pass
                             return q_id
 
                         active_turn_task = current_cancellable_task = asyncio.create_task(
@@ -2473,6 +2645,8 @@ async def _run_interactive(
                     print(f"Turn failed: {exc}")
                 continue
     finally:
+        get_orchestration_event_bus().unsubscribe(_on_subagent_event)
+        _STREAM_STATE.stop_subagent_live()
         # Phase0: restore TTY sane before exit summary
         try:
             ensure_tty_sane()
@@ -2602,7 +2776,7 @@ def main(argv: list[str] | None = None) -> int:
     # an option (e.g. ``-p info`` is a prompt, not the info subcommand).
     _raw = list(argv if argv is not None else sys.argv[1:])
     _first = _raw[0] if _raw else ""
-    if _first in ("info", "export", "mcp", "plugin", "login", "logout", "acp"):
+    if _first in ("info", "export", "mcp", "plugin", "login", "logout", "acp", "migrate"):
         if _first == "info":
             from coderai.cli.info import run_info
 
@@ -2627,6 +2801,10 @@ def main(argv: list[str] | None = None) -> int:
             from coderai.ui.shell.oauth import run_logout
 
             return run_logout(_raw[1:])
+        if _first == "migrate":
+            from coderai.cli.migrate import run_migrate
+
+            return run_migrate(_raw[1:])
         if _first == "acp":
             # Run the ACP server on stdio (Agent Control Protocol).
             from coderai.acp import acp_main
@@ -2654,10 +2832,13 @@ def main(argv: list[str] | None = None) -> int:
         ("max_steps_per_turn", "CODERAI_MAX_STEPS_PER_TURN"),
         ("max_retries_per_step", "CODERAI_MAX_RETRIES_PER_STEP"),
         ("max_ralph_iterations", "CODERAI_MAX_RALPH_ITERATIONS"),
+        ("reasoning_effort", "CODERAI_REASONING_EFFORT"),
     ):
         value = getattr(args, flag, None)
         if value is not None:
             os.environ[env_name] = str(value)
+    if getattr(args, "thinking", None) is not None:
+        os.environ["CODERAI_THINKING_ENABLED"] = "1" if args.thinking else "0"
     # --work-dir switches the project root; --config-file/--config
     # redirect settings resolution; --skills-dir/--add-dir/--mcp-config-file preload.
     if getattr(args, "work_dir", None):
@@ -2881,8 +3062,6 @@ def main(argv: list[str] | None = None) -> int:
         effective_yes = bool(args.yes or getattr(args, "print_mode", False))
         if getattr(args, "afk", False):
             os.environ["CODERAI_START_AFK"] = "1"
-        if getattr(args, "thinking", None) is not None:
-            os.environ["CODERAI_THINKING"] = "1" if args.thinking else "0"
         if has_exec and prompt_value:
             from coderai.ui.print import run_exec_session
 

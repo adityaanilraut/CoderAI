@@ -1,4 +1,5 @@
 ---
+mode: read_only
 name: architect
 description: Architecture specialist for large design changes, refactors, and system boundaries.
 tools: ["Read", "Grep", "Glob"]

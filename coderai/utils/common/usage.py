@@ -5,6 +5,19 @@ from __future__ import annotations
 from typing import Any
 
 
+def _reasoning_usage(raw: Any) -> dict[str, int]:
+    get = raw.get if isinstance(raw, dict) else lambda key, default=None: getattr(raw, key, default)
+    reasoning = get("reasoning_tokens")
+    details = get("completion_tokens_details")
+    if reasoning is None and details is not None:
+        reasoning = (
+            details.get("reasoning_tokens")
+            if isinstance(details, dict)
+            else getattr(details, "reasoning_tokens", None)
+        )
+    return {"reasoning_tokens": int(reasoning)} if reasoning is not None else {}
+
+
 def extract_usage_dict(raw: Any) -> dict[str, int]:
     """Extract standard token counts and prompt caching metrics from any API usage response object or dict."""
     if not raw:
@@ -50,6 +63,7 @@ def extract_usage_dict(raw: Any) -> dict[str, int]:
         uncached = miss if miss is not None else max(0, p - cached)
 
         return {
+            **_reasoning_usage(raw),
             "prompt_tokens": p,
             "completion_tokens": c,
             "total_tokens": tot,
@@ -93,6 +107,7 @@ def extract_usage_dict(raw: Any) -> dict[str, int]:
     uncached = miss if miss is not None else max(0, p - cached)
 
     return {
+        **_reasoning_usage(raw),
         "prompt_tokens": p,
         "completion_tokens": c,
         "total_tokens": tot,
@@ -124,6 +139,14 @@ def accumulate_usage_dict(
     }
     extracted = extract_usage_dict(usage)
     return {
+        **(
+            {
+                "reasoning_tokens": int(c.get("reasoning_tokens", 0))
+                + int(extracted.get("reasoning_tokens", 0))
+            }
+            if "reasoning_tokens" in c or "reasoning_tokens" in extracted
+            else {}
+        ),
         "prompt_tokens": c.get("prompt_tokens", 0) + extracted["prompt_tokens"],
         "completion_tokens": c.get("completion_tokens", 0) + extracted["completion_tokens"],
         "total_tokens": c.get("total_tokens", 0) + extracted["total_tokens"],

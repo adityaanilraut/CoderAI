@@ -56,7 +56,6 @@ yarn-error.log*
 !.coderai/agents/
 !.coderai/skills/
 !.coderai/rules/
-.coderai/skills/workday-autofill/
 .coderai/index/
 .ruff_cache/
 /session-*.md
