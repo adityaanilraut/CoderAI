@@ -280,6 +280,13 @@ def is_process_alive(pid: int) -> bool:
                 len(row) > 1 and row[1] == str(pid)
                 for row in csv.reader(result.stdout.splitlines())
             )
+        if sys.platform == "linux":
+            try:
+                state = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            except FileNotFoundError:
+                return False
+            if state == "Z":
+                return False
         os.kill(pid, 0)
         return True
     except ProcessLookupError:

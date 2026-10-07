@@ -25,6 +25,11 @@ def test_process_liveness_probe_does_not_terminate_child():
         assert proc.poll() is None
     finally:
         proc.terminate()
+        if sys.platform == "linux":
+            import os
+
+            os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
+            assert not is_process_alive(proc.pid)
         proc.wait(timeout=5)
     assert not is_process_alive(proc.pid)
 

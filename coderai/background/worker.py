@@ -31,11 +31,11 @@ from pathlib import Path
 from typing import Any
 
 from coderai.utils.subprocess_env import build_shell_env, kill_process_tree
+from coderai.utils.bounded_process import terminate_owned_process
 
 logger = logging.getLogger(__name__)
 
 _SIGTERM = getattr(signal, "SIGTERM", signal.SIGTERM)
-_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
 async def run_background_task_worker(
@@ -82,10 +82,13 @@ async def run_background_task_worker(
                 logger.debug("Background worker heartbeat callback failed", exc_info=True)
 
     def _terminate_process(force: bool = False) -> None:
-        if process is None or process.returncode is not None:
+        if process is None:
             return
         try:
-            kill_process_tree(process.pid, _SIGKILL if force else _SIGTERM)
+            if force:
+                terminate_owned_process(process.pid)
+            elif process.returncode is None:
+                kill_process_tree(process.pid, _SIGTERM)
         except Exception:
             logger.debug("Background worker terminate failed", exc_info=True)
 
@@ -153,6 +156,7 @@ async def run_background_task_worker(
                         _terminate_process(force=True)
                         returncode = await process.wait()
     except asyncio.CancelledError:
+        cancel_requested = True
         _terminate_process(force=False)
         if process is not None:
             try:
@@ -175,6 +179,9 @@ async def run_background_task_worker(
         logger.exception("Background task worker failed")
         return store.complete(job_id, ok=False, detail=str(exc))
     finally:
+        if cancel_requested or timed_out:
+            # The shell may exit on TERM while descendants ignore it.
+            _terminate_process(force=True)
         stop_event.set()
         for task in (heartbeat_task, control_task):
             if task is not None:

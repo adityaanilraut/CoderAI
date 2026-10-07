@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import os
 import pathlib
 import shlex
 import stat
@@ -150,11 +149,9 @@ async def test_background_worker_cancellation_reaps_process_tree(tmp_path, cance
             await asyncio.wait_for(worker, 2)
         assert store.get("job-tree", "sess-1").status == "killed"
         async with asyncio.timeout(2):
-            while True:
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    break
+            from coderai.utils.subprocess_env import is_process_alive
+
+            while is_process_alive(pid):
                 await asyncio.sleep(0.01)
     finally:
         if not worker.done():
