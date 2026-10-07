@@ -47,6 +47,7 @@ STEERING_MESSAGE = "steering/message"
 
 # Miscellaneous (log-only)
 TODO_WRITE = "todo/write"
+GOAL_STATE = "goal/state"
 SESSION_END_SEED = "session/end-seed"
 
 # Telemetry (log-only)
@@ -82,6 +83,7 @@ LOG_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         COMPACTION_END,
         COMPACTION_PRUNE,
         TODO_WRITE,
+        GOAL_STATE,
         SESSION_END_SEED,
         TELEMETRY_SPAN_START,
         TELEMETRY_SPAN_END,
@@ -497,12 +499,9 @@ def derive_messages_from_events(events: list[SessionEvent]) -> list[dict[str, An
             content = ev.data.get("content", "")
             # Uniform truncation for cache stability
             if len(content) > MAX_TOOL_RESULT_CHARS:
-                head = MAX_TOOL_RESULT_CHARS // 2
-                tail = MAX_TOOL_RESULT_CHARS - head
-                omitted = len(content) - MAX_TOOL_RESULT_CHARS
-                content = (
-                    f"{content[:head]}\n\n...[{omitted} characters omitted]...\n\n{content[-tail:]}"
-                )
+                from coderai.utils.common.tool_payload import prune_tool_payload
+
+                content = prune_tool_payload(content, MAX_TOOL_RESULT_CHARS)
             messages.append(
                 {
                     "role": "tool",

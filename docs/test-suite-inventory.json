@@ -1,5 +1,5 @@
 {
-  "test_files": 87,
+  "test_files": 85,
   "cases": 1199,
   "files": [
     {
@@ -4994,22 +4994,6 @@
         "tests/test_subagents.py::test_subagent_env_scrub_protects_secrets",
         "tests/test_subagents.py::test_subagent_persistent_bash_retains_state"
       ]
-    },
-    {
-      "file": "tests/test_support/__init__.py",
-      "scope": "main",
-      "purpose": "Test support utilities.",
-      "definitions": [],
-      "fixtures": [],
-      "cases": []
-    },
-    {
-      "file": "tests/test_support/llm_replay.py",
-      "scope": "main",
-      "purpose": "Deterministic LLM replay engine for zero-cost, keyless automated testing.\n\nEnables recording and replaying LLM responses\n(text streams, reasoning/thinking, tool calls, token usage) in unit and integration tests.",
-      "definitions": [],
-      "fixtures": [],
-      "cases": []
     },
     {
       "file": "tests/test_token_estimation.py",

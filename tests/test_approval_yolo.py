@@ -204,9 +204,13 @@ def test_apply_auto_approve_allows_all_outside_plan_mode() -> None:
 def test_approval_request_respects_manager_yolo(tmp_path) -> None:
     mgr = _manager(tmp_path)
     mgr.set_yolo(True)
+    mgr._active_session_id = "s1"
     approval = Approval()
 
     async def _run() -> ApprovalResult:
+        from coderai.soul.tool_context import set_session_id
+
+        set_session_id("s1")
         return await approval.request("write", "edit", "write file")
 
     result = asyncio.run(_run())
@@ -221,7 +225,7 @@ def test_toolbar_tokens_include_yolo_and_afk() -> None:
         yolo=True,
         afk=True,
     )
-    text = "".join(part[1] for part in tokens)
+    text = "".join(part[1] for part in tokens).lower()
     assert "yolo" in text
     assert "afk" in text
 

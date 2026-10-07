@@ -70,9 +70,11 @@ from coderai.soul.compaction import (
     BasicCompaction,
     DEFAULT_MAX_TOOL_RESULT_CHARS,
     ToolResultPruner,
+    estimate_context_tokens,
 )
 from coderai.prompt import (
     get_init_command_prompt,
+    calculate_context_budget,
     get_runtime_context,
     get_system_prompt,
     load_agent_instructions,
@@ -133,7 +135,6 @@ from coderai.soul.session.completion import (  # noqa: E402
 from coderai.soul.session.approval import (  # noqa: E402
     check_afk_for_session as _check_afk_for_session,  # noqa: F401
     check_auto_approve_for_session as _check_auto_approve_for_session,  # noqa: F401
-    global_afk_check as _global_afk_check,  # noqa: F401
     register_session_manager,
     sanitize_repetition_loops,  # noqa: F401
     unregister_session_manager,
@@ -202,6 +203,10 @@ class SessionManager:
         self._event_emitters: dict[str, WireEmitter] = {}
         self._streamed_content: dict[str, dict[str, str]] = {}
         self._running_sessions: set[str] = set()
+        from coderai.soul.session.goals import GoalRunner
+
+        self.goal_runner = GoalRunner(self)
+        self._manual_compactions: set[str] = set()
         self._turn_tasks: dict[str, asyncio.Task] = {}
         self._owned_session_ids: set[str] = set()
         self._deleted_session_ids: set[str] = set()
@@ -454,7 +459,9 @@ class SessionManager:
 
     # ---- Phase 2: persisted session state + soul views ----
     def _session_dir(self, session_id: str) -> pathlib.Path:
-        return self._storage()["project_dir"] / str(session_id)
+        from coderai.utils.storage import owned_path, storage_id
+
+        return owned_path(self._storage()["project_dir"], storage_id(session_id))
 
     def get_session_state(self, session_id: str) -> Any:
         """Load (caching) the persisted :class:`SessionState` for a session."""
@@ -465,6 +472,12 @@ class SessionManager:
         if isinstance(cached, SessionState):
             return cached
         state = load_session_state(self._session_dir(target))
+        from coderai.subagents.store import SubagentStore
+        from coderai.subagents.core import get_agent_registry
+
+        SubagentStore(self._session_dir(target)).recover_stale_instances(
+            {handle.id for handle in get_agent_registry().list()}
+        )
         # Resume restores persisted YOLO/AFK into the live manager. Live
         # CLI flags still win and are written back onto the session.
         if state.approval.yolo and not self._yolo_mode:
@@ -888,6 +901,41 @@ class SessionManager:
         tool_meta: dict[str, Any] | None = None,
     ) -> SessionMessage:
         now = _now()
+        spill_meta: dict[str, Any] = {}
+        if len(content) > DEFAULT_MAX_TOOL_RESULT_CHARS:
+            from coderai.spill import session_dir
+            from coderai.utils.io import atomic_write_text
+
+            spill_path = (
+                session_dir(self.session_store.project_dir / "tool-results", session_id)
+                / f"{uuid.uuid4().hex}.txt"
+            )
+            retained = content[:10_000_000]
+            try:
+                atomic_write_text(spill_path, retained, mode=0o600)
+            except OSError:
+                note = "Full tool output could not be saved; only this preview is available."
+            else:
+                spill_meta = {
+                    "output_path": str(spill_path),
+                    "output_size_chars": len(content),
+                    "preserved_chars": len(retained),
+                }
+                note = f"Tool output saved to {spill_path}. Use read or grep to inspect it." + (
+                    f" Only the first {len(retained)} of {len(content)} characters were saved."
+                    if len(retained) < len(content)
+                    else ""
+                )
+            try:
+                payload = json.loads(content)
+            except (ValueError, TypeError):
+                payload = None
+            if isinstance(payload, dict):
+                content = json.dumps(
+                    {**payload, **spill_meta, "output_note": note}, ensure_ascii=False
+                )
+            else:
+                content = f"{content}\n\n{note}"
         pruned_content = ToolResultPruner(max_chars=DEFAULT_MAX_TOOL_RESULT_CHARS).prune_content(
             content
         )
@@ -901,6 +949,7 @@ class SessionManager:
         }
         if tool_meta and isinstance(tool_meta, dict):
             meta.update(tool_meta)
+        meta.update(spill_meta)
         return SessionMessage(
             id=uuid.uuid4().hex,
             session_id=session_id,
@@ -923,6 +972,10 @@ class SessionManager:
         observing its own event sees the interrupt; only installs a preset
         event when no activation owns one.
         """
+        self.goal_runner.interrupt(session_id)
+        task = self._turn_tasks.get(session_id)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
         ctrl = self.session_controllers.get(session_id)
         if ctrl is None:
             ctrl = asyncio.Event()
@@ -930,6 +983,12 @@ class SessionManager:
             self.session_controllers[session_id] = ctrl
         else:
             ctrl.set()
+        for handle in self.owned_agent_handles({session_id}):
+            if handle.manager is not None and handle.run_session_id:
+                handle.manager.cancel_subagent(handle.run_session_id)
+        from coderai.teams.manager import get_team_manager
+
+        get_team_manager().cancel_owned_teammates({session_id}, self.project_root)
         self.kill_live_processes(session_id)
         clear_session_state(session_id)
         self._update_entry(
@@ -1121,6 +1180,11 @@ class SessionManager:
             raise DenwaRenjiError("D-Mail message is empty")
         self._pending_dmails[target] = (text[:4000], checkpoint_id)
 
+    def peek_pending_dmail(self, session_id: str) -> tuple[str, int] | None:
+        """Keep the directive staged until rewind and injection both succeed."""
+        target = self.resolve_session_id(session_id) or session_id
+        return self._pending_dmails.get(target)
+
     def take_pending_dmail(self, session_id: str) -> tuple[str, int] | None:
         """Take the staged D-Mail, if any."""
         target = self.resolve_session_id(session_id) or session_id
@@ -1300,6 +1364,7 @@ class SessionManager:
                     effective_user_prompt,
                     meta={
                         "checkpointHash": ckpt_hash,
+                        "goalSnapshot": self.goal_runner.snapshot(session_id),
                         "userPrompt": {"planMode": plan_mode},
                         "rawPrompt": user_prompt,
                         **({"contentParams": list(content_params)} if content_params else {}),
@@ -1310,9 +1375,9 @@ class SessionManager:
         self._active_session_id = session_id
         # SessionStart fires on creation.
         try:
-            from coderai.hooks import run_session_start
+            from coderai.hooks import run_session_start_async
 
-            run_session_start(session_id, self.project_root, "create")
+            await run_session_start_async(session_id, self.project_root, "create")
         except Exception:
             pass
         try:  # Remember latest session per workdir.
@@ -1371,9 +1436,9 @@ class SessionManager:
         )
         self._active_session_id = session_id
         try:
-            from coderai.hooks import run_session_start
+            from coderai.hooks import run_session_start_async
 
-            run_session_start(session_id, self.project_root, "create")
+            await run_session_start_async(session_id, self.project_root, "create")
         except Exception:
             pass
         try:
@@ -1458,6 +1523,8 @@ class SessionManager:
         skills: list[str] | None = None,
         content_params: list[dict[str, Any]] | None = None,
     ) -> None:
+        if session_id in self._manual_compactions:
+            raise RuntimeError("Session is being compacted; wait for compaction to finish")
         if session_id in self._running_sessions:
             raise RuntimeError("Session already has an active turn")
         entry = self._get_entry(session_id)
@@ -1511,6 +1578,8 @@ class SessionManager:
         is_continue = self.is_continue_prompt(user_prompt)
 
         if permission_replies is not None:
+            if any(reply.get("permission") == "deny" for reply in permission_replies):
+                self.goal_runner.interrupt(session_id)
             self._record_session_approval_replies(session_id, entry, permission_replies)
             # If user provided a message alongside permission replies, queue it as deferred prompt
             deferred_prompt = user_prompt if (user_prompt and not is_continue) else None
@@ -1526,9 +1595,9 @@ class SessionManager:
             # UserPromptSubmit fires before the turn starts; hooks
             # may inject additionalContext (appended) or deny (abort turn).
             try:
-                from coderai.hooks import run_user_prompt_submit
+                from coderai.hooks import run_user_prompt_submit_async
 
-                _ups = run_user_prompt_submit(
+                _ups = await run_user_prompt_submit_async(
                     str(user_prompt),
                     session_id,
                     self.project_root,
@@ -1584,6 +1653,7 @@ class SessionManager:
                     user_text,
                     meta={
                         "checkpointHash": ckpt_res.checkpoint_hash,
+                        "goalSnapshot": self.goal_runner.snapshot(session_id),
                         "userPrompt": {"planMode": curr_mode},
                         **({"contentParams": list(content_params)} if content_params else {}),
                     },
@@ -1595,11 +1665,6 @@ class SessionManager:
 
         self._active_session_id = session_id
         await self._activate(session_id)
-        await self._maybe_drive_goal_rounds(session_id)
-
-    async def _maybe_drive_goal_rounds(self, session_id: str, _depth: int = 0) -> None:
-        """Automatic goal rounds (no-op; harness driver removed)."""
-        return
 
     def list_available_skills(self, session_id: str | None = None) -> list[dict[str, Any]]:
         """Discover skills with enabledSkills filtering, custom scan paths, and loaded flags."""
@@ -1740,8 +1805,11 @@ class SessionManager:
             except Exception:
                 pass
 
+        if session_id in self._manual_compactions:
+            raise RuntimeError("Session is being compacted; wait for compaction to finish")
         if session_id in self._running_sessions:
             raise RuntimeError("Session already has an active turn")
+        self.goal_runner.before_turn(session_id)
         self._owned_session_ids.add(session_id)
         self._running_sessions.add(session_id)
         task = asyncio.current_task()
@@ -1764,6 +1832,7 @@ class SessionManager:
                 deferred_prompt=deferred_prompt,
             )
         except asyncio.CancelledError:
+            self.goal_runner.interrupt(session_id)
             self._update_entry(
                 session_id,
                 lambda entry: {**entry, "status": "interrupted", "failReason": "interrupted"},
@@ -1774,6 +1843,7 @@ class SessionManager:
             reset_emitter(token)
             self._running_sessions.discard(session_id)
             self._turn_tasks.pop(session_id, None)
+        await self.goal_runner.drain(session_id)
 
     def notify(
         self,
@@ -2094,6 +2164,8 @@ class SessionManager:
                         tc_id,
                         json.dumps(
                             {
+                                "ok": False,
+                                "name": (tool_fn or {}).get("name", "tool"),
                                 "error": TOOL_ABORTED_BEFORE_DISPATCH,
                                 "message": "Tool execution was aborted before dispatch.",
                             }
@@ -2113,6 +2185,8 @@ class SessionManager:
         self, session_id: str, client: Any, request: dict[str, Any]
     ) -> dict[str, Any]:
         """Retry retryable LLM failures with automated multi-model failover cascade."""
+        from coderai.wire.types import StepRetry
+
         settings = self.get_resolved_settings()
         primary_model = str(request.get("model") or settings.get("model") or "gpt-6-luna")
 
@@ -2159,6 +2233,29 @@ class SessionManager:
             )
             if not req.get("tools"):
                 req.pop("tools", None)
+            from coderai.llm import apply_request_completion_cap
+
+            configured_limit = settings.get("contextWindow")
+            budget = calculate_context_budget(target_model, context_limit=configured_limit)
+            if target_model != primary_model:
+                budget = calculate_context_budget(
+                    target_model,
+                    context_limit=min(
+                        budget["context_limit"],
+                        calculate_context_budget(target_model)["context_limit"],
+                    ),
+                )
+            for key in ("max_tokens", "max_completion_tokens"):
+                if key in req_base:
+                    req[key] = req_base[key]
+            if req.get("tools") and "tool_choice" in req_base:
+                req["tool_choice"] = req_base["tool_choice"]
+            apply_request_completion_cap(
+                req,
+                context_limit=budget["context_limit"],
+                active_tokens=estimate_context_tokens(self.list_session_messages(session_id)),
+                response_budget=budget["max_output_tokens"],
+            )
             return req
 
         for model_idx, current_model in enumerate(fallback_chain):
@@ -2222,11 +2319,30 @@ class SessionManager:
                         delay_s = max(local_s, provider_s)
                     else:
                         delay_s = local_s
+                    self.get_event_emitter(session_id).send(
+                        StepRetry(
+                            n=attempt,
+                            next_attempt=attempt + 2,
+                            max_attempts=retries_for_model + 1,
+                            wait_s=delay_s,
+                            error_type=type(err).__name__,
+                            status_code=getattr(err, "status_code", None),
+                        )
+                    )
                     await asyncio.sleep(delay_s)
                     continue
 
                 if is_empty_llm_response(response) and attempt < retries_for_model:
                     delay_s = retry_delay_ms(attempt + 1) / 1000.0
+                    self.get_event_emitter(session_id).send(
+                        StepRetry(
+                            n=attempt,
+                            next_attempt=attempt + 2,
+                            max_attempts=retries_for_model + 1,
+                            wait_s=delay_s,
+                            error_type="empty response",
+                        )
+                    )
                     await asyncio.sleep(delay_s)
                     continue
 
@@ -2257,6 +2373,9 @@ class SessionManager:
     ) -> dict[str, Any]:
         from coderai.llm import prepare_oauth_request
 
+        import time
+
+        request_started_at = time.time()
         await prepare_oauth_request(client, oauth=self.oauth_manager)
         on_chunk = self.on_stream_chunk if emit_stream else None
         on_thinking = self.on_thinking_chunk if emit_stream else None
@@ -2298,6 +2417,11 @@ class SessionManager:
             on_thinking,
             is_cancelled,
         )
+        result["_timing"] = {
+            "request_started_at": request_started_at,
+            "request_finished_at": time.time(),
+            **(result.pop("_stream_timing", None) or {}),
+        }
         if self.get_resolved_settings().get("debugLogEnabled"):
             log_openai_chat_completion_debug(
                 {
@@ -2312,14 +2436,14 @@ class SessionManager:
 
     async def _compact_session(
         self, session_id: str, trigger: str = "pressure", custom_instruction: str | None = None
-    ) -> None:
+    ) -> bool:
         """Execute session compaction through the pluggable CompactionEngine."""
         # PreCompact fires first; deny aborts compaction.
         try:
-            from coderai.hooks import run_pre_compact
+            from coderai.hooks import run_pre_compact_async
 
             entry = self._get_entry(session_id) or {}
-            _pre = run_pre_compact(
+            _pre = await run_pre_compact_async(
                 session_id,
                 self.project_root,
                 trigger,
@@ -2327,7 +2451,7 @@ class SessionManager:
                 self.get_resolved_settings(),
             )
             if _pre.decision == "deny":
-                return
+                return False
         except Exception:
             pass
         try:
@@ -2337,7 +2461,11 @@ class SessionManager:
         except Exception:
             pass
         try:
-            res = await self.compaction_engine.compact_if_needed(session_id, trigger=trigger)
+            res = (
+                None
+                if custom_instruction
+                else await self.compaction_engine.compact_if_needed(session_id, trigger=trigger)
+            )
             if not res:
                 # Forward custom_instruction if engine supports it
                 try:
@@ -2359,19 +2487,23 @@ class SessionManager:
                 session_id,
                 lambda e: {
                     **e,
-                    "activeTokens": res.shadowed_token_count or e.get("activeTokens", 0),
+                    "activeTokens": (
+                        res.tokens_after
+                        if res.tokens_after is not None
+                        else estimate_context_tokens(self.list_session_messages(session_id))
+                    ),
                     "updateTime": now,
                 },
             )
             # PostCompact fires after successful compaction.
             try:
-                from coderai.hooks import run_post_compact
+                from coderai.hooks import run_post_compact_async
 
-                run_post_compact(
+                await run_post_compact_async(
                     session_id,
                     self.project_root,
                     trigger,
-                    int(res.shadowed_token_count or 0),
+                    int(res.tokens_after or 0),
                     self.get_resolved_settings(),
                 )
             except Exception:
@@ -2382,14 +2514,22 @@ class SessionManager:
                     await soul.notify_compacted()
             except Exception:
                 pass
+        return res is not None
 
     async def compact_session(
         self, session_id: str, trigger: str = "manual", custom_instruction: str | None = None
-    ) -> None:
+    ) -> bool:
         """Public method to compact long session context history."""
-        await self._compact_session(
-            session_id, trigger=trigger, custom_instruction=custom_instruction
-        )
+        target = self.resolve_session_id(session_id) or session_id
+        if target in self._running_sessions or target in self._manual_compactions:
+            raise RuntimeError("Cannot compact an active session; wait for the turn to finish")
+        self._manual_compactions.add(target)
+        try:
+            return await self._compact_session(
+                target, trigger=trigger, custom_instruction=custom_instruction
+            )
+        finally:
+            self._manual_compactions.discard(target)
 
     # ---- queries, delete, fork & undo ----
 
@@ -2404,6 +2544,10 @@ class SessionManager:
         if len(index["entries"]) == initial_len:
             return False
 
+        from coderai.goals.core import get_goal_store
+
+        get_goal_store(self.project_root).delete_session(target_id)
+        self.goal_runner.clear(target_id)
         self._deleted_session_ids.add(target_id)
         self.session_approval_store.clear(target_id)
         self.approval_runtime.clear_session_grants(target_id)
@@ -2452,6 +2596,7 @@ class SessionManager:
             from coderai.spill import cleanup_spill_session
 
             cleanup_spill_session(target_id)
+            cleanup_spill_session(target_id, root=self.session_store.project_dir / "tool-results")
         except Exception:
             pass
 

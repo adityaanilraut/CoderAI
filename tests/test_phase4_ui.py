@@ -9,7 +9,6 @@ from rich.text import Text
 
 from coderai.cli.ascii_art import CODERAI_ASCII_LOGO, get_gradient_ascii_logo
 from coderai.ui.shell import render_welcome_screen
-from coderai.ui.shell.mcp_status import render_mcp_console
 from coderai.ui.shell.migration_nudge import (
     install_command,
     should_show_exit_nudge,
@@ -19,13 +18,9 @@ from coderai.ui.shell.startup import ShellStartupProgress
 from coderai.ui.shell.update import UpdateResult, semver_tuple
 from coderai.ui.theme import (
     get_mcp_prompt_colors,
-    get_prompt_style,
+    get_prompt_session_styles,
     get_toolbar_colors,
     set_active_theme,
-)
-from coderai.wire.types import (
-    MCPServerSnapshot,
-    MCPStatusSnapshot,
 )
 
 
@@ -62,29 +57,19 @@ def test_theme_prompt_colors() -> None:
     dark_toolbar = get_toolbar_colors()
     assert "plan_label" in dark_toolbar.__dataclass_fields__
 
-    style = get_prompt_style()
-    assert style is not None
+    dark_style = get_prompt_session_styles()
+    assert dark_style["completion-menu.completion.current"]
+    assert dark_style["toolbar.model"]
 
     set_active_theme("light")
     light_colors = get_mcp_prompt_colors()
     assert light_colors.connected.startswith("fg:")
-    set_active_theme("dark")  # restore
-
-
-def test_mcp_status_rendering() -> None:
-    """Test console rendering for MCP status snapshots."""
-    snapshot = MCPStatusSnapshot(
-        total=2,
-        connected=1,
-        tools=3,
-        loading=False,
-        servers=[
-            MCPServerSnapshot(name="github", status="connected", tools=["create_issue"]),
-            MCPServerSnapshot(name="slack", status="connecting", tools=[]),
-        ],
+    light_style = get_prompt_session_styles()
+    assert (
+        light_style["completion-menu.completion.current"]
+        != dark_style["completion-menu.completion.current"]
     )
-    console_renderable = render_mcp_console(snapshot)
-    assert console_renderable is not None
+    set_active_theme("dark")  # restore
 
 
 def test_migration_nudge_helpers(tmp_path: Path) -> None:

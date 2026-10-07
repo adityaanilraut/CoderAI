@@ -214,7 +214,20 @@ def describe_llm_error(error: Any) -> str:
             parts.append(f"request ID: {details['requestId']}")
         if details.get("traceId"):
             parts.append(f"trace ID: {details['traceId']}")
-        return _format_error_parts(parts)
+        explanation = _format_error_parts(parts)
+        if details["status"] == 404 and "no endpoints found for" in msg.lower():
+            explanation += (
+                " Select an available model with /model openrouter or /model refresh, then /retry. "
+                "Refreshing the catalog alone does not switch the active model."
+            )
+        if details["status"] == 403 and "only available on agentic harnesses" in msg.lower():
+            explanation += (
+                " OpenRouter rejected this app's harness eligibility. "
+                "Tool definitions and app attribution alone may not grant access. "
+                "Select another model with /model openrouter, then /retry, "
+                "or contact OpenRouter about CoderAI's eligibility."
+            )
+        return explanation
 
     causes = details.get("causes", [])
     cause_message = _find_useful_cause_message(causes)

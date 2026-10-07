@@ -95,6 +95,11 @@ async def handle_job_kill_tool(
     store = get_job_store()
     session_id = _session_id(context)
 
+    # Ownership must be checked before touching the worker registry: cancelling
+    # a worker is itself a side effect even when store.kill later rejects it.
+    if store.get(job_id, session_id) is None:
+        return ToolResult(ok=False, name="job_kill", error=f"Unknown job_id: {job_id}")
+
     # Subagent-kind jobs own a live worker task; stop it before the store kill.
     try:
         from coderai.tools.agent import subagent_job_tasks

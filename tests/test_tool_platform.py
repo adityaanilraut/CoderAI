@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import asyncio
 
 import pytest
 
@@ -28,6 +29,198 @@ from coderai.tools.legacy.terminal import (
     handle_terminal_open_tool,
 )
 from coderai.tools.legacy.types import ToolDefinition, ToolExecutionContext, ValidationError
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ok", [False, True])
+async def test_tool_spill_survives_process_cleanup_and_keeps_sanitized_failure_output(tmp_path, ok):
+    from coderai.spill import cleanup_all_spills, resolve_spill_root
+    from coderai.tools.legacy.executor import ToolExecutor
+    from coderai.tools.legacy.types import ToolResult
+
+    registry = ToolRegistry()
+    secret = "sk-" + "example" * 5
+    output = "diagnostic é\n" * 4000 + secret
+    registry.register(
+        ToolDefinition(
+            name="diagnostic_probe",
+            handler=lambda _args, _ctx: ToolResult(
+                ok=ok, name="diagnostic_probe", output=output, error=None if ok else "test failed"
+            ),
+        )
+    )
+    executor = ToolExecutor(str(tmp_path), registry=registry)
+    result = await executor.execute_tool_call(
+        "spill-owner", {"id": "probe", "function": {"name": "diagnostic_probe", "arguments": "{}"}}
+    )
+    assert result.ok == ok
+    ref = result.metadata["spill"]
+    path = pathlib.Path(ref["locator"])
+    assert path.is_relative_to(tmp_path / ".coderai" / "sessions" / "tool-results")
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert secret not in path.read_text()
+    assert "[REDACTED_OPENAI_KEY]" in path.read_text()
+    cleanup_all_spills()
+    assert path.exists()
+    resumed = ToolExecutionContext(session_id="spill-owner", project_root=str(tmp_path))
+    assert resolve_spill_root(resumed) == path.parent.parent
+
+
+@pytest.mark.asyncio
+async def test_mcp_large_error_output_is_persisted_without_eager_truncation(tmp_path):
+    from types import SimpleNamespace
+    from coderai.tools.legacy.executor import ToolExecutor
+
+    output = "MCP diagnostics\n" * 9000 + "final diagnostic must survive"
+
+    async def run(_name, _args, session_id=None):
+        return {"ok": False, "output": output, "error": "check failed"}
+
+    manager = SimpleNamespace(
+        is_mcp_tool=lambda _name: True,
+        execute_mcp_tool=run,
+        tools=[],
+        get_mcp_tool_definitions=lambda: [
+            {"function": {"name": "mcp_probe", "parameters": {"type": "object"}}}
+        ],
+    )
+    executor = ToolExecutor(str(tmp_path), mcp_manager=manager)
+    result = await executor.execute_tool_call(
+        "mcp-spill", {"id": "mcp-probe", "function": {"name": "mcp_probe", "arguments": "{}"}}
+    )
+    assert not result.ok and result.error == "check failed"
+    path = pathlib.Path(result.metadata["spill"]["locator"])
+    assert path.read_text() == output
+    assert len(result.output.encode()) <= 30000
+
+
+def test_read_alias_remains_exempt_from_recursive_spilling(tmp_path):
+    from coderai.tools.legacy.executor import ToolExecutor
+    from coderai.tools.legacy.types import ToolResult
+
+    registry = ToolRegistry()
+    registry.register(ToolDefinition(name="read", aliases=["read_file"]))
+    executor = ToolExecutor(str(tmp_path), registry=registry)
+    context = ToolExecutionContext(session_id="read-spill", project_root=str(tmp_path))
+    output = "file content\n" * 4000
+    result = executor._apply_result_spill(
+        "read_file", ToolResult(ok=True, name="read", output=output), context
+    )
+    assert result.output == output and not result.metadata
+
+
+@pytest.mark.asyncio
+async def test_resource_scheduler_orders_conflicts_and_allows_independent_paths(tmp_path):
+    from coderai.tools.legacy.resources import ResourceAccess, ResourceScheduler
+
+    scheduler = ResourceScheduler()
+    shared = str(tmp_path / "shared.txt")
+    entered = []
+    release_reader = asyncio.Event()
+    release_writer = asyncio.Event()
+
+    async def work(label, access, release=None):
+        async with scheduler.acquire((access,)):
+            entered.append(label)
+            if release is not None:
+                await release.wait()
+
+    initial = asyncio.create_task(work("first reader", ResourceAccess(path=shared), release_reader))
+    await asyncio.sleep(0)
+    writer = asyncio.create_task(
+        work("writer", ResourceAccess(path=shared, operation="write"), release_writer)
+    )
+    await asyncio.sleep(0)
+    later = asyncio.create_task(work("later reader", ResourceAccess(path=shared)))
+    independent = asyncio.create_task(
+        work("independent", ResourceAccess(path=str(tmp_path / "other.txt"), operation="write"))
+    )
+    try:
+        await asyncio.wait_for(independent, 1)
+        assert entered == ["first reader", "independent"]
+        release_reader.set()
+        await asyncio.wait_for(initial, 1)
+        await asyncio.sleep(0)
+        assert entered[-1] == "writer" and not later.done()
+        release_writer.set()
+        await asyncio.wait_for(asyncio.gather(writer, later), 1)
+        assert entered[-2:] == ["writer", "later reader"]
+    finally:
+        release_reader.set()
+        release_writer.set()
+        await asyncio.gather(initial, writer, later, independent)
+
+
+@pytest.mark.asyncio
+async def test_resource_scheduler_cancelled_waiter_does_not_block_followers(tmp_path):
+    from coderai.tools.legacy.resources import ResourceAccess, ResourceScheduler
+
+    scheduler = ResourceScheduler()
+    read = ResourceAccess(path=str(tmp_path), recursive=True)
+    write = ResourceAccess(path=str(tmp_path / "file.txt"), operation="write")
+    entered = asyncio.Event()
+
+    async def waiting_writer():
+        async with scheduler.acquire((write,)):
+            entered.set()
+
+    async with scheduler.acquire((read,)):
+        waiter = asyncio.create_task(waiting_writer())
+        await asyncio.sleep(0)
+        assert not entered.is_set()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert scheduler._queued == []
+    await asyncio.wait_for(waiting_writer(), 1)
+
+
+@pytest.mark.asyncio
+async def test_executor_resource_schedule_covers_searches_and_cross_agent_writes(tmp_path):
+    from types import SimpleNamespace
+    from coderai.tools.legacy.executor import ToolExecutor
+
+    executor = ToolExecutor(str(tmp_path))
+    other_executor = ToolExecutor(str(tmp_path))
+    context = ToolExecutionContext(session_id="first", project_root=str(tmp_path))
+    other_context = ToolExecutionContext(session_id="second", project_root=str(tmp_path))
+    searching = asyncio.Event()
+    searched = asyncio.Event()
+    writing = asyncio.Event()
+
+    async def search(_args, _ctx):
+        searching.set()
+        await searched.wait()
+        return "searched"
+
+    async def write(_args, _ctx):
+        writing.set()
+        return "written"
+
+    reader = asyncio.create_task(
+        executor._run_handler(
+            SimpleNamespace(name="grep", handler=search, timeout_ms=None),
+            {"path": "."},
+            context,
+            None,
+        )
+    )
+    await asyncio.wait_for(searching.wait(), 1)
+    writer = asyncio.create_task(
+        other_executor._run_handler(
+            SimpleNamespace(name="write", handler=write, timeout_ms=None),
+            {"file_path": "file.txt"},
+            other_context,
+            None,
+        )
+    )
+    try:
+        await asyncio.sleep(0)
+        assert not writing.is_set()
+    finally:
+        searched.set()
+        results = await asyncio.wait_for(asyncio.gather(reader, writer), 1)
+    assert all(result.ok for result in results) and writing.is_set()
 
 
 def test_registry_validates_required_arguments():

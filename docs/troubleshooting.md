@@ -109,8 +109,24 @@ restores files, not conversation. To recover *conversation* after a crash,
 - **Localization & Docs**: Dialect and translation errors in `.properties`, `.adoc`, and `.md` files are automatically bypassed from Tier 3 gating to protect recall on non-executable files.
 
 ### Network latency or API timeouts
-- **Graceful Degradation**: Jev requests carry a strict timeout (`CODERAI_JEV_TIMEOUT_MS`, default 10000ms). If a request times out or encounters a network failure, CoderAI fails open—candidate comments pass through to the developer without halting the review.
+- **Graceful Degradation**: Jev requests carry a strict timeout (`CODERAI_JEV_TIMEOUT_S`, default 3 seconds). If a request times out or encounters a network failure, CoderAI fails open—candidate comments pass through to the developer without halting the review.
 - **Cache Inspection**: Repeated runs against unchanged commits benefit from the in-memory LRU cache (`CODERAI_JEV_CACHE_SIZE=1024`).
+
+## OpenRouter free models restricted to agentic harnesses
+
+An HTTP 403 with `Gate Free Endpoints by Agentic Harness` means OpenRouter
+rejected the request's harness eligibility before inference. CoderAI sends its
+public app URL (`HTTP-Referer`), display name (`X-OpenRouter-Title`), and
+`cli-agent` category (`X-OpenRouter-Categories`) on OpenRouter requests. Explicit
+provider `custom_headers` override these defaults, including lowercase header
+names and the legacy `X-Title` display name.
+
+[App attribution](https://openrouter.ai/docs/app-attribution) identifies the app;
+it does not guarantee access to these restricted endpoints. Tool schemas alone
+also do not guarantee access. If the rejection persists, contact OpenRouter
+with CoderAI's app URL and the gate name to establish the eligibility requirements.
+Use `/model openrouter` to select another model, then `/retry`. Restart CoderAI
+after updating the installed code so existing sessions use the new defaults.
 
 ## Still stuck?
 
@@ -121,4 +137,3 @@ restores files, not conversation. To recover *conversation* after a crash,
    `coderai --print -p "..."`.
 5. File an issue with: `/doctor` output, `--setup --status` (redact keys),
    and the minimal `--print` reproducer.
-

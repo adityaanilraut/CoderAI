@@ -6,10 +6,12 @@ import base64
 import json
 import os
 import pathlib
-import re
+import stat
 from typing import Any
 
-from coderai.utils.path import is_binary_buffer, read_text_file_with_metadata
+from pathspec import GitIgnoreSpec
+
+from coderai.utils.path import detect_encoding, is_binary_buffer, open_regular_binary
 from coderai.file_snippets import (
     create_full_file_snippet,
     create_snippet,
@@ -28,8 +30,6 @@ DEFAULT_LINE_LIMIT = 2000
 MAX_LINE_LENGTH = 2000
 LINE_NUMBER_WIDTH = 6
 READ_MAX_BYTES = 50 * 1024  # READ_MAX_BYTES cap
-STREAM_MIN_SIZE = 10 * 1024 * 1024  # Streaming threshold; Python reads whole but documents ceiling
-# ponytail: whole-file read; streaming via chunked scan if large files cause OOM
 
 DEFAULT_GITIGNORE = [
     "node_modules/",
@@ -85,15 +85,6 @@ def _get_image_mime_type(ext: str) -> str:
         ".avif": "image/avif",
     }
     return mimes.get(ext.lower(), "image/png")
-
-
-def _count_pdf_pages(data: bytes) -> int | None:
-    try:
-        content = data.decode("latin1", errors="replace")
-        matches = re.findall(r"/Type\s*/Page\b(?!s)", content)
-        return len(matches) if matches else 0
-    except Exception:
-        return None
 
 
 def _format_with_line_numbers(lines: list[str], start_line_number: int) -> str:
@@ -180,101 +171,24 @@ def _format_notebook_output(output: dict[str, Any]) -> list[str]:
     return lines
 
 
-class GitignoreMatcher:
-    """Evaluates relative file and directory paths against gitignore rules."""
-
-    def __init__(self, patterns: list[str]) -> None:
-        self.rules: list[tuple[bool, bool, re.Pattern]] = []  # (is_negation, is_dir_only, regex)
-        for pat in patterns:
-            self._add_pattern(pat)
-
-    def _add_pattern(self, pattern: str) -> None:
-        pat = pattern.strip()
-        if not pat or pat.startswith("#"):
-            return
-        is_negation = pat.startswith("!")
-        if is_negation:
-            pat = pat[1:].strip()
-        is_dir_only = pat.endswith("/")
-        if is_dir_only:
-            pat = pat[:-1]
-
-        rooted = pat.startswith("/")
-        if rooted:
-            pat = pat[1:]
-
-        regex_parts: list[str] = []
-        i = 0
-        while i < len(pat):
-            c = pat[i]
-            if c == "*":
-                if i + 1 < len(pat) and pat[i + 1] == "*":
-                    if i + 2 < len(pat) and pat[i + 2] == "/":
-                        regex_parts.append("(?:.+/)?")
-                        i += 3
-                        continue
-                    else:
-                        regex_parts.append(".*")
-                        i += 2
-                        continue
-                else:
-                    regex_parts.append("[^/]*")
-                    i += 1
-                    continue
-            elif c == "?":
-                regex_parts.append("[^/]")
-            elif c in r"\.+^${}()|[]":
-                regex_parts.append(re.escape(c))
-            else:
-                regex_parts.append(c)
-            i += 1
-
-        pattern_str = "".join(regex_parts)
-        if rooted:
-            regex = re.compile(rf"^{pattern_str}(?:/.*)?$", re.IGNORECASE)
-        else:
-            regex = re.compile(rf"(?:^|/){pattern_str}(?:/.*)?$", re.IGNORECASE)
-
-        self.rules.append((is_negation, is_dir_only, regex))
-
-    def is_ignored(self, rel_path: str, is_dir: bool = False) -> bool:
-        normalized = rel_path.replace("\\", "/").strip("/")
-        if not normalized:
-            return False
-
-        parts = normalized.split("/")
-        ancestor_dirs = ["/".join(parts[:i]) for i in range(1, len(parts))]
-
-        ignored = False
-        for is_negation, is_dir_only, regex in self.rules:
-            if not is_dir_only or is_dir:
-                if regex.search(normalized):
-                    ignored = not is_negation
-                    continue
-            if is_dir_only and not is_dir:
-                if any(regex.search(ancestor) for ancestor in ancestor_dirs):
-                    ignored = not is_negation
-                    continue
-        return ignored
-
-
-def load_gitignore_matcher(project_root: str) -> GitignoreMatcher:
-    """Load GitignoreMatcher using default ignore rules and project .gitignore if present."""
+def _load_ignore_spec(project_root: str) -> GitIgnoreSpec:
+    """Compile default exclusions and the project root gitignore rules."""
     patterns = list(DEFAULT_GITIGNORE)
-    gitignore_path = pathlib.Path(project_root) / ".gitignore"
-    if gitignore_path.is_file():
-        try:
-            content = gitignore_path.read_text(encoding="utf-8", errors="replace")
-            patterns.extend(content.splitlines())
-        except Exception:
-            pass
-    return GitignoreMatcher(patterns)
+    try:
+        patterns.extend(
+            (pathlib.Path(project_root) / ".gitignore")
+            .read_text(encoding="utf-8", errors="replace")
+            .splitlines()
+        )
+    except OSError:
+        pass
+    return GitIgnoreSpec.from_lines(patterns)
 
 
 def _read_directory(dir_path: str, project_root: str, max_entries: int = 150) -> str:
     """Read directory contents respecting .gitignore and format as a structured tree."""
     p = pathlib.Path(dir_path)
-    matcher = load_gitignore_matcher(project_root)
+    matcher = _load_ignore_spec(project_root)
     lines: list[str] = [f"Directory listing for `{dir_path}`:\n"]
 
     entries: list[tuple[str, bool, int]] = []
@@ -287,7 +201,7 @@ def _read_directory(dir_path: str, project_root: str, max_entries: int = 150) ->
             filtered_dirs = []
             for d in dirs:
                 rel_dir = f"{rel_root}/{d}".lstrip("/")
-                if not matcher.is_ignored(rel_dir, is_dir=True):
+                if not matcher.match_file(rel_dir + "/"):
                     filtered_dirs.append(d)
             dirs[:] = filtered_dirs
 
@@ -298,7 +212,7 @@ def _read_directory(dir_path: str, project_root: str, max_entries: int = 150) ->
 
             for f in sorted(files):
                 rel_file = f"{rel_root}/{f}".lstrip("/")
-                if matcher.is_ignored(rel_file, is_dir=False):
+                if matcher.match_file(rel_file):
                     continue
                 full_file = os.path.join(root, f)
                 try:
@@ -346,7 +260,7 @@ def _normalize_relative_suffix(file_path: str) -> str:
 def _find_suffix_matches(project_root: str, suffix: str) -> list[str]:
     matches: list[str] = []
     normalized_suffix = suffix.replace("\\", "/").lower()
-    matcher = load_gitignore_matcher(project_root)
+    matcher = _load_ignore_spec(project_root)
 
     for root, dirs, files in os.walk(project_root):
         rel_root = os.path.relpath(root, project_root).replace("\\", "/")
@@ -357,13 +271,13 @@ def _find_suffix_matches(project_root: str, suffix: str) -> list[str]:
         filtered_dirs = []
         for d in dirs:
             rel_dir = f"{rel_root}/{d}".lstrip("/")
-            if not matcher.is_ignored(rel_dir, is_dir=True):
+            if not matcher.match_file(rel_dir + "/"):
                 filtered_dirs.append(d)
         dirs[:] = filtered_dirs
 
         for f in files:
             rel_file = f"{rel_root}/{f}".lstrip("/")
-            if matcher.is_ignored(rel_file, is_dir=False):
+            if matcher.match_file(rel_file):
                 continue
             full_path = os.path.join(root, f)
             rel_path = os.path.relpath(full_path, project_root).replace("\\", "/").lower()
@@ -540,7 +454,14 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
             metadata={"isDirectory": True, "filePath": file_path},
         )
 
+    if not stat.S_ISREG(st.st_mode):
+        return ToolResult(ok=False, name="read", error="read requires a regular file or directory.")
+
     ext = p.suffix.lower()
+    if ext in IMAGE_EXTENSIONS and st.st_size > 10 * 1024 * 1024:
+        return ToolResult(ok=False, name="read", error="Image file exceeds the 10 MiB limit.")
+    if ext == ".ipynb" and st.st_size > 10 * 1024 * 1024:
+        return ToolResult(ok=False, name="read", error="Notebook exceeds the 10 MiB limit.")
 
     if ext == ".ipynb":
         output = _read_notebook(file_path)
@@ -553,10 +474,14 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
 
     if ext == ".pdf":
         try:
-            pdf_bytes = p.read_bytes()
+            from pypdf import PdfReader
+
+            if st.st_size > 50 * 1024 * 1024:
+                raise ValueError("PDF exceeds the 50 MiB metadata inspection limit.")
+            with open_regular_binary(str(p)) as pdf_stream:
+                page_count = len(PdfReader(pdf_stream).pages)
         except Exception as e:
-            return ToolResult(ok=False, name="read", error=f"Failed to read PDF: {e}")
-        page_count = _count_pdf_pages(pdf_bytes)
+            return ToolResult(ok=False, name="read", error=f"Failed to inspect PDF: {e}")
         mark_file_read(
             session_id,
             file_path,
@@ -569,14 +494,17 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
             metadata={
                 "mime": "application/pdf",
                 "encoding": "base64",
-                "bytes": len(pdf_bytes),
+                "bytes": st.st_size,
                 "pageCount": page_count if page_count is not None else 0,
             },
         )
 
     if ext in IMAGE_EXTENSIONS:
         try:
-            img_bytes = p.read_bytes()
+            with open_regular_binary(str(p)) as image_stream:
+                img_bytes = image_stream.read(10 * 1024 * 1024 + 1)
+            if len(img_bytes) > 10 * 1024 * 1024:
+                return ToolResult(ok=False, name="read", error="Image exceeds the 10 MiB limit.")
         except Exception as e:
             return ToolResult(ok=False, name="read", error=f"Failed to read image: {e}")
         mime = _get_image_mime_type(ext)
@@ -605,11 +533,12 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
         )
 
     try:
-        raw_bytes = p.read_bytes()
+        with open_regular_binary(str(p)) as sample_stream:
+            raw_bytes = sample_stream.read(8192)
     except Exception as e:
         return ToolResult(ok=False, name="read", error=f"Failed to read file: {e}")
 
-    if is_binary_buffer(raw_bytes):
+    if detect_encoding(raw_bytes) == "utf8" and is_binary_buffer(raw_bytes):
         mark_file_read(
             session_id,
             file_path,
@@ -619,7 +548,7 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
             ok=True,
             name="read",
             output="WARNING: File is binary.",
-            metadata={"isBinary": True, "bytes": len(raw_bytes)},
+            metadata={"isBinary": True, "bytes": st.st_size},
         )
 
     offset_ok, offset, offset_err = _parse_line_number(args.get("offset"), "offset")
@@ -632,29 +561,13 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
     if not limit_ok:
         return ToolResult(ok=False, name="read", error=limit_err or "limit must be a number > 0.")
 
+    from coderai.tools.file.window import read_text_window
+
     try:
-        metadata = read_text_file_with_metadata(file_path)
-    except Exception as e:
+        metadata = read_text_window(file_path, offset or 1, limit)
+    except (OSError, UnicodeError) as e:
         return ToolResult(ok=False, name="read", error=str(e))
-
-    raw = metadata["content"]
-    if not raw:
-        return ToolResult(
-            ok=True,
-            name="read",
-            output="WARNING: File is empty.",
-        )
-
-    lines = raw.split("\n")
-    if len(lines) == 1 and lines[0] == "":
-        return ToolResult(
-            ok=True,
-            name="read",
-            output="WARNING: File is empty.",
-        )
-
-    total_lines = len(lines)
-    # Offset out of range (except empty+offset1 which already returned)
+    total_lines = metadata["total_lines"]
     if offset is not None and offset > total_lines:
         return ToolResult(
             ok=False,
@@ -662,29 +575,13 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
             error=f'offset {offset} is out of range for "{file_path}" ({total_lines} lines)',
             metadata={"code": "FS_NOT_FOUND"},
         )
-    start_index = (offset - 1) if offset else 0
-    # READ_MAX_BYTES: byte cap like buildWindow — stop adding lines when cap hit
-    # ponytail: linear scan, no streaming; upgrade to chunked scan if large files regress
-    truncated_by_bytes = False
-    selected: list[str] = []
-    output_bytes = 0
-    for idx in range(start_index, min(start_index + limit, total_lines)):
-        raw_line = lines[idx]
-        # apply line truncation first for byte counting (matches truncateLine)
-        display_line = (
-            raw_line[:MAX_LINE_LENGTH] + f"... (line truncated to {MAX_LINE_LENGTH} chars)"
-            if len(raw_line) > MAX_LINE_LENGTH
-            else raw_line
-        )
-        bsize = len(display_line.encode("utf-8")) + (1 if selected else 0)
-        if output_bytes + bsize > READ_MAX_BYTES:
-            truncated_by_bytes = True
-            break
-        output_bytes += bsize
-        selected.append(raw_line)
-    start_line = start_index + 1
-    end_line = (start_index + len(selected)) if selected else start_line
-    is_partial_view = start_line != 1 or end_line < total_lines or truncated_by_bytes
+    selected = metadata["lines"]
+    start_line = offset or 1
+    end_line = start_line + len(selected) - 1
+    truncated_by_bytes = metadata["capped"]
+    is_partial_view = (
+        start_line != 1 or end_line < total_lines or truncated_by_bytes or metadata["omitted"]
+    )
 
     mark_file_read(
         session_id,
@@ -697,14 +594,26 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
             "is_partial_view": is_partial_view,
             "encoding": metadata["encoding"],
             "line_endings": metadata["lineEndings"],
+            "raw_digest": metadata["digest"],
+            "file_identity": metadata["identity"],
         },
     )
 
     from coderai.tools.legacy.observation import get_observation_tracker
 
-    get_observation_tracker().record_observation(session_id, file_path, content=raw)
+    get_observation_tracker().record_observation(
+        session_id,
+        file_path,
+        digest=metadata["digest"],
+        identity=metadata["identity"],
+        encoding=metadata["encoding"],
+        line_endings=metadata["lineEndings"],
+        complete=not is_partial_view,
+    )
 
     formatted_output = _format_with_line_numbers(selected, start_line)
+    if st.st_size == 0:
+        formatted_output = "WARNING: File is empty."
 
     # Output footers: capped > paged > eof
     if truncated_by_bytes:

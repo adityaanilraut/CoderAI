@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.1
+
+- Separate terminal interaction, submission, navigation and rendering into
+  focused modules; improve session browsing, attachments and cancellation.
+- Harden agent continuation, compaction, team coordination, goals, hook
+  dispatch, MCP lifecycle and session storage.
+- Consolidate tool definitions and permission policies; improve bounded file
+  search, subprocess handling and web-tool validation.
+- Add OpenRouter routing and attribution, session migration and protocol
+  compatibility regressions.
+- Remove unused binary packaging and obsolete helpers, refresh dependency
+  constraints, and expand isolated source, SDK, terminal and security checks.
+
+The headless SDK retains its independent version 0.1.0.
+
 ## 0.5.0
 
 - Split session streaming, tool dispatch and child execution into focused modules;

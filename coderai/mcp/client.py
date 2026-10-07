@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 from collections.abc import Callable
 
@@ -116,9 +117,11 @@ class McpClient:
                         if isinstance(err_obj, dict)
                         else str(err_obj)
                     )
-                    loop.call_soon_threadsafe(future.set_exception, RuntimeError(err_msg))
+                    loop.call_soon_threadsafe(
+                        self._settle_future, future, RuntimeError(err_msg), True
+                    )
                 else:
-                    loop.call_soon_threadsafe(future.set_result, message.get("result"))
+                    loop.call_soon_threadsafe(self._settle_future, future, message.get("result"))
         elif "method" in message:
             # JSON-RPC Notification from server
             method = message.get("method", "")
@@ -126,11 +129,26 @@ class McpClient:
             if self._notification_handler:
                 self._notification_handler(method, params)
 
+    @staticmethod
+    def _settle_future(future: asyncio.Future[Any], value: Any, failed: bool = False) -> None:
+        # A timeout/cancellation or duplicate response can win after the
+        # transport thread schedules this callback and before the loop runs it.
+        if future.done():
+            return
+        if failed:
+            future.set_exception(value)
+        else:
+            future.set_result(value)
+
     def _on_transport_disconnect(self, reason: str) -> None:
         self._disconnected = True
         for fut in list(self._pending.values()):
-            if not fut.done():
-                fut.set_exception(RuntimeError(f"MCP server '{self.server_name}' disconnected."))
+            fut.get_loop().call_soon_threadsafe(
+                self._settle_future,
+                fut,
+                RuntimeError(f"MCP server '{self.server_name}' disconnected."),
+                True,
+            )
         self._pending.clear()
         if self._disconnect_handler:
             self._disconnect_handler(reason)
@@ -170,17 +188,26 @@ class McpClient:
             # Fetch initial tools list
             tools_res = await self.list_tools(timeout_s=timeout_s)
             self._tools = tools_res
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await self.disconnect()
+            raise
         except Exception as e:
-            await self.disconnect()
+            with contextlib.suppress(Exception):
+                await self.disconnect()
             raise RuntimeError(f"Failed to connect to MCP server '{self.server_name}': {e}") from e
 
     async def disconnect(self) -> None:
         self._disconnected = True
-        await self.transport.disconnect()
-        for fut in list(self._pending.values()):
-            if not fut.done():
-                fut.set_exception(RuntimeError(f"MCP server '{self.server_name}' disconnected."))
-        self._pending.clear()
+        try:
+            await self.transport.disconnect()
+        finally:
+            for fut in list(self._pending.values()):
+                if not fut.done():
+                    fut.set_exception(
+                        RuntimeError(f"MCP server '{self.server_name}' disconnected.")
+                    )
+            self._pending.clear()
 
     async def ping(self, timeout_s: float = 5.0) -> bool:
         """Probe MCP connection liveness by sending a ping request."""
@@ -257,8 +284,10 @@ class McpClient:
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._pending[msg_id] = future
 
-        self.transport.send({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params})
         try:
+            self.transport.send(
+                {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}
+            )
             return await asyncio.wait_for(future, timeout=timeout_s)
         finally:
             self._pending.pop(msg_id, None)

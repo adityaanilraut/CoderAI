@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 import pathlib
+import shlex
 import stat
 import sys
 import time
@@ -108,6 +110,57 @@ def test_background_worker_kills_on_cancel_request(tmp_path: pathlib.Path):
         on_heartbeat=lambda: beats.append(True),
     )
     assert job is not None and job.status == "killed" and beats
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_task", [False, True], ids=["job-kill", "task-cancel"])
+async def test_background_worker_cancellation_reaps_process_tree(tmp_path, cancel_task):
+    store = get_job_store()
+    _start_job(store, "job-tree", tmp_path)
+    pid_file = tmp_path / "pid.txt"
+    script = (
+        "import os, pathlib, signal, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(30)"
+    )
+    worker = asyncio.create_task(
+        run_background_task_worker(
+            job_id="job-tree",
+            session_id="sess-1",
+            command=f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+            shell_path="/bin/sh",
+            cwd=str(tmp_path),
+            output_path=str(tmp_path / "job-tree.log"),
+            timeout_s=None,
+            control_poll_interval_s=0.01,
+            kill_grace_period_s=0.05,
+        )
+    )
+    try:
+        async with asyncio.timeout(3):
+            while not pid_file.exists():
+                await asyncio.sleep(0.01)
+        pid = int(pid_file.read_text())
+        if cancel_task:
+            worker.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(worker, 2)
+        else:
+            assert store.kill("job-tree", "sess-1") == "cancellation-requested"
+            await asyncio.wait_for(worker, 2)
+        assert store.get("job-tree", "sess-1").status == "killed"
+        async with asyncio.timeout(2):
+            while True:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                await asyncio.sleep(0.01)
+    finally:
+        if not worker.done():
+            worker.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await worker
 
 
 def test_flow_validate_rejects_malformed_graphs():

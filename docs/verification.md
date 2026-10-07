@@ -23,6 +23,16 @@ Ruff 0.16.8, mypy 2.3.1, requests/PyYAML stubs and pip-audit 2.10.1 are pinned i
 
 ## Release gates
 
+The terminal UI has a focused offline gate:
+`.venv/bin/python scripts/verification.py test --suite ui --report .verification/ui.json`.
+It runs each file independently, including the actual-shell-entrypoint PTY
+journeys, cancellation repairs, concurrent queue/steer flows, attachments,
+full-output inspection, session navigation and adaptive layout fixtures.
+The controller, repair and POSIX PTY files are required in the full suite.
+Portable controller/repair tests also run in the Windows advisory suite; native
+ConPTY behavior remains unverified. See [terminal UI implementation](terminal-ui-improvements.md)
+for the phase outcomes, controls and local verification limits.
+
 CI and Release call `.github/workflows/verify.yml` from their own commit and pass `github.sha`. Each required job checks out that exact SHA. The source job also verifies `git rev-parse HEAD`; the release build verifies the same identity before stamping/building. Linux and macOS/Python 3.12 source checks, separate security regressions/audit, and real-SDK Jev calibration must succeed before release build or publication. Windows source compatibility retains the existing advisory status and runs the
 explicit `windows` suite (CLI and child lifecycle, approval identity, completion/compaction, rendering, flow/hook
 adapters, Jev, bundled local KAOS, MCP overlays, token estimation, wire framing

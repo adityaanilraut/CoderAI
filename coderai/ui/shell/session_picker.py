@@ -224,7 +224,7 @@ def select_with_arrows(
     title: str = "Select an option",
     default_idx: int = 0,
     allow_custom: bool = False,
-    allow_cancel: bool = False,
+    allow_cancel: bool = True,
 ) -> int | str | None:
     """Interactive arrow-key and shortcut selector with live in-place TUI rendering and fallback."""
     if not items:
@@ -236,7 +236,9 @@ def select_with_arrows(
     total_slots = len(items) + (1 if allow_custom else 0)
 
     # If not a TTY, fallback to clean indexed input prompt
-    if not sys.stdin.isatty():
+    from coderai.ui.shell.preferences import accessible_enabled
+
+    if not sys.stdin.isatty() or accessible_enabled():
         if console is not None and _RICH and Panel is not None:
             body_lines = [
                 f"  {num:2}. {disp_title} [dim]— {escape(desc)}[/]"
@@ -253,7 +255,7 @@ def select_with_arrows(
             console.print(panel)
         try:
             raw = input(f"{title} [1-{total_slots}]: ").strip()
-            if raw.lower() in ("q", "cancel", "exit", "0") and allow_cancel:
+            if raw.lower() in ("q", "cancel", "exit", "0", "esc", "escape"):
                 return None
             if raw.isdigit() and 1 <= int(raw) <= len(items):
                 return int(raw) - 1
@@ -262,12 +264,12 @@ def select_with_arrows(
                     c_val = input("Enter custom value: ").strip()
                     return c_val if c_val else default_idx
                 except (EOFError, KeyboardInterrupt):
-                    return None if allow_cancel else default_idx
+                    return None
             elif raw:
                 return raw
             return None if allow_cancel and not raw else default_idx
         except (EOFError, KeyboardInterrupt):
-            return None if allow_cancel else default_idx
+            return None
 
     selected_idx = default_idx
     filter_query = ""
@@ -281,8 +283,6 @@ def select_with_arrows(
                 or cur_query.lower() in items[i][1].lower()
                 or cur_query.lower() in items[i][2].lower()
             ]
-            if not filtered_indices:
-                filtered_indices = [cur_sel] if cur_sel < len(items) else [0]
         else:
             filtered_indices = list(range(len(items)))
 
@@ -301,6 +301,8 @@ def select_with_arrows(
             )
             header.append(Text(""))
 
+        if not filtered_indices:
+            grid.add_row("", "", Text("No matches. Change your search or press Esc."))
         for disp_num, item_idx in enumerate(filtered_indices, 1):
             _key_name, disp_title, desc = items[item_idx]
             is_sel = item_idx == cur_sel
@@ -352,7 +354,7 @@ def select_with_arrows(
                 or cur_query.lower() in items[i][1].lower()
                 or cur_query.lower() in items[i][2].lower()
             ]
-            return f_inds if f_inds else ([selected_idx] if selected_idx < len(items) else [0])
+            return f_inds
         return list(range(len(items)))
 
     def _get_selectable(cur_query: str) -> list[int]:
@@ -380,7 +382,7 @@ def select_with_arrows(
 
                 key = _read_single_key()
                 if key == "":
-                    res = None if allow_cancel else default_idx
+                    res = None
                     break
                 elif key == "UP":
                     if selectable:
@@ -423,23 +425,22 @@ def select_with_arrows(
                     elif allow_custom and digit == len(filtered_indices) + 1:
                         selected_idx = len(items)
                 elif key == "ENTER":
+                    if selected_idx not in selectable:
+                        continue
                     if allow_custom and selected_idx == len(items):
                         live.stop()
                         try:
                             custom_val = input("\nEnter custom value: ").strip()
-                            return custom_val if custom_val else default_idx
+                            return custom_val or None
                         except (EOFError, KeyboardInterrupt):
-                            return None if allow_cancel else default_idx
+                            return None
                     res = selected_idx
                     break
                 elif key == "ESCAPE":
-                    if filter_query:
-                        filter_query = ""
-                    else:
-                        res = None if allow_cancel else default_idx
-                        break
+                    res = None
+                    break
                 elif key in ("CTRL_C", "CTRL_D") or (key in ("q", "Q") and not filter_query):
-                    res = None if allow_cancel else default_idx
+                    res = None
                     break
                 elif key == "BACKSPACE":
                     filter_query = filter_query[:-1]
@@ -476,7 +477,7 @@ def select_with_arrows(
 
         key = _read_single_key()
         if key == "":
-            return None if allow_cancel else default_idx
+            return None
         if key == "UP":
             if selectable:
                 if selected_idx in selectable:
@@ -518,20 +519,19 @@ def select_with_arrows(
             elif allow_custom and digit == len(filtered_indices) + 1:
                 selected_idx = len(items)
         elif key == "ENTER":
+            if selected_idx not in selectable:
+                continue
             if allow_custom and selected_idx == len(items):
                 try:
                     custom_val = input("\nEnter custom value: ").strip()
-                    return custom_val if custom_val else default_idx
+                    return custom_val or None
                 except (EOFError, KeyboardInterrupt):
-                    return None if allow_cancel else default_idx
+                    return None
             return selected_idx
         elif key == "ESCAPE":
-            if filter_query:
-                filter_query = ""
-            else:
-                return None if allow_cancel else default_idx
+            return None
         elif key in ("CTRL_C", "CTRL_D") or (key in ("q", "Q") and not filter_query):
-            return None if allow_cancel else default_idx
+            return None
         elif key == "BACKSPACE":
             filter_query = filter_query[:-1]
         elif len(key) == 1 and key.isprintable():
@@ -552,16 +552,36 @@ def _format_badges_markup(badges: list[str]) -> str:
     return " ".join(parts)
 
 
-def get_available_models(current_model: str = "") -> list[tuple[str, str, str]]:
+def get_available_models(
+    current_model: str = "",
+    *,
+    refresh_openrouter: bool = True,
+    force_refresh_openrouter: bool = False,
+) -> list[tuple[str, str, str]]:
     """Return comprehensive list of models from curated catalog, typed config, and OAuth."""
     models: list[tuple[str, str, str]] = []
     seen: set[str] = set()
+    unavailable: set[str] = set()
+    from coderai.openrouter import is_openrouter_model, openrouter_model_available
 
     # 1. Curated catalog entries (OpenAI, Kimi, Gemini, DeepSeek, Anthropic)
     for key, desc, cat in CURATED_MODELS:
         if key not in seen:
             seen.add(key)
             models.append((key, desc, cat))
+
+    # 1b. Dynamic OpenRouter :free models (live-pinged, cached 24h, never fatal)
+    try:
+        from coderai.openrouter import get_openrouter_free_models
+
+        for key, desc, cat in get_openrouter_free_models(
+            allow_network=refresh_openrouter, force_refresh=force_refresh_openrouter
+        ):
+            if key not in seen:
+                seen.add(key)
+                models.append((key, desc, cat))
+    except Exception:
+        pass
 
     # 2. Configured models in config.toml (including custom & OAuth-synced models)
     try:
@@ -571,10 +591,15 @@ def get_available_models(current_model: str = "") -> list[tuple[str, str, str]]:
         for key, m in cfg.models.items():
             if is_jev_model(key) or is_jev_model(m.model):
                 continue
+            provider = cfg.providers.get(m.provider)
+            p_type = (provider.type if provider else m.provider) or "custom"
+            if (
+                p_type.lower() == "openrouter" or key.startswith("openrouter/")
+            ) and openrouter_model_available(m.model) is False:
+                unavailable.add(key)
+                continue
             if key not in seen:
                 seen.add(key)
-                provider = cfg.providers.get(m.provider)
-                p_type = (provider.type if provider else m.provider) or "custom"
                 category = (
                     "Kimi Code"
                     if "coderai" in p_type.lower() or "coderai" in key.lower()
@@ -586,47 +611,209 @@ def get_available_models(current_model: str = "") -> list[tuple[str, str, str]]:
         pass
 
     # 3. Current model if not yet seen
-    if current_model and current_model not in seen:
+    if (
+        current_model
+        and current_model not in seen
+        and current_model not in unavailable
+        and not (
+            is_openrouter_model(current_model)
+            and openrouter_model_available(current_model) is False
+        )
+    ):
         seen.add(current_model)
         models.append((current_model, f"Active model ({current_model})", "Active"))
 
     return models
 
 
-def select_model_interactive(console: Any | None, current_model: str) -> str:
-    """Prompt the user with an interactive model selection menu with arrow-key navigation."""
-    all_models = get_available_models(current_model)
-    items: list[tuple[str, str, str]] = []
-    default_idx = 0
-    for idx, (name, desc, category) in enumerate(all_models):
-        badges = get_model_badges(name)
-        badges_str = " ".join(f"[{b}]" for b in badges)
-        items.append((name, f"{escape(name):<26} {badges_str}", f"[{escape(category)}] {desc}"))
-        if name == current_model:
-            default_idx = idx
+def _provider_for_model(name: str, category: str) -> str:
+    """Map a (model_name, category) pair to a provider group id."""
+    n = (name or "").strip().lower()
+    cat = (category or "").strip()
+    if cat == "OpenRouter :free" or n.startswith("openrouter/"):
+        return "openrouter"
+    if cat in ("OpenAI GPT-6", "OpenAI GPT-5.6") or n.startswith(("gpt-", "o1", "o3")):
+        return "openai"
+    if cat in ("DeepSeek", "DeepSeek V4") or n.startswith("deepseek"):
+        return "deepseek"
+    if cat in ("Google Gemini",) or n.startswith("gemini-"):
+        return "gemini"
+    if cat in ("Anthropic",) or n.startswith("claude-"):
+        return "anthropic"
+    if cat in ("Kimi Code", "Kimi / Moonshot") or n.startswith(("kimi", "kimi-code/")):
+        return "kimi"
+    return "configured"
 
-    res = select_with_arrows(
-        console,
-        items,
-        title=f"Select Active Model (Current: {current_model})",
-        default_idx=default_idx,
-        allow_custom=True,
-        allow_cancel=True,
+
+_PROVIDER_ORDER = (
+    "openai",
+    "deepseek",
+    "gemini",
+    "anthropic",
+    "kimi",
+    "openrouter",
+    "configured",
+)
+
+_PROVIDER_LABELS: dict[str, tuple[str, str]] = {
+    "openai": ("OpenAI", "GPT-6 Astra/Sol/Luna + GPT-5.6 legacy"),
+    "deepseek": ("DeepSeek", "V4.1 Flash + V4 Pro, 1M context"),
+    "gemini": ("Google Gemini", "Hybrid reasoning, visible thinking"),
+    "anthropic": ("Anthropic", "Claude Sonnet, frontier tool calling"),
+    "kimi": ("Kimi", "Kimi Code flagship + K2.5/K1.5"),
+    "openrouter": ("OpenRouter", "Free catalog via OpenRouter, no key needed"),
+    "configured": ("Configured / Custom", "config.toml models + active model"),
+}
+
+
+def get_models_by_provider(
+    current_model: str = "",
+    *,
+    refresh_openrouter: bool = True,
+    force_refresh_openrouter: bool = False,
+) -> dict[str, list[tuple[str, str, str]]]:
+    """Group get_available_models() output by provider id, preserving order."""
+    grouped: dict[str, list[tuple[str, str, str]]] = {pid: [] for pid in _PROVIDER_ORDER}
+    for name, desc, cat in get_available_models(
+        current_model,
+        refresh_openrouter=refresh_openrouter,
+        force_refresh_openrouter=force_refresh_openrouter,
+    ):
+        grouped[_provider_for_model(name, cat)].append((name, desc, cat))
+    return {pid: models for pid, models in grouped.items() if models}
+
+
+def _short_model_name(name: str) -> str:
+    """Display name without the noisy 'openrouter/' routing prefix."""
+    if name.startswith("openrouter/"):
+        return name[len("openrouter/") :]
+    return name
+
+
+def _truncate(text: str, limit: int = 70) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _model_row(name: str, desc: str) -> tuple[str, str, str]:
+    """Build a compact picker row: short id + badges; desc folds, never cut."""
+    badges = get_model_badges(name)
+    badges_str = " ".join(f"[{b}]" for b in badges)
+    title = escape(_truncate(_short_model_name(name), 42))
+    if badges_str:
+        title += f" {badges_str}"
+    # ponytail: no pre-truncation — the grid column uses overflow="fold" so
+    # long descs wrap to a second line instead of cutting mid-word ("[free via…").
+    return (name, title, " ".join((desc or "").split()))
+
+
+def _resolve_model_string(
+    val: str, all_models: list[tuple[str, str, str]], current_model: str
+) -> str:
+    from coderai.ui.shell.prompt import fuzzy_filter
+
+    model_names = [name for name, _, _ in all_models]
+    fuzzy_models = fuzzy_filter(val, model_names, limit=1)
+    if fuzzy_models:
+        return fuzzy_models[0]
+    return val
+
+
+def select_model_interactive(
+    console: Any | None,
+    current_model: str,
+    *,
+    force_refresh_openrouter: bool = False,
+    announce_catalog: bool = True,
+    initial_provider: str | None = None,
+) -> str:
+    """Provider submenus, with an additional model-maker menu inside OpenRouter."""
+    grouped = get_models_by_provider(
+        current_model, force_refresh_openrouter=force_refresh_openrouter
     )
-    if res is None:
-        return current_model
-    if isinstance(res, int) and 0 <= res < len(all_models):
-        return all_models[res][0]
-    elif isinstance(res, str) and res.strip():
-        val = res.strip()
-        from coderai.ui.shell.prompt import fuzzy_filter
+    from coderai.openrouter import is_openrouter_model, openrouter_model_available
 
-        model_names = [name for name, _, _ in all_models]
-        fuzzy_models = fuzzy_filter(val, model_names, limit=1)
-        if fuzzy_models:
-            return fuzzy_models[0]
-        return val
-    return current_model
+    if (
+        is_openrouter_model(current_model)
+        and openrouter_model_available(current_model) is False
+        and not any(name == current_model for models in grouped.values() for name, _, _ in models)
+    ):
+        warning = (
+            f"Active model {current_model} is absent from the latest OpenRouter catalog. "
+            "Select an available model; refresh alone does not switch the active model."
+        )
+        if console is not None and _RICH:
+            console.print(f"  [yellow]{escape(warning)}[/yellow]")
+        else:
+            print(f"  {warning}")
+        if initial_provider is None:
+            initial_provider = "openrouter"
+    if not grouped:
+        return current_model
+    all_models = [m for models in grouped.values() for m in models]
+    if announce_catalog:
+        try:
+            from coderai.openrouter import catalog_status
+
+            free_count = len(grouped.get("openrouter", []))
+            status_line = catalog_status(free_count)
+            if console is not None and _RICH:
+                console.print(f"  [dim]{escape(status_line)}[/dim]")
+            else:
+                print(f"  {status_line}")
+        except Exception:
+            pass
+
+    provider_ids = [p for p in _PROVIDER_ORDER if p in grouped]
+    pending_provider = (initial_provider or "").strip().lower()
+    if pending_provider not in grouped:
+        # Accept labels like "OpenAI" as well as ids.
+        for pid in provider_ids:
+            if pending_provider == _PROVIDER_LABELS[pid][0].lower():
+                pending_provider = pid
+                break
+        else:
+            pending_provider = ""
+
+    from coderai.ui.shell.model_menu import ModelMenu
+
+    menu = ModelMenu(grouped, _PROVIDER_LABELS, current_model, pending_provider)
+    while True:
+        rows = menu.rows()
+        items = [
+            _model_row(row.id, row.detail)
+            if menu.is_model_menu and row.id != "__back__"
+            else (row.id, escape(row.label), row.detail)
+            for row in rows
+        ]
+        default_idx = next((i for i, row in enumerate(rows) if row.id == menu.default_id), 0)
+        res = select_with_arrows(
+            console,
+            items,
+            title=f"{menu.title} (Current: {current_model})",
+            default_idx=default_idx,
+            allow_custom=menu.is_model_menu,
+            allow_cancel=True,
+        )
+        value = None
+        if isinstance(res, int):
+            if not 0 <= res < len(rows):
+                continue
+            value = rows[res].id
+        elif isinstance(res, str) and res.strip():
+            value = next(
+                (
+                    row.id
+                    for row in rows
+                    if res.strip().casefold()
+                    in (row.id.casefold(), row.label.split(" (")[0].casefold())
+                ),
+                None,
+            )
+            if value is None:
+                return _resolve_model_string(res.strip(), all_models, current_model)
+        if menu.advance(value):
+            return menu.selected_model or current_model
 
 
 REASONING_EFFORT_CHOICES: list[tuple[str, str, str, str]] = [
@@ -1050,7 +1237,7 @@ def select_undo_interactive(
         "restore_code_only",
     ):
         return chosen_target, mode_res
-    return chosen_target, "restore_both"
+    return None, "restore_both"
 
 
 def render_skills_interactive(console: Any | None, project_root: str) -> None:
@@ -1267,11 +1454,12 @@ def render_config_interactive(console: Any | None, project_root: str) -> None:
     from coderai.config import (
         get_project_settings_path,
         get_user_settings_path,
-        mask_api_key,
         resolve_current_settings,
     )
 
-    settings = resolve_current_settings(project_root)
+    from coderai.ui.shell.security import redact_settings
+
+    settings = redact_settings(resolve_current_settings(project_root))
     user_path = get_user_settings_path()
     proj_path = get_project_settings_path(project_root)
 
@@ -1285,23 +1473,23 @@ def render_config_interactive(console: Any | None, project_root: str) -> None:
         )
         table = kv_table(
             [
-                ("Active Model:", str(settings.get("model", "default"))),
-                ("Base URL:", str(settings.get("baseURL", "default"))),
+                ("Active Model:", escape(str(settings.get("model", "default")))),
+                ("Base URL:", escape(str(settings.get("baseURL", "default")))),
                 (
                     "API Key:",
-                    f"[bold green]{mask_api_key(api_k)}[/]" if api_k else "[dim red]Not set[/]",
+                    "[bold green]Configured (redacted)[/]" if api_k else "[dim red]Not set[/]",
                 ),
-                ("Permission Mode:", str(perms.get("defaultMode", "askAll"))),
-                ("Reasoning Effort:", str(settings.get("reasoningEffort", "max"))),
+                ("Permission Mode:", escape(str(perms.get("defaultMode", "askAll")))),
+                ("Reasoning Effort:", escape(str(settings.get("reasoningEffort", "max")))),
                 ("Context Window:", f"{settings.get('contextWindow', 262144):,} tokens"),
                 ("Auto-Compact Window:", f"{settings.get('autoCompactWindow', 131072):,} tokens"),
-                ("Allowed Scopes:", f"[bold green]{allows_str}[/]"),
+                ("Allowed Scopes:", f"[bold green]{escape(allows_str)}[/]"),
                 (
                     "Configured MCP Servers:",
-                    ", ".join(mcp_servers) if mcp_servers else "none",
+                    escape(", ".join(mcp_servers)) if mcp_servers else "none",
                 ),
-                ("User Config File:", f"[dim]{user_path}[/]"),
-                ("Project Config File:", f"[dim]{proj_path}[/]"),
+                ("User Config File:", f"[dim]{escape(user_path)}[/]"),
+                ("Project Config File:", f"[dim]{escape(proj_path)}[/]"),
             ]
         )
 
@@ -1321,8 +1509,8 @@ def render_config_interactive(console: Any | None, project_root: str) -> None:
         print("\n--- CoderAI Configuration ---")
         for k, v in settings.items():
             print(f"  {k}: {v}")
-        print(f"  User Config: {user_path}")
-        print(f"  Project Config: {proj_path}")
+        print(f"  User Config: {escape(user_path)}")
+        print(f"  Project Config: {escape(proj_path)}")
         print("  Tip: Run /setup to change keys and models.\n")
 
 
@@ -1350,12 +1538,16 @@ def estimate_model_cost(
     prompt_tokens: int,
     completion_tokens: int,
     cached_tokens: int = 0,
-) -> float:
+) -> float | None:
     """Calculate estimated cost in USD based on model pricing table."""
     rates = MODEL_PRICING_PER_M.get(model_name.lower())
     if not rates:
         # Check prefix match
-        matched_key = next((k for k in MODEL_PRICING_PER_M if k in model_name.lower()), "default")
+        matched_key = next(
+            (k for k in MODEL_PRICING_PER_M if k != "default" and k in model_name.lower()), None
+        )
+        if matched_key is None:
+            return None
         rates = MODEL_PRICING_PER_M[matched_key]
 
     p_rate, c_rate, cached_rate = rates
@@ -1394,12 +1586,12 @@ def render_token_breakdown(
     active_tokens = entry.active_tokens
 
     # Estimate session cost
-    total_cost = estimate_model_cost(active_model, prompt_tokens, completion_tokens, cached_tokens)
+    from coderai.ui.shell.runtime_view import session_cost, context_limit, cost_text, token_source
+
+    total_cost = session_cost(entry, active_model)
 
     # Default context window ~256k
-    from coderai.config import get_default_context_window
-
-    max_context = get_default_context_window(active_model)
+    max_context = context_limit(mgr)
     pct_used = (active_tokens / max_context) * 100 if max_context > 0 else 0.0
 
     if console is not None and _RICH and Panel is not None and Table is not None:
@@ -1407,6 +1599,7 @@ def render_token_breakdown(
             ("Active Model:", f"[bold cyan]{active_model}[/]"),
             ("Prompt Tokens:", f"{prompt_tokens:,}"),
             ("Completion Tokens:", f"{completion_tokens:,}"),
+            ("Token Source:", token_source(mgr, session_id)),
         ]
         if cached_tokens > 0:
             hit_rate = (cached_tokens / prompt_tokens * 100.0) if prompt_tokens > 0 else 0.0
@@ -1416,10 +1609,10 @@ def render_token_breakdown(
         token_rows.append(
             (
                 "Active Working Context:",
-                f"[bold green]{active_tokens:,}[/] / {max_context:,} ({pct_used:.1f}%)",
+                f"[bold green]{active_tokens:,}[/] estimated / {max_context:,} ({pct_used:.1f}%)",
             )
         )
-        token_rows.append(("Estimated Session Cost:", f"[bold green]${total_cost:.4f} USD[/]"))
+        token_rows.append(("Estimated Session Cost:", cost_text(total_cost)))
 
         if entry.usage_per_model:
             token_rows.append(("Usage by Model:", ""))
@@ -1429,7 +1622,7 @@ def render_token_breakdown(
                 m_comp = m_usage.get("completion_tokens", 0) if isinstance(m_usage, dict) else 0
                 m_cached = m_usage.get("cached_tokens", 0) if isinstance(m_usage, dict) else 0
                 m_cost = estimate_model_cost(model_name, m_prompt, m_comp, m_cached)
-                token_rows.append((f"{model_name}:", f"{m_total:,} tokens (${m_cost:.4f})"))
+                token_rows.append((f"{model_name}:", f"{m_total:,} tokens ({cost_text(m_cost)})"))
 
         panel = Panel(
             kv_table(token_rows),
@@ -1444,13 +1637,16 @@ def render_token_breakdown(
         print(f"  Active Model:      {active_model}")
         print(f"  Prompt Tokens:     {prompt_tokens:,}")
         print(f"  Completion Tokens: {completion_tokens:,}")
+        print(f"  Token Source:      {token_source(mgr, session_id)}")
         if cached_tokens > 0:
             hit_rate = (cached_tokens / prompt_tokens * 100.0) if prompt_tokens > 0 else 0.0
             print(f"  Cached Tokens:     {cached_tokens:,}")
             print(f"  Cache Hit Rate:    {hit_rate:.1f}%")
         print(f"  Total Tokens:      {total_tokens:,}")
-        print(f"  Active Context:    {active_tokens:,} ({pct_used:.1f}%)")
-        print(f"  Estimated Cost:    ${total_cost:.4f} USD\n")
+        print(
+            f"  Active Context:    {active_tokens:,} estimated / {max_context:,} ({pct_used:.1f}%)"
+        )
+        print(f"  Estimated Cost:    {cost_text(total_cost)}\n")
 
 
 def render_session_history(

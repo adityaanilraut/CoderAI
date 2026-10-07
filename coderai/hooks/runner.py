@@ -60,6 +60,7 @@ def run_pre_tool_use(
         project_root=getattr(context, "project_root", "."),
         settings=settings,
         timeout_s=timeout_s,
+        cancellation_event=getattr(context, "cancellation_event", None),
     )
     return "deny" if outcome.decision == "deny" else "allow"
 
@@ -85,6 +86,7 @@ def run_post_tool_use(
         project_root=getattr(context, "project_root", "."),
         settings=settings,
         timeout_s=timeout_s,
+        cancellation_event=getattr(context, "cancellation_event", None),
     )
 
 
@@ -109,6 +111,7 @@ def run_on_tool_error(
         project_root=getattr(context, "project_root", "."),
         settings=settings,
         timeout_s=timeout_s,
+        cancellation_event=getattr(context, "cancellation_event", None),
     )
 
 
@@ -246,6 +249,7 @@ def run_post_tool_use_failure(
         project_root=getattr(context, "project_root", "."),
         settings=settings,
         timeout_s=timeout_s,
+        cancellation_event=getattr(context, "cancellation_event", None),
     )
 
 
@@ -384,6 +388,61 @@ def run_notification(
     )
 
 
+async def run_on_subagent_spawn_async(
+    parent_session_id: str,
+    subagent_id: str,
+    task: str,
+    mode: str = "read_only",
+    project_root: str = ".",
+    settings: dict[str, Any] | None = None,
+) -> MergedHookOutcome:
+    return await run_hook_point_async(
+        HookPoint.ON_SUBAGENT_SPAWN,
+        payload={
+            "parent_session_id": parent_session_id,
+            "subagent_id": subagent_id,
+            "task": task,
+            "mode": mode,
+        },
+        project_root=project_root,
+        settings=settings,
+    )
+
+
+async def run_subagent_start_async(
+    session_id: str,
+    project_root: str,
+    agent_name: str,
+    prompt: str,
+    settings: dict[str, Any] | None = None,
+) -> MergedHookOutcome:
+    return await run_hook_point_async(
+        HookPoint.SUBAGENT_START,
+        payload=build_subagent_start_payload(
+            session_id=session_id, cwd=project_root, agent_name=agent_name, prompt=prompt
+        ),
+        project_root=project_root,
+        settings=settings,
+    )
+
+
+async def run_subagent_stop_async(
+    session_id: str,
+    project_root: str,
+    agent_name: str,
+    response: str = "",
+    settings: dict[str, Any] | None = None,
+) -> MergedHookOutcome:
+    return await run_hook_point_async(
+        HookPoint.SUBAGENT_STOP,
+        payload=build_subagent_stop_payload(
+            session_id=session_id, cwd=project_root, agent_name=agent_name, response=response
+        ),
+        project_root=project_root,
+        settings=settings,
+    )
+
+
 async def run_user_prompt_submit_async(
     prompt: str,
     session_id: str,
@@ -512,7 +571,7 @@ async def run_hook(
     """Execute a single hook command. Fail-open: errors/timeouts -> allow."""
     import os
 
-    from coderai.utils.subprocess_env import scrub_subprocess_env
+    from coderai.utils.subprocess_env import kill_process_tree, scrub_subprocess_env
 
     try:
         proc = await asyncio.create_subprocess_shell(
@@ -524,6 +583,7 @@ async def run_hook(
             # WF-B2: hooks must not inherit ambient secrets; engine.run_hook_point
             # already scrubs, so do the same here.
             env=scrub_subprocess_env(dict(os.environ)),
+            start_new_session=os.name != "nt",
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -531,12 +591,12 @@ async def run_hook(
                 timeout=timeout,
             )
         except (TimeoutError, asyncio.TimeoutError):
-            proc.kill()
+            kill_process_tree(proc.pid)
             await proc.wait()
             logger.warning("Hook timed out after %ss: %s", timeout, command)
             return HookResult(action="allow", timed_out=True)
         except asyncio.CancelledError:
-            proc.kill()
+            kill_process_tree(proc.pid)
             await proc.wait()
             raise
     except Exception as e:

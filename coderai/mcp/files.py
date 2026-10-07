@@ -2,8 +2,10 @@
 
 Layering (lowest → highest):
   1. ``~/.coderai/mcp.json`` global file
-  2. user + project ``mcpServers`` from settings files (see ``coderai.config``)
-  3. ``--mcp-config-file`` / ``--mcp-config`` CLI overlays (highest wins)
+  2. user settings ``mcpServers``
+  3. trusted Git-root ``.mcp.json`` and cwd ``.coderai/mcp.json``
+  4. project settings ``mcpServers``
+  5. ``--mcp-config-file`` / ``--mcp-config`` CLI overlays (highest wins)
 
 This module owns (1) and (3) parsing so both ``coderai.config`` and the CLI
 share one validator. No third-party deps: invalid JSON/shapes are tolerated
@@ -71,6 +73,30 @@ def load_global_mcp_servers() -> dict[str, dict[str, Any]]:
         return {}
     servers, _ = try_load_mcp_servers_file(path)
     return servers
+
+
+def load_workspace_mcp_servers(project_root: str | Path) -> dict[str, dict[str, Any]]:
+    """Load Git-root ``.mcp.json`` then cwd ``.coderai/mcp.json``.
+
+    The caller must establish workspace trust before using project servers.
+    Root-relative stdio cwd values resolve against the repository, matching
+    the reference's project-root MCP file behavior.
+    """
+    cwd = Path(project_root).expanduser().resolve()
+    root = next((path for path in (cwd, *cwd.parents) if (path / ".git").exists()), cwd)
+    merged: dict[str, dict[str, Any]] = {}
+    for path in (root / ".mcp.json", cwd / ".coderai" / "mcp.json"):
+        if not path.is_file():
+            continue
+        servers, _ = try_load_mcp_servers_file(path)
+        for name, config in servers.items():
+            config = dict(config)
+            if path.name == ".mcp.json" and config.get("command"):
+                configured_cwd = Path(str(config.get("cwd") or ".")).expanduser()
+                if not configured_cwd.is_absolute():
+                    config["cwd"] = str(root / configured_cwd)
+            merged[name] = config
+    return merged
 
 
 def merge_server_cfg(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:

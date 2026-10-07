@@ -41,8 +41,15 @@ class ClaudeCodeDriver(CliSubagentDriver):
         bin_name = self.config.claude_bin or shutil.which("claude") or "claude"
         cwd = project_root or self.config.cwd
 
-        cmd = [bin_name, "-p", prompt, "--output-format", "json"]
+        cmd = [bin_name, "-p", "--output-format", "json"]
 
+        if self.config.permission_mode not in {
+            "dontAsk",
+            "acceptEdits",
+            "bypassPermissions",
+            "dangerously-bypass",
+        }:
+            raise ValueError("Invalid Claude permission mode")
         if self.config.permission_mode in ("bypassPermissions", "dangerously-bypass"):
             cmd.append("--dangerously-skip-permissions")
         elif self.config.permission_mode == "acceptEdits":
@@ -52,7 +59,13 @@ class ClaudeCodeDriver(CliSubagentDriver):
 
         cmd.extend(self.config.extra_args)
 
-        res = await self._run_command(cmd, cwd=cwd, env=self.config.env, backend_name="Claude Code")
+        res = await self._run_command(
+            cmd,
+            cwd=cwd,
+            env=self.config.env,
+            backend_name="Claude Code",
+            input_data=prompt.encode("utf-8"),
+        )
         return {
             "ok": res["ok"],
             "status": "completed"

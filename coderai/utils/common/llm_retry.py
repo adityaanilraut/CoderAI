@@ -109,7 +109,7 @@ def is_failover_eligible(error: Any) -> bool:
 
 
 def is_empty_llm_response(response: dict[str, Any] | None) -> bool:
-    """True when the model returned no text, tool calls, refusal, or thinking."""
+    """True when the model returned no text, tool calls, or refusal."""
     if not isinstance(response, dict):
         return True
     choice = (response.get("choices") or [{}])[0] or {}
@@ -118,9 +118,9 @@ def is_empty_llm_response(response: dict[str, Any] | None) -> bool:
     has_content = isinstance(content, str) and bool(content.strip())
     has_tools = bool(msg.get("tool_calls"))
     has_refusal = bool(msg.get("refusal"))
-    thinking = msg.get("reasoning_content") or msg.get("thinking")
-    has_thinking = isinstance(thinking, str) and bool(thinking.strip())
-    return not (has_content or has_tools or has_refusal or has_thinking)
+    # ponytail: thinking/reasoning_details alone never counts — otherwise a
+    # thinking-only turn completes silently and /continue loops on same history.
+    return not (has_content or has_tools or has_refusal)
 
 
 def retry_delay_ms(

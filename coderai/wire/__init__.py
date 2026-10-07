@@ -48,7 +48,7 @@ class Wire:
     def soul_side(self) -> WireSoulSide:
         return self._soul_side
 
-    def ui_side(self, *, merge: bool, replay: bool = True) -> WireUISide:
+    def ui_side(self, *, merge: bool, replay: bool = True, lossless: bool = False) -> WireUISide:
         """
         Create a UI side of the `Wire`.
 
@@ -56,9 +56,9 @@ class Wire:
             merge: Whether to merge `Wire` messages as much as possible.
         """
         if merge:
-            return WireUISide(self._merged_queue.subscribe(replay=replay))
+            return WireUISide(self._merged_queue.subscribe(replay=replay, lossless=lossless))
         else:
-            return WireUISide(self._raw_queue.subscribe(replay=replay))
+            return WireUISide(self._raw_queue.subscribe(replay=replay, lossless=lossless))
 
     def shutdown(self, *, immediate: bool = False) -> None:
         try:

@@ -11,6 +11,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any
 
+from coderai.utils.storage import owned_path, read_bytes, write_bytes, remove_path
+
 MANIFEST_PATH = "manifest.json"
 FILE_HISTORY_AUTHOR_NAME = "CoderAI"
 FILE_HISTORY_AUTHOR_EMAIL = "coderai@local"
@@ -154,7 +156,7 @@ class GitFileHistory:
         if not current_hash:
             return FileHistoryCheckpointResult(None, False)
 
-        normalized_paths = list(dict.fromkeys(str(pathlib.Path(p).resolve()) for p in file_paths))
+        normalized_paths = list(dict.fromkeys(str(self._owned_file(p)) for p in file_paths))
         if not normalized_paths:
             return FileHistoryCheckpointResult(current_hash, False)
 
@@ -168,7 +170,14 @@ class GitFileHistory:
                 continue
 
             try:
-                blob_hash = self._hash_file(abs_path)
+                blob_hash = (
+                    self._spawn_git(
+                        ["hash-object", "-w", "--stdin"],
+                        input_data=read_bytes(pathlib.Path(abs_path)),
+                    )
+                    .decode()
+                    .strip()
+                )
                 next_files[key] = FileHistoryEntry(path=abs_path, blob=blob_hash, mode="100644")
             except Exception:
                 continue
@@ -176,7 +185,11 @@ class GitFileHistory:
         manifest_dict: dict[str, Any] = {
             "version": 2,
             "files": {
-                k: {"path": v.path, "blob": v.blob, "mode": v.mode}
+                k: {
+                    "path": str(pathlib.Path(v.path).relative_to(self.project_root)),
+                    "blob": v.blob,
+                    "mode": v.mode,
+                }
                 for k, v in sorted(next_files.items())
             },
         }
@@ -211,6 +224,7 @@ class GitFileHistory:
             return False
         try:
             self._spawn_git(["cat-file", "-e", f"{checkpoint_hash}^{{commit}}"])
+            self._require_ancestor(session_id, checkpoint_hash)
             self._read_manifest(checkpoint_hash)
             return True
         except Exception:
@@ -223,7 +237,7 @@ class GitFileHistory:
         if not branch_ref or not os.path.exists(self.git_dir):
             raise RuntimeError("File history Git repository was not found for this project.")
 
-        self._spawn_git(["cat-file", "-e", f"{checkpoint_hash}^{{commit}}"])
+        self._require_ancestor(session_id, checkpoint_hash)
 
         current_hash = self.get_current_checkpoint_hash(session_id)
         current_manifest = (
@@ -233,20 +247,25 @@ class GitFileHistory:
         )
         target_manifest = self._read_manifest(checkpoint_hash)
 
-        # Handle files present in current that were removed in target
+        # Preflight every destination and blob before any filesystem mutation.
+        restore_entries = list(target_manifest.files.values())
         for key, entry in current_manifest.files.items():
             if key not in target_manifest.files:
-                self._restore_first_known_entry(current_hash, key, entry.path)
-
-        # Restore files in target
-        for entry in target_manifest.files.values():
-            if not entry.blob:
-                _remove_tracked_file(entry.path)
-                continue
-            os.makedirs(os.path.dirname(entry.path), exist_ok=True)
-            blob_bytes = self._read_blob(entry.blob)
-            with open(entry.path, "wb") as f:
-                f.write(blob_bytes)
+                first = self._find_first_known_entry(current_hash, key) if current_hash else None
+                restore_entries.append(first or FileHistoryEntry(entry.path, None))
+        changes = [
+            (
+                self._owned_file(entry.path),
+                self._read_blob(entry.blob) if entry.blob else None,
+                entry.mode,
+            )
+            for entry in restore_entries
+        ]
+        for path, content, file_mode in changes:
+            if content is None:
+                remove_path(path)
+            else:
+                write_bytes(path, content, mode=0o755 if file_mode == "100755" else 0o644)
 
         self._spawn_git(["update-ref", branch_ref, checkpoint_hash])
 
@@ -264,7 +283,8 @@ class GitFileHistory:
             raise ValueError(f"Invalid target session id: {target_session_id!r}")
         if not os.path.exists(self.git_dir):
             raise RuntimeError("File history Git repository was not found for this project.")
-        if checkpoint_hash and _is_commit_hash(checkpoint_hash):
+        if checkpoint_hash is not None:
+            self._require_ancestor(source_session_id, checkpoint_hash)
             target_hash: str | None = checkpoint_hash
         else:
             target_hash = self.get_current_checkpoint_hash(source_session_id)
@@ -379,18 +399,24 @@ class GitFileHistory:
 
         return "\n".join(diff_chunks)
 
-    def _restore_first_known_entry(
-        self, current_hash: str | None, key: str, fallback_path: str
-    ) -> None:
-        first_entry = self._find_first_known_entry(current_hash, key) if current_hash else None
-        entry = first_entry or FileHistoryEntry(path=fallback_path, blob=None, mode="100644")
-        if not entry.blob:
-            _remove_tracked_file(entry.path)
-            return
-        os.makedirs(os.path.dirname(entry.path), exist_ok=True)
-        blob_bytes = self._read_blob(entry.blob)
-        with open(entry.path, "wb") as f:
-            f.write(blob_bytes)
+    def _owned_file(self, raw: str) -> pathlib.Path:
+        root = pathlib.Path(self.project_root)
+        path = pathlib.Path(raw)
+        if not path.is_absolute():
+            path = root / path
+        try:
+            relative = path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("File history path escapes the workspace") from exc
+        if not relative.parts:
+            raise ValueError("Cannot checkpoint the workspace directory")
+        return owned_path(root, *relative.parts)
+
+    def _require_ancestor(self, session_id: str, checkpoint: str) -> None:
+        current = self.get_current_checkpoint_hash(session_id)
+        if current is None or not _is_commit_hash(checkpoint):
+            raise ValueError("Checkpoint is not owned by this session")
+        self._spawn_git(["merge-base", "--is-ancestor", checkpoint, current])
 
     def _find_first_known_entry(self, current_hash: str, key: str) -> FileHistoryEntry | None:
         try:
@@ -432,12 +458,20 @@ class GitFileHistory:
     def _read_manifest(self, commit_hash: str) -> FileHistoryManifest:
         out = self._spawn_git(["cat-file", "blob", f"{commit_hash}:{MANIFEST_PATH}"])
         data = json.loads(out.decode("utf-8", errors="replace"))
+        if not isinstance(data, dict) or not isinstance(data.get("files"), dict):
+            raise ValueError("Invalid file history manifest")
         files: dict[str, FileHistoryEntry] = {}
-        for key, item in data.get("files", {}).items():
+        for key, item in data["files"].items():
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                raise ValueError("Invalid file history entry")
             if not STORED_PATH_PATTERN.match(key):
                 continue
+            if item.get("blob") is not None and not _is_commit_hash(item["blob"]):
+                raise ValueError("Invalid file history blob")
+            if item.get("mode", "100644") not in {"100644", "100755"}:
+                raise ValueError("Invalid file history mode")
             files[key] = FileHistoryEntry(
-                path=str(pathlib.Path(item["path"]).resolve()),
+                path=str(self._owned_file(item["path"])),
                 blob=item.get("blob"),
                 mode=item.get("mode", "100644"),
             )
@@ -449,7 +483,13 @@ class GitFileHistory:
         return self._spawn_git(["cat-file", "blob", blob_hash])
 
     def _hash_file(self, file_path: str) -> str:
-        out = self._run_git_text(["hash-object", "-w", "--", file_path]).strip()
+        out = (
+            self._spawn_git(
+                ["hash-object", "-w", "--stdin"], input_data=read_bytes(self._owned_file(file_path))
+            )
+            .decode("utf-8")
+            .strip()
+        )
         if not _is_commit_hash(out):
             raise RuntimeError("Failed to hash file into git object database.")
         return out
@@ -471,16 +511,5 @@ def _is_same_entry(left: FileHistoryEntry | None, right: FileHistoryEntry | None
     return left.path == right.path and left.blob == right.blob and left.mode == right.mode
 
 
-def _remove_tracked_file(file_path: str) -> None:
-    if not os.path.exists(file_path):
-        return
-    if os.path.isdir(file_path):
-        return
-    try:
-        os.remove(file_path)
-    except Exception:
-        pass
-
-
 def _is_commit_hash(val: str) -> bool:
-    return bool(COMMIT_HASH_PATTERN.match(val))
+    return isinstance(val, str) and bool(COMMIT_HASH_PATTERN.fullmatch(val))

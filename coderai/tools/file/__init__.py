@@ -1,20 +1,5 @@
 from __future__ import annotations
 
-from enum import Enum
-
-
-class FileOpsWindow:
-    """Maintains a window of file operations."""
-
-    pass
-
-
-class FileActions(str, Enum):
-    READ = "read file"
-    EDIT = "edit file"
-    EDIT_OUTSIDE = "edit file outside of working directory"
-
-
 from coderai.tools.file.glob import (
     GLOB_DESCRIPTION,
     glob_tool_definition,
@@ -29,8 +14,6 @@ from coderai.tools.file.grep import (
 )
 
 __all__ = (
-    "FileActions",
-    "FileOpsWindow",
     "GLOB_DESCRIPTION",
     "GREP_DESCRIPTION",
     "glob_tool_definition",

@@ -6,9 +6,9 @@ Task requirements:
 3. Identify how the code is organized and main module divisions.
 4. Discover project-specific development conventions, testing strategies, and deployment processes.
 
-After the exploration, you should do a thorough summary of your findings and write or update `AGENTS.md` file in the project root. You need to refer to what is already in the file when you do so.
+After the exploration, you should do a thorough summary of your findings and write or update `AGENTS.md` file in the project root. Preserve what is already in the file; only add accurate findings.
 
-For your information, `AGENTS.md` is a file intended to be read by AI coding agents. Expect the reader of this file know nothing about the project.
+For your information, `AGENTS.md` is a file intended to be read by AI coding agents. Expect the reader of this file know nothing about the project. Match the repo's dominant language, and record exact build, test, and lint commands.
 
 You should compose this file according to the actual project content. Do not make any assumptions or generalizations. Ensure the information is accurate and useful. You must use the natural language that is mainly used in the project's comments and documentation.
 

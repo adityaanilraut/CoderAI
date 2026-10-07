@@ -1,7 +1,7 @@
 """Centralized terminal color theme definitions.
 
 Provides dark/light switching for diff background colors, syntax theme,
-task browser, MCP status, and prompt styling. Pure CLI, no browser layer.
+MCP status and prompt styling. Pure CLI, no browser layer.
 """
 
 from __future__ import annotations
@@ -9,8 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from prompt_toolkit.styles import Style as PTKStyle
 from rich.style import Style as RichStyle
+from rich.theme import Theme as RichTheme
 
 ThemeName = Literal["dark", "light"]
 
@@ -41,93 +41,6 @@ _DIFF_LIGHT = DiffColors(
     add_hl=RichStyle(bgcolor="#aff5b4"),
     del_hl=RichStyle(bgcolor="#ffc1c0"),
 )
-
-
-# ---------------------------------------------------------------------------
-# Task browser colors (used by ui/shell/task_browser.py)
-# ---------------------------------------------------------------------------
-
-
-def _task_browser_style_dark() -> PTKStyle:
-    return PTKStyle.from_dict(
-        {
-            "header": "bg:#1f2937 #e5e7eb",
-            "header.title": "bg:#1f2937 #67e8f9 bold",
-            "header.meta": "bg:#1f2937 #9ca3af",
-            "status.running": "bg:#1f2937 #86efac bold",
-            "status.success": "bg:#1f2937 #86efac",
-            "status.warning": "bg:#1f2937 #fbbf24",
-            "status.error": "bg:#1f2937 #fca5a5",
-            "status.info": "bg:#1f2937 #93c5fd",
-            "task-list": "bg:#111827 #d1d5db",
-            "task-list.checked": "bg:#164e63 #ecfeff bold",
-            "frame.border": "#155e75",
-            "frame.label": "bg:#0f172a #67e8f9 bold",
-            "footer": "bg:#0f172a #cbd5e1",
-            "footer.key": "bg:#0f172a #67e8f9 bold",
-            "footer.text": "bg:#0f172a #cbd5e1",
-            "footer.warning": "bg:#7f1d1d #fecaca bold",
-            "footer.meta": "bg:#0f172a #94a3b8",
-        }
-    )
-
-
-def _task_browser_style_light() -> PTKStyle:
-    return PTKStyle.from_dict(
-        {
-            "header": "bg:#e5e7eb #1f2937",
-            "header.title": "bg:#e5e7eb #0e7490 bold",
-            "header.meta": "bg:#e5e7eb #6b7280",
-            "status.running": "bg:#e5e7eb #166534 bold",
-            "status.success": "bg:#e5e7eb #166534",
-            "status.warning": "bg:#e5e7eb #92400e",
-            "status.error": "bg:#e5e7eb #991b1b",
-            "status.info": "bg:#e5e7eb #1e40af",
-            "task-list": "bg:#f9fafb #374151",
-            "task-list.checked": "bg:#cffafe #164e63 bold",
-            "frame.border": "#0e7490",
-            "frame.label": "bg:#f1f5f9 #0e7490 bold",
-            "footer": "bg:#f1f5f9 #475569",
-            "footer.key": "bg:#f1f5f9 #0e7490 bold",
-            "footer.text": "bg:#f1f5f9 #475569",
-            "footer.warning": "bg:#fee2e2 #991b1b bold",
-            "footer.meta": "bg:#f1f5f9 #64748b",
-        }
-    )
-
-
-# ---------------------------------------------------------------------------
-# Prompt / completion menu colors (used by ui/shell/prompt.py)
-# ---------------------------------------------------------------------------
-
-
-_PROMPT_STYLE_DARK = {
-    "bottom-toolbar": "noreverse",
-    "running-prompt-placeholder": "fg:#7c8594 italic",
-    "running-prompt-separator": "fg:#4a5568",
-    "slash-completion-menu": "",
-    "slash-completion-menu.separator": "fg:#4a5568",
-    "slash-completion-menu.marker": "fg:#4a5568",
-    "slash-completion-menu.marker.current": "fg:#4f9fff",
-    "slash-completion-menu.command": "fg:#a6adba",
-    "slash-completion-menu.meta": "fg:#7c8594",
-    "slash-completion-menu.command.current": "fg:#6fb7ff bold",
-    "slash-completion-menu.meta.current": "fg:#56a4ff",
-}
-
-_PROMPT_STYLE_LIGHT = {
-    "bottom-toolbar": "noreverse",
-    "running-prompt-placeholder": "fg:#6b7280 italic",
-    "running-prompt-separator": "fg:#d1d5db",
-    "slash-completion-menu": "",
-    "slash-completion-menu.separator": "fg:#d1d5db",
-    "slash-completion-menu.marker": "fg:#9ca3af",
-    "slash-completion-menu.marker.current": "fg:#2563eb",
-    "slash-completion-menu.command": "fg:#4b5563",
-    "slash-completion-menu.meta": "fg:#6b7280",
-    "slash-completion-menu.command.current": "fg:#1d4ed8 bold",
-    "slash-completion-menu.meta.current": "fg:#2563eb",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +111,7 @@ _TOOLBAR_LIGHT = ToolbarColors(
 
 
 # ---------------------------------------------------------------------------
-# MCP status prompt colors (used by ui/shell/mcp_status.py)
+# MCP status prompt colors
 # ---------------------------------------------------------------------------
 
 
@@ -247,17 +160,58 @@ def get_active_theme() -> ThemeName:
     return _active_theme
 
 
+def get_semantic_rich_styles() -> dict[str, str]:
+    """Shared semantic foregrounds for committed shell content."""
+    if _active_theme == "light":
+        return {
+            "success": "#166534",
+            "warning": "#92400e",
+            "error": "#b91c1c",
+            "muted": "#475569",
+            "chrome": "#155e75",
+            "text": "default",
+        }
+    return {
+        "success": "#86efac",
+        "warning": "#fbbf24",
+        "error": "#fca5a5",
+        "muted": "#94a3b8",
+        "chrome": "#67e8f9",
+        "text": "default",
+    }
+
+
+def get_shell_rich_theme() -> RichTheme:
+    """Resolve legacy Rich styles and Markdown through the semantic palette."""
+    palette = get_semantic_rich_styles()
+    colors = {
+        "green": palette["success"],
+        "yellow": palette["warning"],
+        "red": palette["error"],
+        "cyan": palette["chrome"],
+        "white": palette["text"],
+    }
+    styles = dict(palette)
+    for name, color in colors.items():
+        styles[name] = color
+        for modifier in ("bold", "dim", "italic", "bold dim", "bold italic", "dim italic"):
+            styles[f"{modifier} {name}"] = f"{modifier} {color}"
+    styles.update(
+        {
+            "markdown.paragraph": "default",
+            "markdown.code": f"bold {palette['chrome']}",
+            "markdown.link": f"{palette['chrome']} underline",
+            "markdown.link_url": f"{palette['muted']} underline",
+            "markdown.item.bullet": palette["chrome"],
+            "markdown.item.number": palette["chrome"],
+            **{f"markdown.h{n}": f"bold {palette['chrome']}" for n in range(1, 8)},
+        }
+    )
+    return RichTheme(styles)
+
+
 def get_diff_colors() -> DiffColors:
     return _DIFF_LIGHT if _active_theme == "light" else _DIFF_DARK
-
-
-def get_task_browser_style() -> PTKStyle:
-    return _task_browser_style_light() if _active_theme == "light" else _task_browser_style_dark()
-
-
-def get_prompt_style() -> PTKStyle:
-    d = _PROMPT_STYLE_LIGHT if _active_theme == "light" else _PROMPT_STYLE_DARK
-    return PTKStyle.from_dict(d)
 
 
 def get_toolbar_colors() -> ToolbarColors:

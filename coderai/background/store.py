@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import builtins
 
 from collections.abc import Callable
 from typing import Any
@@ -159,6 +160,27 @@ class JobStore:
         with self._lock:
             jobs = [j for j in self._jobs.values() if j.session_id == session_id]
         return sorted(jobs, key=lambda j: j.started_at)
+
+    def snapshot(self, session_id: str) -> builtins.list[Job]:
+        """Detached session-owned records for UI readers; never expose mutable registry entries."""
+        from dataclasses import replace
+
+        with self._lock:
+            return sorted(
+                (replace(j) for j in self._jobs.values() if j.session_id == session_id),
+                key=lambda j: j.started_at,
+            )
+
+    def tail_output(
+        self, job_id: str, session_id: str, *, lines: int = 12, max_bytes: int = 65536
+    ) -> str:
+        """Bounded preview without advancing the tool consumer's read cursor."""
+        job = self.get(job_id, session_id)
+        if job is None or not job.output_path:
+            return ""
+        from coderai.utils.file_tail import tail_file
+
+        return tail_file(job.output_path, lines=lines, max_bytes=max_bytes)
 
     def read_output(self, job_id: str, session_id: str) -> tuple[str, Job] | None:
         job = self.get(job_id, session_id)

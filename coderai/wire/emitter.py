@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 import uuid
-from concurrent.futures import Future
+from concurrent.futures import Future, TimeoutError
 from collections import deque
 from contextvars import ContextVar, Token
 from typing import Any, TYPE_CHECKING
@@ -105,6 +105,8 @@ class WireEmitter:
             sent: Future[None] = Future()
 
             def publish() -> None:
+                if not sent.set_running_or_notify_cancel():
+                    return
                 try:
                     self._send(msg)
                 except BaseException as exc:
@@ -113,7 +115,11 @@ class WireEmitter:
                     sent.set_result(None)
 
             loop.call_soon_threadsafe(publish)
-            sent.result()
+            try:
+                sent.result(timeout=5.0)
+            except TimeoutError:
+                sent.cancel()
+                raise RuntimeError("Wire publisher did not acknowledge within 5 seconds") from None
             return
         self._send(msg)
 
@@ -150,7 +156,7 @@ class WireEmitter:
             session_wire.soul_side.flush()
 
     # -- subscribe ------------------------------------------------------------
-    def ui_side(self, *, merge: bool, replay: bool = True) -> WireUISide:
+    def ui_side(self, *, merge: bool, replay: bool = True, lossless: bool = False) -> WireUISide:
         import asyncio
 
         with self._lock:
@@ -161,7 +167,7 @@ class WireEmitter:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             pass
-        return self._local.ui_side(merge=merge, replay=replay)
+        return self._local.ui_side(merge=merge, replay=replay, lossless=lossless)
 
     def buffered(self) -> list[WireMessage]:
         with self._lock:

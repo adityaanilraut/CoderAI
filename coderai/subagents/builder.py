@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import logging
+import os
+import math
 import pathlib
-import shutil
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_owned_scratchpads: dict[str, tuple[int, int]] = {}
 
 SUBAGENT_DESCRIPTOR_VERSION = 1
 DEFAULT_MAX_SUBAGENT_DEPTH = 3
@@ -26,10 +30,12 @@ class ToolRestriction:
     deny: list[str] | None = None
 
     def is_tool_permitted(self, tool_name: str) -> bool:
-        if self.deny and tool_name in self.deny:
+        from coderai.subagents.registry import is_tool_allowed
+
+        if self.deny and is_tool_allowed(tool_name, "allowlist", tuple(self.deny)):
             return False
         if self.allow is not None:
-            return tool_name in self.allow
+            return is_tool_allowed(tool_name, "allowlist", tuple(self.allow))
         return True
 
     def to_dict(self) -> dict[str, Any]:
@@ -77,28 +83,40 @@ class SubagentDescriptor:
 
 def parse_subagent_descriptor(raw: dict[str, Any] | None) -> SubagentDescriptor:
     """Validate and parse a raw dictionary into a SubagentDescriptor."""
-    if not raw or not isinstance(raw, dict):
+    if raw is None:
         return SubagentDescriptor()
+    if not isinstance(raw, dict):
+        raise ValueError("Descriptor must be an object")
 
     version = raw.get("version", SUBAGENT_DESCRIPTOR_VERSION)
+    if version != SUBAGENT_DESCRIPTOR_VERSION or isinstance(version, bool):
+        raise ValueError("Unsupported descriptor version")
     mode = str(raw.get("mode", "one-shot")).lower()
-    if mode not in ("one-shot", "continuable", "read_only", "general"):
-        mode = "one-shot"
+    if mode not in ("one-shot", "continuable"):
+        raise ValueError("Descriptor mode must be one-shot or continuable")
 
     provider = str(raw.get("provider", "in_process"))
+    if provider not in {"in_process", "acp", "claude_code", "codex"}:
+        raise ValueError("Unsupported descriptor provider")
     label = str(raw.get("label", ""))
     agent_provider = raw.get("agentProvider") or raw.get("agent_provider")
     agent_model = raw.get("agentModel") or raw.get("agent_model")
     persona = raw.get("persona")
 
-    tf_raw = raw.get("toolFilter") or raw.get("tool_filter")
+    tf_raw = raw.get("toolFilter", raw.get("tool_filter"))
     tool_filter: ToolRestriction | None = None
+    if tf_raw is not None and not isinstance(tf_raw, dict):
+        raise ValueError("toolFilter must be an object")
     if isinstance(tf_raw, dict):
         allow = tf_raw.get("allow")
         deny = tf_raw.get("deny")
+        from coderai.subagents.registry import normalize_tool_list
+
+        normalized_allow = normalize_tool_list(allow)
+        normalized_deny = normalize_tool_list(deny)
         tool_filter = ToolRestriction(
-            allow=list(allow) if isinstance(allow, list) else None,
-            deny=list(deny) if isinstance(deny, list) else None,
+            allow=list(normalized_allow) if normalized_allow is not None else None,
+            deny=list(normalized_deny) if normalized_deny is not None else None,
         )
 
     return SubagentDescriptor(
@@ -111,17 +129,6 @@ def parse_subagent_descriptor(raw: dict[str, Any] | None) -> SubagentDescriptor:
         persona=str(persona) if persona else None,
         tool_filter=tool_filter,
     )
-
-
-@dataclass
-class SubagentQuotaConfig:
-    """Granular execution budgets and depth quotas for subagent spawning."""
-
-    max_depth: int = DEFAULT_MAX_SUBAGENT_DEPTH
-    max_tokens: int | None = None
-    max_turns: int = DEFAULT_SUBAGENT_MAX_ITERATIONS
-    timeout_seconds: float = DEFAULT_SUBAGENT_TIMEOUT_SECONDS
-    allow_nested_spawn: bool = False
 
 
 def check_subagent_depth_quota(
@@ -143,18 +150,29 @@ def setup_subagent_scratchpad(
     prefix: str = "subagent_scratch_",
 ) -> str:
     """Create an isolated, dedicated scratchpad workspace directory for the subagent."""
-    coderai_dir = pathlib.Path(project_root) / ".coderai" / "scratch" / session_id
+    from coderai.utils.storage import owned_path, parent_directory, storage_id
+
+    storage_id(session_id)
+    storage_id(prefix)
+    if len(prefix) > 32:
+        raise ValueError("Scratchpad prefix is too long")
+    root = pathlib.Path(project_root).resolve()
+    scratch_root = owned_path(root, ".coderai", "scratch")
     try:
-        coderai_dir.mkdir(parents=True, exist_ok=True)
-        return str(coderai_dir.resolve())
-    except Exception as exc:
+        directory = owned_path(scratch_root, f"{prefix}{session_id[:64]}_{uuid.uuid4().hex}")
+        with parent_directory(directory, create=True) as parent:
+            os.mkdir(directory if parent is None else directory.name, mode=0o700, dir_fd=parent)
+    except OSError as exc:
         logger.warning(
             "Could not create project scratchpad in %s (%s). Falling back to temp directory.",
-            coderai_dir,
+            scratch_root,
             exc,
         )
-        temp_dir = tempfile.mkdtemp(prefix=f"{prefix}{session_id[:8]}_")
-        return str(pathlib.Path(temp_dir).resolve())
+        directory = pathlib.Path(tempfile.mkdtemp(prefix=f"{prefix}{session_id}_"))
+    directory = directory.resolve()
+    info = directory.stat()
+    _owned_scratchpads[str(directory)] = (info.st_dev, info.st_ino)
+    return str(directory)
 
 
 def cleanup_subagent_scratchpad(scratchpad_path: str | None) -> None:
@@ -163,10 +181,13 @@ def cleanup_subagent_scratchpad(scratchpad_path: str | None) -> None:
         return
     try:
         p = pathlib.Path(scratchpad_path)
+        identity = _owned_scratchpads.pop(str(p), None)
         if p.exists() and p.is_dir():
-            # If in temp directory, remove completely; if in .coderai/scratch, prune if empty
-            if "tmp" in str(p) or "temp" in str(p):
-                shutil.rmtree(p, ignore_errors=True)
+            from coderai.utils.storage import remove_path
+
+            info = p.lstat()
+            if not p.is_symlink() and identity == (info.st_dev, info.st_ino):
+                remove_path(p, tree=True)
     except Exception as exc:
         logger.debug("Failed to clean up scratchpad %s: %s", scratchpad_path, exc)
 
@@ -182,7 +203,7 @@ class SubAgentSpec:
 
     description: str
     prompt: str
-    task_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    task_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     mode: str | None = None  # "read_only" | "general" (defaults to read_only in __post_init__)
     provider: str = "in_process"  # "in_process" | "acp" | "claude_code" | "codex"
     timeout_seconds: float = DEFAULT_SUBAGENT_TIMEOUT
@@ -192,9 +213,9 @@ class SubAgentSpec:
     token_budget: int | None = None
     max_tokens: int | None = None
     isolated_cwd: str | None = None
-    scratchpad_dir: str | None = None
     dry_run: bool = False
     parent_session_id: str | None = None
+    parent_tool_call_id: str | None = None
     allowed_tools: list[str] | None = None
     extra_context: str | None = None
     agent_id: str | None = None
@@ -203,7 +224,6 @@ class SubAgentSpec:
     children_ids: list[str] = field(default_factory=list)
     handle: Any | None = None
     seed_messages: list[dict[str, Any]] | None = None
-    seed_events: list[Any] | None = None
     descriptor: SubagentDescriptor | None = None
     continuable: bool = False  # parked worker loop; survives multiple turns via its handle inbox
     subagent_type: str | None = (
@@ -224,8 +244,42 @@ class SubAgentSpec:
     on_background_process_complete: Any | None = None
     session_manager: Any | None = None
     project_root: str | None = None
+    checkpoint_store: Any | None = None
 
     def __post_init__(self) -> None:
+        from coderai.subagents.registry import normalize_tool_list
+        from coderai.utils.storage import storage_id
+
+        if self.provider not in {"in_process", "acp", "claude_code", "codex"}:
+            raise ValueError("Unsupported child provider")
+        storage_id(self.task_id)
+        if self.parent_session_id:
+            storage_id(self.parent_session_id)
+        if self.mode is not None and self.mode not in {"read_only", "general"}:
+            raise ValueError("Invalid child permission mode")
+        if (
+            not isinstance(self.timeout_seconds, (int, float))
+            or isinstance(self.timeout_seconds, bool)
+            or not math.isfinite(self.timeout_seconds)
+            or self.timeout_seconds <= 0
+        ):
+            raise ValueError("Child timeout must be finite and positive")
+        for label, value in (
+            ("max_iterations", self.max_iterations),
+            ("max_depth", self.max_depth),
+            ("token_budget", self.token_budget),
+            ("max_tokens", self.max_tokens),
+        ):
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 1
+            ):
+                raise ValueError(f"{label} must be a positive integer")
+        if not isinstance(self.depth, int) or isinstance(self.depth, bool) or self.depth < 0:
+            raise ValueError("Child depth must be a nonnegative integer")
+        allowed = normalize_tool_list(self.allowed_tools)
+        excluded = normalize_tool_list(self.exclude_tools)
+        self.allowed_tools = list(allowed) if allowed is not None else None
+        self.exclude_tools = list(excluded) if excluded is not None else None
         # Resolve type policy and role instructions from registry.
         # Deny-by-default: an unknown subagent_type yields an empty allowlist
         # (no tools permitted) rather than silently running unrestricted.
@@ -243,17 +297,18 @@ class SubAgentSpec:
                     self.allowed_tools = []
                     self.mode = "read_only"
                 else:
-                    if self.allowed_tools is None:
-                        mode, tools = resolve_tool_policy(
-                            self.subagent_type, project_root=role_root
-                        )
-                        if mode == "allowlist":
-                            self.allowed_tools = list(tools)
+                    policy, tools = resolve_tool_policy(
+                        self.subagent_type, requested=self.allowed_tools, project_root=role_root
+                    )
+                    if policy == "allowlist":
+                        self.allowed_tools = list(tools)
 
                     if self.model is None and getattr(defn, "model", None):
                         self.model = defn.model
-                    if self.exclude_tools is None and getattr(defn, "exclude_tools", None):
-                        self.exclude_tools = list(defn.exclude_tools)
+                    if defn.exclude_tools:
+                        self.exclude_tools = list(
+                            dict.fromkeys((self.exclude_tools or []) + list(defn.exclude_tools))
+                        )
                     if self.when_to_use is None and getattr(defn, "when_to_use", None):
                         self.when_to_use = defn.when_to_use
 
@@ -267,9 +322,7 @@ class SubAgentSpec:
                     if defn.system_prompt and not self.system_prompt:
                         self.system_prompt = defn.system_prompt
             except Exception as exc:
-                logger.warning(
-                    "Error resolving subagent policy for '%s': %s", self.subagent_type, exc
-                )
+                raise ValueError(f"Cannot resolve child policy for {self.subagent_type!r}") from exc
 
         if self.mode is None:
             self.mode = "read_only"
@@ -296,6 +349,9 @@ def build_spec(
     """
     from coderai.orchestration import resolve_subagent_defaults
 
+    cancellation = getattr(context, "cancellation_event", None)
+    if isinstance(cancellation, threading.Event) and cancellation.is_set():
+        raise ValueError("Cannot spawn from a cancelled invocation")
     args = args or {}
     settings = None
     if hasattr(context, "session_manager") and context.session_manager:
@@ -312,28 +368,37 @@ def build_spec(
     if resolved_mode is not None:
         resolved_mode = str(resolved_mode).strip().lower()
         if resolved_mode not in ("read_only", "general"):
-            resolved_mode = "read_only"
+            raise ValueError("Invalid child permission mode")
 
     # Timeout resolution
     timeout_raw = args.get("timeout_seconds")
     if timeout_raw is not None:
+        if isinstance(timeout_raw, bool):
+            raise ValueError("Invalid child timeout")
         try:
             timeout_s = float(timeout_raw)
-        except (ValueError, TypeError):
-            timeout_s = defaults["timeout_seconds"]
+        except (ValueError, TypeError) as exc:
+            raise ValueError("Invalid child timeout") from exc
     else:
         timeout_s = defaults["timeout_seconds"]
 
     # Max depth resolution
     max_depth = defaults["max_depth"]
 
+    def _parse_opt_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            raise ValueError("Child limits must be integers")
+        try:
+            return int(value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("Child limits must be integers") from exc
+
     # Max iterations resolution
     max_iter_raw = args.get("max_iterations")
     if max_iter_raw is not None:
-        try:
-            max_iterations = int(max_iter_raw)
-        except (ValueError, TypeError):
-            max_iterations = defaults["max_iterations"]
+        max_iterations = _parse_opt_int(max_iter_raw)
     else:
         max_iterations = defaults["max_iterations"]
 
@@ -358,14 +423,6 @@ def build_spec(
         depth = parent_handle.depth + 1 if parent_handle is not None else 0
 
     # Numeric budgets
-    def _parse_opt_int(v: Any) -> int | None:
-        if v is None:
-            return None
-        try:
-            return int(v)
-        except (ValueError, TypeError):
-            return None
-
     token_budget = _parse_opt_int(args.get("token_budget"))
     max_tokens = _parse_opt_int(args.get("max_tokens"))
     resolved_type = (subagent_type or args.get("subagent_type") or "").strip().lower() or None
@@ -386,6 +443,7 @@ def build_spec(
         "max_tokens": max_tokens,
         "continuable": continuable,
         "parent_session_id": getattr(context, "session_id", None),
+        "parent_tool_call_id": (getattr(context, "tool_call", None) or {}).get("id"),
         "extra_context": extra_context,
         "seed_messages": seed_messages,
         "sandbox_mode": getattr(context, "sandbox_mode", None),
@@ -414,16 +472,24 @@ def build_spec(
         min(max_depth, requested_max_depth) if requested_max_depth is not None else max_depth
     )
     spec = SubAgentSpec(**spec_kwargs)
+    from coderai.subagents.registry import intersect_tool_lists
+
     parent_tools = getattr(context, "allowed_tools", None)
     if parent_tools is not None:
-        from coderai.subagents.registry import is_tool_allowed
-
-        if spec.allowed_tools is None:
-            spec.allowed_tools = list(parent_tools)
-        else:
-            spec.allowed_tools = [
-                name
-                for name in spec.allowed_tools
-                if is_tool_allowed(name, "allowlist", tuple(parent_tools))
-            ]
+        allowed = intersect_tool_lists(spec.allowed_tools, parent_tools)
+        spec.allowed_tools = list(allowed) if allowed is not None else None
+    if parent_handle is not None and parent_handle.spec is not None:
+        parent_spec = parent_handle.spec
+        if parent_spec.mode == "read_only":
+            spec.mode = "read_only"
+        allowed = intersect_tool_lists(spec.allowed_tools, parent_spec.allowed_tools)
+        parent_exclusions = list(parent_spec.exclude_tools or [])
+        if parent_spec.descriptor is not None and parent_spec.descriptor.tool_filter is not None:
+            restriction = parent_spec.descriptor.tool_filter
+            allowed = intersect_tool_lists(allowed, restriction.allow)
+            parent_exclusions.extend(restriction.deny or [])
+        spec.allowed_tools = list(allowed) if allowed is not None else None
+        spec.exclude_tools = (
+            list(dict.fromkeys((spec.exclude_tools or []) + parent_exclusions)) or None
+        )
     return spec

@@ -193,14 +193,13 @@ pip install 'coderai-agent[jev]'
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `TYPESAFE_API_KEY` | String | None | Authentication key for the TypeSafe Jev System-One API. |
-| `CODERAI_JEV_ENABLED` | Boolean | Auto (`true` if key present) | Master toggle for Jev System-One triage and gating. |
 | `CODERAI_JEV_GATE_THRESHOLD` | Float (`0.0`–`1.0`) | `0.40` | Minimum `is_actionable_bug` probability required to approve a review comment in Tier 3. |
 | `CODERAI_JEV_SPECULATIVE_THRESHOLD` | Float (`0.0`–`1.0`) | `0.65` | Maximum ceiling for `is_speculative_or_nit`. Comments exceeding this are suppressed. |
 | `CODERAI_JEV_ACCEPT_THRESHOLD` | Float (`0.0`–`1.0`) | `0.50` | Minimum `will_developer_accept` probability required to approve a comment. |
 | `CODERAI_JEV_TRIAGE_THRESHOLD` | Float (`0.0`–`1.0`) | `0.35` | Minimum risk score to qualify a diff hunk for deep review in Tier 1. |
 | `CODERAI_JEV_CACHE_SIZE` | Integer | `1024` | Capacity of the thread-safe LRU in-memory query cache. |
 | `CODERAI_JEV_MAX_DIFF_CHARS` | Integer | `12000` | Maximum diff characters sent per file hunk (prevents oversized payloads). |
-| `CODERAI_JEV_TIMEOUT_MS` | Integer | `10000` | Timeout in milliseconds for Jev API calls before falling back to System 2. |
+| `CODERAI_JEV_TIMEOUT_S` | Float | `3.0` | Timeout in seconds for Jev API calls before falling back to System 2 (minimum `0.5`). |
 
 ### Secret Path Sanitization
 

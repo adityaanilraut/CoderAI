@@ -1,0 +1,101 @@
+{
+  "audit_date": "2026-10-04",
+  "reference_root": "/Users/aditya/Downloads/kimi-code-main",
+  "reference_cli_version": "2.1.1",
+  "reference_git_revision": null,
+  "note": "Reference is an unpacked source tree without Git metadata. These hashes pin the files inspected, not an upstream commit.",
+  "files": [
+    {
+      "path": "apps/kimi-code/package.json",
+      "sha256": "cbadd8de65152ea72d7ec217ba4372f8c99b13b58e12f23f3d5610e72f82e7ca"
+    },
+    {
+      "path": "packages/agent-core-v2/src/session/subagent/subagentService.ts",
+      "sha256": "eb636b8f6ec9b49cb1def0d9b01889532e07a164b0c2deca4705aff716fcf1b1"
+    },
+    {
+      "path": "packages/agent-core-v2/src/agent/tools/agent/subagent-task.ts",
+      "sha256": "17a4c7ba36b4d1e97b42b3fbb82e9187ed5ada64f4b7ebef88ca1ed634ad1a5b"
+    },
+    {
+      "path": "packages/agent-core-v2/src/agent/toolExecutor/toolScheduler.ts",
+      "sha256": "26d26e6676ef820ac94b70942b0dd9175eb277fbe3e774c6b01f8706a8c46b96"
+    },
+    {
+      "path": "packages/agent-core-v2/src/agent/toolExecutor/toolExecutorService.ts",
+      "sha256": "c9b0a6f0ba91a9908dfceef482f1e76e98d8e69800a1921ce5869dbdd9e59b3b"
+    },
+    {
+      "path": "packages/agent-core-v2/src/agent/toolResultTruncation/toolResultTruncationService.ts",
+      "sha256": "4d31f94610bd0088e3384fad626d9728bc7cd7b8830f5dba1c90dc0bf62344e3"
+    },
+    {
+      "path": "packages/agent-core-v2/src/agent/fullCompaction/fullCompactionService.ts",
+      "sha256": "aaf5ee321c62b467810d74dbefa2f80f78f97acc3479998d9ca243a6693fe8d7"
+    },
+    {
+      "path": "packages/agent-core-v2/src/agent/fullCompaction/strategy.ts",
+      "sha256": "60258b0eb4f5f293ed4b24277badfdb877df35bc8d1d3671fb178d9328f5c448"
+    },
+    {
+      "path": "packages/agent-core-v2/src/agent/contextMemory/compactionHandoff.ts",
+      "sha256": "57774625ff843425d9d8f90e4e252c67a5d15ae38a3f4303bea2cbd461fabbd2"
+    },
+    {
+      "path": "packages/agent-core-v2/src/session/tokenCounting/tokenCountingAgentModel.ts",
+      "sha256": "001c58c1b28e2587bb8ec57002063a5f0eaaff2fc1d271dc9805f5f17d90fb98"
+    },
+    {
+      "path": "packages/acp-server/src/session.ts",
+      "sha256": "297cd49c38a24b72c44cb1ef0795ba60a4ed6010398f7fd9e2c804d6f737250c"
+    },
+    {
+      "path": "packages/acp-server/src/config-options.ts",
+      "sha256": "5a7b1a59bfef23d9a9e5fe6bffba9e5661d983e49f279459a5746e69234eda78"
+    },
+    {
+      "path": "packages/migration-legacy/src/run-migration.ts",
+      "sha256": "8fd9cf23a6c1085c477e7d89a0a86df21a1a57ec8a8b1873d10c8cafd67104af"
+    },
+    {
+      "path": "apps/kimi-code/src/tui/controllers/subagent-event-handler.ts",
+      "sha256": "1b1ef242b73f0c1c4cc86b68ca3f8aaebe15d2e4d88dac240bdf01a6de39fdc3"
+    },
+    {
+      "path": "apps/kimi-code/src/tui/controllers/subagent-activity-store.ts",
+      "sha256": "4a28377022f1235f07ddd8e1d10f249574a6e4f8ef4c2e475813fd42455e0bda"
+    },
+    {
+      "path": "packages/agent-core-v2/src/session/subagent/runAgentTurn.ts",
+      "sha256": "170b23ee16959f2f1d0e6842fd68db229b2b7f2def347b981bc440c656305fca"
+    },
+    {
+      "path": "packages/agent-core-v2/src/session/subagent/mirrorAgentRun.ts",
+      "sha256": "c9d88b49781ac2d31780ac827350d3a4ee246f512abd7a61c40827024d375bf2"
+    },
+    {
+      "path": "packages/agent-core-v2/src/session/subagent/spawn.ts",
+      "sha256": "1f27a2b746e7810c30a54016f6f0d4ea3ae8378076660f1082750eb64105cd1b"
+    },
+    {
+      "path": "packages/agent-core-v2/src/agent/tools/os/bash/bashTool.ts",
+      "sha256": "1c7e9936d0f5fd01f62474b6a20553f673361b454df774a1cffd7a8077ddcc11"
+    },
+    {
+      "path": "packages/agent-core-v2/src/agent/tools/os/glob/glob.ts",
+      "sha256": "40ce54dfbf6cf530c95894906d1b1f80509cdbc76a61ce7cf34a0f311e67bdd6"
+    },
+    {
+      "path": "packages/agent-core-v2/src/agent/tools/os/grep/grep.ts",
+      "sha256": "be361feb48c7b6ff00247f74c735d7c77e5fda3c1344a7774571cda7ab52cac7"
+    },
+    {
+      "path": "packages/agent-core-v2/src/tool/toolContract.ts",
+      "sha256": "5a07841f5667ea05414ee57619652873e5346a6e6ff01029eceb3e638984abb0"
+    },
+    {
+      "path": "apps/kimi-code/src/cli/commands.ts",
+      "sha256": "9713c2efd8f2ea08cbad1bacfccdb9720d4da5dbdcf2713dd67bb9ba0f5064f2"
+    }
+  ]
+}

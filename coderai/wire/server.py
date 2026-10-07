@@ -629,7 +629,7 @@ class WireServer:
     def _start_event_forwarding(self) -> asyncio.Task | None:
         """Forward live turn events from the process emitter to the client."""
         try:
-            ui_side = self._event_emitter().ui_side(merge=False, replay=False)
+            ui_side = self._event_emitter().ui_side(merge=False, replay=False, lossless=True)
         except Exception:
             return None
 

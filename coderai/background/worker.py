@@ -91,24 +91,25 @@ async def run_background_task_worker(
 
     async def _control_loop() -> None:
         nonlocal cancel_requested
-        if is_cancelled is None:
-            return
         kill_sent_at: float | None = None
         while not stop_event.is_set():
             await asyncio.sleep(control_poll_interval_s)
             try:
-                cancelled = bool(is_cancelled())
+                job = store.get(job_id, session_id)
+                cancelled = bool(is_cancelled and is_cancelled()) or (
+                    job is not None and job.status in ("stopping", "killed")
+                )
             except Exception:
                 cancelled = False
             if not cancelled:
                 continue
             cancel_requested = True
             _terminate_process(force=False)
-            kill_sent_at = kill_sent_at or time.time()
+            kill_sent_at = kill_sent_at or time.monotonic()
             if (
                 process is not None
                 and process.returncode is None
-                and time.time() - kill_sent_at >= kill_grace_period_s
+                and time.monotonic() - kill_sent_at >= kill_grace_period_s
             ):
                 _terminate_process(force=True)
 
@@ -151,7 +152,26 @@ async def run_background_task_worker(
                     except TimeoutError:
                         _terminate_process(force=True)
                         returncode = await process.wait()
+    except asyncio.CancelledError:
+        _terminate_process(force=False)
+        if process is not None:
+            try:
+                await asyncio.wait_for(process.wait(), timeout=kill_grace_period_s)
+            except TimeoutError:
+                _terminate_process(force=True)
+                await process.wait()
+        store.kill(job_id, session_id, reason="Worker cancelled")
+        store.complete(
+            job_id,
+            ok=False,
+            exit_code=process.returncode if process is not None else None,
+            detail="Worker cancelled",
+        )
+        raise
     except Exception as exc:
+        _terminate_process(force=True)
+        if process is not None:
+            await process.wait()
         logger.exception("Background task worker failed")
         return store.complete(job_id, ok=False, detail=str(exc))
     finally:

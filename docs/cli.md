@@ -67,11 +67,6 @@ usage: coderai [-h] [--version] [-p PROMPT] [-e [PROMPT]] [--agent AGENT]
 | `--debug` | Log debug information. |
 | `-v, --verbose` | Print debug information. |
 
-The `--subagent-*` worker flags (`--subagent-worker`, `--subagent-payload`,
-`--subagent-depth`, `--subagent-parent-id`, `--subagent-runner`,
-`--subagent-type`, `--subagent-desc`, `--subagent-allowed-tools`) are internal
-plumbing for spawned subagent processes, not user-facing options.
-
 ---
 
 `--input-format stream-json` consumes one JSON object with a `prompt` field
@@ -87,6 +82,7 @@ Inside the interactive REPL shell, the following commands are available:
 | Slash Command | Description |
 |---|---|
 | `/help [cmd]` | Display help and usage examples for all slash commands. |
+| `/tools [name]` | Inspect effective tool availability, source, aliases, effects, timeout, parameters, and restriction reasons. See the [generated catalog](tools.md). |
 | `/agents` | List the live subagent tree for the current session. |
 | `/agents roles` | Display all bundled and discovered agent roles (`.coderai/agents/*.md`). |
 | `/agents tree` | Same live tree as `/agents`. |
@@ -96,9 +92,9 @@ Inside the interactive REPL shell, the following commands are available:
 | `/plan` | Enter or toggle Plan Mode (read-only architectural planning). |
 | `/yolo` | Toggle YOLO mode on/off. |
 | `/afk` | Toggle AFK auto-pilot mode on/off. |
-| `/model [name]` | View or switch active LLM model. |
-| `/undo` | Roll back the last turn's file modifications. |
-| `/diff` | View uncommitted changes in the repository. |
+| `/model [name]` | Compare cached model capabilities, context and estimated prices; switch models. `favorites`, `recent`, `favorite [id]`, `unfavorite [id]`, `verify`, and `refresh` manage selection and explicit connectivity checks. |
+| `/undo` | Preview checkpoint impact, choose conversation/code scope, and confirm restoration. Unavailable code snapshots are disabled. |
+| `/diff` | Search complete repository changes by file or hunk, then inspect the full patch. |
 | `/review [base] [--all]` | Review uncommitted changes (or changes since `merge-base(base, HEAD)`): Jev System-One skips low-risk files, the active model reviews the rest, and Jev drops speculative comments. Works without `TYPESAFE_API_KEY` by reviewing every non-doc file. |
 | `/compact` | Trigger manual session history compaction. |
 | `/skills` | List discovered workspace skills and cheat sheets. |
@@ -106,7 +102,7 @@ Inside the interactive REPL shell, the following commands are available:
 | `/clear` | Clear the terminal display. |
 | `/exit` | Exit the interactive session. |
 | `/new` | Start a fresh session. |
-| `/sessions` | Browse, resume, delete, or fork sessions. |
+| `/sessions [filters]` | Search and resume sessions. `manage [id]` exposes pin/archive actions; `tree` shows fork ancestry. Filters include `status:ready`, `after:YYYY-MM-DD`, `before:YYYY-MM-DD`, `pinned:true`, `archived:only`, and `fork:<id>`. |
 | `/delete <id>` | Delete a saved session. |
 | `/rename [title]` | View or set the session title. |
 | `/fork [id]` | Fork the current or specified session. |
@@ -128,11 +124,13 @@ Inside the interactive REPL shell, the following commands are available:
 | `/import <file>` | Import context from a file. |
 | `/export` | Export session history to Markdown or JSON. |
 | `/jobs` | Inspect and manage background jobs. |
+| `/activity` | Inspect foreground progress, current tools, todos, goal budgets, jobs, and agents. |
+| `/queue [action]` | List queued prompts; `edit <n>`, `remove <n>`, `move <from> <to>`, `clear`, or `run`. Editing preserves attachments and pauses the remaining queue. |
 | `/task` | Open interactive background-task browser. |
 | `/schedule` | Manage reminders and background timers. |
-| `/goal` | List or update session goals. |
+| `/goal [list\|add\|start\|pause\|done\|cancel]` | [Save and execute bounded session goals](goals.md). |
 | `/hooks` | Show configured hooks. |
-| `/mcp` | Inspect MCP servers, tools, prompts, and resources. |
+| `/mcp` | Search server status and tool schemas; reconnect a server or securely set a remote server's bearer token. Existing subcommands inspect prompts and resources. |
 | `/continue` | Continue agent execution. |
 | `/btw` | Ask a lightweight side question without mutating the main conversation history. |
 | `/image` | Attach an image for analysis. |
@@ -147,6 +145,12 @@ Inside the interactive REPL shell, the following commands are available:
 | `/init [focus]` | Queue a turn that writes or updates AGENTS.md from the project. |
 
 ---
+
+Interactive drafts, attachments, and queued prompts are saved privately per
+workspace and session. Restarting recovers pending work; recovered queues stay
+paused until `/queue run`. A replacement prompt never resumes a paused queue.
+Large text pastes remain resolvable after restart. `/help shortcuts` lists the current
+bindings; accessible selectors print decision details and support `/details N`.
 
 ## Subcommands
 
@@ -171,4 +175,3 @@ source checkout, e.g. `python -m coderai.cli acp`.
 so it can be launched directly by an ACP-capable editor or agent client. The
 `initialize` response advertises session `resume`, `fork`, and `list`
 capabilities plus image and embedded-context prompt support.
-

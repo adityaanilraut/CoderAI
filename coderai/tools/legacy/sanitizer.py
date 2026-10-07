@@ -164,6 +164,13 @@ def sanitize_tool_output(output: Any) -> Any:
     if isinstance(output, (set, frozenset)):
         return type(output)(sanitize_tool_output(item) for item in output)
 
+    from coderai.tools.legacy.types import ToolExecutionFollowUpMessage
+
+    if isinstance(output, ToolExecutionFollowUpMessage):
+        output.content = sanitize_tool_output(output.content)
+        output.content_params = sanitize_tool_output(output.content_params)
+        return output
+
     # ToolResult instance support
     if hasattr(output, "output") or hasattr(output, "error"):
         if hasattr(output, "output") and isinstance(output.output, str):

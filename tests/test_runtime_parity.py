@@ -78,6 +78,80 @@ def test_pending_tool_payload_increases_the_estimate():
     assert estimate_openai_request_tokens(with_tool) > estimate_openai_request_tokens(short)
 
 
+@pytest.mark.usefixtures("isolated_home")
+async def test_retry_rebuild_preserves_configured_window_and_completion_cap(tmp_path):
+    from coderai.cli.session_factory import close_session_manager
+
+    mgr = SessionManager(
+        project_root=str(tmp_path),
+        create_openai_client=lambda: {"client": object()},
+        get_resolved_settings=lambda: {"model": "gpt-4o", "contextWindow": 4000},
+    )
+    captured = []
+
+    async def complete(client, request, **kwargs):
+        captured.append(request)
+        return {"choices": [{"message": {"content": "done"}}]}
+
+    mgr._create_completion = complete
+    try:
+        await mgr._create_completion_with_retry(
+            "test",
+            object(),
+            {
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "small"}],
+                "max_tokens": 123,
+            },
+        )
+        assert captured[0]["max_tokens"] == 123
+        assert "max_completion_tokens" not in captured[0]
+        await mgr._create_completion_with_retry(
+            "test",
+            object(),
+            {"model": "gpt-4o", "messages": [{"role": "user", "content": "small"}]},
+        )
+        assert captured[1]["max_tokens"] == 400
+    finally:
+        await close_session_manager(mgr)
+
+
+@pytest.mark.usefixtures("isolated_home")
+async def test_manual_compaction_requires_idle_session_and_releases_lease(tmp_path):
+    import asyncio
+    from coderai.cli.session_factory import close_session_manager
+
+    mgr = _manager(tmp_path)
+    sid = await mgr.create_empty_session()
+    entered = asyncio.Event()
+    released = asyncio.Event()
+
+    async def compact(*args, **kwargs):
+        entered.set()
+        await released.wait()
+        return False
+
+    mgr._compact_session = compact
+    try:
+        mgr._running_sessions.add(sid)
+        with pytest.raises(RuntimeError, match="active session"):
+            await mgr.compact_session(sid)
+        mgr._running_sessions.discard(sid)
+        task = asyncio.create_task(mgr.compact_session(sid))
+        await entered.wait()
+        before = mgr.session_store.read_rows(sid)
+        with pytest.raises(RuntimeError, match="being compacted"):
+            await mgr.reply_session(sid, "concurrent prompt")
+        assert mgr.session_store.read_rows(sid) == before
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert sid not in mgr._manual_compactions
+    finally:
+        released.set()
+        await close_session_manager(mgr)
+
+
 def test_force_stop_is_visible_to_the_turn_loop():
     result = ToolResult(ok=True, name="read", output="same")
     result._force_stop_turn = True

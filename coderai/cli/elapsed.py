@@ -4,7 +4,7 @@ from __future__ import annotations
 
 # Single source of truth: `format_elapsed` lives in coderai.utils.datetime and is
 # re-exported here for the UI consumers that import it from this module.
-from coderai.utils.datetime import format_elapsed
+from coderai.utils.datetime import format_elapsed as format_elapsed
 
 
 # Animated bullet frames cycled every 0.13s during thinking/streaming
@@ -47,11 +47,6 @@ def estimate_tokens(text: str) -> int:
     return int(_estimate_tokens_float(text))
 
 
-def format_token_count(n: int) -> str:
-    """Format token count with commas (legacy CoderAI)."""
-    return f"{n:,}"
-
-
 def format_token_count_compact(n: int) -> str:
     """Compact token count (1.5k, 1.2m)."""
     if n >= 1_000_000:
@@ -78,31 +73,9 @@ def format_context_status(
     return f"context: {bounded:.1%}"
 
 
-# ---------------------------------------------------------------------------
-# Status badges
-# ---------------------------------------------------------------------------
-
-STATUS_BADGES: dict[str, tuple[str, str]] = {
-    "thinking": ("Thinking", "magenta"),
-    "searching": ("Searching", "cyan"),
-    "executing": ("Executing", "yellow"),
-    "reading": ("Reading", "blue"),
-    "writing": ("Writing", "green"),
-    "compacting": ("Compacting", "yellow"),
-    "queued": ("Queued", "dim"),
-}
-
 NOTIFICATION_SEVERITY_STYLE = {
     "info": "cyan",
     "success": "green",
     "warning": "yellow",
     "error": "red",
 }
-
-
-def status_badge(status: str, elapsed: float | None = None) -> str:
-    """Return a styled badge string like '[magenta]Thinking...[/] (3s)'."""
-    label, color = STATUS_BADGES.get(status.lower(), (status, "white"))
-    bullet = bullet_frame_for(elapsed) if elapsed is not None else "..."
-    elapsed_str = f" ({format_elapsed(elapsed)})" if elapsed is not None and elapsed >= 1 else ""
-    return f"[bold {color}]{label}{bullet}[/]{elapsed_str}"

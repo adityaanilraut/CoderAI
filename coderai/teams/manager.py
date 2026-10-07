@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 import uuid
 from typing import Any
 
 from coderai.subagents.core import get_agent_registry
+from coderai.orchestration import TERMINAL_AGENT_STATUSES
 from coderai.teams.concurrency import ConcurrencyConflictError
 from coderai.teams.deadlock import assert_acyclic_dependencies
 from coderai.teams.mailbox import ActorChannel
 from coderai.teams.models import TeamMessage, TeamTask, Teammate
 from coderai.tools.legacy.types import ToolExecutionContext
+from coderai.tools.legacy.policy import team_scope
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +47,6 @@ class TeamTaskBoard:
         self._tasks: dict[str, TeamTask] = {}
         self._manager = manager
 
-    def _validate_dag(self) -> None:
-        """Validate that all registered tasks and their dependencies form a strict DAG."""
-        dep_map = {t_id: list(t.dependencies or []) for t_id, t in self._tasks.items()}
-        assert_acyclic_dependencies(dep_map)
-
     def create_task(
         self,
         title: str,
@@ -56,8 +54,11 @@ class TeamTaskBoard:
         assigned_to: str | None = None,
         priority: str = "medium",
         dependencies: list[str] | None = None,
+        owner_scope: tuple[str, str] | None = None,
     ) -> TeamTask:
-        task_id = f"task_{uuid.uuid4().hex[:8]}"
+        task_id = f"task_{uuid.uuid4().hex}"
+        if priority not in VALID_TASK_PRIORITIES:
+            raise ValueError("Invalid task priority")
         deps = list(dependencies or [])
 
         # Validate that every dependency names a known task (dangling deps
@@ -67,6 +68,9 @@ class TeamTaskBoard:
                 raise ValueError(f"Task cannot depend on itself ('{task_id}').")
             if dep_id not in self._tasks:
                 raise KeyError(f"Unknown task dependency '{dep_id}': no such task on the board.")
+
+        if any(self._tasks[dep].owner_scope != owner_scope for dep in deps):
+            raise ValueError("Dependencies must belong to the same team")
 
         # Validate DAG acyclicity
         candidate_deps = {t_id: list(t.dependencies or []) for t_id, t in self._tasks.items()}
@@ -80,8 +84,11 @@ class TeamTaskBoard:
             assigned_to=assigned_to,
             priority=priority if priority in VALID_TASK_PRIORITIES else "medium",
             dependencies=deps,
+            owner_scope=owner_scope,
         )
         self._tasks[task_id] = task
+        if self._manager:
+            self._manager._wake_workers()
         return task
 
     def get_task(self, task_id: str) -> TeamTask | None:
@@ -130,6 +137,8 @@ class TeamTaskBoard:
                     raise KeyError(
                         f"Unknown task dependency '{dep_id}': no such task on the board."
                     )
+            if any(self._tasks[dep].owner_scope != task.owner_scope for dep in new_deps):
+                raise ValueError("Dependencies must belong to the same team")
             candidate_deps = {t_id: list(t.dependencies or []) for t_id, t in self._tasks.items()}
             candidate_deps[task_id] = list(new_deps)
             assert_acyclic_dependencies(candidate_deps)
@@ -156,6 +165,8 @@ class TeamTaskBoard:
             task.notes = notes
         task.revision += 1
         task.updated_at = time.time()
+        if self._manager:
+            self._manager._wake_workers()
         return task
 
     def can_start_task(self, task_id: str) -> bool:
@@ -181,6 +192,20 @@ class TeamManager:
         self._teammates: dict[str, Teammate] = {}
         self._active_tasks: dict[str, asyncio.Task[Any]] = {}
         self._execution_contexts: dict[str, ToolExecutionContext] = {}
+        self._wakeups: dict[str, asyncio.Event] = {}
+
+    def _wake_workers(self) -> None:
+        get_agent_registry().changed()
+        for teammate_id, event in self._wakeups.items():
+            teammate = self._teammates.get(teammate_id)
+            if (
+                teammate is not None
+                and teammate.status in {"completed", "failed"}
+                and self.get_runnable_tasks_for_teammate(teammate_id)
+            ):
+                teammate.status = "idle"
+                teammate.last_report = None
+            event.set()
 
     def spawn_teammate(
         self,
@@ -195,7 +220,10 @@ class TeamManager:
         depth: int = 0,
         execution_context: ToolExecutionContext | None = None,
     ) -> Teammate:
-        teammate_id = f"tm_{uuid.uuid4().hex[:8]}"
+        if mode not in {"read_only", "general"}:
+            raise ValueError("Teammate mode must be read_only or general")
+        loop = asyncio.get_running_loop() if auto_start else None
+        teammate_id = f"tm_{uuid.uuid4().hex}"
         if execution_context is not None:
             from dataclasses import replace
 
@@ -212,54 +240,67 @@ class TeamManager:
         # Resolve markdown role specs if custom prompt not provided. The scan
         # root is clamped to a resolved directory (project root override wins)
         # so a stray process cwd cannot redirect role discovery.
-        if not system_prompt:
-            try:
-                import os
+        try:
+            import os
 
-                from pathlib import Path
-                from coderai.subagents.registry import discover_markdown_agents
+            from pathlib import Path
+            from coderai.subagents.registry import discover_markdown_agents
 
-                scan_root = Path(
-                    project_root or os.environ.get("CODERAI_PROJECT_ROOT") or str(Path.cwd())
-                ).resolve()
-                for d in discover_markdown_agents(scan_root):
-                    if d.name.lower() == role.lower():
+            scan_root = Path(
+                project_root or os.environ.get("CODERAI_PROJECT_ROOT") or str(Path.cwd())
+            ).resolve()
+            for d in discover_markdown_agents(scan_root):
+                if d.name.lower() == role.lower():
+                    if not system_prompt:
                         system_prompt = d.system_prompt or None
-                        if not allowed_tools and d.tools:
-                            allowed_tools = list(d.tools)
-                        if mode == "general" and d.mode:
-                            mode = d.mode
-                        break
-            except Exception:
-                pass
+                    from coderai.subagents.registry import resolve_tool_policy
 
+                    policy, tools = resolve_tool_policy(
+                        role, requested=allowed_tools, project_root=str(scan_root)
+                    )
+                    allowed_tools = list(tools) if policy == "allowlist" else None
+                    if mode == "general" and d.mode:
+                        mode = d.mode
+                    break
+        except Exception as exc:
+            raise ValueError("Cannot resolve teammate role policy") from exc
+
+        from coderai.subagents.registry import normalize_tool_list
+
+        normalized = normalize_tool_list(allowed_tools)
+        allowed_tools = list(normalized) if normalized is not None else None
+        if auto_start and execution_context is None and allowed_tools is None:
+            raise ValueError("Standalone workers must supply an explicit tool policy")
         if not system_prompt and role.strip().lower() in REVIEWER_ROLE_NAMES:
             system_prompt = DEFAULT_REVIEWER_SYSTEM_PROMPT
 
+        scope = team_scope(execution_context) if execution_context else None
+        if any(
+            tm.name.casefold() == name.casefold() and tm.owner_scope == scope
+            for tm in self._teammates.values()
+        ):
+            raise ValueError("Teammate names must be unique within a team")
         teammate = Teammate(
             teammate_id=teammate_id,
             name=name,
             role=role,
-            mode=mode if mode in ("read_only", "general") else "general",
+            mode=mode,
             system_prompt=system_prompt,
             allowed_tools=allowed_tools,
             status="idle",
             project_root=project_root,
             parent_session_id=parent_session_id,
             depth=depth,
+            owner_scope=team_scope(execution_context) if execution_context else None,
         )
         self._teammates[teammate_id] = teammate
         if execution_context is not None:
             self._execution_contexts[teammate_id] = execution_context
         self.channel.register_mailbox(teammate_id)
 
-        if auto_start:
-            try:
-                loop = asyncio.get_running_loop()
-                t = loop.create_task(self._teammate_worker(teammate_id))
-                self._active_tasks[teammate_id] = t
-            except RuntimeError:
-                pass
+        self._wakeups[teammate_id] = asyncio.Event()
+        if loop is not None:
+            self._active_tasks[teammate_id] = loop.create_task(self._teammate_worker(teammate_id))
 
         return teammate
 
@@ -267,10 +308,12 @@ class TeamManager:
         """Look up a teammate by ID or name."""
         if identifier in self._teammates:
             return self._teammates[identifier]
-        for tm in self._teammates.values():
-            if tm.name.lower() == identifier.lower():
-                return tm
-        return None
+        matches = [
+            tm for tm in self._teammates.values() if tm.name.casefold() == identifier.casefold()
+        ]
+        if len(matches) > 1:
+            raise ValueError("Teammate name is ambiguous; use its ID")
+        return matches[0] if matches else None
 
     def list_teammates(self) -> list[Teammate]:
         return list(self._teammates.values())
@@ -281,7 +324,22 @@ class TeamManager:
         recipient: str,
         content: str,
         task_id: str | None = None,
+        owner_scope: tuple[str, str] | None = None,
     ) -> TeamMessage:
+        if not isinstance(content, str) or len(content.encode("utf-8")) > 65536:
+            raise ValueError("Team messages must be text of at most 64 KiB")
+        sender_tm = self.get_teammate(sender)
+        scope = sender_tm.owner_scope if sender_tm else owner_scope
+        target = next(
+            (
+                tm
+                for tm in self._teammates.values()
+                if tm.owner_scope == scope and recipient in {tm.name, tm.teammate_id}
+            ),
+            None,
+        )
+        if recipient != "all" and target is None:
+            raise KeyError("Recipient is not in this team")
         msg = TeamMessage(
             sender=sender,
             recipient=recipient,
@@ -290,6 +348,8 @@ class TeamManager:
         )
         if recipient == "all":
             for tm in self._teammates.values():
+                if tm.owner_scope != scope:
+                    continue
                 tm.inbox.append(msg)
                 tm.unread_messages.append(msg)
                 if len(tm.inbox) > MAX_TEAM_INBOX:
@@ -305,7 +365,6 @@ class TeamManager:
                             msg.message_id,
                         )
         else:
-            target = self.get_teammate(recipient)
             if target:
                 target.inbox.append(msg)
                 target.unread_messages.append(msg)
@@ -334,6 +393,7 @@ class TeamManager:
             if len(sender_tm.outbox) > MAX_TEAM_INBOX:
                 sender_tm.outbox = sender_tm.outbox[-MAX_TEAM_INBOX:]
 
+        self._wake_workers()
         return msg
 
     def get_messages(self, teammate_id: str, mark_read: bool = True) -> list[TeamMessage]:
@@ -357,107 +417,121 @@ class TeamManager:
                 f"Unknown wait_for mode '{wait_for}'. "
                 "Expected 'completion', 'message', or 'any_settlement'."
             )
-        if timeout_seconds < 0:
+        if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError(f"timeout_seconds must be >= 0, got {timeout_seconds}.")
         if isinstance(agent_ids, str):
             target_ids = [agent_ids]
         else:
             target_ids = list(agent_ids)
 
+        if any(not isinstance(aid, str) or not aid for aid in target_ids):
+            raise ValueError("agent_ids must contain nonempty strings")
         if not target_ids:
             return {"ok": True, "status": "no_agents", "agents": []}
 
-        start_time = time.time()
+        start_time = time.monotonic()
         agent_registry = get_agent_registry()
 
-        while True:
-            all_settled = True
-            agent_statuses: list[dict[str, Any]] = []
+        changed = asyncio.Event()
+        agent_registry.watch(changed)
+        try:
+            while True:
+                changed.clear()
+                all_settled = True
+                agent_statuses: list[dict[str, Any]] = []
 
-            for aid in target_ids:
-                # Check in TeamManager
-                tm = self.get_teammate(aid)
-                if tm:
-                    is_done = tm.status in ("completed", "failed", "interrupted")
-                    has_msg = len(tm.unread_messages) > 0
+                for aid in target_ids:
+                    # Check in TeamManager
+                    tm = self.get_teammate(aid)
+                    if tm:
+                        is_done = tm.status in ("completed", "failed", "interrupted")
+                        has_msg = len(tm.unread_messages) > 0
 
-                    if wait_for == "completion":
-                        settled = is_done
-                    elif wait_for == "message":
-                        settled = has_msg
-                    else:  # any_settlement
-                        settled = is_done or has_msg
+                        if wait_for == "completion":
+                            settled = is_done
+                        elif wait_for == "message":
+                            settled = has_msg
+                        else:  # any_settlement
+                            settled = is_done or has_msg
 
-                    if not settled:
-                        all_settled = False
+                        if not settled:
+                            all_settled = False
 
+                        agent_statuses.append(
+                            {
+                                "id": tm.teammate_id,
+                                "name": tm.name,
+                                "role": tm.role,
+                                "status": tm.status,
+                                "settled": settled,
+                                "inbox_count": len(tm.inbox),
+                                "last_report": tm.last_report,
+                            }
+                        )
+                        continue
+
+                    # Check in AgentRegistry
+                    handle = agent_registry.get(aid)
+                    if handle:
+                        is_done = handle.status in TERMINAL_AGENT_STATUSES
+                        has_msg = len(handle.inbox) > 0
+
+                        if wait_for == "completion":
+                            settled = is_done
+                        elif wait_for == "message":
+                            settled = has_msg
+                        else:
+                            settled = is_done or has_msg
+
+                        if not settled:
+                            all_settled = False
+
+                        agent_statuses.append(
+                            {
+                                "id": handle.id,
+                                "description": handle.description,
+                                "status": handle.status,
+                                "settled": settled,
+                                "inbox_count": len(handle.inbox),
+                                "report": handle.report,
+                            }
+                        )
+                        continue
+
+                    # Agent not found
                     agent_statuses.append(
                         {
-                            "id": tm.teammate_id,
-                            "name": tm.name,
-                            "role": tm.role,
-                            "status": tm.status,
-                            "settled": settled,
-                            "inbox_count": len(tm.inbox),
-                            "last_report": tm.last_report,
+                            "id": aid,
+                            "status": "not_found",
+                            "settled": True,
                         }
                     )
-                    continue
 
-                # Check in AgentRegistry
-                handle = agent_registry.get(aid)
-                if handle:
-                    is_done = handle.status in ("completed", "failed", "interrupted", "timeout")
-                    has_msg = len(handle.inbox) > 0
-
-                    if wait_for == "completion":
-                        settled = is_done
-                    elif wait_for == "message":
-                        settled = has_msg
-                    else:
-                        settled = is_done or has_msg
-
-                    if not settled:
-                        all_settled = False
-
-                    agent_statuses.append(
-                        {
-                            "id": handle.id,
-                            "description": handle.description,
-                            "status": handle.status,
-                            "settled": settled,
-                            "inbox_count": len(handle.inbox),
-                            "report": handle.report,
-                        }
-                    )
-                    continue
-
-                # Agent not found
-                agent_statuses.append(
-                    {
-                        "id": aid,
-                        "status": "not_found",
-                        "settled": True,
+                if any(status["status"] == "not_found" for status in agent_statuses):
+                    return {"ok": False, "status": "not_found", "agents": agent_statuses}
+                if all_settled:
+                    return {
+                        "ok": True,
+                        "status": "settled",
+                        "elapsed_seconds": max(0.0, time.monotonic() - start_time),
+                        "agents": agent_statuses,
                     }
-                )
 
-            if all_settled:
-                return {
-                    "ok": True,
-                    "status": "settled",
-                    "elapsed_seconds": max(0.0, time.time() - start_time),
-                    "agents": agent_statuses,
-                }
+                if time.monotonic() - start_time >= timeout_seconds:
+                    return {
+                        "ok": False,
+                        "status": "timeout",
+                        "elapsed_seconds": timeout_seconds,
+                        "agents": agent_statuses,
+                    }
 
-            if time.time() - start_time >= timeout_seconds:
-                return {
-                    "ok": False,
-                    "status": "timeout",
-                    "elapsed_seconds": timeout_seconds,
-                    "agents": agent_statuses,
-                }
-
-            await asyncio.sleep(0.5)
+                remaining = max(0.0, timeout_seconds - (time.monotonic() - start_time))
+                try:
+                    await asyncio.wait_for(changed.wait(), timeout=remaining)
+                except TimeoutError:
+                    pass
+        finally:
+            agent_registry.unwatch(changed)
 
     def get_runnable_tasks_for_teammate(self, teammate_id: str) -> list[TeamTask]:
         tm = self.get_teammate(teammate_id)
@@ -469,13 +543,18 @@ class TeamManager:
         seen: set[str] = set()
         runnable: list[TeamTask] = []
         for t in candidate_tasks:
+            if t.owner_scope != tm.owner_scope:
+                continue
             if t.task_id not in seen:
                 seen.add(t.task_id)
                 if t.status in ("pending", "in_progress") and self.task_board.can_start_task(
                     t.task_id
                 ):
                     runnable.append(t)
-        return runnable
+        priorities = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        return sorted(
+            runnable, key=lambda task: (priorities[task.priority], task.created_at, task.task_id)
+        )
 
     async def _execute_task(self, teammate: Teammate, task: TeamTask) -> str:
         """Execute task assigned to a teammate.
@@ -542,8 +621,10 @@ class TeamManager:
     async def _teammate_worker(self, teammate_id: str) -> None:
         """Autonomous worker loop for active teammates in the swarm."""
         mb = self.channel.get_mailbox(teammate_id)
+        wake = self._wakeups[teammate_id]
         while True:
             try:
+                wake.clear()
                 tm = self.get_teammate(teammate_id)
                 if not tm:
                     break
@@ -553,7 +634,9 @@ class TeamManager:
                 if runnable_tasks:
                     task = runnable_tasks[0]
                     if task.status == "pending":
-                        self.task_board.update_task(task.task_id, status="in_progress")
+                        self.task_board.update_task(
+                            task.task_id, status="in_progress", expected_revision=task.revision
+                        )
                     tm.status = "working"
                     try:
                         report = await self._execute_task(tm, task)
@@ -573,7 +656,7 @@ class TeamManager:
                         tm.status = "failed"
                         tm.last_report = err
                         self.send_message(
-                            sender=tm.name,
+                            sender=tm.teammate_id,
                             recipient="all",
                             content=f"Task '{task.title}' failed for {tm.name}: {err}",
                             task_id=task.task_id,
@@ -588,7 +671,7 @@ class TeamManager:
                     tm.status = "completed"
                     tm.last_report = report
                     self.send_message(
-                        sender=tm.name,
+                        sender=tm.teammate_id,
                         recipient="all",
                         content=f"Task '{task.title}' completed by {tm.name}: {report}",
                         task_id=task.task_id,
@@ -604,13 +687,18 @@ class TeamManager:
                             if not is_acknowledgement_message(msg.content):
                                 reply = f"Acknowledged by {tm.name} ({tm.role}): {msg.content[:60]}"
                                 self.send_message(
-                                    sender=tm.name,
+                                    sender=tm.teammate_id,
                                     recipient=msg.sender,
                                     content=reply,
                                     task_id=msg.task_id,
                                 )
 
-                await asyncio.sleep(0.1)
+                if mb and not mb.is_empty():
+                    continue
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=300.0)
+                except TimeoutError:
+                    break
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -620,6 +708,13 @@ class TeamManager:
                     exc_info=True,
                 )
                 await asyncio.sleep(0.5)
+
+        self._active_tasks.pop(teammate_id, None)
+        self._wakeups.pop(teammate_id, None)
+        self.channel.unregister_mailbox(teammate_id)
+        self._execution_contexts.pop(teammate_id, None)
+        self._teammates.pop(teammate_id, None)
+        get_agent_registry().changed()
 
     def cancel_owned_teammates(
         self, session_ids: set[str], project_root: str
@@ -647,9 +742,15 @@ class TeamManager:
             self._active_tasks.pop(teammate_id, None)
             contexts = getattr(self, "_execution_contexts", {})
             contexts.pop(teammate_id, None)
+            self._wakeups.pop(teammate_id, None)
             self.channel.unregister_mailbox(teammate_id)
             teammate.status = "interrupted"
             self._teammates.pop(teammate_id, None)
+        scopes = {(root, sid) for sid in session_ids}
+        for task_id, task_record in list(self.task_board._tasks.items()):
+            if task_record.owner_scope in scopes:
+                self.task_board._tasks.pop(task_id)
+        self._wake_workers()
         return tasks
 
     def cancel_all_teammates(self) -> None:
@@ -678,6 +779,12 @@ class TeamManager:
             except (asyncio.CancelledError, Exception):
                 pass
         self._active_tasks.clear()
+        for teammate_id in list(self._teammates):
+            self.channel.unregister_mailbox(teammate_id)
+        self._teammates.clear()
+        self._execution_contexts.clear()
+        self._wakeups.clear()
+        self.task_board._tasks.clear()
 
 
 _global_team_manager = TeamManager()

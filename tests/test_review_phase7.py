@@ -11,7 +11,7 @@ Covers:
 - WF-A14: External CLI backends use async process execution and kill process group on cancel.
 - WF-A16: Team tasks get session project root, parent_session_id, depth; ready tasks auto-started.
 - WF-A17: Subagent hooks pass parent_session_id; SubagentStop fires from finally and in continuable runs.
-- WF-A18: Goals advance rounds from turn loop, keyed by project root, atomic write, validate max_rounds, one running.
+- WF-A18: Goals record completed attempts, keyed by project root, atomic write, validate max_rounds, one running.
 - IN-A6: Disconnect old MCP client before replacing; wrap disconnect in try.
 - IN-A7: Stdio writes off-loop; HTTP honours Mcp-Session-Id, sets last_http_status, doesn't swallow errors.
 - IN-A8: OAuth device flow handles access_denied, slow_down (+5s), expires_in, bounded recursion.
@@ -108,7 +108,8 @@ async def test_wf_a8_continuable_worker_kill_and_cap() -> None:
     assert handle.status == "interrupted"
     mock_task.cancel.assert_called_once()
 
-    # Eviction of terminal handles
+    # Eviction follows worker settlement, even after a kill signal.
+    mock_task.done.return_value = True
     registry.evict(handle.id)
     assert registry.get(handle.id) is None
 
@@ -257,11 +258,11 @@ async def test_wf_a17_subagent_hooks_parent_session_id(tmp_path: Path) -> None:
 
     with (
         patch(
-            "coderai.hooks.runner.run_on_subagent_spawn",
+            "coderai.hooks.runner.run_on_subagent_spawn_async",
             side_effect=lambda **kw: fired_spawn_sessions.append(kw.get("parent_session_id")),
         ),
         patch(
-            "coderai.hooks.runner.run_subagent_stop",
+            "coderai.hooks.runner.run_subagent_stop_async",
             side_effect=lambda sid, *a, **kw: fired_stop_sessions.append(sid),
         ),
     ):
@@ -287,16 +288,16 @@ def test_wf_a18_goals_advance_and_only_one_running(tmp_path: Path) -> None:
     store = get_goal_store(str(tmp_path))
     g1 = store.create("session_1", "Objective 1", max_rounds=2)
     assert g1.status == "running"
-    assert g1.round == 1
+    assert g1.round == 0
 
-    # Advance round
-    store.advance_round("session_1", g1.id)
+    # Record a completed goal attempt
+    store.record_attempt("session_1", g1.id)
     g1_updated = store.get_active_goal("session_1")
     assert g1_updated is not None
-    assert g1_updated.round == 2
+    assert g1_updated.round == 1
 
-    # Advancing past max_rounds marks failed
-    store.advance_round("session_1", g1.id)
+    # Consuming max_rounds without completion marks failed
+    store.record_attempt("session_1", g1.id)
     g1_failed = store.list("session_1")[0]
     assert g1_failed.status == "failed"
 

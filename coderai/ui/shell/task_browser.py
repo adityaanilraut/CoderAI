@@ -15,9 +15,7 @@ def _collect_jobs(mgr: Any, session_id: str | None, active_only: bool = False) -
     store = getattr(mgr, "job_store", None)
     if not store:
         return []
-    jobs = list(getattr(store, "_jobs", {}).values())
-    if session_id:
-        jobs = [j for j in jobs if getattr(j, "session_id", None) in (session_id, "default", None)]
+    jobs = store.snapshot(session_id) if session_id else []
     if active_only:
         jobs = [j for j in jobs if getattr(j, "status", "") == "running"]
     return jobs
@@ -35,38 +33,20 @@ def _job_detail(job: Any) -> list[tuple[str, str]]:
 
 
 def _job_preview(job: Any, n: int = 12) -> str:
-    import os
+    from coderai.utils.file_tail import tail_file
 
     path = getattr(job, "output_path", None)
-    if path and os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
-            return "".join(lines[-n:]) or "(no output yet)"
-        except Exception as e:
-            return f"(cannot read output: {e})"
-    return "(no output file)"
+    return (tail_file(path, lines=n) or "(no output yet)") if path else "(no output file)"
 
 
 def task_browser_widths(term_cols: int) -> tuple[int, int, int]:
     """Pane widths that fit the terminal, including the gap between columns."""
-    usable = max(48, term_cols)
-    gap = 2
-    left_w = max(28, min(40, usable * 2 // 5))
-    detail_w = max(22, min(28, usable // 4))
-    preview_w = usable - left_w - detail_w - gap
-    if preview_w < 16:
-        preview_w = 16
-        remaining = max(0, usable - gap - preview_w)
-        left_w = max(20, remaining * 3 // 5)
-        detail_w = remaining - left_w
-        if detail_w < 16:
-            detail_w = 16
-            left_w = max(16, remaining - detail_w)
-    total = left_w + detail_w + preview_w + gap
-    if total > usable:
-        preview_w = max(12, preview_w - (total - usable))
-    return left_w, detail_w, preview_w
+    usable = max(1, term_cols)
+    if usable < 80:
+        return usable, 0, 0
+    left = min(40, usable // 3)
+    detail = min(28, usable // 4)
+    return left, detail, usable - left - detail - 2
 
 
 def run_task_browser(console: Any, mgr: Any, session_id: str | None) -> None:
@@ -106,7 +86,7 @@ def run_task_browser(console: Any, mgr: Any, session_id: str | None) -> None:
         except Exception:
             term_cols = 80
         left_w, detail_w, preview_w = task_browser_widths(term_cols)
-        jobs = _collect_jobs(mgr, session_id, active_only)[:20]
+        jobs = _collect_jobs(mgr, session_id, active_only)
         if jobs and idx >= len(jobs):
             idx = len(jobs) - 1
         if not jobs:
@@ -116,7 +96,7 @@ def run_task_browser(console: Any, mgr: Any, session_id: str | None) -> None:
         left.add_column("#", width=3, justify="right", no_wrap=True)
         left.add_column("Status", width=8, no_wrap=True, overflow="ellipsis")
         left.add_column("Label", overflow="ellipsis", no_wrap=True)
-        for i, j in enumerate(jobs[:20]):
+        for i, j in enumerate(jobs):
             marker = "❯" if i == idx else " "
             status = str(getattr(j, "status", "?")).upper()
             left.add_row(marker, str(i + 1), status, str(getattr(j, "label", "")))
@@ -140,7 +120,11 @@ def run_task_browser(console: Any, mgr: Any, session_id: str | None) -> None:
             "[dim][bold]↑/↓[/] move · [bold]Enter[/] output · [bold]S[/] stop · "
             "[bold]Tab[/] filter · [bold]R[/] refresh · [bold]Q[/] exit[/]"
         )
-        body = Columns([left, detail, preview], padding=(0, 1), expand=False)
+        body = (
+            left
+            if term_cols < 80
+            else Columns([left, detail, preview], padding=(0, 1), expand=False)
+        )
         return Group(body, Text(""), footer), jobs
 
     if sys.platform == "win32" or not sys.stdin.isatty():
@@ -218,7 +202,7 @@ def run_task_browser(console: Any, mgr: Any, session_id: str | None) -> None:
             if key in ("s", "S") and chosen is not None and store:
                 ans = input(f"Stop task {getattr(chosen, 'id', '?')}? [y/N]: ").strip().lower()
                 if ans in ("y", "yes"):
-                    store.cancel(getattr(chosen, "id", ""))
+                    store.kill(getattr(chosen, "id", ""), session_id)
                 continue
     except Exception:
         jobs = _collect_jobs(mgr, session_id)

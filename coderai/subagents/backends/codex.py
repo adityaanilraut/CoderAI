@@ -41,15 +41,26 @@ class CodexDriver(CliSubagentDriver):
         bin_name = self.config.codex_bin or shutil.which("codex") or "codex"
         cwd = project_root or self.config.cwd
 
-        cmd = [bin_name, "exec", prompt, "--json"]
-        if self.config.approval_policy in ("dangerously-bypass", "never"):
-            cmd.extend(["--approval-policy", "never"])
+        if self.config.approval_policy not in {"never", "approve-for-me", "dangerously-bypass"}:
+            raise ValueError("Invalid Codex approval policy")
+        cmd = [bin_name, "exec", "--json", "-c", 'approval_policy="never"']
+        if self.config.approval_policy == "dangerously-bypass":
+            cmd.append("--dangerously-bypass-approvals-and-sandbox")
         elif self.config.approval_policy == "approve-for-me":
-            cmd.extend(["--approval-policy", "on-request", "--auto-approve"])
+            cmd.append("--approve-for-me")
+        else:
+            cmd.extend(["--sandbox", "workspace-write"])
 
         cmd.extend(self.config.extra_args)
 
-        res = await self._run_command(cmd, cwd=cwd, env=self.config.env, backend_name="Codex")
+        cmd.append("-")
+        res = await self._run_command(
+            cmd,
+            cwd=cwd,
+            env=self.config.env,
+            backend_name="Codex",
+            input_data=prompt.encode("utf-8"),
+        )
         return {
             "ok": res["ok"],
             "status": "completed"

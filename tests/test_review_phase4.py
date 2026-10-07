@@ -365,16 +365,18 @@ def test_pwsh_uses_scrubbed_shell_env(monkeypatch: pytest.MonkeyPatch):
     captured: dict = {}
 
     class _Completed:
+        pid = 99999
         returncode = 0
-        stdout = "ok"
-        stderr = ""
+
+        def communicate(self, timeout=None):
+            return "ok", ""
 
     def _fake_run(*args: object, **kwargs: object) -> _Completed:
         captured.update(kwargs)
         return _Completed()
 
     monkeypatch.setattr(shell_mod, "_resolve_pwsh_executable", lambda: "/bin/true")
-    monkeypatch.setattr(shell_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(shell_mod.subprocess, "Popen", _fake_run)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-host-secret")
     ctx = MagicMock()
     ctx.project_root = "/tmp"

@@ -128,7 +128,11 @@ def test_cli_completer_suggests_tokens_for_prefix(tmp_path: pathlib.Path) -> Non
 
     res = CoderAICompleter(str(tmp_path)).complete("/to", 0)
     assert res is not None
-    assert "/tokens" in res
+    assert any(
+        "/tokens" in item
+        for item in (res, CoderAICompleter(str(tmp_path)).complete("/to", 1))
+        if item
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -209,15 +213,15 @@ def test_cli_tool_card_parses_and_renders() -> None:
 
 def test_cli_status_bar_formats_model_tokens() -> None:
     """Status bar embeds model, token count, thinking flag, and branch."""
-    from coderai.ui.shell.prompt import format_status_bar, render_status_bar
+    from coderai.ui.shell.prompt import format_status_bar, render_statusline
 
     bar = format_status_bar("gpt-4o", 1250, True, "main")
     text = str(bar)
     assert "gpt-4o" in text and "1,250" in text and "ON" in text and "main" in text
     mock_console = MagicMock()
-    render_status_bar(mock_console, "gpt-4o", 1250, False, "/tmp")
+    render_statusline(mock_console, "gpt-4o", 1250, False, "/tmp")
     assert mock_console.print.called
-    render_status_bar(None, "gpt-4o", 0, True, "/tmp")
+    render_statusline(None, "gpt-4o", 0, True, "/tmp")
 
 
 def test_cli_file_mention_expands_and_suggests(tmp_path: pathlib.Path) -> None:

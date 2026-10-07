@@ -12,7 +12,7 @@ from typing import Any
 class TeamMessage:
     """A direct message or notification sent between teammates."""
 
-    message_id: str = field(default_factory=lambda: f"msg_{uuid.uuid4().hex[:8]}")
+    message_id: str = field(default_factory=lambda: f"msg_{uuid.uuid4().hex}")
     sender: str = "coordinator"
     recipient: str = "all"
     content: str = ""
@@ -46,6 +46,7 @@ class TeamTask:
     revision: int = 1
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    owner_scope: tuple[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +85,7 @@ class Teammate:
     parent_session_id: str | None = None
     depth: int = 0
     created_at: float = field(default_factory=time.time)
+    owner_scope: tuple[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -42,33 +42,18 @@ def _manager_matches_session(manager: Any, session_id: str) -> bool:
     )
 
 
-def global_afk_check() -> bool:
-    """Check if any active session manager has AFK enabled (questions auto-dismiss)."""
-    for m in _session_managers:
-        try:
-            if m.is_afk():
-                return True
-        except Exception:
-            continue
-    return False
-
-
-def global_auto_approve_check() -> bool:
-    """Check if any active session manager will auto-approve tool actions (YOLO or AFK)."""
-    for m in _session_managers:
-        try:
-            if m.is_auto_approve():
-                return True
-        except Exception:
-            continue
-    return False
+def _session_auto_flag(manager: Any, session_id: str, flag: str) -> bool:
+    if session_id == getattr(manager, "_active_session_id", None):
+        return bool(getattr(manager, f"is_{flag}")())
+    state = getattr(manager, "_session_states", {}).get(session_id)
+    return bool(state and getattr(state.approval, flag, False))
 
 
 def check_afk_for_session(session_id: str) -> bool:
     """Check if AFK is enabled for a given session ID."""
     for m in _session_managers:
         try:
-            if _manager_matches_session(m, session_id) and m.is_afk():
+            if _manager_matches_session(m, session_id) and _session_auto_flag(m, session_id, "afk"):
                 return True
         except Exception:
             continue
@@ -79,7 +64,10 @@ def check_auto_approve_for_session(session_id: str) -> bool:
     """Check if YOLO or AFK is enabled for a given session ID."""
     for m in _session_managers:
         try:
-            if _manager_matches_session(m, session_id) and m.is_auto_approve():
+            if _manager_matches_session(m, session_id) and (
+                _session_auto_flag(m, session_id, "yolo")
+                or _session_auto_flag(m, session_id, "afk")
+            ):
                 return True
         except Exception:
             continue

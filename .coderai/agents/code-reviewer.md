@@ -1,4 +1,5 @@
 ---
+mode: read_only
 name: code-reviewer
 description: High-precision code review specialist for concrete bugs, concurrency issues, security vulnerabilities, regressions, and API contracts.
 tools: ["read", "grep", "glob"]

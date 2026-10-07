@@ -7,6 +7,7 @@ from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.markup import escape
 
 from coderai.soul.session.manager import SessionManager
 from coderai.ui.shell.console import PANEL_BORDER_STYLE, PANEL_PADDING, kv_table
@@ -71,14 +72,9 @@ def compute_session_stats(mgr: SessionManager, session_id: str | None) -> dict[s
     stats["turns"] = turns
     stats["files_modified"] = sorted(modified_files)
 
-    from coderai.ui.shell.session_picker import estimate_model_cost
+    from coderai.ui.shell.runtime_view import session_cost
 
-    stats["estimated_cost"] = estimate_model_cost(
-        stats["model"],
-        stats["prompt_tokens"],
-        stats["completion_tokens"],
-        stats["cached_tokens"],
-    )
+    stats["estimated_cost"] = session_cost(entry, stats["model"]) if entry else None
 
     # Checkpoint hash from git file history if available
     try:
@@ -104,13 +100,15 @@ def render_exit_summary(console: Any | None, mgr: SessionManager, session_id: st
         f"{files_cnt} files ({', '.join(stats['files_modified'])})" if files_cnt > 0 else "None"
     )
     checkpoint_str = stats["checkpoint_hash"] or "clean"
-    cost_str = f"${stats['estimated_cost']:.4f} USD"
+    from coderai.ui.shell.runtime_view import cost_text
+
+    cost_str = cost_text(stats["estimated_cost"])
 
     rows: list[tuple[str, str]] = [
-        ("Session ID:", f"[cyan]{stats['session_id']}[/]"),
-        ("Active Model:", f"[bold cyan]{stats['model']}[/]"),
+        ("Session ID:", f"[cyan]{escape(stats['session_id'])}[/]"),
+        ("Active Model:", f"[bold cyan]{escape(stats['model'])}[/]"),
         ("Conversation Turns:", f"{stats['turns']}"),
-        ("Files Modified:", f"[bold green]{files_str}[/]"),
+        ("Files Modified:", f"[bold green]{escape(files_str)}[/]"),
     ]
     token_usage_str = f"Prompt: {stats['prompt_tokens']:,} | Comp: {stats['completion_tokens']:,} | Total: {stats['total_tokens']:,}"
     if stats.get("cached_tokens", 0) > 0:
@@ -134,4 +132,6 @@ def render_exit_summary(console: Any | None, mgr: SessionManager, session_id: st
     )
     active_console.print()
     active_console.print(panel)
-    active_console.print("[dim]✓ All session history and code checkpoints saved.[/]\n")
+    active_console.print(
+        "[dim]Resume with coderai --last. /history inspects messages; /undo selects a checkpoint.[/]\n"
+    )

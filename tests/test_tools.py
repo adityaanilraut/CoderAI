@@ -15,7 +15,8 @@ from coderai.tools.file.replace import handle as edit_handle
 from coderai.tools.legacy.executor import ToolExecutor
 from coderai.tools.file.read import handle as read_handle
 from coderai.tools.legacy.registry import ToolRegistry
-from coderai.tools.file.glob import handle_glob_tool, handle_grep_tool, resolve_rg_path
+from coderai.tools.file.glob import handle_glob_tool, resolve_rg_path
+from coderai.tools.file.grep import handle_grep_tool
 from coderai.tools.file.replace import handle_str_replace_editor_tool
 from coderai.tools.legacy.terminal import (
     handle_terminal_close_tool,
@@ -37,6 +38,61 @@ def _ctx(tmp_path: pathlib.Path, session_id: str = "sess") -> dict:
     clear_session_state(session_id)
     clear_session_working_dir(session_id)
     return {"session_id": session_id, "project_root": str(tmp_path)}
+
+
+def test_directory_read_applies_gitignore_patterns_and_default_exclusions(tmp_path):
+    from coderai.tools.file.read import _find_suffix_matches, _read_directory
+
+    (tmp_path / ".gitignore").write_text(
+        "/root-only/\n[ab].txt\n*.py\n!keep.py\n\\!literal.txt\nignored/\n!ignored/keep.txt\n"
+    )
+    for name in (
+        "root-only/hidden.txt",
+        "nested/root-only/visible.txt",
+        "a.txt",
+        "b.txt",
+        "X.PY",
+        "hidden.py",
+        "keep.py",
+        "!literal.txt",
+        "ignored/keep.txt",
+        "node_modules/hidden.js",
+        ".venv/hidden.txt",
+    ):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("content")
+
+    listing = _read_directory(str(tmp_path), str(tmp_path))
+    for name in ("nested/root-only/visible.txt", "X.PY", "keep.py"):
+        assert name in listing
+    for name in (
+        "root-only/hidden.txt",
+        "a.txt",
+        "b.txt",
+        "hidden.py",
+        "!literal.txt",
+        "ignored/keep.txt",
+        "node_modules",
+        ".venv",
+    ):
+        assert name not in listing
+    assert _find_suffix_matches(str(tmp_path), "X.PY") == [str(tmp_path / "X.PY")]
+    assert _find_suffix_matches(str(tmp_path), "keep.py") == [str(tmp_path / "keep.py")]
+    assert not _find_suffix_matches(str(tmp_path), "hidden.py")
+    assert not _find_suffix_matches(str(tmp_path), "ignored/keep.txt")
+
+
+@pytest.mark.parametrize(
+    "text,needle", [("say(“hello”)", 'say("hello")'), (r"say(\"hello\")", 'say("hello")')]
+)
+def test_loose_edit_matching_accepts_quote_escape_variants_only(text, needle):
+    from coderai.tools.file.replace import _find_loose_candidate, find_loose_escape_matches
+
+    matches = find_loose_escape_matches(text, needle)
+    assert len(matches) == 1 and matches[0]["score"] == 1.0
+    assert _find_loose_candidate(text, needle) == text
+    assert _find_loose_candidate("acaba", "abaca") is None
 
 
 def test_bash_executes_command_returns_output(tmp_path):
@@ -311,7 +367,7 @@ async def test_web_search_mocked_returns_sources(tmp_path, monkeypatch):
             )
 
     monkeypatch.setattr(
-        search_mod, "resolve_web_search_provider", lambda name=None: _FakeProvider()
+        search_mod, "resolve_web_search_provider", lambda name=None, **kwargs: _FakeProvider()
     )
     ctx = {"session_id": "ws", "project_root": str(tmp_path)}
     res = await search_handle({"query": "mock query"}, ctx)
@@ -331,6 +387,8 @@ async def test_web_fetch_mocked_returns_markdown(tmp_path, monkeypatch):
         status_code = 200
         headers = {"content-type": "text/html"}
         text = "<html><head><title>Hi</title></head><body><h1>Hello Page</h1></body></html>"
+        content = text.encode()
+        fetched_at = 0.0
         url = "https://example.com/"
         from_cache = False
         elapsed_ms = 5

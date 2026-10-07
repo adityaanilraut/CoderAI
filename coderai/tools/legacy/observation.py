@@ -1,105 +1,111 @@
-"""Filesystem Observation Policy
-
-Tracks authoritative read observations per session. Ensures an agent must observe
-(read/view) an existing file before modifying it, and prevents mutations on stale
-versions that have changed on disk since last observed.
-"""
+"""Session-scoped raw file observations and fail-closed mutation verification."""
 
 from __future__ import annotations
 
 import hashlib
 import os
-import pathlib
+import stat
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+def file_identity(path: str) -> tuple[int, int, int, int]:
+    st = Path(path).stat()
+    if not stat.S_ISREG(st.st_mode):
+        raise OSError("Refusing to observe a non-regular file")
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
+
+
+def file_digest(path: str) -> str:
+    digest = hashlib.sha256()
+    from coderai.utils.path import open_regular_binary
+
+    with open_regular_binary(path) as stream:
+        for chunk in iter(lambda: stream.read(64 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class FileObservation:
+    digest: str
+    identity: tuple[int, int, int, int]
+    encoding: str = "utf8"
+    line_endings: Any = "LF"
+    complete: bool = False
 
 
 class FileObservationTracker:
-    """Session-scoped file observation state and anti-clobber guard."""
-
     def __init__(self) -> None:
-        # Key: (session_id or "default", canonical_path) -> (mtime, sha256_hash)
-        self._observed: dict[str, dict[str, tuple[float, str]]] = {}
+        self._observed: dict[str, dict[str, FileObservation]] = {}
 
     def _canonical(self, path: str) -> str:
-        try:
-            return str(pathlib.Path(path).resolve())
-        except Exception:
-            return os.path.abspath(path)
+        return str(Path(path).resolve())
+
+    def get(self, session_id: str, path: str) -> FileObservation | None:
+        return self._observed.get(session_id, {}).get(self._canonical(path))
 
     def record_observation(
         self,
         session_id: str | None,
         file_path: str,
         content: str | bytes | None = None,
+        *,
+        digest: str | None = None,
+        identity: tuple[int, int, int, int] | None = None,
+        encoding: str = "utf8",
+        line_endings: Any = "LF",
+        complete: bool = False,
     ) -> None:
-        """Record an authoritative presence observation for a file."""
+        del content  # Normalized/display text is never a digest of on-disk bytes.
         sid = session_id or "default"
         canon = self._canonical(file_path)
-        if sid not in self._observed:
-            self._observed[sid] = {}
-
         try:
-            if not os.path.exists(canon):
+            before = file_identity(canon)
+            raw_digest = digest or file_digest(canon)
+            after = file_identity(canon)
+            if before != after or (identity is not None and identity != after):
+                self._observed.get(sid, {}).pop(canon, None)
                 return
-            mtime = os.path.getmtime(canon)
-            if content is not None:
-                raw = content.encode("utf-8") if isinstance(content, str) else content
-                file_hash = hashlib.sha256(raw).hexdigest()
-            else:
-                with open(canon, "rb") as f:
-                    file_hash = hashlib.sha256(f.read()).hexdigest()
-            self._observed[sid][canon] = (mtime, file_hash)
-        except Exception:
-            pass
+            self._observed.setdefault(sid, {})[canon] = FileObservation(
+                raw_digest, after, encoding, line_endings, complete
+            )
+        except OSError:
+            self._observed.get(sid, {}).pop(canon, None)
 
     def check_mutation_allowed(
-        self,
-        session_id: str | None,
-        file_path: str,
-        require_observed: bool = True,
+        self, session_id: str | None, file_path: str, require_observed: bool = True
     ) -> tuple[bool, str | None]:
-        """Verify whether the calling session is permitted to write or edit the target file.
-
-        Returns (is_allowed, error_message).
-        """
         sid = session_id or "default"
         canon = self._canonical(file_path)
-
-        # If file does not exist, creating a new file is permitted without prior read
         if not os.path.exists(canon):
             return True, None
-
-        session_obs = self._observed.get(sid, {})
-        if canon not in session_obs:
-            if require_observed:
-                return False, (
-                    f"FS_NOT_OBSERVED: File '{file_path}' has not been read in this session. "
-                    "You must view/read the file first to inspect its contents before modifying or overwriting it."
-                )
-            return True, None
-
-        recorded_mtime, recorded_hash = session_obs[canon]
+        observed = self.get(sid, canon)
+        if observed is None:
+            return (
+                (False, f"FS_NOT_OBSERVED: File '{file_path}' must be read before modifying it.")
+                if require_observed
+                else (True, None)
+            )
         try:
-            current_mtime = os.path.getmtime(canon)
-            # If mtime is identical, fast pass
-            if current_mtime <= recorded_mtime:
-                return True, None
-
-            # If mtime differs, check hash to see if content actually changed
-            with open(canon, "rb") as f:
-                current_hash = hashlib.sha256(f.read()).hexdigest()
-            if current_hash != recorded_hash:
-                return False, (
-                    f"FS_STALE_VERSION: File '{file_path}' has changed on disk since it was last read. "
-                    "Re-read the file to observe its latest state, then retry your modification."
+            before = file_identity(canon)
+            current_digest = file_digest(canon)
+            after = file_identity(canon)
+            if (
+                before != after
+                or before[:2] != observed.identity[:2]
+                or current_digest != observed.digest
+            ):
+                return (
+                    False,
+                    f"FS_STALE_VERSION: File '{file_path}' has changed since it was read. Read it again.",
                 )
-            # Content is identical despite timestamp touch, update mtime
-            self._observed[sid][canon] = (current_mtime, current_hash)
             return True, None
-        except Exception:
-            return True, None
+        except OSError as exc:
+            return False, f"FS_VERIFICATION_FAILED: Unable to verify '{file_path}': {exc}"
 
     def clear_session(self, session_id: str) -> None:
-        """Clear observation history for a closed session."""
         self._observed.pop(session_id, None)
 
 
@@ -107,5 +113,4 @@ _tracker = FileObservationTracker()
 
 
 def get_observation_tracker() -> FileObservationTracker:
-    """Return singleton observation tracker."""
     return _tracker

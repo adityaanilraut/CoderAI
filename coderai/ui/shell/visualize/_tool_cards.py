@@ -19,6 +19,8 @@ def parse_tool_message(message: SessionMessage) -> tuple[str, str, bool, dict[st
     metadata: dict[str, Any] | None = None
     try:
         result = json.loads(content)
+        if not isinstance(result, dict):
+            return "tool", content[:120], True, metadata
         name = str(result.get("name") or "tool")
         ok = result.get("ok") is not False
         if isinstance(result.get("metadata"), dict):
@@ -27,6 +29,23 @@ def parse_tool_message(message: SessionMessage) -> tuple[str, str, bool, dict[st
         if not ok:
             err = str(result.get("error", "failed"))
             return name, f"failed: {err[:120]}", False, metadata
+
+        if name in ("WebSearch", "web_search") and metadata:
+            count = len(metadata.get("sources") or [])
+            failed = sum(
+                bool(item.get("error"))
+                for item in metadata.get("results") or []
+                if isinstance(item, dict)
+            )
+            summary = f"{count} sources" + (f"; {failed} queries failed" if failed else "")
+            return name, summary, True, metadata
+        if name in ("WebFetch", "web_fetch") and metadata:
+            return (
+                name,
+                f"HTTP {metadata.get('statusCode', '?')}; {metadata.get('totalChars', 0)} characters",
+                True,
+                metadata,
+            )
 
         output = result.get("output")
         if isinstance(output, str):
@@ -56,7 +75,7 @@ def _render_collapsible_block(
         console.print(f"{indent}{escape(line)}")
     remaining = len(lines) - len(shown)
     if remaining > 0:
-        console.print(f"      [dim italic]... {remaining} more lines (press Enter to expand)[/]")
+        console.print(f"      [dim italic]... {remaining} more lines (/output to inspect)[/]")
 
 
 def _render_bash_card(
@@ -111,6 +130,7 @@ def _render_search_card(console: Any, output_text: str | None, metadata: dict[st
     raw_results = metadata.get("results") or []
     sources: list[dict[str, Any]] = []
     queries: list[str] = []
+    details: list[tuple[str, str]] = []
     seen_urls: set[str] = set()
 
     for item in raw_results:
@@ -118,12 +138,14 @@ def _render_search_card(console: Any, output_text: str | None, metadata: dict[st
             q = item.get("query")
             if q and q not in queries:
                 queries.append(q)
+            for key, style in (("error", "red"), ("warning", "yellow"), ("content", "dim")):
+                if item.get(key):
+                    details.append((str(item[key])[:500], style))
             for src in item.get("sources") or []:
                 if isinstance(src, dict) and src.get("url") and src["url"] not in seen_urls:
                     seen_urls.add(src["url"])
                     sources.append(src)
-        elif isinstance(item, dict) and "url" in item and item.get("url"):
-            if item["url"] not in seen_urls:
+            if item.get("url") and item["url"] not in seen_urls:
                 seen_urls.add(item["url"])
                 sources.append(item)
 
@@ -142,6 +164,10 @@ def _render_search_card(console: Any, output_text: str | None, metadata: dict[st
             else "    ↳ [bold cyan]Web Search Results[/]"
         )
         console.print(title)
+        for detail, style in details:
+            console.print(f"      [{style}]{escape(detail)}[/]")
+        if not sources and not details:
+            console.print("      [dim]No results found.[/]")
         for idx, src in enumerate(sources[:6], 1):
             s_title = src.get("title") or src.get("url") or "Source"
             s_url = src.get("url") or ""
@@ -157,8 +183,10 @@ def _render_search_card(console: Any, output_text: str | None, metadata: dict[st
             if snippet:
                 snip_short = snippet[:120] + "..." if len(snippet) > 120 else snippet
                 console.print(f"         [dim]{escape(snip_short)}[/]")
-    elif sources:
+    else:
         print(f"    ↳ Web Search: {query_title or 'Results'}")
+        for detail, _style in details:
+            print(f"      {detail}")
         for idx, src in enumerate(sources[:6], 1):
             print(f"      {idx}. {src.get('title') or src.get('url')} - {src.get('url')}")
 
@@ -172,7 +200,9 @@ def _render_fetch_card(
 ) -> None:
     """Render a compact WebFetch result event."""
     url = metadata.get("url") or ""
-    status_code = metadata.get("status_code") or metadata.get("status") or (200 if ok else 400)
+    status_code = metadata.get("statusCode", metadata.get("status_code", metadata.get("status")))
+    if status_code is None:
+        status_code = 200 if ok else 400
     bytes_count = (
         metadata.get("bytes")
         or metadata.get("content_length")
@@ -192,12 +222,18 @@ def _render_fetch_card(
         console.print(
             f"    ↳ [bold cyan]WebFetch[/] [{status_style}][{escape(str(status_code))}][/] [dim]({escape(size_str)})[/] • [dim]{escape(str(url))}[/]"
         )
+        if error_text:
+            console.print(f"      [red]{escape(error_text[:500])}[/]")
+        if metadata.get("truncated") and metadata.get("nextOffset") is not None:
+            console.print(f"      [dim]Continue with offset={metadata['nextOffset']}[/]")
         if output_text and output_text.strip():
             preview_lines = output_text.strip().splitlines()[:5]
             for pl in preview_lines:
                 console.print(f"      [dim]│[/] {escape(pl[:100])}")
     else:
         print(f"    ↳ WebFetch [{status_code}] ({size_str}) - {url}")
+        if error_text:
+            print(f"      {error_text[:500]}")
 
 
 def _render_read_card(
@@ -243,7 +279,7 @@ def _render_read_card(
                     console.print(f"      [dim]{line_no:>4} │[/] {escape(line)}")
             if len(lines) > display_limit:
                 console.print(
-                    f"      [dim italic]... ({len(lines) - display_limit} more lines hidden — press Enter to expand)[/]"
+                    f"      [dim italic]... ({len(lines) - display_limit} more lines hidden — /output to inspect)[/]"
                 )
     else:
         print(

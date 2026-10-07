@@ -126,3 +126,46 @@ def test_general_atomic_modes_remain_preserved_and_explicit(tmp_path):
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
     finally:
         os.umask(old_umask)
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16", "iso2022_jp"])
+def test_streamed_atomic_write_preserves_codec_and_commits_after_iteration(tmp_path, encoding):
+    target = tmp_path / "streamed.txt"
+    target.write_text("old")
+    chunks = ["café" if encoding != "iso2022_jp" else "日本", " text", "\n"]
+
+    def stream():
+        for chunk in chunks:
+            assert target.read_text() == "old"
+            yield chunk
+
+    count = atomic_write_text(target, stream(), encoding=encoding)
+    expected = "".join(chunks).encode(encoding)
+    assert target.read_bytes() == expected
+    assert count == len(expected)
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_streamed_atomic_write_failure_keeps_original_and_cleans_temporary(tmp_path):
+    target = tmp_path / "streamed.txt"
+    target.write_text("old")
+
+    def fail():
+        yield "partial"
+        raise RuntimeError("source failed")
+
+    with pytest.raises(RuntimeError, match="source failed"):
+        atomic_write_text(target, fail())
+    assert target.read_text() == "old"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_atomic_write_can_replace_symlink_without_touching_destination(tmp_path):
+    destination = tmp_path / "destination.txt"
+    destination.write_text("untouched")
+    link = tmp_path / "link.txt"
+    link.symlink_to(destination)
+    atomic_write_text(link, iter(["new", " text"]), mode=0o600, follow_symlinks=False)
+    assert not link.is_symlink()
+    assert link.read_text() == "new text"
+    assert destination.read_text() == "untouched"

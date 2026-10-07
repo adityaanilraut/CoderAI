@@ -64,17 +64,19 @@ async def test_acp_kaos_lifecycle(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_acp_server_initialize():
+@pytest.mark.parametrize("protocol_version", [0, 1, 2, 999])
+async def test_acp_server_initialize(protocol_version):
     server = ACPServer()
     mock_conn = MagicMock()
     server.on_connect(mock_conn)
 
     resp = await server.initialize(
-        protocol_version=1,
+        protocol_version=protocol_version,
         client_capabilities=acp.schema.ClientCapabilities(terminal=True),
         client_info=acp.schema.Implementation(name="test-client", version="1.0.0"),
     )
 
+    assert resp.protocol_version == 1
     assert resp.agent_info.name == "CoderAI"
     assert resp.agent_capabilities.load_session is True
     assert resp.agent_capabilities.prompt_capabilities.image is True

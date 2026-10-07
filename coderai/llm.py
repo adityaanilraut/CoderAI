@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
+from urllib.parse import urlsplit
 
 from kosong.chat_provider import ChatProvider
 from kosong.message import (
@@ -195,6 +196,9 @@ def _estimate_content_blob(content: Any) -> int:
             if isinstance(part, str):
                 total += _estimate_text_tokens(part)
             elif isinstance(part, Mapping):
+                if part.get("type") in {"image_url", "audio_url", "video_url"}:
+                    total += MEDIA_TOKEN_ESTIMATE
+                    continue
                 text = part.get("text") if isinstance(part.get("text"), str) else None
                 if text is None and isinstance(part.get("content"), str):
                     text = part.get("content")
@@ -336,6 +340,16 @@ def _kimi_default_headers(provider: Any, oauth: Any | None = None) -> dict[str, 
     return headers
 
 
+def _provider_default_headers(
+    base_url: str | None, custom_headers: Mapping[str, str] | None
+) -> dict[str, str] | None:
+    if base_url and urlsplit(base_url).hostname == "openrouter.ai":
+        from coderai.openrouter import attribution_headers
+
+        return attribution_headers(custom_headers)
+    return dict(custom_headers) if custom_headers else None
+
+
 def create_llm(
     provider: Any,
     model: Any,
@@ -415,7 +429,9 @@ def create_llm(
             from kosong.contrib.chat_provider.openai_legacy import OpenAILegacy
 
             reasoning_key = getattr(provider, "reasoning_key", None) or "reasoning_content"
-            custom_headers = getattr(provider, "custom_headers", None)
+            custom_headers = _provider_default_headers(
+                base_url, getattr(provider, "custom_headers", None)
+            )
             chat_provider = OpenAILegacy(
                 model=model_name,
                 base_url=base_url,
@@ -427,7 +443,9 @@ def create_llm(
         case "openai_responses":
             from kosong.contrib.chat_provider.openai_responses import OpenAIResponses
 
-            custom_headers = getattr(provider, "custom_headers", None)
+            custom_headers = _provider_default_headers(
+                base_url, getattr(provider, "custom_headers", None)
+            )
             chat_provider = OpenAIResponses(
                 model=model_name,
                 base_url=base_url,
@@ -511,7 +529,9 @@ def create_llm(
             # Fallback default to OpenAILegacy for other OpenAI-compatible endpoints
             from kosong.contrib.chat_provider.openai_legacy import OpenAILegacy
 
-            custom_headers = getattr(provider, "custom_headers", None)
+            custom_headers = _provider_default_headers(
+                base_url, getattr(provider, "custom_headers", None)
+            )
             chat_provider = OpenAILegacy(
                 model=model_name,
                 base_url=base_url,
@@ -659,6 +679,22 @@ def resolve_model_provider_routing(
         )
         return explicit_base_url, api_key
 
+    # 1b. Raw OpenRouter free ids (e.g. "deepseek/deepseek-chat:free") must win
+    # over native provider prefixes below; they only work via OpenRouter.
+    if m.endswith(":free") and not m.startswith("openrouter/"):
+        base_url = (
+            env.get("OPENROUTER_BASE_URL")
+            or os.getenv("OPENROUTER_BASE_URL")
+            or PROVIDER_BASE_URLS.get("openrouter", "https://openrouter.ai/api/v1")
+        )
+        api_key = (
+            env.get("OPENROUTER_API_KEY")
+            or os.getenv("OPENROUTER_API_KEY")
+            or explicit_api_key
+            or os.getenv("OPENAI_API_KEY")
+        )
+        return base_url, api_key
+
     # 2. DeepSeek models
     if m.startswith("deepseek-") or m.startswith("deepseek/"):
         base_url = (
@@ -757,8 +793,8 @@ def resolve_model_provider_routing(
         )
         return base_url, api_key
 
-    # 6. OpenRouter prefix models
-    if m.startswith("openrouter/") or m.startswith("openrouter-"):
+    # 6. OpenRouter prefix models, or raw ":free" ids pasted from openrouter.ai
+    if m.startswith("openrouter/") or m.startswith("openrouter-") or m.endswith(":free"):
         base_url = (
             env.get("OPENROUTER_BASE_URL")
             or os.getenv("OPENROUTER_BASE_URL")
@@ -772,7 +808,20 @@ def resolve_model_provider_routing(
         )
         return base_url, api_key
 
-    # 7. Default OpenAI / Fallback
+    # 7. Raw author/model slugs (e.g. "stealth/space-bunny-alpha"): no native
+    # family claimed them above, so they only resolve via OpenRouter. Route
+    # there when its key is configured; otherwise fall through to default.
+    if "/" in m:
+        openrouter_key = env.get("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+        if openrouter_key:
+            base_url = (
+                env.get("OPENROUTER_BASE_URL")
+                or os.getenv("OPENROUTER_BASE_URL")
+                or PROVIDER_BASE_URLS.get("openrouter", "https://openrouter.ai/api/v1")
+            )
+            return base_url, openrouter_key
+
+    # 8. Default OpenAI / Fallback
     base_url = explicit_base_url or os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE_URL
     api_key = (
         explicit_api_key
@@ -1051,8 +1100,10 @@ def create_openai_client(
         env=env,
     )
 
-    if settings.get("thinkingEnabled") is not None and model_override is None:
-        thinking_enabled = bool(settings.get("thinkingEnabled"))
+    if settings.get("explicitThinkingEnabled") is not None:
+        thinking_enabled = bool(settings["explicitThinkingEnabled"])
+    elif settings.get("thinkingEnabled") is not None and model_override is None:
+        thinking_enabled = bool(settings["thinkingEnabled"])
     else:
         thinking_enabled = defaults_to_thinking_mode(active_model)
 
@@ -1062,8 +1113,17 @@ def create_openai_client(
     wire_model = active_model
     if tmodel is not None and tmodel.model:
         wire_model = tmodel.model
-    elif "/" in active_model and not active_model.startswith("openrouter/"):
-        wire_model = active_model.split("/", 1)[-1]
+    elif active_model.startswith("openrouter/"):
+        wire_model = active_model[len("openrouter/") :]
+    elif "/" in active_model:
+        # OpenRouter addresses models by full author/model id — only strip the
+        # prefix for native families (e.g. kimi-code/kimi-for-coding).
+        if base_url and "openrouter.ai" in base_url:
+            wire_model = active_model
+        else:
+            wire_model = active_model.split("/", 1)[-1]
+
+    custom_headers = _provider_default_headers(base_url, custom_headers)
 
     def base() -> dict[str, Any]:
         return {
@@ -1119,7 +1179,8 @@ def create_openai_client(
     if not api_key or base_url == "jev://system-one":
         return base()
 
-    cache_key = f"{api_key}::{base_url}::{id(oauth) if oauth_key else ''}"
+    headers_key = json.dumps(custom_headers or {}, sort_keys=True)
+    cache_key = f"{api_key}::{base_url}::{id(oauth) if oauth_key else ''}::{headers_key}"
     if cache_key in _client_pool:
         result = base()
         result["client"] = _client_pool[cache_key]
@@ -1252,11 +1313,11 @@ def probe_provider_connectivity(
     except Exception:
         pass
     wire_model = model
+    alias = None
     try:
         from coderai.config import load_typed_config
 
         typed = load_typed_config()
-        alias = None
         for key, m in typed.models.items():
             if key == model or m.model == model:
                 alias = key
@@ -1282,8 +1343,10 @@ def probe_provider_connectivity(
                             api_key = resolved_oauth
                     except Exception:
                         pass
-        elif "/" in model and not model.startswith("openrouter/"):
-            wire_model = model.split("/", 1)[-1]
+        elif model.startswith("openrouter/"):
+            wire_model = model[len("openrouter/") :]
+        elif "/" in model:
+            wire_model = model  # refined below once the route is known
     except Exception:
         pass
 
@@ -1292,6 +1355,15 @@ def probe_provider_connectivity(
         explicit_base_url=base_url,
         explicit_api_key=api_key,
     )
+
+    if (
+        not alias
+        and "/" in wire_model
+        and not wire_model.startswith("openrouter/")
+        and resolved_url
+        and "openrouter.ai" not in resolved_url
+    ):
+        wire_model = wire_model.split("/", 1)[-1]
 
     if not resolved_key:
         return (

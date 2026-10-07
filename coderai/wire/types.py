@@ -534,6 +534,10 @@ class WireMessageEnvelope:
 
     def to_wire_message(self) -> Any:
         msg_type = _NAME_TO_TYPE.get(self.type)
+        if self.type == "TextPart" and "TYPE" in self.payload:
+            msg_type = TextPart
+        if self.type == "ThinkPart" and "text" in self.payload:
+            msg_type = ThinkPart
         if self.type == "ToolCallPart" and "arguments_part" not in self.payload:
             msg_type = ToolCallPart
         if msg_type is None:

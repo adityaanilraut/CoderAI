@@ -93,13 +93,6 @@ async def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> T
 
     # AFK: auto-dismiss AskUserQuestion. YOLO still surfaces questions.
     is_afk = False
-    try:
-        from coderai.soul.session.manager import _global_afk_check  # type: ignore
-
-        if _global_afk_check():
-            is_afk = True
-    except Exception:
-        pass
     if not is_afk:
         try:
             sid = getattr(context, "session_id", "")

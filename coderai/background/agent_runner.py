@@ -201,7 +201,7 @@ def get_task_supervisor() -> TaskSupervisor:
 
 
 def new_agent_id() -> str:
-    return f"agent_{uuid.uuid4().hex[:8]}"
+    return f"agent_{uuid.uuid4().hex}"
 
 
 async def spawn_background_agent(
@@ -209,6 +209,8 @@ async def spawn_background_agent(
     spec: SubAgentSpec,
     parent_agent_id: str | None = None,
 ) -> AgentHandle:
+    if spec.provider != "in_process":
+        raise ValueError("Continuable workers require the in_process provider")
     registry = get_agent_registry()
     agent_id = new_agent_id()
     spec.agent_id = agent_id
@@ -220,17 +222,17 @@ async def spawn_background_agent(
         spec.parent_agent_id = parent_handle.id
         spec.root_agent_id = parent_handle.root_agent_id or parent_handle.id
         spec.depth = parent_handle.depth + 1
-        if agent_id not in parent_handle.children_ids:
-            parent_handle.children_ids.append(agent_id)
     elif spec.parent_agent_id:
         p_handle = registry.get(spec.parent_agent_id)
         if p_handle:
             spec.root_agent_id = p_handle.root_agent_id or p_handle.id
             spec.depth = p_handle.depth + 1
-            if agent_id not in p_handle.children_ids:
-                p_handle.children_ids.append(agent_id)
     else:
         spec.root_agent_id = agent_id
+
+    parent_owner = registry.get(spec.parent_agent_id) if spec.parent_agent_id else None
+    if parent_owner is not None and (parent_owner.killed or parent_owner.status == "interrupted"):
+        raise ValueError("Cannot spawn from an interrupted parent agent")
 
     # Per-session spawn cap (configurable via CODERAI_MAX_CONTINUABLE_AGENTS_PER_SESSION).
     max_continuable = resolve_max_continuable_agents()
@@ -247,12 +249,17 @@ async def spawn_background_agent(
             "live sub-agents per session (MAX_CONTINUABLE_AGENTS_PER_SESSION)"
         )
 
+    from coderai.subagents.builder import check_subagent_depth_quota
+
+    allowed, error = check_subagent_depth_quota(spec.depth, spec.max_depth)
+    if not allowed:
+        raise ValueError(error)
     now = time.time()
     handle = AgentHandle(
         id=agent_id,
         parent_session_id=spec.parent_session_id or "",
         description=spec.description,
-        mode=spec.mode,
+        mode=spec.mode or "read_only",
         spec=spec,
         parent_agent_id=spec.parent_agent_id,
         root_agent_id=spec.root_agent_id,
@@ -268,6 +275,9 @@ async def spawn_background_agent(
     )
     spec.handle = handle
     registry.register(handle)
+    parent = registry.get(spec.parent_agent_id) if spec.parent_agent_id else None
+    if parent is not None:
+        parent.children_ids.append(agent_id)
 
     def _parent_notice(session_id: str, text: str) -> None:
         if notify_parent_session(session_id, text):
@@ -277,22 +287,42 @@ async def spawn_background_agent(
     handle.parent_notice = _parent_notice
 
     async def _run() -> None:
+        from coderai.subagents.streaming import ChildWireEmitter
+        from coderai.wire.emitter import bind_emitter, get_emitter, reset_emitter
+
+        child_emitter: ChildWireEmitter | None = None
+        emitter_token = None
+        started = False
         run_id = uuid.uuid4().hex
         session_id = handle.run_session_id or ""
         provider = spec.provider or "in_process"
-        publish_subagent_start(
-            run_id=run_id,
-            provider=provider,
-            child_id=agent_id,
-            local=provider == "in_process",
-            parent_session_id=spec.parent_session_id,
-        )
         try:
+            store = manager._prepare_subagent_store(spec, agent_id, background=True)
+            child_emitter = ChildWireEmitter(
+                get_emitter(),
+                agent_id,
+                spec.subagent_type,
+                spec.parent_tool_call_id,
+                spec.parent_session_id,
+                wire_path=store.instance_dir(agent_id) / "wire.jsonl"
+                if store is not None
+                else None,
+            )
+            publish_subagent_start(
+                run_id=run_id,
+                provider=provider,
+                child_id=agent_id,
+                local=provider == "in_process",
+                parent_session_id=spec.parent_session_id,
+            )
+            started = True
+            emitter_token = bind_emitter(child_emitter)
             result = await manager.run_continuable(spec, session_id)
             handle.result = result
             if handle.status != "interrupted":
                 handle.status = result.status
             handle.last_stop_reason = result.stop_reason
+            registry.changed()
         except asyncio.CancelledError:
             handle.status = "interrupted"
             handle.last_stop_reason = "aborted"
@@ -323,19 +353,28 @@ async def spawn_background_agent(
                 children_ids=list(spec.children_ids),
             )
         finally:
-            publish_subagent_end(
-                run_id=run_id,
-                provider=provider,
-                child_id=agent_id,
-                local=provider == "in_process",
-                stop_reason=handle.last_stop_reason or "aborted",
-                last_assistant_message=(
-                    [{"type": "text", "text": handle.result.summary}]
-                    if handle.result and handle.result.summary
-                    else None
-                ),
-                parent_session_id=spec.parent_session_id,
-            )
+            if handle.result is not None:
+                manager._save_subagent_result(spec, handle.result)
+            manager.cancel_subagent(session_id)
+            registry.changed()
+            if child_emitter is not None:
+                child_emitter.close()
+            if emitter_token is not None:
+                reset_emitter(emitter_token)
+            if started:
+                publish_subagent_end(
+                    run_id=run_id,
+                    provider=provider,
+                    child_id=agent_id,
+                    local=provider == "in_process",
+                    stop_reason=handle.last_stop_reason or "aborted",
+                    last_assistant_message=(
+                        [{"type": "text", "text": handle.result.summary}]
+                        if handle.result and handle.result.summary
+                        else None
+                    ),
+                    parent_session_id=spec.parent_session_id,
+                )
 
     handle.task = asyncio.create_task(_run())
     return handle

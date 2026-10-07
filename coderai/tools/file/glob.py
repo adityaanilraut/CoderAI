@@ -11,7 +11,7 @@ import pathlib
 import time
 from typing import Any
 
-from coderai.spill import SpillRef, try_save_text
+from coderai.spill import SpillRef, resolve_spill_root, try_save_text
 from coderai.tools.file._search_common import (
     GLOB_VCS_EXCLUDES,
     SEARCH_TIMEOUT_MS,
@@ -35,43 +35,17 @@ from coderai.tools.legacy.types import (
     as_str,
 )
 
-# Backwards-compatible re-exports: grep lived in this module before the split.
-# New code should import from coderai.tools.file.grep directly.
-from coderai.tools.file.grep import GREP_DESCRIPTION
-from coderai.tools.file.grep import GREP_MAX_LINE_BYTES
-from coderai.tools.file.grep import GREP_MAX_MATCHES
-from coderai.tools.file.grep import GrepMatch
-from coderai.tools.file.grep import build_grep_command
-from coderai.tools.file.grep import format_grep_matches
-from coderai.tools.file.grep import format_grep_output
-from coderai.tools.file.grep import handle_grep
-from coderai.tools.file.grep import handle_grep_tool
-from coderai.tools.file.grep import parse_grep_args
-from coderai.tools.file.grep import parse_grep_matches
-from coderai.tools.file.grep import preview_line
 
 __all__ = (
     "GLOB_DESCRIPTION",
     "GLOB_MAX_RESULTS",
-    "GREP_DESCRIPTION",
-    "GREP_MAX_LINE_BYTES",
-    "GREP_MAX_MATCHES",
-    "GrepMatch",
     "RipgrepRun",
     "SearchError",
     "build_glob_command",
-    "build_grep_command",
-    "format_grep_matches",
-    "format_grep_output",
     "glob_tool_definition",
     "handle_glob",
     "handle_glob_tool",
-    "handle_grep",
-    "handle_grep_tool",
     "parse_glob_args",
-    "parse_grep_args",
-    "parse_grep_matches",
-    "preview_line",
     "render_glob_paths",
     "resolve_rg_path",
     "run_ripgrep",
@@ -222,8 +196,9 @@ def _python_glob(pattern: str, workdir: str, search_path: str | None, timeout_ms
     if root.is_file():
         rel = to_workdir_relative(str(root), workdir)
         return [rel] if _matches_glob(pathlib.Path(rel).name, pattern) else []
-    deadline = time.time() + max(0.1, timeout_ms / 1000.0)
+    deadline = time.monotonic() + max(0.1, timeout_ms / 1000.0)
     scored: list[tuple[float, str]] = []
+    raw_size = 0
     for path in _iter_workspace_files(root, deadline):
         try:
             rel = to_workdir_relative(str(path), workdir)
@@ -231,6 +206,12 @@ def _python_glob(pattern: str, workdir: str, search_path: str | None, timeout_ms
             if _matches_glob(rel_posix, pattern):
                 mtime = path.stat().st_mtime
                 scored.append((mtime, rel_posix))
+                raw_size += len(rel_posix.encode()) + 1
+                if raw_size > 20_000_000:
+                    raise SearchError(
+                        "Glob output limit reached; narrow path and retry",
+                        "SEARCH_RAW_OUTPUT_OVERFLOW",
+                    )
         except OSError:
             continue
     scored.sort(key=lambda item: item[0])  # oldest first, matching rg --sort=modified
@@ -245,16 +226,30 @@ def handle_glob_tool(args: dict[str, Any], context: ToolExecutionContext | Any) 
     workdir = _session_workdir(context)
     pattern = parsed["pattern"]
     path = parsed.get("path")
+    deadline = time.monotonic() + SEARCH_TIMEOUT_MS / 1000
+
+    def remaining_ms() -> int:
+        remaining = int((deadline - time.monotonic()) * 1000)
+        if remaining <= 0:
+            raise SearchError("Search deadline reached; narrow path and retry", "SEARCH_ABORTED")
+        return remaining
+
     try:
         if _prefer_python_backend() or resolve_rg_path() is None:
-            paths = _python_glob(pattern, workdir, path, SEARCH_TIMEOUT_MS)
+            paths = _python_glob(pattern, workdir, path, remaining_ms())
         else:
             try:
-                run = run_ripgrep(build_glob_command(pattern, path), workdir, tool_name="glob")
+                run = run_ripgrep(
+                    build_glob_command(pattern, path),
+                    workdir,
+                    tool_name="glob",
+                    timeout_ms=remaining_ms(),
+                    cancellation_event=getattr(context, "cancellation_event", None),
+                )
             except SearchError as err:
                 if err.code != "SEARCH_UNAVAILABLE":
                     raise
-                paths = _python_glob(pattern, workdir, path, SEARCH_TIMEOUT_MS)
+                paths = _python_glob(pattern, workdir, path, remaining_ms())
             else:
                 paths = (
                     []
@@ -275,6 +270,7 @@ def handle_glob_tool(args: dict[str, Any], context: ToolExecutionContext | Any) 
             session_id=_session_id(context),
             suggested_name="glob-results.txt",
             content="\n".join(paths),
+            root=resolve_spill_root(context),
         )
     output = render_glob_paths(paths, root=root, spill_ref=spill_ref)
     return ToolResult(
@@ -296,6 +292,7 @@ handle_glob = handle_glob_tool
 def glob_tool_definition() -> ToolDefinition:
     """Per-tool registry definition for `glob` (keeps `registry.py` thin)."""
     return define_tool(
+        effects="read",
         name="glob",
         description=GLOB_DESCRIPTION,
         parameters={

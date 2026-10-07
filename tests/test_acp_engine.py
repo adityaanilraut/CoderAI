@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 from kosong.message import TextPart as KTextPart
 
-from coderai.acp.engine import SessionManagerEngine, build_prompt
+from coderai.acp.engine import SessionManagerEngine, build_acp_prompt
 from coderai.wire.emitter import get_emitter
 from coderai.wire.types import ApprovalRequest, QuestionRequest, TextPart
 
@@ -98,12 +98,15 @@ async def _drain_parts(engine: SessionManagerEngine, parts: list):
     return [msg async for msg in engine.run(parts, asyncio.Event())]
 
 
-def test_build_prompt_flattens_text_parts():
-    assert build_prompt([KTextPart(text="first"), KTextPart(text="second")]) == "first\nsecond"
+def test_build_acp_prompt_flattens_text_parts():
+    assert build_acp_prompt([KTextPart(text="first"), KTextPart(text="second")]) == (
+        "first\nsecond",
+        [],
+    )
 
 
-def test_build_prompt_ignores_empty_text():
-    assert build_prompt([KTextPart(text="")]) == ""
+def test_build_acp_prompt_ignores_empty_text():
+    assert build_acp_prompt([KTextPart(text="")]) == ("", [])
 
 
 def test_build_acp_prompt_routes_images_via_content_params_not_temp_files():

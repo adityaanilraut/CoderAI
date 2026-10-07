@@ -37,6 +37,7 @@ ASK_SCOPES = {
     "unknown",
     "sandbox-escalation",
     "hook-approval",
+    "plan-approval",
 }
 
 BASH_SIDE_EFFECTS = {
@@ -111,9 +112,6 @@ PERMISSION_EXEMPT_REGISTERED_TOOLS = {
     "exit_plan_mode",
     "enter_plan_mode",
     "goal",
-    "get_goal",
-    "create_goal",
-    "update_goal",
 }
 
 PLAN_MODE_FORCE_ASK_SCOPES: list[str] = [
@@ -197,7 +195,7 @@ def _generate_file_diff_preview(
 class PermissionTicket:
     """Capability escalation grant with optional scoping, expiration, and usage quotas."""
 
-    ticket_id: str = field(default_factory=lambda: f"tkt_{uuid.uuid4().hex[:8]}")
+    ticket_id: str = field(default_factory=lambda: f"tkt_{uuid.uuid4().hex}")
     session_id: str = ""
     tool_name: str = "*"  # specific tool name or "*" for all tools
     scope: str = "*"  # specific scope or "*"
@@ -219,15 +217,14 @@ class PermissionTicket:
             return False
         if self.max_uses is not None and self.use_count >= self.max_uses:
             return False
-        if self.tool_name != "*" and tool_name and self.tool_name != tool_name:
+        if not tool_name or not scope:
             return False
-        if self.scope != "*" and scope and self.scope != scope:
+        if self.tool_name != "*" and self.tool_name != tool_name:
             return False
-        if self.pattern and target:
-            if not (
-                fnmatch.fnmatch(target, self.pattern) or target.startswith(self.pattern.rstrip("*"))
-            ):
-                return False
+        if self.scope != "*" and self.scope != scope:
+            return False
+        if self.pattern and (not target or not fnmatch.fnmatchcase(target, self.pattern)):
+            return False
         return True
 
     def consume(
@@ -260,9 +257,25 @@ class PermissionTicketRegistry:
 
     def __init__(self) -> None:
         self._tickets: dict[str, PermissionTicket] = {}
+        import threading
+
+        self._lock = threading.RLock()
 
     def grant_ticket(self, ticket: PermissionTicket) -> PermissionTicket:
-        self._tickets[ticket.ticket_id] = ticket
+        from coderai.utils.storage import storage_id
+        import math
+
+        storage_id(ticket.session_id)
+        if ticket.expires_at is not None and not math.isfinite(ticket.expires_at):
+            raise ValueError("Ticket expiration must be finite")
+        if ticket.max_uses is not None and (
+            not isinstance(ticket.max_uses, int)
+            or isinstance(ticket.max_uses, bool)
+            or ticket.max_uses < 1
+        ):
+            raise ValueError("Ticket use limit must be a positive integer")
+        with self._lock:
+            self._tickets[ticket.ticket_id] = ticket
         return ticket
 
     def request_escalation(
@@ -295,34 +308,38 @@ class PermissionTicketRegistry:
         target: str | None = None,
         consume: bool = True,
     ) -> bool:
-        for t in list(self._tickets.values()):
-            if t.session_id and t.session_id != session_id:
-                continue
-            if t.is_valid(tool_name=tool_name, scope=scope, target=target):
-                if consume:
-                    t.consume(tool_name=tool_name, scope=scope, target=target)
-                return True
-        return False
+        with self._lock:
+            for t in list(self._tickets.values()):
+                if not session_id or t.session_id != session_id:
+                    continue
+                if t.is_valid(tool_name=tool_name, scope=scope, target=target):
+                    if consume:
+                        t.consume(tool_name=tool_name, scope=scope, target=target)
+                    return True
+            return False
 
     def revoke_ticket(self, ticket_id: str) -> bool:
-        return bool(self._tickets.pop(ticket_id, None))
+        with self._lock:
+            return bool(self._tickets.pop(ticket_id, None))
 
     def list_active_tickets(self, session_id: str | None = None) -> list[PermissionTicket]:
         now = time.time()
         res: list[PermissionTicket] = []
-        for t in self._tickets.values():
-            if session_id and t.session_id and t.session_id != session_id:
-                continue
-            if (t.expires_at is None or now <= t.expires_at) and (
-                t.max_uses is None or t.use_count < t.max_uses
-            ):
-                res.append(t)
+        with self._lock:
+            for t in self._tickets.values():
+                if session_id and t.session_id and t.session_id != session_id:
+                    continue
+                if (t.expires_at is None or now <= t.expires_at) and (
+                    t.max_uses is None or t.use_count < t.max_uses
+                ):
+                    res.append(t)
         return res
 
     def clear_session_tickets(self, session_id: str) -> None:
-        to_remove = [tid for tid, t in self._tickets.items() if t.session_id == session_id]
-        for tid in to_remove:
-            self._tickets.pop(tid, None)
+        with self._lock:
+            to_remove = [tid for tid, t in self._tickets.items() if t.session_id == session_id]
+            for tid in to_remove:
+                self._tickets.pop(tid, None)
 
 
 _ticket_registry = PermissionTicketRegistry()
@@ -829,8 +846,19 @@ def compute_tool_call_permissions(
             read_permission_exempt_paths=read_permission_exempt_paths,
             resolve_snippet_path=resolve_snippet_path,
         )
+        from coderai.tools.legacy.policy import is_owned_plan_file
+
+        owned_plan = (
+            bool(force_ask_scopes)
+            and request["name"] in {"write", "edit"}
+            and is_owned_plan_file(
+                {"session_id": session_id, "project_root": project_root},
+                parse_tool_arguments(tool_call["function"]["arguments"]),
+            )
+        )
+        effective_forced = None if owned_plan else force_ask_scopes
         decision = evaluate_permission_scopes(
-            request["scopes"], settings, force_ask_scopes=force_ask_scopes
+            request["scopes"], settings, force_ask_scopes=effective_forced
         )
         from coderai.sandbox import DEFAULT_SANDBOX_MODE, parse_sandbox_mode
 
@@ -842,6 +870,21 @@ def compute_tool_call_permissions(
         base = parse_sandbox_mode(settings.get("sandbox")) or DEFAULT_SANDBOX_MODE
         requested = parse_sandbox_mode(args.get("sandbox_permissions"))
         explicit_scopes: list[str] = []
+        if request["name"] == "exit_plan_mode":
+            explicit_scopes.append("plan-approval")
+            request["description"] = str(
+                args.get("plan") or args.get("summary") or "Plan completed."
+            )
+            if not args.get("plan"):
+                from coderai.tools.plan.heroes import read_plan_for_approval
+
+                try:
+                    presented = read_plan_for_approval(session_id, project_root)
+                    if presented is not None:
+                        request["description"] = presented
+                except (OSError, ValueError) as exc:
+                    request["description"] = str(exc)
+                    decision = "deny"
         if request["name"] == "bash" and requested and rank[requested] > rank[base]:
             explicit_scopes.append("sandbox-escalation")
             request["description"] = f"Raise sandbox from {base} to {requested}. " + str(
@@ -863,7 +906,7 @@ def compute_tool_call_permissions(
         request["scopes"] = list(dict.fromkeys([*request["scopes"], *explicit_scopes]))
         if (
             evaluate_permission_scopes(
-                request["scopes"], settings, force_ask_scopes=force_ask_scopes
+                request["scopes"], settings, force_ask_scopes=effective_forced
             )
             == "deny"
         ):
@@ -880,7 +923,7 @@ def compute_tool_call_permissions(
             decision = "allow"
         if decision == "ask":
             ask_scopes = get_scopes_requiring_ask(
-                request["scopes"], settings, force_ask_scopes=force_ask_scopes
+                request["scopes"], settings, force_ask_scopes=effective_forced
             )
             ask_scopes = list(dict.fromkeys([*ask_scopes, *explicit_scopes]))
             target = request.get("command") or request.get("name")
@@ -959,7 +1002,10 @@ def apply_auto_approve_to_permission_plan(
             continue
         if ask and (
             ask.get("requiresExplicitApproval")
-            or any(scope in {"sandbox-escalation", "hook-approval"} for scope in scopes)
+            or any(
+                scope in {"sandbox-escalation", "hook-approval", "plan-approval"}
+                for scope in scopes
+            )
             or (plan_mode and any(scope in PLAN_MODE_FORCE_ASK_SCOPES for scope in scopes))
         ):
             new_permissions.append(item)
@@ -992,7 +1038,7 @@ def resolve_tool_call_permission(
             "ask",
         ):
             return item["permission"]
-    return "allow"
+    return "ask"
 
 
 def build_synthetic_tool_execution(tool_call: dict[str, Any], error: str) -> dict[str, Any]:
@@ -1220,27 +1266,19 @@ class Approval:
         description: str,
         display: list[Any] | None = None,
     ) -> ApprovalResult:
-        if self.is_auto_approve() or action in self._state.auto_approve_actions:
+        explicit = action in {"sandbox-escalation", "hook-approval", "plan-approval"}
+        if not explicit and (self.is_auto_approve() or action in self._state.auto_approve_actions):
             return ApprovalResult(True)
 
         from coderai.soul.tool_context import get_current_tool_call_or_none, get_session_id
 
         session_id = get_session_id()
-        if session_id:
+        if session_id and not explicit:
             try:
                 from coderai.soul.session.approval import check_auto_approve_for_session
 
                 if check_auto_approve_for_session(session_id):
                     return ApprovalResult(True)
-            except Exception:
-                pass
-        else:
-            try:
-                from coderai.soul.session.approval import _session_managers
-
-                for m in _session_managers:
-                    if m.is_auto_approve():
-                        return ApprovalResult(True)
             except Exception:
                 pass
 
@@ -1271,7 +1309,7 @@ class Approval:
             )
             if tool_call
             and session_id
-            and action not in {"sandbox-escalation", "hook-approval"}
+            and action not in {"sandbox-escalation", "hook-approval", "plan-approval"}
             and "sandbox_permissions"
             not in parse_tool_arguments(tool_call.function.arguments or "{}")
             else None

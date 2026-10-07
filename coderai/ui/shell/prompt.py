@@ -1,54 +1,34 @@
 from __future__ import annotations
 
 import atexit
-import contextlib
 import hashlib
-import json
 import os
 import re
 import subprocess
 import sys
 import time
-from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Protocol, TypeVar, cast, runtime_checkable
+from typing import Any
 
 HAS_PTK = True
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application.current import get_app_or_none
-from prompt_toolkit.buffer import Buffer
 
 try:
     from prompt_toolkit.clipboard.pyperclip import PyperclipClipboard
 except ImportError:  # pragma: no cover - minimal installs without `media` extra
     PyperclipClipboard = None  # type: ignore[assignment,misc]
 from prompt_toolkit.completion import (
-    Completion,
     merge_completers,
 )
-from prompt_toolkit.data_structures import Point
-from prompt_toolkit.formatted_text import AnyFormattedText, FormattedText
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import DynamicStyle, Style
-from prompt_toolkit.layout.containers import (
-    ConditionalContainer,
-    DynamicContainer,
-    FloatContainer,
-    HSplit,
-    Window,
-)
-from prompt_toolkit.layout.controls import BufferControl, UIContent, UIControl
 from prompt_toolkit.utils import get_cwidth
-from pydantic import BaseModel, ValidationError
 
 from coderai.ui.shell import placeholders as prompt_placeholders
-from coderai.utils.logging import logger
-from coderai.wire.types import ContentPart
 
 AttachmentCache = prompt_placeholders.AttachmentCache
 CachedAttachment = prompt_placeholders.CachedAttachment
@@ -64,9 +44,6 @@ class CwdLostError(OSError):
     """Raised when the working directory no longer exists (e.g. external drive unplugged)."""
 
 
-T = TypeVar("T")
-
-
 from coderai.ui.shell.prompt_completers import (
     FileMentionCompleter as FileMentionCompleter,
     LocalFileMentionCompleter as LocalFileMentionCompleter,
@@ -76,656 +53,8 @@ from coderai.ui.shell.prompt_completers import (
 )
 
 
-def _truncate_to_width(text: str, width: int) -> str:
-    if width <= 0:
-        return ""
-
-    total = 0
-    chars: list[str] = []
-    for ch in text:
-        ch_width = get_cwidth(ch)
-        if total + ch_width > width:
-            break
-        chars.append(ch)
-        total += ch_width
-
-    if total == get_cwidth(text):
-        return text + (" " * max(0, width - total))
-
-    ellipsis = "..."
-    ellipsis_width = get_cwidth(ellipsis)
-    if width <= ellipsis_width:
-        return "." * width
-
-    available = width - ellipsis_width
-    total = 0
-    chars = []
-    for ch in text:
-        ch_width = get_cwidth(ch)
-        if total + ch_width > available:
-            break
-        chars.append(ch)
-        total += ch_width
-    return "".join(chars) + ellipsis + (" " * max(0, width - total - ellipsis_width))
-
-
-def _wrap_to_width(text: str, width: int, *, max_lines: int | None = None) -> list[str]:
-    if width <= 0:
-        return []
-
-    words = text.split()
-    if not words:
-        return [""]
-
-    lines: list[str] = []
-    current_words: list[str] = []
-    current_width = 0
-    index = 0
-
-    while index < len(words):
-        word = words[index]
-        word_width = get_cwidth(word)
-        separator_width = 1 if current_words else 0
-
-        if current_words and current_width + separator_width + word_width <= width:
-            current_words.append(word)
-            current_width += separator_width + word_width
-            index += 1
-            continue
-
-        if not current_words and word_width <= width:
-            current_words.append(word)
-            current_width = word_width
-            index += 1
-            continue
-
-        if not current_words and word_width > width:
-            current_words.append(_truncate_to_width(word, width).rstrip())
-            current_width = get_cwidth(current_words[0])
-            index += 1
-
-        lines.append(" ".join(current_words))
-        current_words = []
-        current_width = 0
-
-        if max_lines is not None and len(lines) == max_lines:
-            remaining = " ".join(words[index:])
-            if remaining:
-                prefix = f"{lines[-1]} " if lines[-1] else ""
-                lines[-1] = _truncate_to_width(prefix + remaining, width).rstrip()
-            return lines
-
-    if current_words:
-        line = " ".join(current_words)
-        if max_lines is not None and len(lines) + 1 > max_lines:
-            if lines:
-                lines[-1] = _truncate_to_width(f"{lines[-1]} {line}", width).rstrip()
-            else:
-                lines.append(_truncate_to_width(line, width).rstrip())
-        else:
-            lines.append(line)
-
-    return lines
-
-
-def _find_prompt_float_container(layout_container: object) -> FloatContainer | None:
-    if not isinstance(layout_container, HSplit):
-        return None
-
-    for child in cast(Sequence[object], layout_container.children):
-        float_container = _extract_float_container(child)
-        if float_container is not None:
-            return float_container
-    return None
-
-
-def _extract_float_container(container: object) -> FloatContainer | None:
-    if isinstance(container, FloatContainer):
-        return container
-    if isinstance(container, ConditionalContainer):
-        if isinstance(container.content, FloatContainer):
-            return container.content
-        if isinstance(container.alternative_content, FloatContainer):
-            return container.alternative_content
-    return None
-
-
-def _find_default_buffer_container(
-    layout_container: object,
-    target_buffer: Buffer,
-) -> ConditionalContainer | None:
-    seen: set[int] = set()
-
-    def _walk(node: object) -> ConditionalContainer | None:
-        if id(node) in seen:
-            return None
-        seen.add(id(node))
-
-        if isinstance(node, ConditionalContainer):
-            content = getattr(node, "content", None)
-            if isinstance(content, Window):
-                control = content.content
-                if isinstance(control, BufferControl) and control.buffer is target_buffer:
-                    return node
-
-        if isinstance(node, DynamicContainer):
-            with contextlib.suppress(Exception):
-                found = _walk(node.get_container())
-                if found is not None:
-                    return found
-
-        for attr in ("children", "content", "floats", "container"):
-            if not hasattr(node, attr):
-                continue
-            value = getattr(node, attr)
-            if attr == "children" and isinstance(value, Sequence):
-                for child in value:  # pyright: ignore[reportUnknownVariableType]
-                    found = _walk(child)  # pyright: ignore[reportUnknownArgumentType]
-                    if found is not None:
-                        return found
-            elif attr == "floats" and isinstance(value, Sequence):
-                for float_ in value:  # pyright: ignore[reportUnknownVariableType]
-                    content = getattr(float_, "content", None)  # pyright: ignore[reportUnknownArgumentType]
-                    if content is None:
-                        continue
-                    found = _walk(content)
-                    if found is not None:
-                        return found
-            elif (
-                attr in {"content", "container"}
-                and value is not None
-                and type(value).__module__.startswith("prompt_toolkit")
-            ):
-                found = _walk(value)
-                if found is not None:
-                    return found
-        return None
-
-    return _walk(layout_container)
-
-
-class SlashCommandMenuControl(UIControl):
-    """Render slash command completions as a full-width menu that matches the shell UI."""
-
-    _MAX_EXPANDED_META_LINES = 3
-
-    def __init__(
-        self,
-        *,
-        left_padding: Callable[[], int],
-        scroll_offset: int = 1,
-    ) -> None:
-        self._left_padding = left_padding
-        self._scroll_offset = scroll_offset
-
-    def has_focus(self) -> bool:
-        return False
-
-    def preferred_width(self, max_available_width: int) -> int | None:
-        return max_available_width
-
-    def preferred_height(
-        self,
-        width: int,
-        max_available_height: int,
-        wrap_lines: bool,
-        get_line_prefix: Callable[..., AnyFormattedText] | None,
-    ) -> int | None:
-        app = get_app_or_none()
-        complete_state = (
-            getattr(app.current_buffer, "complete_state", None) if app is not None else None
-        )
-        if complete_state is None:
-            return 0
-        completions = complete_state.completions
-        selected_index = complete_state.complete_index
-        if selected_index is None:
-            return min(max_available_height, len(completions) + 1)
-        menu_width = max(0, width - self._left_padding())
-        marker_width = 2
-        command_width = self._command_column_width(completions, menu_width, marker_width)
-        gap_width = 3 if menu_width > command_width + 6 else 1
-        meta_width = max(0, menu_width - marker_width - command_width - gap_width)
-        selected_meta_lines = self._selected_meta_lines(
-            completions[selected_index].display_meta_text,
-            meta_width,
-        )
-        return min(max_available_height, len(completions) + len(selected_meta_lines))
-
-    def create_content(self, width: int, height: int) -> UIContent:
-        app = get_app_or_none()
-        complete_state = (
-            getattr(app.current_buffer, "complete_state", None) if app is not None else None
-        )
-        if complete_state is None or not complete_state.completions:
-            return UIContent()
-
-        completions = complete_state.completions
-        selected_index = complete_state.complete_index
-        available_rows = max(1, height - 1)
-
-        menu_width = max(0, width - self._left_padding())
-        marker_width = 2
-        command_width = self._command_column_width(completions, menu_width, marker_width)
-        gap_width = 3 if menu_width > command_width + 6 else 1
-        meta_width = max(0, menu_width - marker_width - command_width - gap_width)
-
-        rendered_lines: list[FormattedText] = [
-            FormattedText([("class:slash-completion-menu.separator", "─" * max(0, width))])
-        ]
-        selected_line_index = 0
-
-        if selected_index is None:
-            end = min(len(completions) - 1, available_rows - 1)
-            for index in range(0, end + 1):
-                rendered_lines.append(
-                    self._render_single_line_item(
-                        width=width,
-                        completion=completions[index],
-                        marker_width=marker_width,
-                        command_width=command_width,
-                        meta_width=meta_width,
-                        gap_width=gap_width,
-                        is_current=False,
-                    )
-                )
-
-            return UIContent(
-                get_line=lambda i: rendered_lines[i],
-                line_count=len(rendered_lines),
-                cursor_position=Point(x=0, y=selected_line_index),
-            )
-
-        selected_meta_lines = self._selected_meta_lines(
-            completions[selected_index].display_meta_text,
-            meta_width,
-        )
-        start, end = self._visible_window_bounds(
-            completion_count=len(completions),
-            selected_index=selected_index,
-            available_rows=available_rows,
-            selected_item_height=len(selected_meta_lines),
-        )
-        selected_line_index = 1
-
-        for index in range(start, end + 1):
-            completion = completions[index]
-            if index == selected_index:
-                selected_line_index = len(rendered_lines)
-                rendered_lines.extend(
-                    self._render_selected_item_lines(
-                        width=width,
-                        completion=completion,
-                        marker_width=marker_width,
-                        command_width=command_width,
-                        meta_width=meta_width,
-                        gap_width=gap_width,
-                        meta_lines=selected_meta_lines,
-                    )
-                )
-                continue
-
-            rendered_lines.append(
-                self._render_single_line_item(
-                    width=width,
-                    completion=completion,
-                    marker_width=marker_width,
-                    command_width=command_width,
-                    meta_width=meta_width,
-                    gap_width=gap_width,
-                    is_current=False,
-                )
-            )
-
-        return UIContent(
-            get_line=lambda i: rendered_lines[i],
-            line_count=len(rendered_lines),
-            cursor_position=Point(x=0, y=selected_line_index),
-        )
-
-    def _selected_meta_lines(self, text: str, meta_width: int) -> list[str]:
-        lines = _wrap_to_width(
-            text,
-            meta_width,
-            max_lines=self._MAX_EXPANDED_META_LINES,
-        )
-        return lines or [""]
-
-    def _visible_window_bounds(
-        self,
-        *,
-        completion_count: int,
-        selected_index: int,
-        available_rows: int,
-        selected_item_height: int,
-    ) -> tuple[int, int]:
-        selected_item_height = min(selected_item_height, available_rows)
-        remaining_rows = max(0, available_rows - selected_item_height)
-
-        before = min(self._scroll_offset, selected_index, remaining_rows)
-        remaining_rows -= before
-        after = min(completion_count - selected_index - 1, remaining_rows)
-        remaining_rows -= after
-
-        extra_before = min(selected_index - before, remaining_rows)
-        before += extra_before
-        remaining_rows -= extra_before
-
-        extra_after = min(completion_count - selected_index - 1 - after, remaining_rows)
-        after += extra_after
-
-        return selected_index - before, selected_index + after
-
-    def _command_column_width(
-        self,
-        completions: Sequence[Completion],
-        menu_width: int,
-        marker_width: int,
-    ) -> int:
-        if menu_width <= 0:
-            return 0
-        longest = max((get_cwidth(c.display_text) for c in completions), default=0)
-        preferred = longest + 2
-        usable_width = max(0, menu_width - marker_width)
-        minimum = min(usable_width, 18)
-        maximum = max(minimum, min(28, usable_width // 2))
-        return max(minimum, min(preferred, maximum))
-
-    def _render_single_line_item(
-        self,
-        *,
-        width: int,
-        completion: Completion,
-        marker_width: int,
-        command_width: int,
-        meta_width: int,
-        gap_width: int,
-        is_current: bool,
-    ) -> FormattedText:
-        padding_width = max(0, width - marker_width - command_width - meta_width - gap_width)
-        left_padding = min(self._left_padding(), padding_width)
-        trailing_width = max(
-            0,
-            width - left_padding - marker_width - command_width - gap_width - meta_width,
-        )
-
-        command_style = (
-            "class:slash-completion-menu.command.current"
-            if is_current
-            else "class:slash-completion-menu.command"
-        )
-        meta_style = (
-            "class:slash-completion-menu.meta.current"
-            if is_current
-            else "class:slash-completion-menu.meta"
-        )
-        marker_style = (
-            "class:slash-completion-menu.marker.current"
-            if is_current
-            else "class:slash-completion-menu.marker"
-        )
-        marker = "❯ " if is_current else "  "
-
-        fragments: FormattedText = FormattedText()
-        fragments.append(("class:slash-completion-menu", " " * left_padding))
-        fragments.append((marker_style, marker.ljust(marker_width)))
-        fragments.append(
-            (command_style, _truncate_to_width(completion.display_text, command_width))
-        )
-        fragments.append(("class:slash-completion-menu", " " * gap_width))
-        fragments.append((meta_style, _truncate_to_width(completion.display_meta_text, meta_width)))
-        fragments.append(("class:slash-completion-menu", " " * trailing_width))
-        return fragments
-
-    def _render_selected_item_lines(
-        self,
-        *,
-        width: int,
-        completion: Completion,
-        marker_width: int,
-        command_width: int,
-        meta_width: int,
-        gap_width: int,
-        meta_lines: Sequence[str],
-    ) -> list[FormattedText]:
-        lines = [
-            self._render_single_line_item(
-                width=width,
-                completion=Completion(
-                    text=completion.text,
-                    start_position=completion.start_position,
-                    display=completion.display,
-                    display_meta=meta_lines[0],
-                ),
-                marker_width=marker_width,
-                command_width=command_width,
-                meta_width=meta_width,
-                gap_width=gap_width,
-                is_current=True,
-            )
-        ]
-
-        continuation_prefix = (
-            " " * self._left_padding() + " " * marker_width + " " * command_width + " " * gap_width
-        )
-        continuation_trailing = max(
-            0,
-            width - get_cwidth(continuation_prefix) - meta_width,
-        )
-        for meta_line in meta_lines[1:]:
-            fragments: FormattedText = FormattedText()
-            fragments.append(("class:slash-completion-menu", continuation_prefix))
-            fragments.append(
-                (
-                    "class:slash-completion-menu.meta.current",
-                    _truncate_to_width(meta_line, meta_width),
-                )
-            )
-            fragments.append(("class:slash-completion-menu", " " * continuation_trailing))
-            lines.append(fragments)
-
-        return lines
-
-
-class _HistoryEntry(BaseModel):
-    content: str
-
-
-def _load_history_entries(history_file: Path) -> list[_HistoryEntry]:
-    entries: list[_HistoryEntry] = []
-    if not history_file.exists():
-        return entries
-
-    try:
-        with history_file.open(encoding="utf-8") as f:
-            for raw_line in f:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    logger.warning(
-                        "Failed to parse user history line; skipping: {line}",
-                        line=line,
-                    )
-                    continue
-                try:
-                    entry = _HistoryEntry.model_validate(record)
-                    entries.append(entry)
-                except ValidationError:
-                    logger.warning(
-                        "Failed to validate user history entry; skipping: {line}",
-                        line=line,
-                    )
-                    continue
-    except OSError as exc:
-        logger.warning(
-            "Failed to load user history file: {file} ({error})",
-            file=history_file,
-            error=exc,
-        )
-
-    return entries
-
-
-class PromptMode(Enum):
-    AGENT = "agent"
-    SHELL = "shell"
-
-    def toggle(self) -> PromptMode:
-        return PromptMode.SHELL if self == PromptMode.AGENT else PromptMode.AGENT
-
-    def __str__(self) -> str:
-        return self.value
-
-
-class PromptUIState(Enum):
-    NORMAL_INPUT = "normal_input"
-    MODAL_HIDDEN_INPUT = "modal_hidden_input"
-    MODAL_TEXT_INPUT = "modal_text_input"
-
-
-class UserInput(BaseModel):
-    mode: PromptMode
-    command: str
-    """The plain text representation of the user input."""
-    resolved_command: str
-    """The text command after UI-only placeholders are expanded."""
-    content: list[ContentPart]
-    """The rich content parts."""
-
-    def __str__(self) -> str:
-        return self.command
-
-    def __bool__(self) -> bool:
-        return bool(self.command)
-
-
-_IDLE_REFRESH_INTERVAL = 1.0
-_RUNNING_REFRESH_INTERVAL = 0.1
-
-_GIT_BRANCH_TTL = 5.0
-_GIT_STATUS_TTL = 15.0
-_TIP_ROTATE_INTERVAL = 30.0
 _MAX_CWD_COLS = 30
 _MAX_BRANCH_COLS = 22
-
-
-@dataclass
-class _GitBranchState:
-    timestamp: float = 0.0
-    branch: str | None = None
-    proc: subprocess.Popen[str] | None = None
-
-
-@dataclass
-class _GitStatusState:
-    timestamp: float = 0.0
-    dirty: bool = False
-    ahead: int = 0
-    behind: int = 0
-    proc: subprocess.Popen[str] | None = None
-
-
-_git_branch_state = _GitBranchState()
-_git_status_state = _GitStatusState()
-
-_GIT_STATUS_AB_RE = re.compile(r"\[(?:ahead (\d+))?(?:, )?(?:behind (\d+))?\]")
-
-
-def _get_git_branch() -> str | None:
-    """Return the current git branch name via a non-blocking cached subprocess."""
-    state = _git_branch_state
-    now = time.monotonic()
-
-    # Collect result if a previously launched process has finished
-    if state.proc is not None:
-        returncode = state.proc.poll()
-        if returncode is not None:
-            try:
-                stdout, _ = state.proc.communicate()
-                new_branch = stdout.strip() or None
-                # Branch changed — discard any in-flight status subprocess so it cannot
-                # write stale results for the old branch, then force an immediate refresh.
-                if new_branch != state.branch:
-                    if _git_status_state.proc is not None:
-                        with contextlib.suppress(Exception):
-                            _git_status_state.proc.terminate()
-                        _git_status_state.proc = None
-                    _git_status_state.timestamp = 0.0
-                state.branch = new_branch
-            except Exception:
-                state.branch = None
-            state.proc = None
-
-    # Launch a new process when the TTL has expired and nothing is running
-    if state.timestamp + _GIT_BRANCH_TTL <= now and state.proc is None:
-        state.timestamp = now
-        try:
-            state.proc = subprocess.Popen(
-                ["git", "branch", "--show-current"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-        except Exception:
-            state.branch = None
-
-    return state.branch
-
-
-def _get_git_status() -> tuple[bool, int, int]:
-    """Return (dirty, ahead, behind) via a non-blocking cached subprocess.
-
-    Runs ``git status --porcelain -b`` (includes untracked files so newly created
-    files show as dirty).  TTL is longer than the branch check because file-tree
-    scanning is expensive.
-    """
-    state = _git_status_state
-    now = time.monotonic()
-
-    if state.proc is not None:
-        returncode = state.proc.poll()
-        if returncode is not None:
-            try:
-                stdout, _ = state.proc.communicate()
-                dirty = False
-                ahead = 0
-                behind = 0
-                for line in stdout.splitlines():
-                    if line.startswith("## "):
-                        m = _GIT_STATUS_AB_RE.search(line)
-                        if m:
-                            ahead = int(m.group(1) or 0)
-                            behind = int(m.group(2) or 0)
-                    elif line.strip():
-                        dirty = True
-                state.dirty = dirty
-                state.ahead = ahead
-                state.behind = behind
-            except Exception:
-                pass
-            state.proc = None
-        elif now - state.timestamp > _GIT_STATUS_TTL:
-            # Subprocess is stuck (e.g. OS pipe buffer full from many untracked files).
-            # Terminate it so the toolbar is not permanently frozen; retry after next TTL.
-            with contextlib.suppress(Exception):
-                state.proc.terminate()
-            state.proc = None
-            state.timestamp = now  # delay next spawn by one full TTL
-
-    if state.timestamp + _GIT_STATUS_TTL <= now and state.proc is None:
-        state.timestamp = now
-        with contextlib.suppress(Exception):
-            state.proc = subprocess.Popen(
-                ["git", "status", "--porcelain", "-b"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-
-    return state.dirty, state.ahead, state.behind
 
 
 def _format_git_badge(branch: str, dirty: bool, ahead: int, behind: int) -> str:
@@ -796,109 +125,6 @@ def _truncate_right(text: str, max_cols: int) -> str:
         chars.append(ch)
         width += w
     return "".join(chars) + ellipsis
-
-
-@dataclass(slots=True)
-class _ToastEntry:
-    topic: str | None
-    """There can be only one toast of each non-None topic in the queue."""
-    message: str
-    expires_at: float
-
-
-class RunningPromptDelegate(Protocol):
-    """Protocol for components that can take over the bottom prompt area."""
-
-    modal_priority: int
-
-    def render_running_prompt_body(self, columns: int) -> AnyFormattedText: ...
-
-    def running_prompt_placeholder(self) -> AnyFormattedText | None: ...
-
-    def running_prompt_allows_text_input(self) -> bool: ...
-
-    def running_prompt_hides_input_buffer(self) -> bool: ...
-
-    def running_prompt_accepts_submission(self) -> bool: ...
-
-    def should_handle_running_prompt_key(self, key: str) -> bool: ...
-
-    def handle_running_prompt_key(self, key: str, event: KeyPressEvent) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class BgTaskCounts:
-    bash: int = 0
-    agent: int = 0
-
-
-@runtime_checkable
-class AgentStatusProvider(Protocol):
-    """Optional protocol for delegates that render always-visible agent status.
-
-    When the running prompt delegate implements this, ``_render_agent_status``
-    will call ``render_agent_status`` instead of the fallback status block.
-    This ensures spinners, content blocks, and tool calls remain visible
-    even when a modal (approval/question/btw) is active.
-    """
-
-    def render_agent_status(self, columns: int) -> AnyFormattedText: ...
-
-
-_toast_queues: dict[Literal["left", "right"], deque[_ToastEntry]] = {
-    "left": deque(),
-    "right": deque(),
-}
-"""The queue of toasts to show, including the one currently being shown (the first one)."""
-
-
-def toast(
-    message: str,
-    duration: float = 5.0,
-    topic: str | None = None,
-    immediate: bool = False,
-    position: Literal["left", "right"] = "left",
-) -> None:
-    queue = _toast_queues[position]
-    duration = max(duration, _IDLE_REFRESH_INTERVAL)
-    entry = _ToastEntry(topic=topic, message=message, expires_at=time.monotonic() + duration)
-    if topic is not None:
-        # Remove existing toasts with the same topic
-        for existing in list(queue):
-            if existing.topic == topic:
-                queue.remove(existing)
-    if immediate:
-        queue.appendleft(entry)
-    else:
-        queue.append(entry)
-
-
-def _current_toast(position: Literal["left", "right"] = "left") -> _ToastEntry | None:
-    queue = _toast_queues[position]
-    now = time.monotonic()
-    while queue and queue[0].expires_at <= now:
-        queue.popleft()
-    if not queue:
-        return None
-    return queue[0]
-
-
-def _build_toolbar_tips(clipboard_available: bool) -> list[str]:
-    tips = [
-        "ctrl-x: toggle mode",
-        "shift-tab: plan mode",
-        "ctrl-o: editor",
-        "ctrl-j: newline",
-        "/feedback: send feedback",
-        "/theme: switch dark/light",
-    ]
-    if clipboard_available:
-        tips.append("ctrl-v: paste clipboard")
-    tips.append("@: mention files")
-    return tips
-
-
-_TIP_SEPARATOR = " | "
 
 
 # --- COMPATIBILITY LAYER ---
@@ -1016,10 +242,10 @@ class CoderAICompleter:
                 return None
 
             # Sub-argument completion for /model
-            if lead_cmd in ("/model",):
-                from coderai.ui.shell.session_picker import CURATED_MODELS
+            if lead_cmd in ("/model", "/models"):
+                from coderai.ui.shell.session_picker import get_available_models
 
-                all_models = [name for name, _, _ in CURATED_MODELS]
+                all_models = [name for name, _, _ in get_available_models(refresh_openrouter=False)]
                 matching_models = fuzzy_filter(arg_prefix, all_models, limit=15)
                 if state < len(matching_models):
                     return matching_models[state]
@@ -1149,9 +375,10 @@ def setup_readline(project_root: str, get_active_model: Any = None) -> bool:
 
 
 import pathlib
-import re
 
-FILE_MENTION_PATTERN = re.compile(r"@([A-Za-z0-9_\-./\\]+(?::L?\d+(?:-\d+)?)?)")
+FILE_MENTION_PATTERN = re.compile(
+    r'(?<![\w@])@((?:"[^"\n]+"|\'[^\'\n]+\'|[^\s@,;!?<>]+)(?::[Ll]?\d+(?:-[Ll]?\d+)?)?)'
+)
 IGNORED_DIRS = {
     ".git",
     ".venv",
@@ -1166,12 +393,21 @@ IGNORED_DIRS = {
 }
 
 
+class AmbiguousFileMention(ValueError):
+    def __init__(self, reference: str, paths: list[pathlib.Path]):
+        self.reference, self.paths = reference, paths
+        super().__init__(
+            f"Ambiguous file {reference!r}; choose an exact path: "
+            + ", ".join(str(path) for path in paths[:10])
+        )
+
+
 def _find_matching_file(project_root: str, file_ref: str) -> pathlib.Path | None:
     """Find matching file by exact relative path, absolute path, or filename search."""
     root = pathlib.Path(project_root).resolve()
 
     # 1. Exact path relative to root
-    exact = (root / file_ref).resolve()
+    exact = (root / pathlib.Path(file_ref).expanduser()).resolve()
     if exact.is_file():
         return exact
 
@@ -1181,42 +417,41 @@ def _find_matching_file(project_root: str, file_ref: str) -> pathlib.Path | None
 
     # 3. Filename search in workspace tree
     target_name = pathlib.Path(file_ref).name.lower()
+    matches = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
         for f in filenames:
             if f.lower() == target_name:
-                return (pathlib.Path(dirpath) / f).resolve()
-
-    return None
+                matches.append((pathlib.Path(dirpath) / f).resolve())
+    if len(matches) > 1:
+        raise AmbiguousFileMention(file_ref, matches)
+    return matches[0] if matches else None
 
 
 def _parse_line_range(spec: str) -> tuple[str, int | None, int | None]:
-    """Parse '@file.py:10-20' or '@file.py:L10-L20' or '@file.py:15'."""
-    if ":" not in spec:
-        return spec, None, None
-    path_part, range_part = spec.split(":", 1)
-    range_part = range_part.replace("L", "").replace("l", "").strip()
-    if "-" in range_part:
-        start_str, end_str = range_part.split("-", 1)
-        try:
-            return path_part, int(start_str), int(end_str)
-        except ValueError:
-            return path_part, None, None
-    try:
-        single = int(range_part)
-        return path_part, single, single
-    except ValueError:
-        return path_part, None, None
+    """Only a trailing numeric range is a range; drive letters/colons are paths."""
+    match = re.fullmatch(r"(.+):[Ll]?(\d+)(?:-[Ll]?(\d+))?", spec)
+    if match:
+        path, start, end = match.groups()
+        first, last = int(start), int(end or start)
+        if first < 1 or last < first:
+            raise ValueError("File line ranges must start at 1 and end at or after the start.")
+        return path.strip("\"'"), first, last
+    return spec.strip("\"'"), None, None
 
 
 def read_file_mention_snippet(
     file_path: pathlib.Path, start_line: int | None, end_line: int | None
 ) -> str:
     """Read full file or slice of file content."""
+    if file_path.stat().st_size > 2 * 1024 * 1024:
+        raise ValueError(
+            f"Attached file exceeds 2 MiB: {file_path}. Select a smaller file or use a tool to read it."
+        )
     try:
         text = file_path.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
-        return f"[Error reading {file_path.name}: {e}]"
+        raise ValueError(f"Cannot read attached file {file_path}: {e}") from e
 
     lines = text.splitlines()
     if start_line is not None and end_line is not None:
@@ -1242,12 +477,17 @@ def expand_file_mentions(prompt: str, project_root: str) -> tuple[str, list[str]
         file_ref, start_line, end_line = _parse_line_range(match)
         target_path = _find_matching_file(project_root, file_ref)
         if target_path and target_path.is_file():
-            rel_path = str(target_path.relative_to(pathlib.Path(project_root).resolve()))
+            try:
+                rel_path = str(target_path.relative_to(pathlib.Path(project_root).resolve()))
+            except ValueError:
+                rel_path = str(target_path)
             attached_files.append(rel_path)
             content = read_file_mention_snippet(target_path, start_line, end_line)
             range_info = f" (lines {start_line}-{end_line})" if start_line and end_line else ""
             snippet_block = f"--- Attached Context: {rel_path}{range_info} ---\n{content}\n--- End Attached Context ---"
             snippets.append(snippet_block)
+        else:
+            raise ValueError(f"Attached file not found: {file_ref}")
 
     _, session_refs, session_context = resolve_session_references(project_root, prompt)
     if session_context:
@@ -1274,6 +514,7 @@ def _list_files_git(project_root: str, limit: int = 1000) -> list[str] | None:
         cached = getattr(_list_files_git, "_cached", None)
         if (
             cached
+            and cached.get("root") == str(pathlib.Path(project_root).resolve())
             and cached.get("idx_mtime") == idx_mtime
             and _t.monotonic() - cached.get("ts", 0) < 5
         ):
@@ -1293,7 +534,12 @@ def _list_files_git(project_root: str, limit: int = 1000) -> list[str] | None:
         setattr(
             _list_files_git,
             "_cached",
-            {"files": files, "idx_mtime": idx_mtime, "ts": _t.monotonic()},
+            {
+                "files": files,
+                "root": str(pathlib.Path(project_root).resolve()),
+                "idx_mtime": idx_mtime,
+                "ts": _t.monotonic(),
+            },
         )
         return files
     except Exception:
@@ -1380,80 +626,81 @@ def get_bottom_toolbar_tokens(
     active_agent: str | None = None,
     yolo: bool = False,
     afk: bool = False,
+    width: int | None = None,
+    state: str = "idle",
+    execution_mode: str = "agent",
+    permission: str = "ask",
+    context_budget: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> list[tuple[str, str]]:
     """Return prompt_toolkit FormattedText for bottom toolbar."""
-    global _tip_index, _tip_last_rotate
-    segments: list[tuple[str, str]] = []
+    from shutil import get_terminal_size
+    from prompt_toolkit.utils import get_cwidth
 
-    def add(style: str, text: str) -> None:
-        if text:
-            segments.append((style, text))
-
-    # One separator between segments. Wrapping each badge in spaces used to
-    # produce "  ·  " gaps and made the bar look unevenly padded.
-    if active_model:
-        add("class:toolbar.model", active_model)
-
-    if active_agent and active_agent != "default":
-        add("class:toolbar.role", f"role: {active_agent}")
-
-    if active_model and tokens > 0:
-        try:
-            _, _, pct = compute_token_gauge(tokens, active_model)
-            pct_str = f"{pct:.0f}%" if pct >= 1 or tokens == 0 else f"{pct:.1f}%"
-            if tokens >= 1000:
-                tok_str = f"{tokens / 1000:.1f}k ({pct_str})"
-            else:
-                tok_str = f"{tokens} ({pct_str})"
-            add("class:toolbar.tokens", tok_str)
-        except Exception:
-            add("class:toolbar.tokens", f"{tokens:,} tok")
-
-    try:
-        branch, dirty, ahead, behind = get_git_detailed_status(project_root)
-        if branch:
-            badge = _format_git_badge(branch, dirty, ahead, behind)
-            if HAS_PTK:
-                from prompt_toolkit.utils import get_cwidth
-
-                if sum(get_cwidth(c) for c in badge) > 22:
-                    badge = _truncate_left(badge, 22)
-            else:
-                badge = badge[:22]
-            add("class:toolbar.git", badge)
-    except Exception:
-        pass
-
-    if plan_mode:
-        add("class:toolbar.plan", "plan: ON")
-    if yolo:
-        add("class:toolbar.yolo", "yolo")
-    if afk:
-        add("class:toolbar.afk", "afk")
-    if turns > 0:
-        add("class:toolbar.turns", f"turns: {turns}")
-    if mcp_count > 0:
-        add("class:toolbar.mcp", f"mcp: {mcp_count}")
-
-    cwd = _shorten_cwd(project_root)
-    add("class:toolbar.cwd", _truncate_left(cwd, 26))
-
-    now = time.monotonic()
-    if now - _tip_last_rotate > 30:
-        _tip_index = (_tip_index + 1) % len(_TIPS)
-        _tip_last_rotate = now
-    add("class:toolbar.tip", _TIPS[_tip_index])
+    budget = width if width is not None else get_terminal_size((80, 24)).columns
+    permission_label = (
+        "YOLO+AFK" if yolo and afk else "YOLO" if yolo else "AFK" if afk else permission
+    )
+    segments = [
+        ("class:toolbar", f"{execution_mode} {state}"),
+        ("class:toolbar.plan", "plan: ON" if plan_mode else "plan: off"),
+        ("class:toolbar.yolo", permission_label),
+    ]
     if extra_info:
-        add("class:toolbar.extra", extra_info)
+        segments.append(("class:toolbar.extra", extra_info))
+    optional = []
+    if active_model:
+        # Drop routing prefixes, not the distinguishing end of a model name.
+        optional.append(("class:toolbar.model", active_model.rsplit("/", 1)[-1]))
+    if active_agent and active_agent != "default":
+        optional.append(("class:toolbar.role", f"role: {active_agent}"))
+    if tokens:
+        pct = (
+            tokens / context_budget * 100
+            if context_budget
+            else compute_token_gauge(tokens, active_model or "")[2]
+        )
+        optional.append(("class:toolbar.tokens", f"{tokens:,} est {pct:.0f}%"))
+    if reasoning_effort:
+        optional.append(("class:toolbar", f"effort:{reasoning_effort}"))
+    cached = _GIT_STATUS_CACHE.get(project_root)
+    if cached and cached[1]:
+        optional.append(
+            ("class:toolbar.git", _format_git_badge(cached[1], cached[2], cached[3], cached[4]))
+        )
+    optional.append(("class:toolbar.cwd", _shorten_cwd(project_root)))
+    if turns:
+        optional.append(("class:toolbar.turns", f"turns: {turns}"))
+    if mcp_count:
+        optional.append(("class:toolbar.mcp", f"mcp: {mcp_count}"))
 
-    if not segments:
-        return []
-    toolbar_tokens: list[tuple[str, str]] = [("class:toolbar", " ")]
-    for index, (style, text) in enumerate(segments):
-        if index:
-            toolbar_tokens.append(("class:toolbar.sep", " · "))
-        toolbar_tokens.append((style, text))
-    return toolbar_tokens
+    def cells(text):
+        return sum(get_cwidth(char) for char in text)
+
+    used = sum(cells(text) for _, text in segments) + 3 * (len(segments) - 1) + 1
+    for style, value in optional:
+        remaining = budget - used - 3
+        if remaining < 8:
+            break
+        value = _truncate_right(value, min(24, remaining))
+        segments.append((style, value))
+        used += cells(value) + 3
+    result = [("class:toolbar", " ")]
+    for i, (style, value) in enumerate(segments):
+        if i:
+            result.append(("class:toolbar.sep", " · "))
+        result.append((style, value))
+    # Critical badges use compact labels when even their full form won't fit.
+    if sum(cells(text) for _, text in result) > budget:
+        critical = (
+            f"{execution_mode} {state} plan:{'ON' if plan_mode else 'off'} {permission_label}"
+        )
+        if extra_info:
+            compact_extra = extra_info.replace("queued:", "q:").replace("paused:", "pause:")
+            if cells(critical + " " + compact_extra) <= budget:
+                critical += " " + compact_extra
+        result = [("class:toolbar", _truncate_right(critical, max(0, budget)))]
+    return result
 
 
 def _get_history_file(project_root: str) -> Path:
@@ -1474,8 +721,7 @@ class _PasteSafeFileHistory(FileHistory):
 
     prompt_toolkit persists every accepted buffer verbatim, so a pasted
     blob would flood history (and history recall) with megabytes of text.
-    Large inputs are collapsed via the placeholder manager before storing;
-    the full text stays in the in-memory placeholder cache for the LLM.
+    Large inputs use persistent private payloads with unique identities.
     """
 
     def store_string(self, string: str) -> None:
@@ -1496,6 +742,12 @@ class _PasteSafeFileHistory(FileHistory):
         except Exception:
             pass
         super().store_string(string)
+
+    def replace_last(self, project_root: str, replacement: str) -> None:
+        """Update persistent and already-loaded recall after attaching images."""
+        _rewrite_last_history_entry(project_root, replacement)
+        if self._loaded_strings:
+            self._loaded_strings[0] = replacement
 
 
 def _rewrite_last_history_entry(project_root: str, replacement: str) -> None:
@@ -1539,6 +791,7 @@ if HAS_PTK:
             plan_mode: bool = False,
             get_session_stats: Any | None = None,
             on_plan_mode_toggle: Any | None = None,
+            additional_roots: Any | None = None,
         ) -> None:
             self.project_root = project_root
             self.get_active_model = get_active_model
@@ -1550,6 +803,14 @@ if HAS_PTK:
             self._mcp_count: int = 0
             self._yolo: bool = False
             self._afk: bool = False
+            self.on_interrupt: Any = None
+            self.preview: Any = None
+            self.modal = False
+            self.inspect_requested = False
+            self.attachments_requested = False
+            self.controller_owned = False
+            self.accessible: Any = None
+            self.external_editor_context: Any = None
 
             # Build completers — pass canonical SlashCommand objects with aliases
             slash_objs: list[Any]
@@ -1580,7 +841,7 @@ if HAS_PTK:
                     slash_objs = []
 
             self._slash_completer = SlashCommandCompleter(slash_objs, project_root=project_root)
-            self._file_completer = FileMentionCompleter(project_root)
+            self._file_completer = FileMentionCompleter(project_root, additional_roots)
             self._completer = merge_completers(
                 [self._slash_completer, self._file_completer], deduplicate=True
             )
@@ -1598,23 +859,35 @@ if HAS_PTK:
             # Key bindings:
             # c-j / escape-enter newline, s-tab plan toggle, c-o external
             # editor, c-s steer flag, c-x agent/shell mode flag.
+            from coderai.ui.shell.shortcuts import bind_shortcut
+
             kb = KeyBindings()
+
+            def bind(name):
+                return bind_shortcut(kb, name)
+
             self.shell_mode = False
             self.steer_requested = False
             self._external_editor_cb: Any = None
 
-            @kb.add("c-j")
-            def _(event: Any) -> None:  # type: ignore
+            @bind("complete")
+            def _tab_complete(event: Any) -> None:
+                if self.modal:
+                    return
+                buf = event.current_buffer
+                if buf.complete_state:
+                    buf.complete_next()
+                else:
+                    buf.start_completion(select_first=True)
+
+            @bind("newline")
+            def _newline(event: Any) -> None:
                 event.current_buffer.insert_text("\n")
 
-            @kb.add("escape", "enter")
-            def _(event: Any) -> None:  # type: ignore
-                event.current_buffer.insert_text("\n")
-
-            @kb.add("s-tab")
-            @kb.add("escape", "tab")
-            @kb.add("escape", "[", "Z")
+            @bind("plan")
             def _toggle_plan_mode(event: Any) -> None:  # type: ignore
+                if self.modal:
+                    return
                 self.plan_mode = not self.plan_mode
                 if self.on_plan_mode_toggle and callable(self.on_plan_mode_toggle):
                     try:
@@ -1624,16 +897,20 @@ if HAS_PTK:
                 if hasattr(event, "app") and event.app is not None:
                     event.app.invalidate()
 
-            @kb.add("c-x")
+            @bind("shell")
             def _toggle_shell_mode(event: Any) -> None:  # type: ignore
                 """Ctrl-X: toggle agent/shell mode indicator."""
+                if self.modal:
+                    return
                 self.shell_mode = not self.shell_mode
                 if hasattr(event, "app") and event.app is not None:
                     event.app.invalidate()
 
-            @kb.add("c-s")
+            @bind("steer")
             def _steer(event: Any) -> None:  # type: ignore
                 """Ctrl-S: mark steer — inject input into running turn."""
+                if self.modal:
+                    return
                 self.steer_requested = True
                 if hasattr(event, "app") and event.app is not None:
                     try:
@@ -1641,27 +918,42 @@ if HAS_PTK:
                     except Exception:
                         pass
 
-            @kb.add("c-o")
-            def _external_editor(event: Any) -> None:  # type: ignore
+            @bind("editor")
+            async def _external_editor(event: Any) -> None:  # type: ignore
                 """Ctrl-O: open $VISUAL/$EDITOR for the current buffer."""
+                if self.modal:
+                    return
                 buf = event.current_buffer
                 try:
                     from coderai.utils.editor import open_external_editor
 
+                    from prompt_toolkit.application import run_in_terminal
+                    from coderai.ui.shell.placeholders import get_placeholder_manager
+
+                    original = buf.text
+                    manager = get_placeholder_manager()
+
                     def _run() -> None:
-                        composed = open_external_editor(buf.text)
-                        if composed:
-                            buf.text = composed
-                            buf.cursor_position = len(composed)
+                        composed = open_external_editor(manager.expand_for_editor(original))
+                        if composed is not None:
+                            buf.text = manager.refold_after_editor(composed, original)
+                            buf.cursor_position = len(buf.text)
 
-                    if hasattr(event, "app") and hasattr(event.app, "run_in_terminal"):
-                        event.app.run_in_terminal(_run)
-                    else:
-                        _run()
-                except Exception:
-                    pass
+                    from contextlib import nullcontext
 
-            @kb.add("c-c")
+                    context = (
+                        self.external_editor_context()
+                        if self.external_editor_context
+                        else nullcontext()
+                    )
+                    with context:
+                        await run_in_terminal(_run, in_executor=True)
+                except (OSError, ValueError) as exc:
+                    from coderai.utils.logging import logger
+
+                    logger.warning("External editor failed: {error}", error=str(exc))
+
+            @bind("interrupt")
             def _ctrl_c_clear(event: Any) -> None:  # type: ignore
                 """Ctrl-C: bash-like — clear a non-empty line, cancel if empty.
 
@@ -1673,16 +965,50 @@ if HAS_PTK:
                 """
                 try:
                     buf = event.current_buffer
-                    if buf.text:
+                    if self.modal:
+                        event.app.exit(exception=KeyboardInterrupt())
+                    elif self.on_interrupt and self.on_interrupt():
+                        event.app.invalidate()
+                    elif buf.text:
                         buf.reset()
                     else:
                         event.app.exit(result="")
                 except Exception:
                     pass
 
-            @kb.add("c-e")
+            @bind("output")
             def _expand_pager(event: Any) -> None:  # type: ignore
-                """Ctrl-E: no-op in input (handled in approval panel)."""
+                """Expand retained tool/subagent output in the terminal pager."""
+                if self.modal:
+                    return
+                if not self.controller_owned:
+                    from prompt_toolkit.application import run_in_terminal
+                    from coderai.ui.shell.app import _STREAM_STATE
+
+                    if _STREAM_STATE.has_expandable_panel():
+                        run_in_terminal(_STREAM_STATE._show_expandable_panel_content)
+                    return
+                self.inspect_requested = True
+                event.app.exit(result=event.current_buffer.text)
+
+            @bind("attachments")
+            def _attachment_tray(event: Any) -> None:
+                if self.modal or not self.controller_owned:
+                    return
+                self.attachments_requested = True
+                event.app.exit(result=event.current_buffer.text)
+
+            @bind("cancel")
+            def _escape_modal(event: Any) -> None:
+                if self.modal:
+                    event.app.exit(exception=KeyboardInterrupt())
+
+            @bind("exit")
+            def _eof(event: Any) -> None:
+                if self.modal or not event.current_buffer.text:
+                    event.app.exit(exception=EOFError())
+                else:
+                    event.current_buffer.delete()
 
             self._kb = kb
 
@@ -1690,6 +1016,8 @@ if HAS_PTK:
             # bar and the completion menu together. Every toolbar class shares
             # one background; a partial override used to punch holes in the strip.
             def _session_style() -> Style:
+                if os.getenv("NO_COLOR") is not None or (self.accessible and self.accessible()):
+                    return Style.from_dict({})
                 try:
                     from coderai.ui.theme import get_prompt_session_styles
 
@@ -1705,6 +1033,8 @@ if HAS_PTK:
             self._style = DynamicStyle(_session_style)
 
             def _toolbar_callback() -> list[tuple[str, str]]:
+                if self.accessible and self.accessible():
+                    return []
                 model = self.get_active_model() if self.get_active_model else None
                 toks = self._tokens
                 t_count = self._turns
@@ -1712,6 +1042,7 @@ if HAS_PTK:
                 role = getattr(self, "_agent_role", None)
                 yolo_on = getattr(self, "_yolo", False)
                 afk_on = getattr(self, "_afk", False)
+                st = {}
                 if self.get_session_stats and callable(self.get_session_stats):
                     try:
                         st = self.get_session_stats()
@@ -1726,7 +1057,7 @@ if HAS_PTK:
                         pass
                 return get_bottom_toolbar_tokens(
                     self.project_root,
-                    self.plan_mode,
+                    st.get("plan_mode", self.plan_mode),
                     active_model=model,
                     tokens=toks,
                     turns=t_count,
@@ -1734,6 +1065,15 @@ if HAS_PTK:
                     active_agent=role,
                     yolo=yolo_on,
                     afk=afk_on,
+                    width=self._session.app.output.get_size().columns,
+                    state=st.get("state", "idle") if self.get_session_stats else "idle",
+                    execution_mode=st.get(
+                        "execution_mode", "shell" if self.shell_mode else "agent"
+                    ),
+                    permission=st.get("permission", "ask") if self.get_session_stats else "ask",
+                    context_budget=st.get("context_limit") if self.get_session_stats else None,
+                    extra_info=st.get("pending") if self.get_session_stats else None,
+                    reasoning_effort=st.get("reasoning_effort"),
                 )
 
             self._session: PromptSession[Any] = PromptSession(
@@ -1743,8 +1083,12 @@ if HAS_PTK:
                 style=self._style,
                 complete_in_thread=True,
                 complete_while_typing=True,
+                reserve_space_for_menu=0,
                 bottom_toolbar=_toolbar_callback,  # type: ignore[arg-type]
             )
+
+        def set_plan_mode(self, plan_mode: bool) -> None:
+            self.update_plan_mode(plan_mode)
 
         def update_plan_mode(self, plan_mode: bool) -> None:
             self.plan_mode = plan_mode
@@ -1775,13 +1119,39 @@ if HAS_PTK:
             if afk is not None:
                 self._afk = bool(afk)
 
+        def _get_slash_preview(self) -> list[tuple[str, str]]:
+            """Reserve clean headroom above the input line so CompletionsMenu floats cleanly above."""
+            if not hasattr(self, "_session") or self.modal:
+                return []
+            try:
+                buf = self._session.default_buffer
+                text = buf.text.lstrip()
+                if not text.startswith("/") and not text.startswith("@"):
+                    return []
+
+                doc = buf.document
+                from prompt_toolkit.completion import CompleteEvent
+
+                comps = list(self._completer.get_completions(doc, CompleteEvent()))
+                if not comps:
+                    return []
+
+                num_lines = min(7, len(comps))
+                return [("", "\n" * (num_lines + 1))]
+            except Exception:
+                return []
+
         def _get_prompt_message(self) -> list[tuple[str, str]]:
             """Return dynamic formatted prompt tokens (✨/💫 agent, 📋 plan, $ shell)."""
+            prefix = self.preview() if self.preview and not self.modal else []
+            slash_preview = self._get_slash_preview()
+            if slash_preview:
+                prefix = prefix + slash_preview
             if getattr(self, "shell_mode", False):
-                return [("class:prompt", "$ ")]
+                return prefix + [("class:prompt", "$ ")]
             if self.plan_mode:
-                return [("class:prompt.plan", "📋 "), ("class:prompt", "❯ ")]
-            return [("class:prompt", "❯ ")]
+                return prefix + [("class:prompt.plan", "plan "), ("class:prompt", "> ")]
+            return prefix + [("class:prompt", "> ")]
 
         def pop_steer(self) -> bool:
             """Consume the Ctrl-S steer flag."""
@@ -1789,15 +1159,27 @@ if HAS_PTK:
             self.steer_requested = False
             return flag
 
-        async def prompt_async(self, message: Any = None) -> str:
+        def remember_submission(self, text: str) -> None:
+            self._history.replace_last(self.project_root, text)
+
+        async def prompt_async(
+            self, message: Any = None, *, default: str = "", cursor: int | None = None
+        ) -> str:
             """Async prompt with styled message and live plan/build toggle support."""
             try:
                 # Use patch_stdout to not interfere with Live
                 from prompt_toolkit.patch_stdout import patch_stdout
 
                 msg = self._get_prompt_message if message in (None, "❯ ", "[plan] ❯ ") else message
-                with patch_stdout():
-                    text = await self._session.prompt_async(msg)  # type: ignore[arg-type]
+                with patch_stdout(raw=True):
+                    from prompt_toolkit.document import Document
+
+                    document = (
+                        Document(default, cursor_position=min(len(default), max(0, cursor)))
+                        if cursor is not None
+                        else default
+                    )
+                    text = await self._session.prompt_async(msg, default=document)  # type: ignore[arg-type]
                     return text
             except (KeyboardInterrupt, EOFError):
                 raise
@@ -1917,29 +1299,6 @@ def format_status_bar(
     )
 
 
-def render_status_bar(
-    console: Any | None,
-    model: str,
-    active_tokens: int,
-    plan_mode: bool,
-    project_root: str,
-    turns: int = 0,
-    mcp_count: int = 0,
-    settings: dict[str, Any] | None = None,
-) -> None:
-    """Render the status bar line above the REPL input prompt."""
-    engine = StatuslineEngine(settings) if settings else _ENGINE
-    engine.render(
-        console,
-        model,
-        active_tokens,
-        plan_mode,
-        project_root,
-        turns=turns,
-        mcp_count=mcp_count,
-    )
-
-
 """Pluggable statusline engine
 
 Supports:
@@ -1953,7 +1312,6 @@ Supports:
 import importlib
 import re
 import time
-from dataclasses import dataclass
 
 from rich.console import Console
 

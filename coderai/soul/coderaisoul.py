@@ -46,6 +46,7 @@ from coderai.soul.approval import (
     resolve_snippet_file_path,
 )
 from coderai.soul.compaction import (
+    estimate_context_tokens,
     estimate_text_tokens,
     evaluate_compaction_trigger,
 )
@@ -79,6 +80,7 @@ class AgentLoop:
             self._turn = 0
             self._step = 0
         self._controller: asyncio.Event | None = None
+        self._turn_ended = True
 
     def _consume_steers(self) -> bool:
         """Append queued steer text as user messages. True when any were applied."""
@@ -91,7 +93,7 @@ class AgentLoop:
 
     async def _rewind_dmail(self) -> bool:
         """Revert to a staged D-Mail checkpoint and inject its directive."""
-        pending = self.manager.take_pending_dmail(self.session_id)
+        pending = self.manager.peek_pending_dmail(self.session_id)
         if pending is None:
             return False
         message, checkpoint_id = pending
@@ -113,6 +115,7 @@ class AgentLoop:
                 meta={"isDMail": True, "checkpointId": checkpoint_id},
             )
         )
+        self.manager.take_pending_dmail(self.session_id)
         try:
             self.manager._repeat_reminders.pop(self.session_id, None)
         except Exception:
@@ -162,7 +165,8 @@ class AgentLoop:
         except Exception:
             return None
 
-    def emit_turn_start(self) -> None:
+    def emit_turn_start(self, *, run_hooks: bool = True) -> None:
+        self._turn_ended = False
         try:
             self._turn = self.manager.next_turn(self.session_id)
         except Exception:
@@ -184,6 +188,8 @@ class AgentLoop:
                 w.turn_begin(last_user)
         except Exception:
             pass
+        if not run_hooks:
+            return
         from coderai.hooks.runner import run_pre_turn
 
         try:
@@ -197,8 +203,12 @@ class AgentLoop:
         except Exception:
             pass
 
-    def emit_turn_end(self, reason: str) -> None:
+    def emit_turn_end(self, reason: str, *, run_hooks: bool = True) -> None:
+        if self._turn_ended:
+            return
+        self._turn_ended = True
         self._emit(make_turn_end(self._next_seq(), self._turn, reason))
+        self.manager.goal_runner.on_turn_end(self.session_id, reason)
         try:
             w = self._wire()
             if w is not None and reason not in ("permission", "question"):
@@ -207,16 +217,8 @@ class AgentLoop:
         except Exception:
             pass
         if reason not in ("permission", "question"):
-            try:
-                from coderai.goals.core import get_goal_store
-
-                goal_store = get_goal_store(self.manager.project_root)
-                active_goal = goal_store.get_active_goal(self.session_id)
-                if active_goal and active_goal.status == "running":
-                    goal_store.advance_round(self.session_id, active_goal.id)
-            except Exception:
-                pass
-
+            if not run_hooks:
+                return
             from coderai.hooks.runner import run_post_turn, run_stop
 
             try:
@@ -239,6 +241,7 @@ class AgentLoop:
                         settings=settings,
                     )
                     if outcome and (outcome.stop or outcome.decision == "deny"):
+                        self.manager.goal_runner.on_turn_end(self.session_id, "hook")
                         for ctx in outcome.additional_context:
                             try:
                                 self.manager._append_message(
@@ -253,6 +256,55 @@ class AgentLoop:
                                 pass
                 except Exception:
                     pass
+
+    async def emit_turn_start_async(self) -> None:
+        self.emit_turn_start(run_hooks=False)
+        from coderai.hooks.engine import run_hook_point_async
+        from coderai.hooks.events import HookPoint
+
+        try:
+            await run_hook_point_async(
+                HookPoint.PRE_TURN,
+                payload={"turn": self._turn, "session_id": self.session_id},
+                project_root=self.manager.project_root,
+                settings=self.manager.get_resolved_settings(),
+            )
+        except Exception:
+            pass
+
+    async def emit_turn_end_async(self, reason: str) -> None:
+        self.emit_turn_end(reason, run_hooks=False)
+        if reason in ("permission", "question"):
+            return
+        from coderai.hooks.engine import run_hook_point_async
+        from coderai.hooks.events import HookPoint
+        from coderai.hooks.runner import run_stop_async
+
+        settings = self.manager.get_resolved_settings()
+        try:
+            await run_hook_point_async(
+                HookPoint.POST_TURN,
+                payload={"turn": self._turn, "session_id": self.session_id, "reason": reason},
+                project_root=self.manager.project_root,
+                settings=settings,
+            )
+        except Exception:
+            pass
+        if reason in ("waiting", "max_steps", "refusal", "natural"):
+            try:
+                outcome = await run_stop_async(
+                    self.session_id, self.manager.project_root, settings=settings
+                )
+                if outcome and (outcome.stop or outcome.decision == "deny"):
+                    self.manager.goal_runner.on_turn_end(self.session_id, "hook")
+                    for context in outcome.additional_context:
+                        self.manager._append_message(
+                            self.manager._build_message(
+                                self.session_id, "user", str(context), meta={"isHookContext": True}
+                            )
+                        )
+            except Exception:
+                pass
 
     def emit_step_start(self) -> None:
         try:
@@ -302,58 +354,59 @@ class AgentLoop:
         settings = manager.get_resolved_settings()
 
         self._claim_controller(fresh_turn=(permission_replies is None))
-        if permission_replies is None:
-            self.emit_turn_start()
+        try:
+            if permission_replies is None:
+                await self.emit_turn_start_async()
 
-        messages = manager.list_session_messages(session_id)
-        rebuild_session_state_from_history(
-            session_id, [manager._serialize_message(message) for message in messages]
-        )
+            messages = manager.list_session_messages(session_id)
+            rebuild_session_state_from_history(
+                session_id, [manager._serialize_message(message) for message in messages]
+            )
 
-        manager._update_entry(
-            session_id,
-            lambda entry: {
-                **entry,
-                "status": "processing",
-                "failReason": None,
-                "updateTime": _now(),
-            },
-        )
-
-        if client is None:
-            if base_url == "jev://system-one":
-                fail_reason = "Jev System-One cannot run the chat loop"
-                fail_message = (
-                    f"{model} is a non-autoregressive triage/gating model and cannot drive "
-                    "chat or tool calls. Select a chat model with /model; Jev keeps working "
-                    "alongside it via TYPESAFE_API_KEY."
-                )
-            else:
-                fail_reason = "API key not found"
-                fail_message = (
-                    "API key not found. Set your API key in .env (e.g. OPENAI_API_KEY=...), "
-                    "export it in your shell, or configure ~/.coderai/settings.json."
-                )
             manager._update_entry(
                 session_id,
                 lambda entry: {
                     **entry,
-                    "status": "failed",
-                    "failReason": fail_reason,
+                    "status": "processing",
+                    "failReason": None,
                     "updateTime": _now(),
                 },
             )
-            manager.on_assistant_message(
-                manager._build_message(session_id, "assistant", fail_message),
-                False,
-            )
-            self.emit_turn_end("error")
-            self._release_controller()
-            return
 
-        try:
+            if client is None:
+                if base_url == "jev://system-one":
+                    fail_reason = "Jev System-One cannot run the chat loop"
+                    fail_message = (
+                        f"{model} is a non-autoregressive triage/gating model and cannot drive "
+                        "chat or tool calls. Select a chat model with /model; Jev keeps working "
+                        "alongside it via TYPESAFE_API_KEY."
+                    )
+                else:
+                    fail_reason = "API key not found"
+                    fail_message = (
+                        "API key not found. Set your API key in .env (e.g. OPENAI_API_KEY=...), "
+                        "export it in your shell, or configure ~/.coderai/settings.json."
+                    )
+                manager._update_entry(
+                    session_id,
+                    lambda entry: {
+                        **entry,
+                        "status": "failed",
+                        "failReason": fail_reason,
+                        "updateTime": _now(),
+                    },
+                )
+                manager.on_assistant_message(
+                    manager._build_message(session_id, "assistant", fail_message),
+                    False,
+                )
+                await self.emit_turn_end_async("error")
+                self._release_controller()
+                return
+
             for _iteration in range(manager.max_iterations):
                 if manager.is_interrupted(session_id):
+                    await self.emit_turn_end_async("interrupted")
                     return
 
                 manager._dispatch_due_schedules(session_id)
@@ -400,6 +453,7 @@ class AgentLoop:
                         deferred_prompt = None
 
                     if manager.is_interrupted(session_id):
+                        await self.emit_turn_end_async("interrupted")
                         return
                     if await self._rewind_dmail():
                         continue
@@ -407,7 +461,7 @@ class AgentLoop:
                     if stop_reason in ("tool_call_repeat", "hook"):
                         if stop_reason == "tool_call_repeat" and self._consume_steers():
                             continue
-                        self.emit_turn_end(stop_reason)
+                        await self.emit_turn_end_async(stop_reason)
                         manager._update_entry(
                             session_id,
                             lambda entry: {
@@ -428,6 +482,7 @@ class AgentLoop:
                                 "updateTime": _now(),
                             },
                         )
+                        await self.emit_turn_end_async("waiting")
                         return
                     continue
 
@@ -435,8 +490,14 @@ class AgentLoop:
                 active_tokens = int(current_entry.get("activeTokens") or 0)
                 # Provider usage lags tool results appended after the last call.
                 # The text estimate covers that pending payload.
-                token_count = max(active_tokens, estimate_text_tokens(messages))
-                budget = calculate_context_budget(model)
+                token_count = estimate_context_tokens(
+                    messages,
+                    active_tokens,
+                    settings.get("tokenCountingStrategy", "measured+estimated"),
+                )
+                budget = calculate_context_budget(
+                    model, context_limit=settings.get("contextWindow")
+                )
                 auto_compact_threshold = (
                     settings.get("autoCompactWindow") or budget["pressure_threshold"]
                 )
@@ -451,7 +512,7 @@ class AgentLoop:
                 # ponytail: max_steps_per_turn guard prevents cost bomb
                 max_steps = int(settings.get("maxStepsPerTurn") or 1000)
                 if self._step >= max_steps:
-                    self.emit_turn_end("max_steps")
+                    await self.emit_turn_end_async("max_steps")
                     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
                     manager._update_entry(
                         session_id,
@@ -494,10 +555,12 @@ class AgentLoop:
                 tools_preset = settings.get("toolsPreset") or settings.get("preset")
                 tools = get_tools(
                     {
+                        "session_id": session_id,
                         "model": model,
                         "nonInteractive": manager.non_interactive,
                         "multimodal": multimodal_mode,
                         "preset": tools_preset,
+                        "allowedTools": settings.get("allowedTools"),
                     },
                     external_tools=manager.get_external_tool_definitions(tools_preset),
                 )
@@ -602,12 +665,12 @@ class AgentLoop:
                         False,
                     )
                     self.emit_step_end()
-                    self.emit_turn_end("error")
+                    await self.emit_turn_end_async("error")
                     return
 
                 if manager.is_interrupted(session_id):
                     self.emit_step_end()
-                    self.emit_turn_end("interrupted")
+                    await self.emit_turn_end_async("interrupted")
                     return
 
                 choice = (response.get("choices") or [{}])[0]
@@ -629,17 +692,26 @@ class AgentLoop:
                 assistant_message.meta = {
                     **(assistant_message.meta or {}),
                     "usage": extracted_usage,
+                    "usageSource": response.get(
+                        "_usage_source", "provider-reported" if usage else "unavailable"
+                    ),
+                    "timing": response.get("_timing"),
                     "model": model,
+                    "reasoningDetails": response_message.get("reasoning_details"),
                 }
 
                 current_entry = manager._get_entry(session_id) or {}
                 is_plan = bool(current_entry.get("planMode"))
                 forced_scopes = PLAN_MODE_FORCE_ASK_SCOPES if is_plan else None
                 custom_paths = settings.get("skillScanPaths") or []
-                from coderai.tools.legacy.authorization import prepare_pre_tool_outcomes
+                from coderai.tools.legacy.authorization import prepare_pre_tool_outcomes_async
 
-                pre_tool_outcomes = prepare_pre_tool_outcomes(
-                    session_id, manager.project_root, tool_calls or [], settings
+                pre_tool_outcomes = await prepare_pre_tool_outcomes_async(
+                    session_id,
+                    manager.project_root,
+                    tool_calls or [],
+                    settings,
+                    manager.get_external_tool_definitions(),
                 )
                 permission_plan = (
                     compute_tool_call_permissions(
@@ -703,7 +775,7 @@ class AgentLoop:
                             },
                         )
                         self.emit_step_end()
-                        self.emit_turn_end("permission")
+                        await self.emit_turn_end_async("permission")
                         return
 
                     waiting_for_user = await manager._append_tool_messages(
@@ -718,7 +790,7 @@ class AgentLoop:
 
                 if manager.is_interrupted(session_id):
                     self.emit_step_end()
-                    self.emit_turn_end("interrupted")
+                    await self.emit_turn_end_async("interrupted")
                     return
 
                 if await self._rewind_dmail():
@@ -730,7 +802,7 @@ class AgentLoop:
                         self.emit_step_end()
                         continue
                     self.emit_step_end()
-                    self.emit_turn_end(stop_reason)
+                    await self.emit_turn_end_async(stop_reason)
                     manager._update_entry(
                         session_id,
                         lambda entry: {
@@ -778,18 +850,18 @@ class AgentLoop:
                         self.emit_step_end()
                         continue
                     self.emit_step_end()
-                    self.emit_turn_end("refusal" if refusal else "waiting")
+                    await self.emit_turn_end_async("refusal" if refusal else "waiting")
                     return
                 if not tool_calls:
                     if self._consume_steers():
                         self.emit_step_end()
                         continue
                     self.emit_step_end()
-                    self.emit_turn_end("natural")
+                    await self.emit_turn_end_async("natural")
                     return
                 self.emit_step_end()
 
-            self.emit_turn_end("max_iterations")
+            await self.emit_turn_end_async("max_iterations")
             manager._update_entry(
                 session_id,
                 lambda entry: {
@@ -814,7 +886,7 @@ class AgentLoop:
                     wire.step_interrupted()
             except Exception:
                 pass
-            self.emit_turn_end("interrupted")
+            await self.emit_turn_end_async("interrupted")
             manager._update_entry(
                 session_id,
                 lambda entry: {
@@ -831,7 +903,7 @@ class AgentLoop:
                     wire.step_interrupted()
             except Exception:
                 pass
-            self.emit_turn_end("cancelled")
+            await self.emit_turn_end_async("cancelled")
             manager._update_entry(
                 session_id,
                 lambda entry: {
@@ -850,7 +922,7 @@ class AgentLoop:
                     wire.step_interrupted()
             except Exception:
                 pass
-            self.emit_turn_end("error")
+            await self.emit_turn_end_async("error")
             manager._update_entry(
                 session_id,
                 lambda entry, r=fail_reason: {

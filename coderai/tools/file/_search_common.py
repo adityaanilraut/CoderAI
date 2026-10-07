@@ -9,7 +9,6 @@ sharing one 700-line file.
 
 from __future__ import annotations
 
-import fnmatch
 import os
 import pathlib
 import re
@@ -17,6 +16,8 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass
+from collections.abc import Iterator
+from coderai.utils.bounded_process import bounded_run, OutputLimitError
 from typing import Any
 
 from coderai.tools.legacy.types import ToolExecutionContext, ToolResult
@@ -80,24 +81,28 @@ def run_ripgrep(
     timeout_ms: int = SEARCH_TIMEOUT_MS,
     raw_output_max_bytes: int = RAW_OUTPUT_MAX_BYTES,
     tool_name: str = "search",
+    cancellation_event: Any = None,
 ) -> RipgrepRun:
+    deadline = time.monotonic() + max(0.1, timeout_ms / 1000.0)
     rg = resolve_rg_path()
+    if time.monotonic() >= deadline:
+        raise SearchError("Search deadline reached; narrow path and retry", "SEARCH_ABORTED")
     if not rg:
         raise SearchError(
             f"{tool_name} could not start its search command (ripgrep binary not found)",
             "SEARCH_UNAVAILABLE",
         )
     try:
-        proc = subprocess.run(
+        proc = bounded_run(
             [rg, "--no-config", *argv],
             cwd=workdir,
-            capture_output=True,
-            # Never inherit stdin: with no path operand rg heuristically searches
-            # stdin when it looks readable, silently returning no matches.
-            stdin=subprocess.DEVNULL,
-            timeout=max(0.1, timeout_ms / 1000.0),
+            timeout=max(0.001, deadline - time.monotonic()),
+            stdout_limit=raw_output_max_bytes,
             env=_rg_env(),
+            cancellation_event=cancellation_event,
         )
+    except OutputLimitError as exc:
+        raise SearchError(str(exc), "SEARCH_RAW_OUTPUT_OVERFLOW") from exc
     except subprocess.TimeoutExpired as exc:
         raise SearchError(
             f"{tool_name} was aborted before completion (tool timeout or caller cancellation)",
@@ -171,40 +176,112 @@ def _expand_braces(pattern: str) -> list[str]:
 
 
 def _matches_glob(rel_posix: str, pattern: str) -> bool:
-    name = rel_posix.rsplit("/", 1)[-1]
-    for alt in _expand_braces(pattern):
-        alt = alt.replace("\\", "/")
-        if "/" not in alt:
-            if fnmatch.fnmatch(name, alt):
-                return True
-            continue
-        if fnmatch.fnmatch(rel_posix, alt) or fnmatch.fnmatch(name, alt):
-            return True
-        # `**/*.ext` style
-        if alt.startswith("**/") and fnmatch.fnmatch(rel_posix, alt[3:]):
-            return True
-        if fnmatch.fnmatch(rel_posix, alt.replace("**/", "")):
-            return True
-    return False
+    from pathspec import GitIgnoreSpec
+
+    # gitwildmatch handles separators and **; basename patterns match at any depth.
+    if pattern.startswith("!"):
+        return not _matches_glob(rel_posix, pattern[1:])
+    return any(
+        GitIgnoreSpec.from_lines([alt]).match_file(rel_posix) for alt in _expand_braces(pattern)
+    )
 
 
-def _iter_workspace_files(root: pathlib.Path, deadline: float) -> list[pathlib.Path]:
-    files: list[pathlib.Path] = []
+def _iter_workspace_files(
+    root: pathlib.Path, deadline: float, *, include_ignored: bool = True
+) -> Iterator[pathlib.Path]:
+    from pathspec import GitIgnoreSpec
+
+    rules: list[tuple[pathlib.Path, Any]] = []
+    if not include_ignored:
+        ancestors = []
+        for parent in (root, *root.parents):
+            ancestors.append(parent)
+            if (parent / ".git").exists():
+                break
+        for parent in reversed(ancestors):
+            for ignore in (
+                parent / ".git" / "info" / "exclude",
+                parent / ".gitignore",
+                parent / ".ignore",
+                parent / ".rgignore",
+            ):
+                if ignore.is_file():
+                    rules.append(
+                        (parent, GitIgnoreSpec.from_lines(ignore.read_text().splitlines()))
+                    )
+        # Git's default global ignore file applies relative to the repository root.
+        global_ignore = (
+            pathlib.Path(os.environ.get("XDG_CONFIG_HOME", str(pathlib.Path.home() / ".config")))
+            / "git"
+            / "ignore"
+        )
+        git = shutil.which("git")
+        if git:
+            try:
+                config = bounded_run(
+                    [git, "config", "--path", "--get", "core.excludesFile"],
+                    cwd=str(root),
+                    timeout=min(1.0, max(0.001, deadline - time.monotonic())),
+                    stdout_limit=4096,
+                )
+                if config.returncode == 0:
+                    configured = config.stdout.decode().strip()
+                    if configured:
+                        global_ignore = pathlib.Path(configured).expanduser()
+            except (OSError, subprocess.TimeoutExpired, OutputLimitError) as exc:
+                raise SearchError(
+                    f"Cannot resolve Git ignore policy: {exc}", "SEARCH_ABORTED"
+                ) from exc
+        if global_ignore.is_file():
+            rules.insert(
+                0,
+                (
+                    ancestors[-1] if ancestors else root,
+                    GitIgnoreSpec.from_lines(global_ignore.read_text().splitlines()),
+                ),
+            )
     exclude = set(GLOB_VCS_EXCLUDES)
     for dirpath, dirnames, filenames in os.walk(root):
-        if time.time() > deadline:
-            break
-        dirnames[:] = [d for d in dirnames if d not in exclude]
+        if time.monotonic() >= deadline:
+            raise SearchError(
+                "Search deadline reached; narrow path or pattern and retry", "SEARCH_ABORTED"
+            )
         base = pathlib.Path(dirpath)
+        rules = [(directory, spec) for directory, spec in rules if base.is_relative_to(directory)]
+        if not include_ignored:
+            for ignore in (base / ".gitignore", base / ".ignore", base / ".rgignore"):
+                if ignore.is_file():
+                    try:
+                        rules.append(
+                            (base, GitIgnoreSpec.from_lines(ignore.read_text().splitlines()))
+                        )
+                    except OSError as exc:
+                        raise SearchError(
+                            f"Cannot read ignore rules: {exc}", "SEARCH_FAILED"
+                        ) from exc
+
+        def ignored(path: pathlib.Path, directory: bool = False) -> bool:
+            result = False
+            for parent, spec in rules:
+                relative = path.relative_to(parent).as_posix() + ("/" if directory else "")
+                match = spec.check_file(relative)
+                if match.include is not None:
+                    result = match.include
+            return result
+
+        dirnames[:] = [d for d in dirnames if d not in exclude and not ignored(base / d, True)]
         for name in filenames:
+            if time.monotonic() >= deadline:
+                raise SearchError(
+                    "Search deadline reached; narrow path or pattern and retry", "SEARCH_ABORTED"
+                )
             path = base / name
             try:
-                if path.is_symlink() or not path.is_file():
+                if path.is_symlink() or not path.is_file() or ignored(path):
                     continue
             except OSError:
                 continue
-            files.append(path)
-    return files
+            yield path
 
 
 def _prefer_python_backend() -> bool:
@@ -226,5 +303,10 @@ def _search_error_result(name: str, err: SearchError) -> ToolResult:
         ok=False,
         name=name,
         error=f"Error: {err.message}",
-        metadata={"name": "SearchError", "code": err.code},
+        metadata={
+            "name": "SearchError",
+            "code": err.code,
+            "incomplete": err.code in {"SEARCH_ABORTED", "SEARCH_RAW_OUTPUT_OVERFLOW"},
+            "retryable": err.code in {"SEARCH_ABORTED", "SEARCH_RAW_OUTPUT_OVERFLOW"},
+        },
     )

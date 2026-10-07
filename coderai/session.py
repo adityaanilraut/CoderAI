@@ -26,6 +26,18 @@ from coderai.utils.string import shorten
 from coderai.wire.file import WireFile
 from coderai.wire.types import TurnBegin
 
+
+def _valid_session_id(session_id: str) -> bool:
+    """Session ids are directory names, never paths supplied by a client."""
+    return (
+        isinstance(session_id, str)
+        and bool(session_id.strip())
+        and session_id not in {".", ".."}
+        and not any(char in session_id for char in "/\\\x00")
+        and not any(ord(char) < 32 for char in session_id)
+    )
+
+
 # Backward-compat re-exports from core.session
 from coderai.soul.session.manager import (
     SessionEntry,
@@ -117,7 +129,14 @@ class Session:
 
     async def refresh(self) -> None:
         self.title = "Untitled"
-        self.updated_at = self.context_file.stat().st_mtime if self.context_file.exists() else 0.0
+        self.updated_at = max(
+            (
+                path.stat().st_mtime
+                for path in (self.context_file, self.wire_file.path)
+                if path.exists()
+            ),
+            default=0.0,
+        )
 
         if self.state.custom_title:
             self.title = self.state.custom_title
@@ -157,8 +176,11 @@ class Session:
 
         if session_id is None:
             session_id = str(uuid.uuid4())
+        if not _valid_session_id(session_id):
+            raise ValueError("Session id must be a non-empty directory name")
         session_dir = work_dir_meta.sessions_dir / session_id
-        session_dir.mkdir(parents=True, exist_ok=True)
+        # A duplicate id must never truncate an existing conversation.
+        session_dir.mkdir(parents=True, exist_ok=False)
 
         if _context_file is None:
             context_file = session_dir / "context.jsonl"
@@ -166,9 +188,11 @@ class Session:
             _context_file.parent.mkdir(parents=True, exist_ok=True)
             context_file = _context_file
 
-        if context_file.exists():
-            context_file.unlink()
-        context_file.touch()
+        try:
+            context_file.touch(exist_ok=False)
+        except OSError:
+            session_dir.rmdir()
+            raise
 
         work_dir_meta.last_session_id = session_id
         save_metadata(metadata)
@@ -189,6 +213,8 @@ class Session:
     @staticmethod
     async def find(work_dir: KaosPath | str, session_id: str) -> Session | None:
         """Find a session by work directory and session ID."""
+        if not _valid_session_id(session_id):
+            return None
         if isinstance(work_dir, str):
             work_dir = KaosPath(work_dir)
         work_dir = work_dir.canonical()

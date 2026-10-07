@@ -165,13 +165,16 @@ class InjectionRegistry:
 
 
 def default_registry() -> InjectionRegistry:
-    """Standard provider set: afk + plan-mode reminders."""
+    """Standard provider set: AFK, plan-mode, and current goal context."""
     from coderai.soul.dynamic_injections.afk_mode import AfkModeInjectionProvider
     from coderai.soul.dynamic_injections.plan_mode import PlanModeInjectionProvider
 
     registry = InjectionRegistry()
     registry.add(AfkModeInjectionProvider())
     registry.add(PlanModeInjectionProvider())
+    from coderai.soul.dynamic_injections.goals import GoalInjectionProvider
+
+    registry.add(GoalInjectionProvider())
     return registry
 
 

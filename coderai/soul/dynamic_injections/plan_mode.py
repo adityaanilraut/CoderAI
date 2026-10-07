@@ -46,7 +46,7 @@ def plan_full_reminder(plan_file: str | None, plan_exists: bool = False, afk: bo
     lines += [
         "",
         "Workflow:",
-        "1. Understand — explore the codebase with glob, grep, read",
+        '1. Understand — explore with read, glob, grep, WebSearch, WebFetch, Task(subagent_type="explore"); no bash',
         "2. Design — converge on the best approach with trade-offs",
         "3. Review — re-read key files to verify understanding",
         "4. Write Plan — write the plan file with write/edit",

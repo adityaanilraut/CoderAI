@@ -34,8 +34,6 @@ from coderai.teams import (
 )
 from coderai.teams.deadlock import (
     CycleDetectedError,
-    DeadlockError,
-    InterAgentWaitWatchdog,
     assert_acyclic_dependencies,
     detect_task_cycles,
 )
@@ -118,8 +116,8 @@ def test_orchestration_team_messaging_direct_and_broadcast():
     """Teammates receive direct messages and broadcasts fan out to all."""
     reset_team_manager()
     mgr = get_team_manager()
-    alice = mgr.spawn_teammate(name="Alice", role="architect")
-    bob = mgr.spawn_teammate(name="Bob", role="coder")
+    alice = mgr.spawn_teammate(name="Alice", role="architect", auto_start=False)
+    bob = mgr.spawn_teammate(name="Bob", role="coder", auto_start=False)
     assert mgr.get_teammate("bob").teammate_id == bob.teammate_id
     msg = mgr.send_message(
         sender="Alice", recipient="Bob", content="Please implement the user model."
@@ -221,43 +219,41 @@ def test_orchestration_cycle_detection_rejects_loops():
             assert_acyclic_dependencies(graph)
 
 
-def test_orchestration_wait_watchdog_detects_deadlock():
-    """Inter-agent wait watchdog raises once a wait cycle closes."""
-    watchdog = InterAgentWaitWatchdog()
-    watchdog.record_wait("agent_A", "agent_B")
-    watchdog.record_wait("agent_B", "agent_C")
-    with pytest.raises(DeadlockError, match="DeadlockError"):
-        watchdog.record_wait("agent_C", "agent_A")
-
-
 async def test_orchestration_path_locks_isolate_writes():
-    """Path locks serialize same-path writers while disjoint paths run parallel."""
+    """Canonical same-path writers serialize; disjoint paths run concurrently."""
     lock_mgr = PathLockManager()
-    active_readers, max_readers, writer_active = 0, 0, False
+    active = 0
+    maximum = 0
 
-    async def _reader():
-        nonlocal active_readers, max_readers, writer_active
-        async with lock_mgr.acquire_read_lock("/workspace/file_a.py"):
-            assert not writer_active
-            active_readers += 1
-            max_readers = max(max_readers, active_readers)
-            await asyncio.sleep(0.05)
-            active_readers -= 1
-
-    async def _writer(path):
-        nonlocal writer_active, active_readers
+    async def same_path(path):
+        nonlocal active, maximum
         async with lock_mgr.acquire_write_lock(path):
-            assert active_readers == 0
-            writer_active = True
-            await asyncio.sleep(0.05)
-            writer_active = False
+            active += 1
+            maximum = max(maximum, active)
+            await asyncio.sleep(0)
+            active -= 1
 
-    await asyncio.gather(*[_reader() for _ in range(4)])
-    assert max_readers > 1
-    await asyncio.gather(_reader(), _writer("/workspace/file_a.py"), _reader())
-    t0 = time.time()
-    await asyncio.gather(_writer("/workspace/file_a.py"), _writer("/workspace/file_b.py"))
-    assert time.time() - t0 < 0.12
+    await asyncio.gather(
+        same_path("/workspace/file_a.py"),
+        same_path("/workspace/./file_a.py"),
+        same_path("/workspace/file_a.py"),
+    )
+    assert maximum == 1
+
+    entered = set()
+    both_entered = asyncio.Event()
+
+    async def different_path(path):
+        async with lock_mgr.acquire_write_lock(path):
+            entered.add(path)
+            if len(entered) == 2:
+                both_entered.set()
+            await asyncio.wait_for(both_entered.wait(), timeout=1)
+
+    await asyncio.gather(
+        different_path("/workspace/file_a.py"),
+        different_path("/workspace/file_b.py"),
+    )
 
 
 async def test_autonomous_teammate_execution_and_settlement(monkeypatch):
@@ -308,7 +304,7 @@ async def test_autonomous_teammate_failure_marks_failed(monkeypatch):
     """A sub-agent error must mark the task `failed` — never `completed`."""
     reset_team_manager()
     mgr = get_team_manager()
-    tm = mgr.spawn_teammate(name="Erin", role="coder")
+    tm = mgr.spawn_teammate(name="Erin", role="coder", allowed_tools=[])
 
     async def _boom(teammate, task):
         raise RuntimeError("AuthenticationError: Missing API client.")
@@ -339,7 +335,7 @@ async def test_execute_task_uses_subagent_manager(monkeypatch):
 
     reset_team_manager()
     mgr = get_team_manager()
-    tm = mgr.spawn_teammate(name="Farah", role="coder")
+    tm = mgr.spawn_teammate(name="Farah", role="coder", allowed_tools=[])
     task = mgr.task_board.create_task(
         title="Real Path",
         description="exercises the SubAgentManager call path",

@@ -10,7 +10,9 @@ def test_task_browser_uses_plain_listing_on_windows(monkeypatch):
 
     lines = []
     job = SimpleNamespace(id="task-1", status="running", session_id="session-1")
-    manager = SimpleNamespace(job_store=SimpleNamespace(_jobs={job.id: job}))
+    manager = SimpleNamespace(
+        job_store=SimpleNamespace(snapshot=lambda sid: [job] if sid == job.session_id else [])
+    )
     monkeypatch.setattr(sys, "platform", "win32")
     # A Windows TTY must not reach POSIX fileno/termios operations.
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))

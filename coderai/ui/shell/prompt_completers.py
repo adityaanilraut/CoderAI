@@ -195,17 +195,11 @@ class SlashCommandCompleter(Completer):
 
             candidates: list[tuple[str, str]] = []
 
-            if lead_cmd in ("/model",):
-                from coderai.ui.shell.session_picker import CURATED_MODELS
+            if lead_cmd in ("/model", "/models"):
+                from coderai.ui.shell.session_picker import get_available_models
 
-                for m in CURATED_MODELS:
-                    if isinstance(m, dict):
-                        candidates.append(
-                            (m["id"], f"{m.get('name', m['id'])} — {m.get('desc', '')}")
-                        )
-                    else:
-                        mid, mdesc, _mcat = m
-                        candidates.append((mid, f"{mid} — {mdesc}"))
+                for mid, mdesc, _mcat in get_available_models(refresh_openrouter=False):
+                    candidates.append((mid, f"{mid} — {mdesc}"))
             elif lead_cmd in ("/effort", "/reasoning"):
                 for tier in ("off", "low", "medium", "high", "xhigh", "max"):
                     candidates.append((tier, f"Reasoning effort: {tier}"))
@@ -228,7 +222,7 @@ class SlashCommandCompleter(Completer):
                 ):
                     candidates.append((sub, f"Permission preset: {sub}"))
             elif lead_cmd in ("/goal",):
-                for sub in ("list", "add", "done", "cancel", "start"):
+                for sub in ("list", "add", "start", "pause", "done", "cancel"):
                     candidates.append((sub, f"Goal action: {sub}"))
             elif lead_cmd in ("/jobs", "/job"):
                 for sub in ("list", "kill", "logs"):
@@ -517,9 +511,11 @@ class LocalFileMentionCompleter(Completer):
 class FileMentionCompleter(Completer):
     """@-file completer — thin wrapper over workspace file suggestions."""
 
-    def __init__(self, project_root: str) -> None:
+    def __init__(self, project_root: str, additional_roots: Any = None) -> None:
         super().__init__()
         self.project_root = project_root
+        self.additional_roots = additional_roots
+        self._local = LocalFileMentionCompleter(Path(project_root))
 
     def get_completions(self, document: Document, complete_event: Any):  # type: ignore[override]
         text_before = document.text_before_cursor
@@ -531,20 +527,37 @@ class FileMentionCompleter(Completer):
             if prev.isalnum() or prev in (".", "-", "_", "`", "'", '"', ":", "@", "#", "~"):
                 return
         token = text_before[at_idx + 1 :]
-        if " " in token or "\n" in token:
+        quoted = token.startswith(('"', "'"))
+        if (" " in token and not quoted) or "\n" in token:
             return
-        if token and not re.match(r"^[\w.\-_/\\'\":@#~]*$", token):
+        if token and not quoted and not re.match(r"^[\w.\-_/\\'\":@#~]*$", token):
             return
-        query = token
+        query = token.lstrip("\"'")
         try:
             from coderai.ui.shell.prompt import suggest_workspace_files
 
-            candidates = suggest_workspace_files(query, self.project_root, limit=20)
+            if not quoted:
+                candidates = [
+                    completion.text
+                    for completion in self._local.get_completions(document, complete_event)
+                ]
+            else:
+                candidates = suggest_workspace_files(query, self.project_root, limit=20)
+            roots = (
+                self.additional_roots()
+                if callable(self.additional_roots)
+                else self.additional_roots or []
+            )
+            for root in roots:
+                candidates.extend(
+                    str(Path(root) / path)
+                    for path in suggest_workspace_files(query, str(root), limit=20)
+                )
         except Exception:
             candidates = []
         for f in candidates:
             yield Completion(
-                text=f,
+                text=f'"{f}"' if quoted or any(char.isspace() for char in f) else f,
                 start_position=-len(token),
                 display=f,
                 display_meta="file",

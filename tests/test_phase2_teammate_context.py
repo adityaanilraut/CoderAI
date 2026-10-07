@@ -181,7 +181,7 @@ async def test_parent_constraints_block_real_child_mutation(runtime, constraint)
     assert not target.exists()
     assert runtime.callbacks == []
     errors = [m["content"] for m in runtime.requests[-1]["messages"] if m["role"] == "tool"]
-    assert errors and '"ok": false' in errors[-1]
+    assert errors and json.loads(errors[-1])["ok"] is False
     if constraint == "plan":
         assert child(runtime).spec.plan_mode
     if constraint == "empty-allowlist":

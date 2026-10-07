@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import pathlib
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 from coderai.utils.path import (
@@ -38,6 +39,7 @@ from coderai.config import DEFAULT_MODEL
 from coderai.tools.legacy.types import ToolResult, as_str
 from coderai.tools.file.utils import (
     check_file_write_access,
+    context_value,
     get_effective_workdir,
     write_file_with_callbacks,
 )
@@ -533,36 +535,6 @@ def _call_completions(client: Any, **kwargs) -> Any:
     return res
 
 
-def to_bigrams(value: str) -> list[str]:
-    """Extract 2-character overlapping shingles for similarity scoring."""
-    if len(value) < 2:
-        return [value] if value else []
-    return [value[i : i + 2] for i in range(len(value) - 1)]
-
-
-def similarity_score(left: str, right: str) -> float:
-    """Calculate Sorensen-Dice bigram similarity coefficient (0.0 to 1.0)."""
-    if not left or not right:
-        return 1.0 if left == right else 0.0
-    if left == right:
-        return 1.0
-    left_bigrams = to_bigrams(left)
-    right_bigrams = to_bigrams(right)
-    if not left_bigrams or not right_bigrams:
-        return 1.0 if left == right else 0.0
-
-    from collections import Counter
-
-    right_counts = Counter(right_bigrams)
-    overlap = 0
-    for bg in left_bigrams:
-        if right_counts[bg] > 0:
-            overlap += 1
-            right_counts[bg] -= 1
-
-    return (2.0 * overlap) / (len(left_bigrams) + len(right_bigrams))
-
-
 def build_loose_character_pattern(character: str) -> str:
     """Match quotes and typographic variants interchangeably, allowing optional escaping."""
     if character in ('"', "“", "”"):
@@ -601,7 +573,7 @@ def build_loose_escape_regex(source: str) -> re.Pattern | None:
 
 
 def find_loose_escape_matches(scope_text: str, needle: str) -> list[dict[str, Any]]:
-    """Find loose character matches scored by bigram similarity."""
+    """Find quote and escaping variants scored by sequence similarity."""
     regex = build_loose_escape_regex(needle)
     if not regex:
         return []
@@ -609,7 +581,7 @@ def find_loose_escape_matches(scope_text: str, needle: str) -> list[dict[str, An
     matches: list[dict[str, Any]] = []
     for match in regex.finditer(scope_text):
         text = match.group(0)
-        score = similarity_score(normalized_needle, _normalize_loose_text(text))
+        score = SequenceMatcher(None, normalized_needle, _normalize_loose_text(text)).ratio()
         matches.append(
             {
                 "text": text,
@@ -849,7 +821,7 @@ DEFAULT_MAX_OUTPUT_CHARS = 32_000
 TRUNCATED_MESSAGE = "\n<response clipped>"
 
 # History stack for undo_edit: session_id -> path -> list of previous file contents
-_UNDO_HISTORY: dict[str, dict[str, list[str]]] = {}
+_UNDO_HISTORY: dict[str, dict[str, list[dict[str, Any]]]] = {}
 
 
 def _record_state(session_id: str, file_path: str, content: str) -> None:
@@ -887,7 +859,13 @@ def _push_undo(*args: Any, **kwargs: Any) -> None:
         _UNDO_HISTORY[sess_id] = {}
     if norm not in _UNDO_HISTORY[sess_id]:
         _UNDO_HISTORY[sess_id][norm] = []
-    _UNDO_HISTORY[sess_id][norm].append(content)
+    _UNDO_HISTORY[sess_id][norm].append(
+        {
+            "content": content,
+            "encoding": kwargs.get("encoding", "utf8"),
+            "line_endings": kwargs.get("line_endings", "LF"),
+        }
+    )
     # Keep last 20 revisions
     if len(_UNDO_HISTORY[sess_id][norm]) > 20:
         _UNDO_HISTORY[sess_id][norm].pop(0)
@@ -909,7 +887,7 @@ def _pop_undo(*args: Any, **kwargs: Any) -> str | None:
     norm = normalize_file_path(path)
     sess_history = _UNDO_HISTORY.get(sess_id)
     if sess_history and norm in sess_history and sess_history[norm]:
-        return sess_history[norm].pop()
+        return sess_history[norm].pop()["content"]
     return None
 
 
@@ -1013,34 +991,44 @@ def _handle_view(
                 error=f"Failed to list directory `{target_path}`: {exc}",
             )
 
-    # File view
-    try:
-        meta = read_text_file_with_metadata(target_path)
-        content = meta["content"]
-    except Exception as exc:
-        return ToolResult(
-            ok=False,
-            name="str_replace_editor",
-            error=f"Failed to read file `{target_path}`: {exc}",
-        )
-
-    session_id = str(getattr(context, "session_id", "default") or "default")
+    from coderai.tools.file.window import read_text_window
     from coderai.tools.legacy.observation import get_observation_tracker
 
-    get_observation_tracker().record_observation(session_id, target_path, content=content)
-
-    start_line = 1
-    end_line = -1
+    start_line, end_line = 1, -1
     if isinstance(view_range, list) and len(view_range) >= 2:
-        try:
-            start_line = int(view_range[0])
-            end_line = int(view_range[1])
-        except (ValueError, TypeError):
-            pass
-
-    formatted = _format_lines(content, start_line, end_line)
-    if len(formatted) > DEFAULT_MAX_OUTPUT_CHARS:
-        formatted = formatted[:DEFAULT_MAX_OUTPUT_CHARS] + TRUNCATED_MESSAGE
+        start_line, end_line = int(view_range[0]), int(view_range[1])
+    try:
+        window = read_text_window(
+            target_path,
+            max(1, start_line),
+            max(1, end_line - start_line + 1) if end_line != -1 else 2**63,
+            max_bytes=DEFAULT_MAX_OUTPUT_CHARS,
+        )
+    except Exception as exc:
+        return ToolResult(
+            ok=False, name="str_replace_editor", error=f"Failed to read file `{target_path}`: {exc}"
+        )
+    session_id = str(context_value(context, "session_id", "default") or "default")
+    complete = (
+        start_line == 1
+        and (end_line == -1 or end_line >= window["total_lines"])
+        and not window["capped"]
+        and not window["omitted"]
+    )
+    get_observation_tracker().record_observation(
+        session_id,
+        target_path,
+        digest=window["digest"],
+        identity=window["identity"],
+        encoding=window["encoding"],
+        line_endings=window["lineEndings"],
+        complete=complete,
+    )
+    formatted = "\n".join(
+        f"{number:6}\t{line}" for number, line in enumerate(window["lines"], max(1, start_line))
+    )
+    if not complete:
+        formatted += "\n[Partial view; use view_range for additional lines]"
 
     return ToolResult(
         ok=True,
@@ -1202,9 +1190,6 @@ def _handle_str_replace(
             metadata={"dry_run": True, "virtual_patch": patch, "file_path": target_path},
         )
 
-    # Save for undo
-    _push_undo(target_path, current_content, session_id=session_id)
-
     try:
         line_endings = meta.get("line_endings_list") or meta.get("lineEndings")
         write_file_with_callbacks(
@@ -1217,6 +1202,13 @@ def _handle_str_replace(
             error=f"Failed to write file `{target_path}`: {exc}",
         )
 
+    _push_undo(
+        target_path,
+        current_content,
+        session_id=session_id,
+        encoding=meta.get("encoding", "utf8"),
+        line_endings=meta.get("line_endings_list") or meta.get("lineEndings", "LF"),
+    )
     _record_state(session_id, target_path, new_content)
     get_observation_tracker().record_observation(session_id, target_path, content=new_content)
 
@@ -1333,8 +1325,6 @@ def _handle_insert(
             metadata={"dry_run": True, "virtual_patch": patch, "file_path": target_path},
         )
 
-    _push_undo(target_path, current_content, session_id=session_id)
-
     try:
         line_endings = meta.get("line_endings_list") or meta.get("lineEndings")
         write_file_with_callbacks(
@@ -1347,6 +1337,13 @@ def _handle_insert(
             error=f"Failed to write file `{target_path}`: {exc}",
         )
 
+    _push_undo(
+        target_path,
+        current_content,
+        session_id=session_id,
+        encoding=meta.get("encoding", "utf8"),
+        line_endings=meta.get("line_endings_list") or meta.get("lineEndings", "LF"),
+    )
     _record_state(session_id, target_path, new_content)
     get_observation_tracker().record_observation(session_id, target_path, content=new_content)
 
@@ -1371,22 +1368,37 @@ def _handle_undo(target_path: str, context: Any) -> ToolResult:
     if not allowed and obs_err:
         return ToolResult(ok=False, name="str_replace_editor", error=obs_err)
 
-    prev = _pop_undo(target_path, session_id=session_id)
-    if prev is None:
+    history = _UNDO_HISTORY.get(session_id, {}).get(normalize_file_path(target_path), [])
+    if not history:
         return ToolResult(
             ok=False,
             name="str_replace_editor",
             error=f"No previous edit found in history for `{target_path}` to undo.",
         )
+    entry = history[-1]
+    prev = entry["content"]
+    from coderai.tools.file.utils import generate_virtual_patch, is_dry_run
 
+    if is_dry_run(context):
+        current = read_text_file_with_metadata(target_path)["content"]
+        patch = generate_virtual_patch(target_path, current, prev)
+        return ToolResult(
+            ok=True,
+            name="str_replace_editor",
+            output=f"[dry-run] Undo preview:\n{patch['diff']}",
+            metadata={"dry_run": True, "virtual_patch": patch},
+        )
     try:
-        write_file_with_callbacks(context, target_path, prev)
+        write_file_with_callbacks(
+            context, target_path, prev, entry["encoding"], entry["line_endings"]
+        )
     except Exception as exc:
         return ToolResult(
             ok=False,
             name="str_replace_editor",
             error=f"Failed to restore file `{target_path}`: {exc}",
         )
+    history.pop()
 
     _record_state(session_id, target_path, prev)
     get_observation_tracker().record_observation(session_id, target_path, content=prev)

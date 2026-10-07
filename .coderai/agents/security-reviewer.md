@@ -1,4 +1,5 @@
 ---
+mode: read_only
 name: security-reviewer
 description: Security reviewer for input handling, auth, secrets, trust boundaries, and unsafe integrations.
 tools: ["Read", "Grep", "Glob"]

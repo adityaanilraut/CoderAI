@@ -158,8 +158,9 @@ async def test_ext_method_terminal_bridge_catalogue():
 async def test_ext_method_terminal_list_empty_session():
     server = ACPServer()
     server._check_auth = lambda: None
-    result = await server.ext_method("terminal/list", {"session_id": "acp-new"})
-    assert result == {"terminals": []}
+    with pytest.raises(acp.RequestError) as exc:
+        await server.ext_method("terminal/list", {"session_id": "acp-new"})
+    assert exc.value.code == -32602
 
 
 @pytest.mark.asyncio
@@ -178,6 +179,5 @@ async def test_ext_method_terminal_validation_errors():
         await server.ext_method("terminal/read", {"session_id": "s"})
     assert exc_read.value.code == -32602
 
-    assert "error" in await server.ext_method(
-        "terminal/read", {"session_id": "s", "terminal_id": "missing"}
-    )
+    with pytest.raises(acp.RequestError):
+        await server.ext_method("terminal/read", {"session_id": "s", "terminal_id": "missing"})

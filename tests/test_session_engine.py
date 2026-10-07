@@ -152,7 +152,7 @@ def test_session_store_replay_recovers_after_corruption(tmp_path):
     assert len(verify_session_invariants(rows)) == 0
     abort = next(r for r in rows if r.get("tool_call_id") == "tc_x")
     assert TOOL_ABORTED_BEFORE_DISPATCH in abort.get("content", "")
-    assert len(store.replay_events(sid)) == len(rows)
+    assert len(store.list_events(sid)) == len(rows)
 
 
 def test_session_store_mixed_rows_read_both_formats(tmp_path):
@@ -593,16 +593,34 @@ async def test_session_fork_id_unique_and_seq_seeded(tmp_path):
     assert mgr.list_session_messages(first)
 
 
-def test_session_store_orphan_tmp_cleanup(tmp_path):
+@pytest.mark.parametrize("temporary_name", ["keep.tmp-deadbeef", "keep.jsonl.012345abcdef.tmp"])
+def test_session_store_orphan_tmp_cleanup(tmp_path, temporary_name):
     """Crash-leftover atomic-write tmps are removed on store init; real logs survive."""
     store = JsonlSessionStore(str(tmp_path))
     store.append_row("keep", {"id": "m1", "role": "user", "content": "hi"})
-    orphan = store.project_dir / "keep.jsonl.tmp-deadbeef"
+    orphan = store.project_dir / temporary_name
     orphan.write_text("{}\n", encoding="utf-8")
     assert store.cleanup_orphan_tmps() == 1
     assert not orphan.exists()
     assert store.cleanup_orphan_tmps() == 0
     assert store.read_rows("keep") == [{"id": "m1", "role": "user", "content": "hi"}]
+
+
+def test_session_replacement_files_are_private_and_symlink_destinations_untouched(tmp_path):
+    store = JsonlSessionStore(str(tmp_path))
+    store.save_index({"entries": []})
+    assert store.index_path.stat().st_mode & 0o777 == 0o600
+    destination = tmp_path / "external.jsonl"
+    destination.write_text("untouched\n")
+    log = store.messages_path("private")
+    log.symlink_to(destination)
+    store.replace_rows("private", [{"role": "user", "content": "secret"}])
+    assert not log.is_symlink()
+    assert destination.read_text() == "untouched\n"
+    assert log.stat().st_mode & 0o777 == 0o600
+    store.write_raw_lines("private", ['{"role":"user","content":"raw"}'])
+    assert store.read_rows("private")[0]["content"] == "raw"
+    assert log.stat().st_mode & 0o777 == 0o600
 
 
 def test_session_file_history_fork_errors(tmp_path):

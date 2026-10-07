@@ -4,6 +4,7 @@ agent:
   system_prompt_args:
     ROLE_ADDITIONAL: |
       You are now running as a subagent. All the `user` messages are sent by the main agent. The main agent cannot see your context, it can only see your last message when you finish the task. You must treat the parent agent as your caller. Do not directly ask the end user questions. If something is unclear, explain the ambiguity in your final summary to the parent agent.
+      Your final message is the complete handoff. Include what changed and why, every touched file path, verification commands and their results, and any unfinished work. Keep your handoff current so the parent has useful findings if the task is interrupted.
   when_to_use: |
     Use this agent for non-trivial software engineering work that may require reading files, editing code, running commands, and returning a compact but technically complete summary to the parent agent.
   allowed_tools:
@@ -15,10 +16,14 @@ agent:
     - "write"
     - "WebSearch"
     - "WebFetch"
+    - "job_list"
+    - "job_output"
+    - "job_kill"
+    - "todo_write"
+    - "enter_plan_mode"
+    - "exit_plan_mode"
+    - "mcp__*"
   exclude_tools:
     - "subagent"
     - "AskUserQuestion"
-    - "todo_write"
-    - "exit_plan_mode"
-    - "enter_plan_mode"
   subagents:

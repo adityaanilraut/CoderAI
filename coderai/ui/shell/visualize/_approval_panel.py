@@ -629,7 +629,11 @@ def prompt_plan_review(
             except Exception:
                 print((plan_text or "(empty plan)")[:3000])
         res = choose(
-            console_obj, items, title="Plan Review — Approve, Revise, or Reject", default_idx=0
+            console_obj,
+            items,
+            title="Plan Review — Approve, Revise, or Reject",
+            default_idx=0,
+            allow_cancel=True,
         )
     except Exception:
         return {"action": "reject", "feedback": ""}

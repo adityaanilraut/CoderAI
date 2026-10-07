@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import copy
 import os
 import pathlib
 import re
@@ -28,7 +29,7 @@ from coderai.sandbox import (
 )
 from coderai.tools.legacy.path_lock import extract_redirect_paths
 from coderai.tools.legacy.sanitizer import sanitize_text
-from coderai.spill import apply_spill_policy
+from coderai.spill import apply_spill_policy, resolve_spill_root
 from coderai.utils.subprocess_env import (
     build_disable_extglob_command,
     build_shell_env,
@@ -48,6 +49,36 @@ from coderai.tools.legacy.types import (
 
 MAX_OUTPUT_CHARS = 30000
 MAX_CAPTURE_CHARS = 10 * 1024 * 1024
+DEFAULT_FOREGROUND_TIMEOUT_S = 60
+MAX_FOREGROUND_TIMEOUT_S = 300
+DEFAULT_BACKGROUND_TIMEOUT_S = 600
+MAX_BACKGROUND_TIMEOUT_S = 86400
+
+
+def _background_tools_active(context: Any) -> bool:
+    from coderai.tools.file.utils import context_value
+    from coderai.subagents.registry import is_tool_allowed
+
+    allowed = context_value(context, "allowed_tools")
+    required = ("job_list", "job_output", "job_kill")
+    if allowed is not None:
+        return all(is_tool_allowed(name, "allowlist", tuple(allowed)) for name in required)
+    manager = context_value(context, "session_manager")
+    registry = getattr(getattr(manager, "tool_executor", None), "registry", None)
+    if registry is not None:
+        scope = context_value(context, "session_id")
+        return all(registry.get(name, scope=scope) is not None for name in required)
+    return True
+
+
+def _auto_background_enabled(context: Any) -> bool:
+    from coderai.tools.file.utils import context_value
+
+    manager = context_value(context, "session_manager")
+    resolve = getattr(manager, "get_resolved_settings", None)
+    if resolve is not None:
+        return resolve().get("bashAutoBackgroundOnTimeout", True) is not False
+    return context_value(context, "bashAutoBackgroundOnTimeout", True) is not False
 
 
 class HeadTailBuffer:
@@ -160,6 +191,12 @@ def _effective_sandbox_mode(context: Any, args: dict[str, Any]) -> tuple[Any, To
 
     base = _context_value(context, "sandbox_mode", None)
     requested = args.get("sandbox_permissions") if isinstance(args, dict) else None
+    if _context_value(context, "plan_mode", False):
+        if requested not in (None, "", "read-only"):
+            return "read-only", ToolResult(
+                ok=False, name="bash", error="Plan mode forbids sandbox escalation."
+            )
+        return "read-only", None
     if requested is None or (isinstance(requested, str) and not requested.strip()):
         return base, None
     parsed = parse_sandbox_mode(requested) if isinstance(requested, str) else None
@@ -455,12 +492,17 @@ def _execute_persistent_bash(
         )
 
     accumulated = ""
-    deadline = time.time() + timeout_s
+    deadline = time.monotonic() + timeout_s
     timed_out = False
     exit_code: int | None = None
     next_cwd: str | None = None
 
-    while time.time() < deadline:
+    cancellation = _context_value(context, "cancellation_event", None)
+    cancelled = False
+    while time.monotonic() < deadline:
+        if isinstance(cancellation, threading.Event) and cancellation.is_set():
+            cancelled = True
+            break
         chunk = term.read_unread()
         if chunk:
             accumulated += chunk
@@ -472,12 +514,31 @@ def _execute_persistent_bash(
             break
 
     if end_marker not in accumulated:
-        if time.time() >= deadline:
+        if time.monotonic() >= deadline:
             timed_out = True
             try:
                 term.send_signal("SIGINT")
             except Exception:
                 pass
+
+    if cancelled or timed_out or end_marker not in accumulated:
+        # Retire the whole process tree and settle it before another command.
+        mgr.close_session(
+            term.session_id, owner_session_id=session_id, workspace_root=term.workspace_root
+        )
+        return ToolResult(
+            ok=False,
+            name="bash",
+            error="Persistent command cancelled"
+            if cancelled
+            else "Persistent command did not complete",
+            metadata={
+                "code": "TOOL_CANCELLED" if cancelled else "TOOL_TIMEOUT",
+                "cancelled": cancelled,
+                "timed_out": timed_out,
+                "retryable": True,
+            },
+        )
 
     clean_accum = _strip_ansi_escapes(accumulated)
     body = clean_accum
@@ -513,6 +574,7 @@ def _execute_persistent_bash(
         tool_name="bash",
         max_inline_bytes=MAX_OUTPUT_CHARS,
         suggested_name="bash_persistent.txt",
+        root=resolve_spill_root(context),
     )
     if spill_ref is not None:
         truncated_text, is_truncated = spilled, True
@@ -586,6 +648,23 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 error=f"invalid timeoutMs: expected a positive number, got {args['timeout_ms']!r}",
             )
 
+    timeout_s = args.get("timeout")
+    timeout_cap = MAX_BACKGROUND_TIMEOUT_S if run_in_background else MAX_FOREGROUND_TIMEOUT_S
+    if timeout_s is not None and (
+        isinstance(timeout_s, bool)
+        or not isinstance(timeout_s, int)
+        or not 0 < timeout_s <= timeout_cap
+    ):
+        return ToolResult(
+            ok=False, name="bash", error=f"timeout must be a positive integer ≤ {timeout_cap}s."
+        )
+    if timeout_s is not None and args.get("timeout_ms") is not None:
+        return ToolResult(ok=False, name="bash", error="Specify only one of timeout or timeout_ms.")
+    if run_in_background and not _background_tools_active(context):
+        return ToolResult(
+            ok=False, name="bash", error="Background task tools are disabled for this agent."
+        )
+
     session_id = getattr(context, "session_id", None) or (
         context.get("session_id", "default") if isinstance(context, dict) else "default"
     )
@@ -599,7 +678,9 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
     isolated = _isolated_root(context)
     try:
         start_cwd = resolve_exec_cwd(
-            _get_session_cwd(session_id, project_root), str(project_root), isolated
+            args.get("cwd") or _get_session_cwd(session_id, project_root),
+            str(project_root),
+            isolated,
         )
     except (ValueError, OSError) as exc:
         return ToolResult(ok=False, name="bash", error=f"CWD rejected: {exc}")
@@ -610,6 +691,8 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
         return redirect_error
 
     if persistent and sys.platform != "win32":
+        if timeout_s is not None:
+            args = {**args, "timeout_ms": timeout_s * 1000}
         return _execute_persistent_bash(
             command, str(session_id), start_cwd, context, args, eff_mode
         )
@@ -618,7 +701,34 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
 
     if run_in_background:
         return _start_background_shell_command(
-            shell_path, shell_args, start_cwd, command, marker, context, eff_mode
+            shell_path,
+            shell_args,
+            start_cwd,
+            command,
+            marker,
+            context,
+            eff_mode,
+            timeout_ms=None
+            if _is_true(args.get("disable_timeout"))
+            else (args.get("timeout_ms") or (timeout_s or DEFAULT_BACKGROUND_TIMEOUT_S) * 1000),
+        )
+
+    foreground_timeout_s = timeout_s or DEFAULT_FOREGROUND_TIMEOUT_S
+    if (
+        args.get("timeout_ms") is None
+        and args.get("auto_background_on_timeout") is not False
+        and _auto_background_enabled(context)
+        and _background_tools_active(context)
+    ):
+        return _run_foreground_shell_task(
+            shell_path,
+            shell_args,
+            start_cwd,
+            command,
+            marker,
+            context,
+            eff_mode,
+            foreground_timeout_s,
         )
 
     execution = _execute_shell_command(
@@ -628,7 +738,7 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
         command,
         context,
         eff_mode,
-        timeout_ms_override=args.get("timeout_ms"),
+        timeout_ms_override=args.get("timeout_ms") or foreground_timeout_s * 1000,
     )
     cleaned_stdout, cwd = _strip_marker(execution["stdout"], marker)
     combined = _join_output(cleaned_stdout, execution["stderr"])
@@ -653,6 +763,7 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
         tool_name="bash",
         max_inline_bytes=MAX_OUTPUT_CHARS,
         suggested_name="bash.txt",
+        root=resolve_spill_root(context),
     )
     if spill_ref is not None:
         truncated_text, is_truncated = spilled, True
@@ -821,7 +932,7 @@ def _execute_shell_command(
     if on_process_start and pid:
         on_process_start(pid, command)
 
-    timer_lock = threading.Lock()
+    timer_lock = threading.RLock()
     active_timer: list[threading.Timer | None] = [None]
 
     def on_timeout() -> None:
@@ -882,6 +993,22 @@ def _execute_shell_command(
 
     schedule_timeout()
 
+    cancellation_event = getattr(context, "cancellation_event", None)
+    if isinstance(context, dict):
+        cancellation_event = context.get("cancellation_event", cancellation_event)
+    process_settled = threading.Event()
+
+    def watch_cancellation() -> None:
+        while not process_settled.wait(0.05):
+            if cancellation_event.is_set():
+                kill_process_tree(pid)
+                return
+
+    cancellation_watcher = None
+    if cancellation_event is not None:
+        cancellation_watcher = threading.Thread(target=watch_cancellation, daemon=True)
+        cancellation_watcher.start()
+
     stdout_buf = HeadTailBuffer(max_chars=MAX_CAPTURE_CHARS)
     stderr_buf = HeadTailBuffer(max_chars=MAX_CAPTURE_CHARS)
 
@@ -907,6 +1034,9 @@ def _execute_shell_command(
         t_out.join(timeout=2.0)
         t_err.join(timeout=2.0)
     finally:
+        process_settled.set()
+        if cancellation_watcher is not None:
+            cancellation_watcher.join(timeout=0.1)
         if profile_path:
             delete_seatbelt_profile(profile_path)
 
@@ -927,17 +1057,145 @@ def _execute_shell_command(
         signal_name = f"SIG{-exit_code}"
         exit_code = None
 
+    startup_error = None
+    stderr = stderr_buf.get_value()
+    if (
+        exit_code == 71
+        and sandbox_meta.get("sandboxBackend") == "seatbelt"
+        and stderr.lstrip().startswith("sandbox-exec: sandbox_apply:")
+    ):
+        startup_error = (
+            "OS sandbox initialization failed before the shell command ran. "
+            "An enclosing macOS sandbox can prevent nested sandbox initialization."
+        )
+        sandbox_meta = {**sandbox_meta, "sandboxApplied": False, "sandboxDenied": startup_error}
+
     return {
         "stdout": stdout_buf.get_value(),
-        "stderr": stderr_buf.get_value(),
+        "stderr": stderr,
         "exit_code": exit_code,
         "signal": signal_name,
-        "error": None,
+        "error": startup_error,
         "timed_out": state["timed_out"],
         "timeout_ms": state["timeout_ms"],
         "deadline_at_ms": state["deadline_at_ms"],
         "sandbox": sandbox_meta,
     }
+
+
+def _run_foreground_shell_task(
+    shell_path: str,
+    shell_args: list[str],
+    cwd: str,
+    command: str,
+    marker: str,
+    context: Any,
+    mode: Any,
+    timeout_s: int,
+) -> ToolResult:
+    from coderai.tools.file.utils import context_value
+
+    completed = threading.Event()
+    state_lock = threading.Lock()
+    completion: BackgroundProcessCompletion | None = None
+    detached = False
+    original_complete = context_value(context, "on_background_process_complete")
+    original_output = context_value(context, "on_process_stdout")
+
+    def on_completion(result: BackgroundProcessCompletion) -> None:
+        nonlocal completion
+        with state_lock:
+            completion = result
+            notify = detached
+        completed.set()
+        if notify and original_complete:
+            original_complete(result)
+
+    def on_output(pid: int, text: str) -> None:
+        with state_lock:
+            forward = not detached
+        if forward and original_output:
+            original_output(pid, text)
+
+    task_context = dict(context) if isinstance(context, dict) else copy.copy(context)
+    if task_context is None:
+        task_context = {}
+    for key, callback in (
+        ("on_background_process_complete", on_completion),
+        ("on_process_stdout", on_output),
+    ):
+        if isinstance(task_context, dict):
+            task_context[key] = callback
+        else:
+            setattr(task_context, key, callback)
+    started = _start_background_shell_command(
+        shell_path,
+        shell_args,
+        cwd,
+        command,
+        marker,
+        task_context,
+        mode,
+        timeout_ms=(timeout_s + DEFAULT_BACKGROUND_TIMEOUT_S) * 1000,
+    )
+    if not started.ok:
+        return started
+    cancellation = context_value(context, "cancellation_event")
+    deadline = time.monotonic() + timeout_s
+    while not completed.wait(min(0.05, max(0, deadline - time.monotonic()))):
+        if isinstance(cancellation, threading.Event) and cancellation.is_set():
+            get_job_store().kill(
+                started.metadata["backgroundTaskId"],
+                str(context_value(context, "session_id", "default")),
+                reason="Foreground command cancelled",
+            )
+            completed.wait()
+            break
+        if time.monotonic() >= deadline:
+            with state_lock:
+                if completion is None:
+                    detached = True
+                    started.output = (
+                        f"Command moved to background after {timeout_s}s. {started.output}"
+                    )
+                    started.metadata.update(timeoutDetached=True, timeoutMs=timeout_s * 1000)
+                    return started
+
+    assert completion is not None
+    try:
+        output = pathlib.Path(completion.output_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        output = ""
+    body = output.strip() or "(no output)"
+    if completion.signal:
+        body += f"\n[killed by signal: {completion.signal}]"
+    else:
+        body += f"\n[exit code: {completion.exit_code}]"
+    preview, spill = apply_spill_policy(
+        sanitize_text(body)[0],
+        session_id=str(context_value(context, "session_id", "default")),
+        tool_name="bash",
+        root=resolve_spill_root(context),
+    )
+    meta = {
+        "taskId": completion.task_id,
+        "exitCode": completion.exit_code,
+        "signal": completion.signal,
+        "cwd": completion.cwd,
+        "startCwd": cwd,
+        "shellPath": shell_path,
+        "timedOut": False,
+        "timeoutMs": timeout_s * 1000,
+        "runInBackground": False,
+        "truncated": spill is not None,
+    }
+    if started.metadata.get("sandbox"):
+        meta["sandbox"] = started.metadata["sandbox"]
+    if spill is not None:
+        meta["spill"] = spill.to_dict()
+    return ToolResult(
+        ok=completion.ok, name="bash", output=preview, error=completion.error, metadata=meta
+    )
 
 
 def _start_background_shell_command(
@@ -948,6 +1206,7 @@ def _start_background_shell_command(
     marker: str,
     context: Any,
     mode_override: Any = None,
+    timeout_ms: int | None = None,
 ) -> ToolResult:
     BACKGROUND_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     task_id = f"bash-{uuid.uuid4()}"
@@ -990,6 +1249,8 @@ def _start_background_shell_command(
     try:
         proc = subprocess.Popen(argv, **kwargs)
     except Exception as e:
+        if sandbox_meta.get("sandboxProfile"):
+            delete_seatbelt_profile(sandbox_meta["sandboxProfile"])
         return ToolResult(
             ok=False,
             name="bash",
@@ -1012,12 +1273,15 @@ def _start_background_shell_command(
     on_background_process_complete = getattr(context, "on_background_process_complete", None) or (
         context.get("on_background_process_complete") if isinstance(context, dict) else None
     )
-    session_id = getattr(context, "session_id", "default") or (
+    session_id = getattr(context, "session_id", None) or (
         context.get("session_id", "default") if isinstance(context, dict) else "default"
     )
 
     if on_process_start and pid:
-        on_process_start(pid, command)
+        try:
+            on_process_start(pid, command)
+        except Exception:
+            pass
 
     try:
         get_job_store().start(
@@ -1035,12 +1299,32 @@ def _start_background_shell_command(
                 kill_process_tree(int(pid))
             except Exception:
                 pass
+        proc.wait()
+        if sandbox_meta.get("sandboxProfile"):
+            delete_seatbelt_profile(sandbox_meta["sandboxProfile"])
+        if on_process_exit and pid:
+            try:
+                on_process_exit(pid)
+            except Exception:
+                pass
         return ToolResult(ok=False, name="bash", error=str(exc))
 
     project_root = getattr(context, "project_root", None) or (
         context.get("project_root", os.getcwd()) if isinstance(context, dict) else os.getcwd()
     )
     isolated = _isolated_root(context)
+    timed_out = threading.Event()
+    timeout_timer: threading.Timer | None = None
+
+    def on_timeout() -> None:
+        if proc.poll() is None:
+            timed_out.set()
+            kill_process_tree(proc.pid)
+
+    if timeout_ms is not None:
+        timeout_timer = threading.Timer(timeout_ms / 1000.0, on_timeout)
+        timeout_timer.daemon = True
+        timeout_timer.start()
 
     # Background worker thread to stream output to file and notify completion
     def bg_worker() -> None:
@@ -1062,6 +1346,7 @@ def _start_background_shell_command(
                     for line in iter(stream.readline, ""):
                         if not line:
                             break
+                        line = sanitize_text(line)[0]
                         if is_stderr:
                             stderr_captured = _append_chunk(stderr_captured, line)
                         else:
@@ -1099,11 +1384,16 @@ def _start_background_shell_command(
                     next_cwd = None
             _update_session_cwd(session_id, cwd, next_cwd)
         finally:
+            if timeout_timer is not None:
+                timeout_timer.cancel()
             if bg_profile:
                 delete_seatbelt_profile(bg_profile)
 
         if on_process_exit and pid:
-            on_process_exit(pid)
+            try:
+                on_process_exit(pid)
+            except Exception:
+                pass
 
         exit_code = proc.returncode
         signal_name = None
@@ -1111,8 +1401,25 @@ def _start_background_shell_command(
             signal_name = f"SIG{-exit_code}"
             exit_code = None
 
-        ok = exit_code == 0 and signal_name is None
-        err_msg = None if ok else _build_error_message(exit_code, signal_name)
+        startup_error = None
+        if (
+            exit_code == 71
+            and sandbox_meta.get("sandboxBackend") == "seatbelt"
+            and stderr_captured.lstrip().startswith("sandbox-exec: sandbox_apply:")
+        ):
+            startup_error = (
+                "OS sandbox initialization failed before the shell command ran. "
+                "An enclosing macOS sandbox can prevent nested sandbox initialization."
+            )
+            sandbox_meta.update(sandboxApplied=False, sandboxDenied=startup_error)
+        ok = exit_code == 0 and signal_name is None and not timed_out.is_set()
+        err_msg = (
+            f"Command timed out after {timeout_ms}ms."
+            if timed_out.is_set()
+            else None
+            if ok
+            else _build_error_message(exit_code, signal_name, startup_error)
+        )
 
         get_job_store().complete(
             task_id,
@@ -1165,6 +1472,7 @@ def _start_background_shell_command(
             "shellPath": shell_path,
             "startCwd": cwd,
             "runInBackground": True,
+            "sandbox": sandbox_meta,
         },
     )
 
@@ -1178,7 +1486,7 @@ import shutil
 import tempfile
 
 MAX_OUTPUT_CHARS = 30000
-DEFAULT_PWSH_TIMEOUT_S = 120.0
+DEFAULT_PWSH_TIMEOUT_S = float(DEFAULT_FOREGROUND_TIMEOUT_S)
 
 
 def _resolve_pwsh_executable() -> str | None:
@@ -1209,6 +1517,11 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
     if isinstance(context, dict):
         sandbox_mode = context.get("sandbox_mode", sandbox_mode)
         project_root = context.get("project_root", project_root)
+
+    sandbox_mode, mode_error = _effective_sandbox_mode(context, args)
+    if mode_error:
+        mode_error.name = "pwsh"
+        return mode_error
 
     isolated = _isolated_root(context)
     try:
@@ -1280,6 +1593,13 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
     profile_path = sandbox_meta.get("sandboxProfile") if isinstance(sandbox_meta, dict) else None
 
     if run_in_background:
+        pwsh_timeout_s = (
+            min(MAX_BACKGROUND_TIMEOUT_S, max(0.001, float(raw_timeout) / 1000))
+            if raw_timeout is not None
+            else DEFAULT_BACKGROUND_TIMEOUT_S
+        )
+
+    if run_in_background:
         # Background job execution
         job_id = f"job_pwsh_{uuid.uuid4().hex[:8]}"
         log_dir = pathlib.Path(tempfile.gettempdir()) / "coderai-pwsh"
@@ -1319,19 +1639,27 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
             return ToolResult(ok=False, name="pwsh", error=str(exc))
 
         def _pwsh_bg_watcher() -> None:
+            timed_out = False
             try:
+                proc.wait(timeout=pwsh_timeout_s)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                kill_process_tree(proc.pid)
                 proc.wait()
             except Exception:
-                pass
+                kill_process_tree(proc.pid)
+                proc.wait()
             finally:
                 if profile_path:
                     delete_seatbelt_profile(profile_path)
                 try:
                     job_store.complete(
                         job_id,
-                        ok=(proc.returncode == 0),
+                        ok=(proc.returncode == 0 and not timed_out),
                         exit_code=proc.returncode,
-                        detail=None
+                        detail="PowerShell background command timed out"
+                        if timed_out
+                        else None
                         if proc.returncode == 0
                         else f"Process exited with code {proc.returncode}",
                     )
@@ -1357,15 +1685,54 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
 
     # Synchronous execution offloaded to worker thread to prevent event loop starvation
     start_time = time.time()
-    try:
-        completed = await asyncio.to_thread(
-            subprocess.run,
+    cancellation_event = getattr(context, "cancellation_event", None)
+    if isinstance(context, dict):
+        cancellation_event = context.get("cancellation_event", cancellation_event)
+    if not isinstance(cancellation_event, threading.Event):
+        cancellation_event = threading.Event()
+
+    def run_foreground() -> subprocess.CompletedProcess[str]:
+        proc = subprocess.Popen(
             wrapped_argv,
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=pwsh_timeout_s,
+            errors="replace",
             **popen_kwargs,
         )
+        settled = threading.Event()
+
+        def watch_cancellation() -> None:
+            while not settled.wait(0.05):
+                if cancellation_event.is_set():
+                    kill_process_tree(proc.pid)
+                    return
+
+        watcher = threading.Thread(target=watch_cancellation, daemon=True)
+        watcher.start()
+        try:
+            stdout, stderr = proc.communicate(timeout=pwsh_timeout_s)
+            return subprocess.CompletedProcess(wrapped_argv, proc.returncode, stdout, stderr)
+        except BaseException:
+            kill_process_tree(proc.pid)
+            proc.communicate()
+            raise
+        finally:
+            settled.set()
+            watcher.join(timeout=0.1)
+
+    worker = asyncio.create_task(asyncio.to_thread(run_foreground))
+    try:
+        try:
+            completed = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancellation_event.set()
+            try:
+                await asyncio.shield(worker)
+            except Exception:
+                pass
+            raise
 
         combined_output: str = completed.stdout or ""
         if completed.stderr:
@@ -1382,6 +1749,7 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
             combined_output,
             session_id=str(session_id),
             tool_name="pwsh",
+            root=resolve_spill_root(context),
         )
 
         meta = {"returncode": completed.returncode, "duration_seconds": duration}

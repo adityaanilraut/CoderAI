@@ -37,7 +37,7 @@ from typing import Any, Literal
 import requests
 
 from coderai.utils.io import atomic_json_write
-from coderai.share import get_share_dir
+from coderai.share import get_share_dir, secure_share_subdir
 
 from coderai.auth.platforms import (
     KIMI_CODE_PLATFORM_ID,
@@ -167,11 +167,7 @@ def _refresh_threshold(expires_in: float) -> float:
 
 
 def _credentials_dir() -> Path:
-    path = get_share_dir() / "credentials"
-    path.mkdir(parents=True, exist_ok=True)
-    with suppress(OSError):
-        path.chmod(0o700)
-    return path
+    return secure_share_subdir("credentials")
 
 
 def credentials_path(key: str) -> Path:

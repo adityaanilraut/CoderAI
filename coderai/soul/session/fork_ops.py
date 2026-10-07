@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 import json
+import contextlib
 import uuid
 from typing import Any
 
 from coderai.soul.session.models import _now
 from coderai.state import clear_session_state, rebuild_session_state_from_history
+from coderai.goals.core import get_goal_store
+from coderai.soul.session.goals import snapshot_from_history
 
 MAX_SESSION_ENTRIES = 50
+
+
+def _is_json_object(line: str) -> bool:
+    try:
+        return isinstance(json.loads(line), dict)
+    except (ValueError, TypeError):
+        return False
 
 
 def fork_session(
@@ -41,32 +51,31 @@ def fork_session(
 
     if at_message_id_or_seq is None:
         sliced_lines = list(raw_lines)
-    elif isinstance(at_message_id_or_seq, int):
-        # Check if matching by seq number or message index
-        matched_by_seq = False
-        for line in raw_lines:
-            try:
-                data = json.loads(line)
-                if "seq" in data:
-                    if int(data["seq"]) <= at_message_id_or_seq:
-                        sliced_lines.append(line)
-                        matched_by_seq = True
-                elif not matched_by_seq and len(sliced_lines) <= at_message_id_or_seq:
-                    sliced_lines.append(line)
-            except Exception:
-                continue
-        if not matched_by_seq and not sliced_lines and raw_lines:
-            # Fallback to index-based slice
-            sliced_lines = raw_lines[: at_message_id_or_seq + 1]
+    elif isinstance(at_message_id_or_seq, int) and not isinstance(at_message_id_or_seq, bool):
+        if at_message_id_or_seq < 0:
+            raise ValueError("Fork sequence must be nonnegative")
+        for index, line in enumerate(raw_lines):
+            if _is_json_object(line) and json.loads(line).get("seq") == at_message_id_or_seq:
+                sliced_lines = raw_lines[: index + 1]
+                break
+        else:
+            raise ValueError("Fork sequence was not found")
     elif isinstance(at_message_id_or_seq, str):
+        found = False
         for line in raw_lines:
             sliced_lines.append(line)
-            try:
-                data = json.loads(line)
-                if data.get("id") == at_message_id_or_seq:
+            if _is_json_object(line):
+                row = json.loads(line)
+                if row.get("id") == at_message_id_or_seq or (
+                    isinstance(row.get("data"), dict)
+                    and row["data"].get("id") == at_message_id_or_seq
+                ):
+                    found = True
                     break
-            except Exception:
-                continue
+        if not found:
+            raise ValueError("Fork message was not found")
+    else:
+        raise ValueError("Fork target must be a message ID or sequence number")
 
     # Find latest checkpoint hash in the sliced messages/events
     for line in reversed(sliced_lines):
@@ -79,6 +88,11 @@ def fork_session(
         except Exception:
             continue
 
+    if checkpoint_hash is not None and not manager.file_history.can_restore(
+        target_src_id, checkpoint_hash
+    ):
+        raise ValueError("Fork checkpoint is not owned by the source session")
+
     # Write cloned lines to the new session's file, rewriting sessionId
     forked_lines: list[str] = []
     for line in sliced_lines:
@@ -86,80 +100,113 @@ def fork_session(
             data = json.loads(line)
             if "sessionId" in data:
                 data["sessionId"] = forked_id
-            elif "session_id" in data:
+            if "session_id" in data:
                 data["session_id"] = forked_id
+            payload = data.get("data")
+            if isinstance(payload, dict):
+                for key in ("sessionId", "session_id"):
+                    if payload.get(key) == target_src_id:
+                        payload[key] = forked_id
             forked_lines.append(json.dumps(data, ensure_ascii=False))
         except Exception:
             forked_lines.append(line)
 
-    manager.session_store.write_raw_lines(forked_id, forked_lines)
-
-    # Seed the forked session's seq counter from the cloned log so the next
-    # minted seq continues past the clone instead of restarting at 0 and
-    # duplicating persisted seqs.
-    try:
-        max_cloned_seq = -1
-        for line in forked_lines:
-            try:
-                seq = json.loads(line).get("seq")
-            except Exception:
-                continue
-            if isinstance(seq, int) and seq > max_cloned_seq:
-                max_cloned_seq = seq
-        lock = getattr(manager, "_seq_lock", None)
-        if lock is not None:
-            with lock:
-                manager._seq_counters[forked_id] = max_cloned_seq + 1
-                manager._turn_step_synced.discard(forked_id)
-        else:
-            manager._seq_counters[forked_id] = max_cloned_seq + 1
-    except Exception:
-        pass
-
-    # Fork file history branch
-    manager.file_history.ensure_session(forked_id)
-    manager.file_history.fork_session(target_src_id, forked_id, checkpoint_hash=checkpoint_hash)
-
-    # Phase 2: copy persisted state (fork titles "Fork: <title>").
-    try:
-        from coderai.session_state import SessionState
-
-        src_state = manager.get_session_state(target_src_id)
-        forked_state = SessionState.model_validate(
-            src_state.model_dump(mode="json"),
+    goal_store = get_goal_store(manager.project_root)
+    snapshot = (
+        goal_store.snapshot(target_src_id)
+        if at_message_id_or_seq is None
+        else snapshot_from_history(
+            [json.loads(line) for line in sliced_lines if _is_json_object(line)]
         )
-        forked_state.custom_title = f"Fork: {src_entry.get('summary', '')}"[:200]
-        forked_state.title_generated = True
-        manager._session_states[forked_id] = forked_state
-        manager._save_session_state(forked_id)
-    except Exception:
-        pass
+    )
+    try:
+        # Forked goals retain their IDs but await an explicit start in the new session.
+        goal_store.restore(forked_id, snapshot, pause=True)
+        manager.session_store.write_raw_lines(forked_id, forked_lines)
 
-    # Update sessions index
-    index = manager._load_index()
-    forked_entry = {
-        "id": forked_id,
-        "summary": f"[Fork] {src_entry.get('summary', '')}",
-        "assistantReply": src_entry.get("assistantReply"),
-        "assistantThinking": src_entry.get("assistantThinking"),
-        "assistantRefusal": None,
-        "toolCalls": src_entry.get("toolCalls"),
-        "status": "completed",
-        "failReason": None,
-        "askPermissions": None,
-        "usage": None,
-        "usagePerModel": None,
-        "activeTokens": src_entry.get("activeTokens", 0),
-        "createTime": now,
-        "updateTime": now,
-        "planMode": src_entry.get("planMode", False),
-        "forkOf": target_src_id,
-        "parentSessionId": target_src_id,
-        "forkPoint": at_message_id_or_seq,
-    }
-    index["entries"].insert(0, forked_entry)
-    index["entries"] = index["entries"][:MAX_SESSION_ENTRIES]
-    manager._save_index(index)
+        # Seed the forked session's seq counter from the cloned log so the next
+        # minted seq continues past the clone instead of restarting at 0 and
+        # duplicating persisted seqs.
+        try:
+            max_cloned_seq = -1
+            for line in forked_lines:
+                try:
+                    seq = json.loads(line).get("seq")
+                except Exception:
+                    continue
+                if isinstance(seq, int) and seq > max_cloned_seq:
+                    max_cloned_seq = seq
+            lock = getattr(manager, "_seq_lock", None)
+            if lock is not None:
+                with lock:
+                    manager._seq_counters[forked_id] = max_cloned_seq + 1
+                    manager._turn_step_synced.discard(forked_id)
+            else:
+                manager._seq_counters[forked_id] = max_cloned_seq + 1
+        except Exception:
+            pass
+
+        # Fork file history branch
+        manager.file_history.ensure_session(forked_id)
+        manager.file_history.fork_session(target_src_id, forked_id, checkpoint_hash=checkpoint_hash)
+
+        # Phase 2: copy persisted state (fork titles "Fork: <title>").
+        try:
+            from coderai.session_state import SessionState
+
+            src_state = manager.get_session_state(target_src_id)
+            forked_state = SessionState.model_validate(
+                src_state.model_dump(mode="json"),
+            )
+            forked_state.custom_title = f"Fork: {src_entry.get('summary', '')}"[:200]
+            forked_state.title_generated = True
+            manager._session_states[forked_id] = forked_state
+            manager._save_session_state(forked_id)
+        except Exception:
+            pass
+
+        # Update sessions index
+        index = manager._load_index()
+        forked_entry = {
+            "id": forked_id,
+            "summary": f"[Fork] {src_entry.get('summary', '')}",
+            "assistantReply": src_entry.get("assistantReply"),
+            "assistantThinking": src_entry.get("assistantThinking"),
+            "assistantRefusal": None,
+            "toolCalls": src_entry.get("toolCalls"),
+            "status": "completed",
+            "failReason": None,
+            "askPermissions": None,
+            "usage": None,
+            "usagePerModel": None,
+            "activeTokens": src_entry.get("activeTokens", 0),
+            "createTime": now,
+            "updateTime": now,
+            "planMode": src_entry.get("planMode", False),
+            "forkOf": target_src_id,
+            "parentSessionId": target_src_id,
+            "forkPoint": at_message_id_or_seq,
+        }
+        index["entries"].insert(0, forked_entry)
+        index["entries"] = index["entries"][:MAX_SESSION_ENTRIES]
+        manager._save_index(index)
+    except BaseException:
+        # A branch is published only after all durable artifacts exist.
+        from coderai.utils.storage import remove_path
+
+        with contextlib.suppress(Exception):
+            goal_store.delete_session(forked_id)
+        with contextlib.suppress(Exception):
+            remove_path(manager.session_store.messages_path(forked_id))
+            remove_path(manager._session_dir(forked_id), tree=True)
+        with contextlib.suppress(Exception):
+            ref = manager.file_history._get_session_branch_ref(forked_id)
+            if ref:
+                manager.file_history._spawn_git(["update-ref", "-d", ref])
+        manager._session_states.pop(forked_id, None)
+        manager._seq_counters.pop(forked_id, None)
+        manager._turn_step_synced.discard(forked_id)
+        raise
     try:  # Forked session becomes the latest.
         from coderai.metadata import record_last_session
 
@@ -270,7 +317,18 @@ def undo(
         if cutoff_idx < 0:
             return False
         retained_messages = messages[: cutoff_idx + 1]
-        manager._save_messages(target_id, retained_messages)
+        goal_store = get_goal_store(manager.project_root)
+        previous_goals = goal_store.snapshot(target_id)
+        goal_store.restore(
+            target_id,
+            snapshot_from_history([manager._serialize_message(m) for m in retained_messages]),
+        )
+        try:
+            manager._save_messages(target_id, retained_messages)
+        except Exception:
+            goal_store.restore(target_id, previous_goals)
+            raise
+        manager.goal_runner.clear(target_id)
         clear_session_state(target_id)
         rebuild_session_state_from_history(
             target_id, [manager._serialize_message(m) for m in retained_messages]

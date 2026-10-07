@@ -1,102 +1,123 @@
-"""Pluggable web search and fetch providers (Exa, Perplexity, custom scripts, HTTP)."""
+"""Pluggable web retrieval providers using the policy-enforcing HTTP transport."""
 
 from __future__ import annotations
 
 import abc
 import asyncio
 import base64
+import copy
 import html
+import hashlib
 import json
-import logging
 import os
 import re
 import shutil
 import subprocess
 import urllib.parse
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
-import requests
 
-from coderai.utils.aiohttp import get_http_client
-
-logger = logging.getLogger(__name__)
+from coderai.network.security import NetworkSecurityError
+from coderai.tools.web.common import safe_web_url
+from coderai.tools.web.options import SearchFilters
+from coderai.utils.aiohttp import HttpClient, get_http_client
 
 USER_AGENT = "CoderAI/1.0"
 
 
 @dataclass
 class WebSearchSource:
-    """A single source result returned by a search provider."""
-
     title: str
     url: str
     snippet: str | None = None
     published_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {"title": self.title, "url": self.url}
+        result: dict[str, Any] = {"title": self.title, "url": self.url}
         if self.snippet:
-            d["snippet"] = self.snippet
+            result["snippet"] = self.snippet
         if self.published_at:
-            d["publishedAt"] = self.published_at
-        return d
+            result["publishedAt"] = self.published_at
+        return result
 
 
 @dataclass
 class WebSearchResult:
-    """Aggregated output from a web search query."""
-
     query: str
     sources: list[WebSearchSource] = field(default_factory=list)
     content: str | None = None
     error: str | None = None
+    fetched_at: float = 0.0
+    from_cache: bool = False
+    truncated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
+        result: dict[str, Any] = {
             "query": self.query,
             "sources": [s.to_dict() for s in self.sources],
         }
         if self.content:
-            d["content"] = self.content
+            result["content"] = self.content
         if self.error:
-            d["error"] = self.error
-        return d
+            result["error"] = self.error
+        result["fetchedAt"] = self.fetched_at
+        result["fromCache"] = self.from_cache
+        result["truncated"] = self.truncated
+        return result
 
 
 class WebSearchProvider(abc.ABC):
-    """Abstract base class for all web search providers."""
+    client: HttpClient | None = None
+    filters = SearchFilters()
 
     @property
     @abc.abstractmethod
-    def id(self) -> str:
-        """Provider identifier (e.g. 'exa', 'perplexity', 'deepseek', 'http', 'custom')."""
-        ...
+    def id(self) -> str: ...
 
     @abc.abstractmethod
-    def available(self) -> bool:
-        """Return True if required API keys or endpoints are configured."""
-        ...
+    def available(self) -> bool: ...
 
     @abc.abstractmethod
     def search(
-        self,
-        query: str,
-        max_results: int = 8,
-        timeout_seconds: float = 15.0,
-    ) -> WebSearchResult:
-        """Execute a web search query and return normalized results."""
-        ...
+        self, query: str, max_results: int = 8, timeout_seconds: float = 15.0
+    ) -> WebSearchResult: ...
+
+    def _client(self) -> HttpClient:
+        return self.client or get_http_client()
+
+    def _get(self, url: str, **kwargs: Any) -> Any:
+        response = self._client().get(url, **kwargs)
+        if response.security_blocked:
+            raise NetworkSecurityError(response.error or "Request blocked by policy.")
+        return response
+
+    async def _get_async(self, url: str, **kwargs: Any) -> Any:
+        response = await self._client().get_async(url, **kwargs)
+        if response.security_blocked:
+            raise NetworkSecurityError(response.error or "Request blocked by policy.")
+        return response
+
+    def cache_scope(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "base_url": getattr(self, "base_url", ""),
+            "model": getattr(self, "model", ""),
+            "script": getattr(self, "script_path", ""),
+            "filters": self.filters.to_dict(),
+            "policy": vars(self._client().policy),
+            "search_type": getattr(self, "search_type", ""),
+            "credential_scope": hashlib.sha256(getattr(self, "api_key", "").encode()).hexdigest()[
+                :16
+            ],
+        }
 
 
 class CustomScriptSearchProvider(WebSearchProvider):
-    """Custom search script provider executing an external script specified by path or CODERAI_WEB_SEARCH_TOOL."""
+    id = "custom"
 
     def __init__(self, script_path: str) -> None:
         self.script_path = script_path
-
-    @property
-    def id(self) -> str:
-        return "custom"
 
     def available(self) -> bool:
         return bool(
@@ -105,39 +126,112 @@ class CustomScriptSearchProvider(WebSearchProvider):
         )
 
     def search(
-        self,
-        query: str,
-        max_results: int = 8,
-        timeout_seconds: float = 15.0,
+        self, query: str, max_results: int = 8, timeout_seconds: float = 15.0
     ) -> WebSearchResult:
-        try:
-            from coderai.utils.subprocess_env import scrub_subprocess_env
+        from coderai.utils.subprocess_env import scrub_subprocess_env
 
+        if self.filters.to_dict():
+            return WebSearchResult(
+                query=query, error="Custom scripts do not support structured search filters."
+            )
+        try:
             proc = subprocess.run(
                 [self.script_path, query],
                 capture_output=True,
                 text=True,
                 timeout=timeout_seconds,
-                # Custom scripts come from user config; never hand them secrets.
                 env=scrub_subprocess_env(dict(os.environ)),
             )
-            stdout = proc.stdout.strip()
-            if proc.returncode == 0 and stdout:
+            stdout = proc.stdout.strip()[:100_000]
+            if proc.returncode != 0 or not stdout:
                 return WebSearchResult(
                     query=query,
-                    content=stdout,
-                    sources=[WebSearchSource(title="Custom Search Output", url="", snippet=stdout)],
+                    error=f"Custom search exited with code {proc.returncode}: {(proc.stderr or stdout)[:1000]}",
                 )
-            return WebSearchResult(
-                query=query,
-                error=f"Custom search tool exited with code {proc.returncode}: {proc.stderr or stdout}",
-            )
+            # Structured output supplies usable citations; plain scripts remain compatible.
+            try:
+                parsed = json.loads(stdout)
+                if isinstance(parsed, dict) and isinstance(parsed.get("sources"), list):
+                    return WebSearchResult(
+                        query=query,
+                        content=parsed.get("content"),
+                        sources=_map_sources(parsed["sources"])[:max_results],
+                    )
+            except ValueError:
+                pass
+            return WebSearchResult(query=query, content=stdout)
         except Exception as exc:
             return WebSearchResult(query=query, error=f"Custom search tool error: {exc}")
 
 
-class ExaSearchProvider(WebSearchProvider):
-    """Exa neural & keyword web search provider."""
+class _KeyedSearchProvider(WebSearchProvider):
+    key_env = ""
+
+    def __init__(self, api_key: str | None, base_url: str) -> None:
+        self._api_key = api_key
+        self.base_url = base_url.rstrip("/")
+
+    @property
+    def api_key(self) -> str:
+        return self._api_key if self._api_key is not None else os.environ.get(self.key_env, "")
+
+    def available(self) -> bool:
+        return bool(self.api_key.strip())
+
+    def _post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        timeout: float,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        if not self.available():
+            raise ValueError(f"{self.id.title()} API key not configured (set {self.key_env}).")
+        response = self._client().post(
+            f"{self.base_url}/{path}",
+            json_data=payload,
+            timeout=timeout,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "User-Agent": USER_AGENT,
+                "Content-Type": "application/json",
+                **(headers or {}),
+            },
+        )
+        if response.security_blocked:
+            raise NetworkSecurityError(response.error or "Request blocked by policy.")
+        if not response.ok:
+            raise ValueError(
+                f"{self.id} search failed: {response.error or f'HTTP {response.status_code}'}"
+            )
+        parsed = json.loads(response.text)
+        if not isinstance(parsed, dict):
+            raise ValueError("Provider returned a non-object JSON response.")
+        return parsed
+
+
+def _map_sources(items: list[Any]) -> list[WebSearchSource]:
+    sources = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = safe_web_url(item.get("url") or "")
+        if not url:
+            continue
+        sources.append(
+            WebSearchSource(
+                title=item.get("title") or url,
+                url=url,
+                snippet=item.get("snippet") or item.get("text"),
+                published_at=item.get("publishedDate") or item.get("date") or item.get("page_age"),
+            )
+        )
+    return sources
+
+
+class ExaSearchProvider(_KeyedSearchProvider):
+    id = "exa"
+    key_env = "EXA_API_KEY"
 
     def __init__(
         self,
@@ -145,69 +239,45 @@ class ExaSearchProvider(WebSearchProvider):
         base_url: str = "https://api.exa.ai",
         search_type: str = "auto",
     ) -> None:
-        self.api_key = api_key or os.environ.get("EXA_API_KEY", "")
-        self.base_url = base_url.rstrip("/")
+        super().__init__(api_key, base_url)
         self.search_type = search_type
 
-    @property
-    def id(self) -> str:
-        return "exa"
-
-    def available(self) -> bool:
-        return bool(self.api_key.strip())
-
     def search(
-        self,
-        query: str,
-        max_results: int = 8,
-        timeout_seconds: float = 15.0,
+        self, query: str, max_results: int = 8, timeout_seconds: float = 15.0
     ) -> WebSearchResult:
-        if not self.available():
-            return WebSearchResult(
-                query=query, error="Exa API key not configured (set EXA_API_KEY)."
-            )
-
-        url = f"{self.base_url}/search"
-        headers = {
-            "x-api-key": self.api_key,
-            "User-Agent": USER_AGENT,
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "query": query,
-            "numResults": max_results,
-            "type": self.search_type,
-            "contents": {"highlights": {"numSentences": 2}},
-        }
-
         try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=timeout_seconds)
-            if resp.status_code != 200:
-                return WebSearchResult(
-                    query=query,
-                    error=f"Exa search failed with status {resp.status_code}: {resp.text}",
-                )
-            data = resp.json()
-            results = data.get("results") or []
-            sources: list[WebSearchSource] = []
-            for r in results:
-                highlights = r.get("highlights") or []
-                snippet = " ... ".join(highlights) if highlights else r.get("text")
-                sources.append(
-                    WebSearchSource(
-                        title=r.get("title") or r.get("url") or "Untitled",
-                        url=r.get("url", ""),
-                        snippet=snippet,
-                        published_at=r.get("publishedDate"),
-                    )
-                )
-            return WebSearchResult(query=query, sources=sources[:max_results])
+            if self.filters.language:
+                raise ValueError("Language filtering requires the Perplexity provider.")
+            payload: dict[str, Any] = {
+                "query": query,
+                "numResults": max_results,
+                "type": self.search_type,
+                "contents": {"highlights": True},
+            }
+            for name, value in (
+                ("includeDomains", self.filters.include_domains),
+                ("excludeDomains", self.filters.exclude_domains),
+                ("startPublishedDate", self.filters.start_date),
+                ("endPublishedDate", self.filters.end_date),
+                ("userLocation", self.filters.region),
+            ):
+                if value:
+                    payload[name] = value
+            data = self._post("search", payload, timeout_seconds, {"x-api-key": self.api_key})
+            items = data.get("results") or []
+            for item in items:
+                if isinstance(item, dict) and item.get("highlights"):
+                    item["snippet"] = " ... ".join(item["highlights"])
+            return WebSearchResult(query=query, sources=_map_sources(items)[:max_results])
+        except NetworkSecurityError:
+            raise
         except Exception as exc:
             return WebSearchResult(query=query, error=f"Exa search error: {exc}")
 
 
-class PerplexitySearchProvider(WebSearchProvider):
-    """Perplexity AI web search provider with generated answers and citations."""
+class PerplexitySearchProvider(_KeyedSearchProvider):
+    id = "perplexity"
+    key_env = "PERPLEXITY_API_KEY"
 
     def __init__(
         self,
@@ -215,235 +285,233 @@ class PerplexitySearchProvider(WebSearchProvider):
         base_url: str = "https://api.perplexity.ai",
         model: str = "sonar",
     ) -> None:
-        self.api_key = api_key or os.environ.get("PERPLEXITY_API_KEY", "")
-        self.base_url = base_url.rstrip("/")
+        super().__init__(api_key, base_url)
         self.model = model
 
-    @property
-    def id(self) -> str:
-        return "perplexity"
-
-    def available(self) -> bool:
-        return bool(self.api_key.strip())
-
     def search(
-        self,
-        query: str,
-        max_results: int = 8,
-        timeout_seconds: float = 15.0,
+        self, query: str, max_results: int = 8, timeout_seconds: float = 15.0
     ) -> WebSearchResult:
-        if not self.available():
-            return WebSearchResult(
-                query=query, error="Perplexity API key not configured (set PERPLEXITY_API_KEY)."
-            )
-
-        url = f"{self.base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "User-Agent": USER_AGENT,
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": query}],
-            "max_tokens": 1024,
-        }
-
         try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=timeout_seconds)
-            if resp.status_code != 200:
+            if self.filters.to_dict():
+                payload: dict[str, Any] = {
+                    "query": query,
+                    "max_results": min(max_results, 20),
+                    "max_tokens_per_page": 512,
+                }
+                # Perplexity accepts include OR exclude; exclusions are enforced locally as well.
+                domains = list(self.filters.include_domains) or [
+                    "-" + d for d in self.filters.exclude_domains
+                ]
+                if domains:
+                    payload["search_domain_filter"] = [d.removeprefix("*.") for d in domains]
+                if self.filters.language:
+                    payload["search_language_filter"] = [self.filters.language]
+                if self.filters.region:
+                    payload["country"] = self.filters.region
+                for name, value in (
+                    ("search_after_date_filter", self.filters.start_date),
+                    ("search_before_date_filter", self.filters.end_date),
+                ):
+                    if value:
+                        payload[name] = datetime.fromisoformat(value).strftime("%m/%d/%Y")
+                data = self._post("search", payload, timeout_seconds)
                 return WebSearchResult(
-                    query=query,
-                    error=f"Perplexity search failed with status {resp.status_code}: {resp.text}",
+                    query=query, sources=_map_sources(data.get("results") or [])[:max_results]
                 )
-            data = resp.json()
-            choices = data.get("choices") or [{}]
-            answer = choices[0].get("message", {}).get("content", "")
-            citations = data.get("citations") or []
-            search_results = data.get("search_results") or []
-
-            sources: list[WebSearchSource] = []
-            if search_results:
-                for sr in search_results:
-                    sources.append(
-                        WebSearchSource(
-                            title=sr.get("title") or sr.get("url") or "Source",
-                            url=sr.get("url", ""),
-                            snippet=sr.get("snippet"),
-                        )
-                    )
-            elif citations:
-                for cite in citations:
-                    sources.append(
-                        WebSearchSource(
-                            title=cite,
-                            url=cite,
-                            snippet=None,
-                        )
-                    )
-
-            return WebSearchResult(
-                query=query,
-                content=answer.strip() if answer else None,
-                sources=sources[:max_results],
+            data = self._post(
+                "chat/completions",
+                {
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": query}],
+                    "max_tokens": 1024,
+                },
+                timeout_seconds,
             )
+            choices = data.get("choices") or [{}]
+            answer = choices[0].get("message", {}).get("content") or None
+            sources = _map_sources(data.get("search_results") or [])
+            if not sources:
+                sources = [
+                    WebSearchSource(title=url, url=url)
+                    for url in data.get("citations") or []
+                    if safe_web_url(url)
+                ]
+            return WebSearchResult(query=query, content=answer, sources=sources[:max_results])
+        except NetworkSecurityError:
+            raise
         except Exception as exc:
             return WebSearchResult(query=query, error=f"Perplexity search error: {exc}")
 
 
-class DeepSeekSearchProvider(WebSearchProvider):
-    """DeepSeek native search API provider."""
+class DeepSeekSearchProvider(_KeyedSearchProvider):
+    """Native search is a Messages model turn, not a dedicated /search endpoint."""
+
+    id = "deepseek"
+    key_env = "DEEPSEEK_API_KEY"
 
     def __init__(
-        self,
-        api_key: str | None = None,
-        base_url: str = "https://api.deepseek.com",
+        self, api_key: str | None = None, base_url: str | None = None, model: str = "deepseek-flash"
     ) -> None:
-        self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
-        self.base_url = base_url.rstrip("/")
-
-    @property
-    def id(self) -> str:
-        return "deepseek"
-
-    def available(self) -> bool:
-        return bool(self.api_key.strip())
+        super().__init__(
+            api_key,
+            base_url
+            or os.environ.get("DEEPSEEK_SEARCH_BASE_URL", "https://api.deepseek.com/anthropic/v1"),
+        )
+        self.model = model
 
     def search(
-        self,
-        query: str,
-        max_results: int = 8,
-        timeout_seconds: float = 15.0,
+        self, query: str, max_results: int = 8, timeout_seconds: float = 15.0
     ) -> WebSearchResult:
-        if not self.available():
-            return WebSearchResult(
-                query=query, error="DeepSeek API key not configured (set DEEPSEEK_API_KEY)."
-            )
-
-        url = f"{self.base_url}/search"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "User-Agent": USER_AGENT,
-            "Content-Type": "application/json",
-        }
         try:
-            resp = requests.post(
-                url,
-                json={"query": query, "limit": max_results},
-                headers=headers,
-                timeout=timeout_seconds,
+            if self.filters.to_dict():
+                raise ValueError("Structured filters require Exa or Perplexity.")
+            data = self._post(
+                "messages",
+                {
+                    "model": self.model,
+                    "max_tokens": 4096,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": f"Search the web for: {query}"}],
+                        }
+                    ],
+                    "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
+                },
+                timeout_seconds,
+                {"x-api-key": self.api_key, "anthropic-version": "2023-06-01"},
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                results = data.get("results") or []
-                sources = [
-                    WebSearchSource(
-                        title=r.get("title", "Untitled"),
-                        url=r.get("url", ""),
-                        snippet=r.get("snippet"),
+            blocks = data.get("content") or []
+            snippets: dict[str, str] = {}
+            answer: list[str] = []
+            items: list[Any] = []
+            found_search = False
+            for block in blocks:
+                if block.get("type") == "text":
+                    answer.append(block.get("text") or "")
+                    for citation in block.get("citations") or []:
+                        if citation.get("url") and citation.get("cited_text"):
+                            snippets.setdefault(citation["url"], citation["cited_text"])
+                elif block.get("type") == "web_search_tool_result":
+                    found_search = True
+                    content = block.get("content") or []
+                    if isinstance(content, dict):
+                        raise ValueError(
+                            f"Native search failed: {content.get('error_code', 'unknown error')}"
+                        )
+                    items.extend(
+                        item for item in content if item.get("type") == "web_search_result"
                     )
-                    for r in results
-                ]
-                return WebSearchResult(query=query, sources=sources[:max_results])
+            if not found_search:
+                raise ValueError("DeepSeek returned no native search result blocks.")
+            sources = _map_sources(items)
+            for source in sources:
+                source.snippet = snippets.get(source.url) or source.snippet
             return WebSearchResult(
-                query=query, error=f"DeepSeek search API returned status {resp.status_code}"
+                query=query,
+                sources=sources[:max_results],
+                content="\n\n".join(answer).strip() or None,
             )
+        except NetworkSecurityError:
+            raise
         except Exception as exc:
             return WebSearchResult(query=query, error=f"DeepSeek search error: {exc}")
 
 
 class HttpSearchProvider(WebSearchProvider):
-    """Generic HTTP multi-engine web search provider (Yahoo + Bing + DuckDuckGo).
+    """Free HTTP search. Date/language filters require a structured search API."""
 
-    Result caching lives in the WebSearch tool layer (single owner), so this
-    provider stays pure: identical inputs always execute the lookup.
-    """
-
-    @property
-    def id(self) -> str:
-        return "http"
+    id = "http"
 
     def available(self) -> bool:
         return True
 
-    def search(
-        self,
-        query: str,
-        max_results: int = 8,
-        timeout_seconds: float = 10.0,
-    ) -> WebSearchResult:
-        # 1. DuckDuckGo Instant Answer / Mock Client Check
-        try:
-            client = get_http_client()
-            ddg_url = f"https://api.duckduckgo.com/?q={urllib.parse.quote(query)}&format=json&no_html=1&skip_disambig=1"
-            resp = client.get(ddg_url, timeout=timeout_seconds)
-            if resp.ok and resp.text:
-                try:
-                    data = json.loads(resp.text)
-                    abstract = data.get("AbstractText", "")
-                    ddg_sources: list[WebSearchSource] = []
-                    for topic in data.get("RelatedTopics", []):
-                        if isinstance(topic, dict) and "FirstURL" in topic:
-                            u = topic.get("FirstURL", "")
-                            if u:
-                                ddg_sources.append(
-                                    WebSearchSource(
-                                        title=topic.get("Text", "Topic"),
-                                        url=u,
-                                        snippet=topic.get("Text"),
-                                    )
-                                )
-                    if abstract or ddg_sources:
-                        return WebSearchResult(
-                            query=query,
-                            content=abstract or None,
-                            sources=ddg_sources[:max_results],
-                        )
-                except Exception:
-                    pass
-        except Exception:
-            pass
+    def _query(self, query: str) -> str:
+        if self.filters.start_date or self.filters.end_date or self.filters.language:
+            raise ValueError("Date and language filters require Exa (dates) or Perplexity.")
+        if self.filters.include_domains:
+            query += (
+                " ("
+                + " OR ".join("site:" + d.removeprefix("*.") for d in self.filters.include_domains)
+                + ")"
+            )
+        query += "".join(" -site:" + d.removeprefix("*.") for d in self.filters.exclude_domains)
+        return query
 
-        return self._search_fallback(query, max_results, timeout_seconds)
+    @staticmethod
+    def _instant(query: str, text: str, max_results: int) -> WebSearchResult | None:
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return None
+        sources: list[WebSearchSource] = []
+        if data.get("AbstractURL"):
+            sources.append(
+                WebSearchSource(
+                    title=data.get("Heading") or query,
+                    url=data["AbstractURL"],
+                    snippet=data.get("AbstractText"),
+                )
+            )
+
+        def topics(items: list[Any]) -> None:
+            for item in items:
+                if isinstance(item, dict):
+                    if item.get("FirstURL"):
+                        sources.append(
+                            WebSearchSource(
+                                title=item.get("Text") or "Topic",
+                                url=item["FirstURL"],
+                                snippet=item.get("Text"),
+                            )
+                        )
+                    topics(item.get("Topics") or [])
+
+        topics(data.get("RelatedTopics") or [])
+        if sources or data.get("AbstractText"):
+            return WebSearchResult(
+                query=query, content=data.get("AbstractText") or None, sources=sources[:max_results]
+            )
+        return None
+
+    def search(
+        self, query: str, max_results: int = 8, timeout_seconds: float = 10.0
+    ) -> WebSearchResult:
+        effective = self._query(query)
+        url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode(
+            {"q": effective, "format": "json", "no_html": 1, "skip_disambig": 1}
+        )
+        response = self._get(url, timeout=timeout_seconds, use_cache=False)
+        result = (
+            self._instant(query, response.text, max_results)
+            if response.ok and not self.filters.region
+            else None
+        )
+        if not result:
+            result = self._search_fallback(effective, max_results, timeout_seconds)
+        result.query = query
+        return result
 
     async def search_async(
-        self,
-        query: str,
-        max_results: int = 8,
-        timeout_seconds: float = 10.0,
+        self, query: str, max_results: int = 8, timeout_seconds: float = 10.0
     ) -> WebSearchResult:
-        try:
-            client = get_http_client()
-            ddg_url = f"https://api.duckduckgo.com/?q={urllib.parse.quote(query)}&format=json&no_html=1&skip_disambig=1"
-            resp = await client.get_async(ddg_url, timeout=timeout_seconds)
-            if resp.ok and resp.text:
-                try:
-                    data = json.loads(resp.text)
-                    abstract = data.get("AbstractText", "")
-                    ddg_sources: list[WebSearchSource] = []
-                    for topic in data.get("RelatedTopics", []):
-                        if isinstance(topic, dict) and "FirstURL" in topic:
-                            u = topic.get("FirstURL", "")
-                            if u:
-                                ddg_sources.append(
-                                    WebSearchSource(
-                                        title=topic.get("Text", "Topic"),
-                                        url=u,
-                                        snippet=topic.get("Text"),
-                                    )
-                                )
-                    if abstract or ddg_sources:
-                        return WebSearchResult(
-                            query=query,
-                            content=abstract or None,
-                            sources=ddg_sources[:max_results],
-                        )
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        return await asyncio.to_thread(self.search, query, max_results, timeout_seconds)
+        effective = self._query(query)
+        url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode(
+            {"q": effective, "format": "json", "no_html": 1, "skip_disambig": 1}
+        )
+        response = await self._get_async(url, timeout=timeout_seconds, use_cache=False)
+        result = (
+            self._instant(query, response.text, max_results)
+            if response.ok and not self.filters.region
+            else None
+        )
+        if result:
+            return result
+        result = await asyncio.to_thread(
+            self._search_fallback, effective, max_results, timeout_seconds
+        )
+        result.query = query
+        return result
 
     def _search_fallback(
         self,
@@ -460,11 +528,15 @@ class HttpSearchProvider(WebSearchProvider):
             "Accept-Language": "en-US,en;q=0.5",
         }
 
-        # 2. Engine 1: Yahoo Web Search
+        # Yahoo is the first HTML fallback. Country-specific requests use Bing.
         try:
             url = f"https://search.yahoo.com/search?p={urllib.parse.quote(query)}"
-            resp = requests.get(url, headers=headers, timeout=timeout_seconds)
-            if resp.status_code == 200:
+            resp = (
+                None
+                if self.filters.region
+                else self._get(url, headers=headers, timeout=timeout_seconds, use_cache=False)
+            )
+            if resp is not None and resp.status_code == 200:
                 items = re.findall(r"<li><div class=\"[^\"]*dd [^\"]*\"[\s\S]*?</li>", resp.text)
                 for it in items:
                     link_m = re.search(r"href=\"(https?://[^\"]+)\"", it)
@@ -482,7 +554,15 @@ class HttpSearchProvider(WebSearchProvider):
                             m = re.search(r"/RU=([^/]+)/", raw_url)
                             if m:
                                 target_url = urllib.parse.unquote(m.group(1))
-                        if "yahoo.com" in target_url or target_url in seen_urls:
+                        target_url = safe_web_url(html.unescape(target_url))
+                        host = urllib.parse.urlsplit(target_url).hostname or ""
+                        if (
+                            not target_url
+                            or host == "yahoo.com"
+                            or host.endswith(".yahoo.com")
+                            or target_url in seen_urls
+                            or not self.filters.allows_url(target_url)
+                        ):
                             continue
                         title = html.unescape(re.sub(r"<[^>]+>", "", title_m.group(1)).strip())
                         snippet = (
@@ -500,14 +580,21 @@ class HttpSearchProvider(WebSearchProvider):
                             )
                             if len(sources) >= max_results:
                                 break
+        except NetworkSecurityError:
+            raise
         except Exception:
             pass
 
-        # 2. Engine 2: Bing Web Search
+        # Fill remaining results from Bing.
         if len(sources) < max_results:
             try:
-                b_url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
-                resp = requests.get(b_url, headers=headers, timeout=timeout_seconds)
+                b_url = "https://www.bing.com/search?" + urllib.parse.urlencode(
+                    {
+                        "q": query,
+                        **({"cc": self.filters.region.lower()} if self.filters.region else {}),
+                    }
+                )
+                resp = self._get(b_url, headers=headers, timeout=timeout_seconds, use_cache=False)
                 if resp.status_code == 200:
                     matches = re.findall(r"<li class=\"b_algo\"[\s\S]*?</li>", resp.text)
                     for m in matches:
@@ -533,10 +620,14 @@ class HttpSearchProvider(WebSearchProvider):
                                             )
                                         except Exception:
                                             pass
+                            target_url = safe_web_url(target_url)
+                            host = urllib.parse.urlsplit(target_url).hostname or ""
                             if (
-                                "r.bing.com" in target_url
-                                or "bing.com" in target_url
+                                not target_url
+                                or host == "bing.com"
+                                or host.endswith(".bing.com")
                                 or target_url in seen_urls
+                                or not self.filters.allows_url(target_url)
                             ):
                                 continue
                             title = html.unescape(re.sub(r"<[^>]+>", "", h2_match.group(2)).strip())
@@ -557,45 +648,19 @@ class HttpSearchProvider(WebSearchProvider):
                                 )
                                 if len(sources) >= max_results:
                                     break
-            except Exception:
-                pass
-
-        # 3. Engine 3: DuckDuckGo instant answer / abstract fallback
-        if not sources:
-            try:
-                ddg_url = f"https://api.duckduckgo.com/?q={urllib.parse.quote(query)}&format=json&no_html=1&skip_disambig=1"
-                resp = requests.get(ddg_url, headers=headers, timeout=timeout_seconds)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    abstract = data.get("AbstractText", "")
-                    for topic in data.get("RelatedTopics", []):
-                        if isinstance(topic, dict) and "FirstURL" in topic:
-                            u = topic.get("FirstURL", "")
-                            if u and u not in seen_urls:
-                                seen_urls.add(u)
-                                sources.append(
-                                    WebSearchSource(
-                                        title=topic.get("Text", "Topic"),
-                                        url=u,
-                                        snippet=topic.get("Text"),
-                                    )
-                                )
-                    if abstract or sources:
-                        return WebSearchResult(
-                            query=query,
-                            content=abstract or None,
-                            sources=sources[:max_results],
-                        )
+            except NetworkSecurityError:
+                raise
             except Exception:
                 pass
 
         if sources:
             return WebSearchResult(query=query, sources=sources[:max_results])
+        return WebSearchResult(
+            query=query,
+            error="Search engines returned no readable results; they may be unavailable or blocking automated access.",
+        )
 
-        return WebSearchResult(query=query, sources=[], error="No search results found.")
 
-
-# Registry Management
 _PROVIDERS: dict[str, WebSearchProvider] = {
     "exa": ExaSearchProvider(),
     "perplexity": PerplexitySearchProvider(),
@@ -609,29 +674,59 @@ def register_web_search_provider(provider: WebSearchProvider) -> None:
 
 
 def list_web_search_providers() -> list[str]:
-    return sorted(_PROVIDERS.keys())
+    return sorted(_PROVIDERS)
 
 
-def resolve_web_search_provider(name: str | None = None) -> WebSearchProvider:
-    """Resolve the active WebSearchProvider based on preferences, env vars, or availability."""
-    if name and name.lower() in _PROVIDERS:
-        return _PROVIDERS[name.lower()]
+def resolve_web_search_provider(
+    name: str | None = None,
+    *,
+    settings: dict[str, Any] | None = None,
+    filters: SearchFilters | None = None,
+    client: HttpClient | None = None,
+) -> WebSearchProvider:
+    settings = settings or {}
+    env = {**(settings.get("env") or {}), **os.environ}
+    custom_tool = env.get("CODERAI_WEB_SEARCH_TOOL") or settings.get("webSearchTool")
+    preferred = name or env.get("CODERAI_WEB_SEARCH_PROVIDER") or settings.get("webSearchProvider")
 
-    custom_tool = os.environ.get("CODERAI_WEB_SEARCH_TOOL")
-    if custom_tool and (os.path.isfile(custom_tool) or shutil.which(custom_tool)):
-        return CustomScriptSearchProvider(custom_tool)
+    def configured(provider_id: str) -> WebSearchProvider:
+        if provider_id == "custom":
+            if not custom_tool:
+                raise ValueError("Custom search executable is not configured.")
+            provider: WebSearchProvider = CustomScriptSearchProvider(custom_tool)
+        elif provider_id in _PROVIDERS:
+            provider = copy.copy(_PROVIDERS[provider_id])
+            if isinstance(provider, _KeyedSearchProvider):
+                provider._api_key = (
+                    provider.api_key
+                    if provider._api_key is not None
+                    else env.get(provider.key_env, "")
+                )
+            if isinstance(provider, DeepSeekSearchProvider) and env.get("DEEPSEEK_SEARCH_BASE_URL"):
+                provider.base_url = env["DEEPSEEK_SEARCH_BASE_URL"].rstrip("/")
+        else:
+            raise ValueError(f"Unknown web search provider: {provider_id}")
+        if isinstance(provider, WebSearchProvider):
+            provider.filters = filters or SearchFilters()
+            provider.client = client
+        elif filters and filters.to_dict():
+            raise ValueError(f"Provider {provider_id} does not support structured search filters.")
+        if not provider.available():
+            raise ValueError(f"Web search provider '{provider_id}' is not configured or available.")
+        return provider
 
-    preferred = os.environ.get("CODERAI_WEB_SEARCH_PROVIDER")
-    if preferred and preferred.lower() in _PROVIDERS:
-        p = _PROVIDERS[preferred.lower()]
-        if p.available():
-            return p
-
-    # Fallback to first available provider
-    for p_id in ("exa", "perplexity", "deepseek"):
-        p = _PROVIDERS[p_id]
-        if p.available():
-            return p
-
-    # Default fallback
-    return _PROVIDERS["http"]
+    if preferred:
+        return configured(preferred.lower().strip())
+    if custom_tool:
+        return configured("custom")
+    order = (
+        ("perplexity", "exa", "deepseek")
+        if filters and filters.language
+        else ("exa", "perplexity", "deepseek")
+    )
+    for provider_id in order:
+        try:
+            return configured(provider_id)
+        except ValueError:
+            continue
+    return configured("http")

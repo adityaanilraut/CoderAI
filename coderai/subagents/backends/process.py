@@ -17,7 +17,7 @@ class RunningProcess(Protocol):
     @property
     def returncode(self) -> int | None: ...
 
-    async def communicate(self) -> tuple[bytes, bytes]: ...
+    async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]: ...
 
     async def wait(self) -> int: ...
 
@@ -33,6 +33,7 @@ class ProcessFactory(Protocol):
         stderr: int,
         env: dict[str, str],
         start_new_session: bool,
+        stdin: int | None = ...,
     ) -> Awaitable[RunningProcess]: ...
 
 

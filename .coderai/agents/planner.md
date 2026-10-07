@@ -1,4 +1,5 @@
 ---
+mode: read_only
 name: planner
 description: Planning specialist for complex features, refactors, and implementation sequencing.
 tools: ["Read", "Grep", "Glob"]

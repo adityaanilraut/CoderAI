@@ -8,16 +8,15 @@ Asyncio primitives and lifecycle control:
 - ``OrchestrationEventBus`` — contained process-local publication of the
   ``subagent/start`` + ``subagent/end`` lifecycle pairs.
   Listener failures are logged and contained; they never change the run.
-- ``resolve_child_depth`` — lineage-derived delegation depth (parent + 1),
-  monotone via the registry handle when available.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from typing import Any
+
+from coderai.utils.envvar import get_env_float, get_env_int
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +44,7 @@ _STATUS_TO_STOP_REASON: dict[str, str] = {
     "budget_exceeded": SUBTASK_MAX_TOKENS,
     "refusal": SUBTASK_REFUSAL,
 }
+TERMINAL_AGENT_STATUSES: frozenset[str] = frozenset(_STATUS_TO_STOP_REASON)
 
 
 def status_to_stop_reason(status: str) -> str:
@@ -54,16 +54,6 @@ def status_to_stop_reason(status: str) -> str:
     partial output as success (mirrors the reference's fall-through rule).
     """
     return _STATUS_TO_STOP_REASON.get(status, SUBTASK_ERROR)
-
-
-def stop_reason_error(stop_reason: str) -> str:
-    """Parent-facing failure headline for a non-completed stop reason."""
-    return {
-        SUBTASK_ABORTED: "subagent run was cancelled",
-        SUBTASK_ERROR: "subagent run failed",
-        SUBTASK_MAX_TOKENS: "subagent run hit its token limit before finishing",
-        SUBTASK_REFUSAL: "subagent declined the task",
-    }.get(stop_reason, f"subagent run ended abnormally ({stop_reason})")
 
 
 def settlement_summary(child_id: str, stop_reason: str, outcome: str | None = None) -> str:
@@ -195,41 +185,15 @@ def publish_subagent_end(
 
 
 # ---------------------------------------------------------------------------
-# Delegation depth (mirrors packages/subagent/subagent/src/depth.ts)
+# Orchestration settings
 # ---------------------------------------------------------------------------
 
 DEFAULT_MAX_SUBAGENT_DEPTH = 3
 
 
-def resolve_child_depth(parent_depth: int | None, max_depth: int | None = None) -> int:
-    """Compute a child's delegation depth: zero for top level, parent + 1 below.
-
-    The cap itself is enforced by the quota check at spawn time (kept for
-    backward compatibility with ``check_subagent_depth_quota``); this helper is
-    the lineage-derived depth source so children can never reset to zero.
-    """
-    parent = parent_depth if parent_depth is not None and parent_depth >= 0 else 0
-    child = parent + 1
-    if max_depth is not None and child > max_depth:
-        child = max_depth
-    return child
-
-
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return default
+    value = get_env_int(name, default)
     return value if value >= minimum else default
-
-
-def auto_max_concurrent_agents() -> int:
-    """Default concurrent subagent slots: min(16, max(1, cores - 2))."""
-    cores = os.cpu_count() or 1
-    return min(16, max(1, cores - 2))
 
 
 def resolve_subagent_defaults(settings: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -241,11 +205,7 @@ def resolve_subagent_defaults(settings: dict[str, Any] | None = None) -> dict[st
         from_settings = orch.get(settings_key)
         if isinstance(from_settings, (int, float)) and from_settings > 0:
             return float(from_settings)
-        raw = os.environ.get(env_name)
-        try:
-            value = float(raw) if raw is not None else default
-        except (TypeError, ValueError):
-            return default
+        value = get_env_float(env_name, default)
         return value if value > 0 else default
 
     def _int_pick(settings_key: str, env_name: str, default: int) -> int:
@@ -263,18 +223,6 @@ def resolve_subagent_defaults(settings: dict[str, Any] | None = None) -> dict[st
     }
 
 
-def resolve_goal_defaults(settings: dict[str, Any] | None = None) -> dict[str, int]:
-    settings = settings or {}
-    orch = settings.get("orchestration") or {}
-    max_rounds = orch.get("goalMaxRounds")
-    if not (isinstance(max_rounds, int) and max_rounds >= 1):
-        max_rounds = _env_int("CODERAI_GOAL_MAX_ROUNDS", 256)
-    blocked_after = orch.get("goalBlockedAfterRounds")
-    if not (isinstance(blocked_after, int) and blocked_after >= 1):
-        blocked_after = _env_int("CODERAI_GOAL_BLOCKED_AFTER_ROUNDS", 3)
-    return {"max_goal_rounds": max_rounds, "blocked_after_rounds": blocked_after}
-
-
 def resolve_max_parallel_tool_calls(settings: dict[str, Any] | None = None) -> int:
     """Agent loop default: 10 parallel tool calls in one rolling pool."""
     settings = settings or {}
@@ -289,33 +237,40 @@ DEFAULT_MAX_CONTINUABLE_AGENTS: int = 50
 DEFAULT_MAX_RUNNING_JOBS: int = 50
 
 
-def resolve_max_continuable_agents(settings: dict[str, Any] | None = None) -> int:
-    """Resolve maximum live continuable subagents per session (env, settings, or default 50)."""
+def _resolve_max_capped(
+    settings: dict[str, Any] | None,
+    settings_key: str,
+    env_names: tuple[str, ...],
+    default: int,
+) -> int:
+    """Shared settings → env(s) → default resolver with a floor of 1."""
     settings = settings or {}
     orch = settings.get("orchestration") or {}
-    from_settings = orch.get("maxContinuableAgents")
+    from_settings = orch.get(settings_key)
     if isinstance(from_settings, int) and from_settings >= 1:
         return from_settings
-    val = _env_int("CODERAI_MAX_CONTINUABLE_AGENTS_PER_SESSION", 0)
-    if val >= 1:
-        return val
-    val = _env_int("MAX_CONTINUABLE_AGENTS_PER_SESSION", 0)
-    if val >= 1:
-        return val
-    return DEFAULT_MAX_CONTINUABLE_AGENTS
+    for env_name in env_names:
+        val = _env_int(env_name, 0)
+        if val >= 1:
+            return val
+    return default
+
+
+def resolve_max_continuable_agents(settings: dict[str, Any] | None = None) -> int:
+    """Resolve maximum live continuable subagents per session (env, settings, or default 50)."""
+    return _resolve_max_capped(
+        settings,
+        "maxContinuableAgents",
+        ("CODERAI_MAX_CONTINUABLE_AGENTS_PER_SESSION", "MAX_CONTINUABLE_AGENTS_PER_SESSION"),
+        DEFAULT_MAX_CONTINUABLE_AGENTS,
+    )
 
 
 def resolve_max_running_jobs(settings: dict[str, Any] | None = None) -> int:
     """Resolve maximum concurrent running background jobs per session (env, settings, or default 50)."""
-    settings = settings or {}
-    orch = settings.get("orchestration") or {}
-    from_settings = orch.get("maxRunningJobs")
-    if isinstance(from_settings, int) and from_settings >= 1:
-        return from_settings
-    val = _env_int("CODERAI_MAX_RUNNING_JOBS_PER_SESSION", 0)
-    if val >= 1:
-        return val
-    val = _env_int("MAX_RUNNING_JOBS_PER_SESSION", 0)
-    if val >= 1:
-        return val
-    return DEFAULT_MAX_RUNNING_JOBS
+    return _resolve_max_capped(
+        settings,
+        "maxRunningJobs",
+        ("CODERAI_MAX_RUNNING_JOBS_PER_SESSION", "MAX_RUNNING_JOBS_PER_SESSION"),
+        DEFAULT_MAX_RUNNING_JOBS,
+    )

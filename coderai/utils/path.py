@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import codecs
 import os
 import pathlib
 import secrets
 import stat
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -36,9 +37,24 @@ def detect_line_endings(value: str) -> str:
     return "CRLF" if "\r\n" in value else "LF"
 
 
+def open_regular_binary(path: str):
+    """Open without blocking on special files, then verify the opened descriptor."""
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("Refusing to read a non-regular file")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def detect_encoding(buf: bytes) -> str:
     if len(buf) >= 2 and buf[0] == 0xFF and buf[1] == 0xFE:
         return "utf16le"
+    if buf.startswith(b"\xfe\xff"):
+        return "utf16be"
     return "utf8"
 
 
@@ -75,10 +91,11 @@ def get_per_line_endings(text: str) -> list[str]:
 
 def read_text_file_with_metadata(path: str) -> dict[str, Any]:
     p = pathlib.Path(path)
-    raw = p.read_bytes()
-    is_binary = is_binary_buffer(raw)
+    with open_regular_binary(str(p)) as stream:
+        raw = stream.read()
+    is_binary = is_binary_buffer(raw) if detect_encoding(raw) == "utf8" else False
     enc = detect_encoding(raw)
-    codec = "utf-16-le" if enc == "utf16le" else "utf-8"
+    codec = {"utf16le": "utf-16-le", "utf16be": "utf-16-be"}.get(enc, "utf-8")
     decoded_strict = True
     try:
         raw.decode(codec, errors="strict")
@@ -101,18 +118,26 @@ def read_text_file_with_metadata(path: str) -> dict[str, Any]:
 
 def write_file_atomic(
     filename: str | pathlib.Path,
-    content: str,
+    content: str | Iterable[str],
     mode: int | None = None,
     dir_mode: int | None = None,
     encoding: str = "utf8",
     errors: str = "strict",
+    expected_identity: tuple[int, int, int, int] | None = None,
+    expected_digest: str | None = None,
+    *,
+    follow_symlinks: bool = True,
 ) -> int:
     """Replace filename with content in one atomic step, creating parent directories.
 
     with exclusive create (O_CREAT | O_EXCL | O_WRONLY), preserves or sets mode bits,
     flushes and syncs buffer, and atomically renames over target.
     """
-    target = pathlib.Path(filename).resolve()
+    target = pathlib.Path(filename)
+    target = target.resolve() if follow_symlinks else target.absolute()
+    replaces_link = not follow_symlinks and target.is_symlink()
+    if not replaces_link and target.exists() and not stat.S_ISREG(target.stat().st_mode):
+        raise OSError("Refusing to replace a non-regular file")
     target.parent.mkdir(parents=True, exist_ok=True)
     if dir_mode is not None:
         try:
@@ -131,10 +156,12 @@ def write_file_atomic(
             target_mode = 0o644
 
     # Retain the historical utf16le shorthand alongside Python codec aliases.
-    target_encoding = (
-        "utf-16-le" if encoding.lower().replace("-", "").replace("_", "") == "utf16le" else encoding
+    target_encoding = {"utf16le": "utf-16-le", "utf16be": "utf-16-be"}.get(
+        encoding.lower().replace("-", "").replace("_", ""), encoding
     )
-    encoded_bytes = content.encode(target_encoding, errors=errors)
+    # One encoder across chunks retains BOMs and stateful codec behavior.
+    encoder = codecs.getincrementalencoder(target_encoding)(errors=errors)
+    chunks = (content,) if isinstance(content, str) else content
 
     temp_name = f"{target.name}.{secrets.token_hex(6)}.tmp"
     temp_path = target.parent / temp_name
@@ -144,9 +171,12 @@ def write_file_atomic(
         flags |= os.O_BINARY
 
     fd = os.open(str(temp_path), flags, target_mode)
+    written = 0
     try:
         with open(fd, "wb", closefd=True) as f:
-            f.write(encoded_bytes)
+            for chunk in chunks:
+                written += f.write(encoder.encode(chunk))
+            written += f.write(encoder.encode("", final=True))
             f.flush()
             try:
                 os.fsync(f.fileno())
@@ -158,6 +188,13 @@ def write_file_atomic(
         except OSError:
             pass
 
+        if expected_identity is not None:
+            from coderai.tools.legacy.observation import file_digest, file_identity
+
+            if file_identity(str(target)) != expected_identity or (
+                expected_digest is not None and file_digest(str(target)) != expected_digest
+            ):
+                raise OSError("FS_STALE_VERSION: file changed before atomic commit")
         os.replace(str(temp_path), str(target))
     except Exception:
         if temp_path.exists():
@@ -167,7 +204,7 @@ def write_file_atomic(
                 pass
         raise
 
-    return len(encoded_bytes)
+    return written
 
 
 def with_file_lock(
@@ -221,6 +258,9 @@ def write_text_file(
     content: str,
     encoding: str = "utf8",
     line_endings: str | list[str] = "LF",
+    *,
+    expected_identity: tuple[int, int, int, int] | None = None,
+    expected_digest: str | None = None,
 ) -> int:
     norm = normalize_content(content)
     if isinstance(line_endings, (list, tuple)):
@@ -238,7 +278,13 @@ def write_text_file(
         to_write = norm.replace("\n", "\r\n")
     else:
         to_write = norm
-    return write_file_atomic(path, to_write, encoding=encoding)
+    return write_file_atomic(
+        path,
+        to_write,
+        encoding=encoding,
+        expected_identity=expected_identity,
+        expected_digest=expected_digest,
+    )
 
 
 def ensure_parent_directory(path: str) -> None:
@@ -247,8 +293,18 @@ def ensure_parent_directory(path: str) -> None:
 
 def has_file_changed_since_state(path: str, state: Any) -> bool:
     try:
+        from coderai.tools.legacy.observation import file_digest, file_identity
+
+        observed = getattr(state, "raw_digest", None)
+        if observed:
+            identity = getattr(state, "file_identity", None)
+            return file_digest(path) != observed or (
+                identity is not None and file_identity(path)[:2] != identity[:2]
+            )
         cur = read_text_file_with_metadata(path)
-        return cur["timestamp"] > state.timestamp
+        return cur["timestamp"] != state.timestamp or (
+            not getattr(state, "is_partial_view", False) and cur["content"] != state.content
+        )
     except Exception:
         return True
 

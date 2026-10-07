@@ -75,13 +75,14 @@ def test_pr_a8_dynamic_available_tools_and_goal_guidance():
     """PR-A8/PR-B9: Available tools section is generated from live get_tools().
     No get_goal/create_goal/update_goal, and goal reflects actual schema.
     """
-    prompt = get_system_prompt({"preset": "core"})
+    prompt = get_system_prompt({"preset": "full"})
     assert "## get_goal" not in prompt
     assert "## create_goal" not in prompt
     assert "## update_goal" not in prompt
-    # If goal is present, it shouldn't mention list/add/update/done
-    if "## goal" in prompt:
-        assert "(`list` / `add` / `update` / `done`)" not in prompt
+    # Full preset exposes goal; verify its current action contract.
+    assert "## goal" in prompt
+    assert "action=create/status/update/start/pause/complete/cancel" in prompt
+    assert "with title, description, and milestones" not in prompt
 
 
 def test_pr_a9_enter_plan_mode_description_uses_real_tool_names():
@@ -217,7 +218,8 @@ def test_pr_c3_flow_decision_retry_cap_and_case_insensitive():
     assert matched_upper == "YES_NODE"
 
 
-def test_ui_b3_dispatch_command_parsing():
+@pytest.mark.asyncio
+async def test_ui_b3_dispatch_command_parsing():
     """UI-B3: Slash commands reject unknown args and parse subcommands cleanly."""
     ctx = ShellContext(mgr=MagicMock(), session_id="test-session")
 
@@ -240,7 +242,7 @@ def test_ui_b3_dispatch_command_parsing():
     assert ctx.active_plan_mode is False
 
     # /goal unknown args should show start <id> in usage
-    cmd_goal(ctx, "unknown_args_xyz")
+    await cmd_goal(ctx, "unknown_args_xyz")
 
 
 @pytest.mark.asyncio
