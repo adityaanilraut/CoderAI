@@ -6,9 +6,9 @@ CoderAI now has stronger execution, cancellation, context, persistence, and prot
 
 ## Scope and reference identity
 
-Target: `/Users/aditya/Desktop/CoderAI-main`.
+Target: `CoderAI`.
 
-Reference: `/Users/aditya/Downloads/kimi-code-main`, CLI package version **2.1.1**. This reference is a TypeScript monorepo, without Git metadata. [The reference manifest](architectural-parity-reference.json) pins the inspected files by SHA-256; it does not identify an upstream commit.
+Reference: `<reference-checkout>/kimi-code-main`, CLI package version **2.1.1**. This reference is a TypeScript monorepo, without Git metadata. [The reference manifest](architectural-parity-reference.json) pins the inspected files by SHA-256; it does not identify an upstream commit.
 
 Three agents examined orchestration/streaming, tool execution, and sessions/protocols independently. Their changes were integrated and reviewed, including cancellation and configuration regressions caught by the isolated suite. Existing uncommitted workspace changes were retained. Consequently, the aggregate Git diff also contains work that predates this audit.
 

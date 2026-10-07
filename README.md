@@ -25,7 +25,8 @@
 </p>
 
 ---
-![alt text](Screenshot.png)
+![CoderAI interactive terminal session](Screenshot.png)
+
 ## Overview
 <a id="key-features"></a>
 
@@ -46,6 +47,8 @@ See [Runtime architecture](docs/architecture.md) for execution boundaries and
 ---
 
 ## 🏆 Martian Code Review Benchmark Results
+
+<a id="benchmarks"></a>
 
 CoderAI was independently evaluated on the **Martian Code Review Benchmark** across **50 real-world pull requests** across 5 production enterprise repositories (`cal.com`, `keycloak`, `grafana`, `sentry`, `discourse`), competing against 30 leading commercial and open-source AI code review tools.
 

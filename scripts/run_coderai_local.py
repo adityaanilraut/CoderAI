@@ -735,7 +735,8 @@ def main() -> None:
     parser.add_argument(
         "--offline",
         type=Path,
-        default=Path("/Users/aditya/Downloads/code-review-benchmark-main/offline"),
+        required=True,
+        help="Path to the code-review benchmark's offline directory",
     )
     local_cli = Path(__file__).resolve().parents[1] / ".venv/bin/coderai"
     parser.add_argument(

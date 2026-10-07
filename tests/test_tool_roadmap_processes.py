@@ -25,7 +25,7 @@ def test_subprocess_caps_during_collection_and_bounds_stderr():
     result = bounded_run(
         [sys.executable, "-c", "import sys;sys.stderr.write('x'*1000000);print('ok')"], timeout=3
     )
-    assert result.stdout == b"ok\n" and len(result.stderr) == 64 * 1024
+    assert result.stdout.splitlines() == [b"ok"] and len(result.stderr) == 64 * 1024
 
 
 def test_fallback_respects_ignore_rules_and_searches_large_text(tmp_path):

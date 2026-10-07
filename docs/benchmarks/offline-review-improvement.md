@@ -1,7 +1,7 @@
 # Local offline review improvement
 
-The runner is `scripts/run_coderai_local.py`; a standalone copy is available in
-`/Users/aditya/Downloads/code-review-benchmark-main/offline/run_coderai_local.py`.
+The runner is `scripts/run_coderai_local.py`. Pass `--offline` with the path
+to the benchmark checkout's `offline` directory.
 It obtains each diff with `gh pr diff`, invokes the installed workspace CoderAI
 CLI with `--trust-project --yolo --quiet --exec`, and reads the final assistant
 message from the session log. Reviews are injected as `tool=coderai` into an
@@ -61,7 +61,8 @@ From the offline benchmark directory, specify the current CoderAI executable:
 
 ```sh
 .venv/bin/python run_coderai_local.py \
-  --coderai /Users/aditya/Desktop/CoderAI-main/.venv/bin/coderai \
+  --offline /path/to/code-review-benchmark/offline \
+  --coderai .venv/bin/coderai \
   --five-failed
 ```
 
@@ -173,10 +174,12 @@ PR-head context mode that defaults off and was not used in these results):
 
 ```sh
 .venv/bin/python run_coderai_local.py \
-  --coderai /Users/aditya/Desktop/CoderAI-main/.venv/bin/coderai \
+  --offline /path/to/code-review-benchmark/offline \
+  --coderai .venv/bin/coderai \
   --run-dir results/coderai-dual-fresh-full
 .venv/bin/python run_coderai_local.py \
-  --coderai /Users/aditya/Desktop/CoderAI-main/.venv/bin/coderai \
+  --offline /path/to/code-review-benchmark/offline \
+  --coderai .venv/bin/coderai \
   --five-failed --run-dir results/coderai-dual-final-five
 ```
 

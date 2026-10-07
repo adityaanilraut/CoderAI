@@ -1,7 +1,7 @@
 # Test-suite audit
 
-September 30, 2026 cleanup, phases 4–7. The complete
-[case inventory](test-suite-inventory.json) records every collected node ID,
+September 30, 2026 cleanup, phases 4–7. The historical 0.5.0
+[case inventory](test-suite-inventory.json) records the collected node IDs,
 parameter variant, test definition/contract, fixture, and supporting Python file
 under `tests/`, `tests_e2e/`, and `sdks/coderai-sdk/tests/`. Collection used one
 pytest process per file, with SDK integration enabled and isolated homes.
@@ -18,6 +18,12 @@ added or implied by the zero-skip result. Fixtures remain local to matching
 boundaries; no universal mock framework was introduced.
 
 ## Removal and replacement decisions
+
+Version 0.5.1 adds runtime, tool, terminal UI and provider regression files and
+removes the unused replay support package. The tables below retain the 0.5.0
+baseline. For current per-file case counts and outcomes, use the JSON reports
+uploaded by [CI](../.github/workflows/verify.yml), or run
+`make check` to generate `.verification/tests.json` locally.
 
 | Removed case in `tests_e2e/test_wire_real_llm.py` | Decision and retained coverage |
 | --- | --- |
@@ -116,7 +122,7 @@ certify live providers or signed standalone binaries.
 ## Per-file inventory
 
 Counts include all collected parameter variants. Supporting fixtures are listed
-in the JSON inventory, including both conftests, wire helpers and the replay fake.
+in the historical JSON inventory, including conftests and wire helpers.
 
 | Test file | Cases | Contract scope |
 | --- | ---: | --- |

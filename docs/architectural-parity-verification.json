@@ -4,7 +4,7 @@
     {
       "file": "sdks/coderai-sdk/tests/test_sdk.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "sdks/coderai-sdk/tests/test_sdk.py",
@@ -25,7 +25,7 @@
     {
       "file": "sdks/coderai-sdk/tests/test_sdk_integration.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "sdks/coderai-sdk/tests/test_sdk_integration.py",
@@ -46,7 +46,7 @@
     {
       "file": "tests/test_acp_engine.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_acp_engine.py",
@@ -67,7 +67,7 @@
     {
       "file": "tests/test_acp_server.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_acp_server.py",
@@ -88,7 +88,7 @@
     {
       "file": "tests/test_acp_terminal.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_acp_terminal.py",
@@ -109,7 +109,7 @@
     {
       "file": "tests/test_approval_identity.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_approval_identity.py",
@@ -130,7 +130,7 @@
     {
       "file": "tests/test_approval_yolo.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_approval_yolo.py",
@@ -151,7 +151,7 @@
     {
       "file": "tests/test_atomic_file_ops.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_atomic_file_ops.py",
@@ -172,7 +172,7 @@
     {
       "file": "tests/test_background_wire.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_background_wire.py",
@@ -193,7 +193,7 @@
     {
       "file": "tests/test_cli.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_cli.py",
@@ -214,7 +214,7 @@
     {
       "file": "tests/test_cli_reasoning_flags.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_cli_reasoning_flags.py",
@@ -235,7 +235,7 @@
     {
       "file": "tests/test_cli_subagent_process.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_cli_subagent_process.py",
@@ -256,7 +256,7 @@
     {
       "file": "tests/test_compaction_conversion.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_compaction_conversion.py",
@@ -277,7 +277,7 @@
     {
       "file": "tests/test_completion_streaming.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_completion_streaming.py",
@@ -298,7 +298,7 @@
     {
       "file": "tests/test_config_setup.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_config_setup.py",
@@ -319,7 +319,7 @@
     {
       "file": "tests/test_credential_boundaries.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_credential_boundaries.py",
@@ -340,7 +340,7 @@
     {
       "file": "tests/test_e2e.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_e2e.py",
@@ -361,7 +361,7 @@
     {
       "file": "tests/test_file_context.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_file_context.py",
@@ -382,7 +382,7 @@
     {
       "file": "tests/test_flow_parsers.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_flow_parsers.py",
@@ -403,7 +403,7 @@
     {
       "file": "tests/test_hierarchical_config.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_hierarchical_config.py",
@@ -424,7 +424,7 @@
     {
       "file": "tests/test_hook_payloads.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_hook_payloads.py",
@@ -445,7 +445,7 @@
     {
       "file": "tests/test_jev_calibration.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_jev_calibration.py",
@@ -466,7 +466,7 @@
     {
       "file": "tests/test_jev_system_one.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_jev_system_one.py",
@@ -487,7 +487,7 @@
     {
       "file": "tests/test_local_kaos.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_local_kaos.py",
@@ -508,7 +508,7 @@
     {
       "file": "tests/test_local_review_runner.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_local_review_runner.py",
@@ -529,7 +529,7 @@
     {
       "file": "tests/test_mcp_lifecycle_hardening.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_mcp_lifecycle_hardening.py",
@@ -550,7 +550,7 @@
     {
       "file": "tests/test_mcp_overlays.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_mcp_overlays.py",
@@ -571,7 +571,7 @@
     {
       "file": "tests/test_mcp_plugins.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_mcp_plugins.py",
@@ -592,7 +592,7 @@
     {
       "file": "tests/test_openrouter.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_openrouter.py",
@@ -613,7 +613,7 @@
     {
       "file": "tests/test_orchestration.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_orchestration.py",
@@ -634,7 +634,7 @@
     {
       "file": "tests/test_phase1_authorization.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase1_authorization.py",
@@ -655,7 +655,7 @@
     {
       "file": "tests/test_phase1_cancellation.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase1_cancellation.py",
@@ -676,7 +676,7 @@
     {
       "file": "tests/test_phase1_duplicate_ids.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase1_duplicate_ids.py",
@@ -697,7 +697,7 @@
     {
       "file": "tests/test_phase1_mcp_redirects.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase1_mcp_redirects.py",
@@ -718,7 +718,7 @@
     {
       "file": "tests/test_phase1_terminals.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase1_terminals.py",
@@ -739,7 +739,7 @@
     {
       "file": "tests/test_phase2_child_lifecycle.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase2_child_lifecycle.py",
@@ -760,7 +760,7 @@
     {
       "file": "tests/test_phase2_engine.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase2_engine.py",
@@ -781,7 +781,7 @@
     {
       "file": "tests/test_phase2_event_lifetime.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase2_event_lifetime.py",
@@ -802,7 +802,7 @@
     {
       "file": "tests/test_phase2_hub_routing.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase2_hub_routing.py",
@@ -823,7 +823,7 @@
     {
       "file": "tests/test_phase2_protocol_events.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase2_protocol_events.py",
@@ -844,7 +844,7 @@
     {
       "file": "tests/test_phase2_runtime_ownership.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase2_runtime_ownership.py",
@@ -865,7 +865,7 @@
     {
       "file": "tests/test_phase2_teammate_context.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase2_teammate_context.py",
@@ -886,7 +886,7 @@
     {
       "file": "tests/test_phase3_packaging.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase3_packaging.py",
@@ -907,7 +907,7 @@
     {
       "file": "tests/test_phase3_sdk_oauth.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase3_sdk_oauth.py",
@@ -928,7 +928,7 @@
     {
       "file": "tests/test_phase3_session_approvals.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase3_session_approvals.py",
@@ -949,7 +949,7 @@
     {
       "file": "tests/test_phase4_ui.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase4_ui.py",
@@ -970,7 +970,7 @@
     {
       "file": "tests/test_phase4_verification.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase4_verification.py",
@@ -991,7 +991,7 @@
     {
       "file": "tests/test_phase5_rendering.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase5_rendering.py",
@@ -1012,7 +1012,7 @@
     {
       "file": "tests/test_phase6_tooling.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_phase6_tooling.py",
@@ -1033,7 +1033,7 @@
     {
       "file": "tests/test_plan_mode_tools.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_plan_mode_tools.py",
@@ -1054,7 +1054,7 @@
     {
       "file": "tests/test_prompt_context.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_prompt_context.py",
@@ -1075,7 +1075,7 @@
     {
       "file": "tests/test_protocol_parity_hardening.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_protocol_parity_hardening.py",
@@ -1096,7 +1096,7 @@
     {
       "file": "tests/test_review_command.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_review_command.py",
@@ -1117,7 +1117,7 @@
     {
       "file": "tests/test_review_fixes.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_review_fixes.py",
@@ -1138,7 +1138,7 @@
     {
       "file": "tests/test_review_phase1.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_review_phase1.py",
@@ -1159,7 +1159,7 @@
     {
       "file": "tests/test_review_phase3.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_review_phase3.py",
@@ -1180,7 +1180,7 @@
     {
       "file": "tests/test_review_phase4.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_review_phase4.py",
@@ -1201,7 +1201,7 @@
     {
       "file": "tests/test_review_phase5.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_review_phase5.py",
@@ -1222,7 +1222,7 @@
     {
       "file": "tests/test_review_phase6.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_review_phase6.py",
@@ -1243,7 +1243,7 @@
     {
       "file": "tests/test_review_phase7.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_review_phase7.py",
@@ -1264,7 +1264,7 @@
     {
       "file": "tests/test_review_phase8.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_review_phase8.py",
@@ -1285,7 +1285,7 @@
     {
       "file": "tests/test_review_phase9.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_review_phase9.py",
@@ -1306,7 +1306,7 @@
     {
       "file": "tests/test_runtime_parity.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_runtime_parity.py",
@@ -1327,7 +1327,7 @@
     {
       "file": "tests/test_search_rendering.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_search_rendering.py",
@@ -1348,7 +1348,7 @@
     {
       "file": "tests/test_security.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_security.py",
@@ -1369,7 +1369,7 @@
     {
       "file": "tests/test_security_fixes.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_security_fixes.py",
@@ -1390,7 +1390,7 @@
     {
       "file": "tests/test_session_engine.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_session_engine.py",
@@ -1411,7 +1411,7 @@
     {
       "file": "tests/test_session_migration.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_session_migration.py",
@@ -1432,7 +1432,7 @@
     {
       "file": "tests/test_session_storage.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_session_storage.py",
@@ -1453,7 +1453,7 @@
     {
       "file": "tests/test_shell_lifecycle_parity.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_shell_lifecycle_parity.py",
@@ -1474,7 +1474,7 @@
     {
       "file": "tests/test_shell_sandbox_startup.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_shell_sandbox_startup.py",
@@ -1495,7 +1495,7 @@
     {
       "file": "tests/test_stream_json_example.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_stream_json_example.py",
@@ -1516,7 +1516,7 @@
     {
       "file": "tests/test_subagent_parity.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_subagent_parity.py",
@@ -1537,7 +1537,7 @@
     {
       "file": "tests/test_subagent_permissions.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_subagent_permissions.py",
@@ -1558,7 +1558,7 @@
     {
       "file": "tests/test_subagents.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_subagents.py",
@@ -1579,7 +1579,7 @@
     {
       "file": "tests/test_token_estimation.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_token_estimation.py",
@@ -1600,7 +1600,7 @@
     {
       "file": "tests/test_tool_dispatch.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_tool_dispatch.py",
@@ -1621,7 +1621,7 @@
     {
       "file": "tests/test_tool_free_review.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_tool_free_review.py",
@@ -1642,7 +1642,7 @@
     {
       "file": "tests/test_tool_payload.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_tool_payload.py",
@@ -1663,7 +1663,7 @@
     {
       "file": "tests/test_tool_platform.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_tool_platform.py",
@@ -1684,7 +1684,7 @@
     {
       "file": "tests/test_tools.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_tools.py",
@@ -1705,7 +1705,7 @@
     {
       "file": "tests/test_triage_engine.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_triage_engine.py",
@@ -1726,7 +1726,7 @@
     {
       "file": "tests/test_ui_alignment.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_ui_alignment.py",
@@ -1747,7 +1747,7 @@
     {
       "file": "tests/test_ui_p0_fixes.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_ui_p0_fixes.py",
@@ -1768,7 +1768,7 @@
     {
       "file": "tests/test_ui_review_remediation.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_ui_review_remediation.py",
@@ -1789,7 +1789,7 @@
     {
       "file": "tests/test_web.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_web.py",
@@ -1810,7 +1810,7 @@
     {
       "file": "tests/test_wire_framing.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests/test_wire_framing.py",
@@ -1831,7 +1831,7 @@
     {
       "file": "tests_e2e/test_mcp_cli.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests_e2e/test_mcp_cli.py",
@@ -1852,7 +1852,7 @@
     {
       "file": "tests_e2e/test_wire_approvals_tools.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests_e2e/test_wire_approvals_tools.py",
@@ -1873,7 +1873,7 @@
     {
       "file": "tests_e2e/test_wire_auth.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests_e2e/test_wire_auth.py",
@@ -1894,7 +1894,7 @@
     {
       "file": "tests_e2e/test_wire_config.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests_e2e/test_wire_config.py",
@@ -1915,7 +1915,7 @@
     {
       "file": "tests_e2e/test_wire_errors.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests_e2e/test_wire_errors.py",
@@ -1936,7 +1936,7 @@
     {
       "file": "tests_e2e/test_wire_prompt.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests_e2e/test_wire_prompt.py",
@@ -1957,7 +1957,7 @@
     {
       "file": "tests_e2e/test_wire_protocol.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests_e2e/test_wire_protocol.py",
@@ -1978,7 +1978,7 @@
     {
       "file": "tests_e2e/test_wire_question.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests_e2e/test_wire_question.py",
@@ -1999,7 +1999,7 @@
     {
       "file": "tests_e2e/test_wire_sessions.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests_e2e/test_wire_sessions.py",
@@ -2020,7 +2020,7 @@
     {
       "file": "tests_e2e/test_wire_skills_mcp.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests_e2e/test_wire_skills_mcp.py",
@@ -2041,7 +2041,7 @@
     {
       "file": "tests_e2e/test_wire_steer.py",
       "command": [
-        "/Users/aditya/Desktop/CoderAI-main/.venv/bin/python",
+        ".venv/bin/python",
         "-m",
         "pytest",
         "tests_e2e/test_wire_steer.py",

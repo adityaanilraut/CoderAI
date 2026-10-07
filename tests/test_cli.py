@@ -242,12 +242,15 @@ def test_cli_file_mention_expands_and_suggests(tmp_path: pathlib.Path) -> None:
 
 def test_cli_welcome_renders_shortcuts() -> None:
     """Welcome screen renders on null and rich consoles without raising."""
+    from io import StringIO
+    from rich.console import Console
     from coderai.ui.shell import render_welcome_screen
 
     render_welcome_screen(None, "/tmp", "gpt-4o", plan_mode=True, mcp_servers_count=2)
-    mock_console = MagicMock()
-    render_welcome_screen(mock_console, "/tmp", "gpt-4o", plan_mode=False, mcp_servers_count=0)
-    assert mock_console.print.called
+    output = StringIO()
+    console = Console(file=output, width=80, color_system=None)
+    render_welcome_screen(console, "/tmp", "gpt-4o", plan_mode=False, mcp_servers_count=0)
+    assert "/help | /setup | /agent | /activity | /plan" in output.getvalue()
 
 
 def test_cli_exit_summary_handles_empty_session(tmp_path: pathlib.Path) -> None:
