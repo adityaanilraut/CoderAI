@@ -41,7 +41,7 @@ jobs:
         run: python scripts/verify_wheel.py dist --audit --audit-report .verification/wheel-audit.json --expected-sha "${{ github.sha }}"
       - name: Preserve installed-wheel audit evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ci-wheel-audit
           path: .verification/
