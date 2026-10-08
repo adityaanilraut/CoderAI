@@ -57,7 +57,7 @@ jobs:
         run: python scripts/verification.py check --coverage --report .verification/tests.json
       - name: Save test and resolved dependency evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: verification-${{ matrix.os }}-${{ matrix.python-version }}
           path: .verification/
@@ -80,7 +80,7 @@ jobs:
       - run: python -m pip install -e ".[dev,jev]" -e sdks/coderai-sdk
       - run: python scripts/verification.py test --suite security --report .verification/security.json
       - run: python scripts/verification.py audit
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: security-verification
@@ -101,7 +101,7 @@ jobs:
       - run: python -m pip install -e ".[dev,jev]"
       # JUnit requires at least one passing case and zero skips/errors/failures.
       - run: python scripts/verification.py test --suite jev --report .verification/jev.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: jev-calibration
@@ -123,7 +123,7 @@ jobs:
         run: choco install ripgrep --yes --no-progress
       - run: python -m pip install -e ".[dev,jev]" -e sdks/coderai-sdk
       - run: python scripts/verification.py check --suite windows --report .verification/windows.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: windows-compatibility
