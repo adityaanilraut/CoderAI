@@ -46,7 +46,7 @@ dependencies = [
     "agent-client-protocol>=0.8,<0.9",
     # Telemetry transport (async).
     "aiohttp>=3.10",
-    "multidict>=6.9.1,<7",
+    "multidict>=6.9.1,<8",
     # Reject the vulnerable transitive JWT versions used by MCP authentication.
     "PyJWT>=2.15.0,<3",
     # Direct imports that previously resolved only transitively (kept explicit
