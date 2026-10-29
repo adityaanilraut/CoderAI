@@ -4,7 +4,7 @@ import { isAbsolute, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isSea, getAsset } from 'node:sea';
+import { isSea, getAsset } from './sea.js';
 import { mediaKindForPath } from '../../../packages/agent-core-v2/src/agent/media/mediaRef.js';
 
 type Result = { kind: 'file'; path: string } | { kind: 'image'; bytes: Buffer };
@@ -15,6 +15,8 @@ function nativeClipboard(): NativeClipboard | undefined {
   try {
     if (process.platform === 'linux' && !process.env['DISPLAY'] && !process.env['WAYLAND_DISPLAY']) return;
     const require = createRequire(import.meta.url);
+    const bunBinding = (globalThis as typeof globalThis & { __coderaiBunClipboard?: string }).__coderaiBunClipboard;
+    if (bunBinding) return require(bunBinding) as NativeClipboard;
     if (!isSea()) return require('@mariozechner/clipboard') as NativeClipboard;
     const dir = mkdtempSync(join(tmpdir(), 'coderai-native-clipboard-'));
     try {

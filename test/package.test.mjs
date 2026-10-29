@@ -91,7 +91,7 @@ test('packaged MiniDb worker builds a real text index', { timeout: 30000 }, asyn
       } finally { await db.close(); }
     `;
     await build({ stdin: { contents: code, resolveDir: process.cwd(), sourcefile: 'worker-test.ts' }, bundle: true, platform: 'node', format: 'esm', target: 'node24', outfile: entry });
-    const result = await exec(process.execPath, [entry], { timeout: 25000 });
+    const result = await exec(process.env.CODERAI_TEST_RUNTIME || process.execPath, [entry], { timeout: 25000 });
     const stats = JSON.parse(result.stdout.trim());
     assert.ok(stats.textWorkerBuilds > 0, result.stdout);
     assert.equal(stats.textWorkerFallbacks, 0);

@@ -21,6 +21,9 @@ jobs:
         with:
           node-version: 26
           cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
       - run: pnpm install --frozen-lockfile
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ripgrep
@@ -34,4 +37,4 @@ jobs:
       - if: runner.os == 'Windows'
         run: pnpm build
       - if: runner.os == 'Windows'
-        run: node dist/coderai.mjs --help
+        run: bun dist/coderai.mjs --help

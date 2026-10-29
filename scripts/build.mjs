@@ -2,7 +2,9 @@ import { build } from 'esbuild';
 import { readFile, writeFile, mkdir, chmod, rm, copyFile } from 'node:fs/promises';
 import { resolve, dirname, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
-const native = process.argv.includes('--native');
+const bunNative = process.argv.includes('--bun-native');
+const native = process.argv.includes('--native') || bunNative;
+const nativeDir = bunNative ? 'dist-bun' : 'dist-native';
 const workspacePackages = new Map();
 for (const folder of ['node-sdk','agent-core-v2','klient','kosong','oauth','product','minidb','tree-sitter-bash','pi-tui']) {
   const root = resolve('packages', folder);
@@ -33,7 +35,7 @@ const aliases = { name: 'workspace-aliases', setup(b) {
 } };
 
 if (!native) await rm('dist', { recursive: true, force: true });
-await mkdir(native ? 'dist-native' : 'dist', { recursive: true });
+await mkdir(native ? nativeDir : 'dist', { recursive: true });
 const external = { name: 'runtime-dependencies', setup(b) {
   b.onResolve({ filter: /^[\w@][^:]*$/ }, args => {
     if (args.path.startsWith('@coderai/') || args.path.startsWith('#')) return;
@@ -46,13 +48,13 @@ const raw = { name: 'raw-assets', setup(b) {
 } };
 const options = { bundle: true, tsconfigRaw: { compilerOptions: { experimentalDecorators: true } }, platform: 'node', target: 'node24', format: 'esm', sourcemap: true, plugins: [aliases, raw, external], logLevel: 'warning', metafile: true };
 if (native) {
-  const nativeOptions = { ...options, format: 'cjs', sourcemap: false, plugins: [aliases, raw], define: { 'import.meta.url': '__nativeModuleUrl' }, banner: { js: "const __nativeModuleUrl = require('node:url').pathToFileURL(process.execPath).href;" } };
-  await build({ ...nativeOptions, entryPoints: ['apps/coderai/src/main.ts'], outfile: 'dist-native/main.cjs' });
-  await build({ ...options, plugins: [aliases, raw], entryPoints: ['packages/minidb/src/worker/text-build-worker.ts'], outfile: 'dist-native/text-build-worker.mjs' });
+  const nativeOptions = { ...options, format: 'cjs', sourcemap: false, plugins: [aliases, raw], define: { 'import.meta.url': '__nativeModuleUrl' }, banner: { js: `${bunNative ? 'var' : 'const'} __nativeModuleUrl = require('node:url').pathToFileURL(process.execPath).href;` } };
+  await build({ ...nativeOptions, entryPoints: ['apps/coderai/src/main.ts'], outfile: join(nativeDir, 'main.cjs') });
+  await build({ ...options, plugins: [aliases, raw], entryPoints: ['packages/minidb/src/worker/text-build-worker.ts'], outfile: join(nativeDir, 'text-build-worker.mjs') });
   console.error('Built native bundles.');
   process.exit(0);
 }
-const main = await build({ ...options, entryPoints: ['apps/coderai/src/main.ts'], outfile: 'dist/coderai.mjs', banner: { js: "#!/usr/bin/env node\nimport { createRequire as __createRequire } from 'node:module';\nimport { fileURLToPath as __fileURLToPath } from 'node:url';\nimport { dirname as __dirnameOf } from 'node:path';\nconst require = __createRequire(import.meta.url);\nconst __filename = __fileURLToPath(import.meta.url);\nconst __dirname = __dirnameOf(__filename);" } });
+const main = await build({ ...options, entryPoints: ['apps/coderai/src/main.ts'], outfile: 'dist/coderai.mjs', banner: { js: "#!/usr/bin/env bun\nimport { createRequire as __createRequire } from 'node:module';\nimport { fileURLToPath as __fileURLToPath } from 'node:url';\nimport { dirname as __dirnameOf } from 'node:path';\nconst require = __createRequire(import.meta.url);\nconst __filename = __fileURLToPath(import.meta.url);\nconst __dirname = __dirnameOf(__filename);" } });
 await build({ ...options, entryPoints: ['packages/minidb/src/worker/text-build-worker.ts'], outfile: 'dist/text-build-worker.mjs' });
 await writeFile('dist/metafile.json', JSON.stringify(main.metafile, null, 2));
 await chmod('dist/coderai.mjs', 0o755);

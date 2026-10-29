@@ -4,46 +4,29 @@
 
 ## Install and run
 
-For a source install, requires Node.js **24.15.0 or newer**, pnpm **10.33.0**, and `rg` (ripgrep) on PATH for file searches. Bash is used for commands; Windows requires Git Bash. Automated terminal tests additionally require Python 3 and a POSIX PTY. Development and verification here used Node 26.9.0 on macOS.
+A source install requires Bun **1.4.4**, Node.js **24.15.0 or newer**, pnpm **10.33.0**, and `rg` (ripgrep) on PATH for file searches. Node runs the build and test tooling; Bun runs the application. Bash is used for commands; Windows requires Git Bash. Terminal tests also require Python 3 and a POSIX PTY.
 
 ```sh
-cd /Users/aditya/Desktop/coderai
 npx --yes pnpm@10.33.0 install --frozen-lockfile
 npx --yes pnpm@10.33.0 build
-node dist/coderai.mjs --help
+bun dist/coderai.mjs --help
 export CODERAI_MODEL_NAME='YOUR_MODEL_ID'
 export OPENAI_API_KEY='YOUR_API_KEY'
-node dist/coderai.mjs
+bun dist/coderai.mjs
 ```
 
-To use the name `coderai` from any directory, install a local executable link with `npm link` from this directory, or add this shell alias:
-
-```sh
-alias coderai='/Users/aditya/Desktop/coderai/dist/coderai.mjs'
-```
-
-The built executable is executable directly and resolves its assets and dependencies relative to the installation, independently of the current directory. Keep `dist/` beside the installed `node_modules/`. No part of the original Kimi checkout is required.
+To run `coderai` from any directory, build the standalone executable below and place it on your PATH.
 
 ## Standalone executable
 
-CoderAI can be built as a single executable with an embedded Node.js runtime. The user running the executable does not need Node.js or `node_modules`; ripgrep (`rg`) is still required for file searches, and Windows requires Git Bash.
-
-To build it on the target machine, install Node.js **26 or newer** and pnpm 10.33.0, then run:
+Build a single executable with the Bun runtime embedded on the target machine:
 
 ```sh
 npx --yes pnpm@10.33.0 install --frozen-lockfile
 npx --yes pnpm@10.33.0 build:native
 ```
 
-The result is `dist-native/<platform>-<architecture>/coderai` (`coderai.exe` on Windows). The build also produces a ZIP containing the executable and license notices, plus a SHA-256 checksum. You can copy the executable to a directory on your PATH. For example, on macOS or Linux:
-
-```sh
-mkdir -p ~/.local/bin
-cp dist-native/$(node -p 'process.platform + "-" + process.arch')/coderai ~/.local/bin/coderai
-~/.local/bin/coderai --help
-```
-
-Add `~/.local/bin` to your PATH if needed, then configure a model and API key as described below. Local macOS builds use an ad-hoc signature; distributing outside your machine may require Apple signing and notarization. The native build workflow creates platform-specific artifacts, but this repository does not yet publish them or host an installer. Linux and Windows native builds have not been verified locally.
+The executable is written to `dist-bun/<platform>-<architecture>/coderai` (`coderai.exe` on Windows), alongside a ZIP and SHA-256 checksum in `dist-bun/`. It does not require Bun, Node, or `node_modules` at runtime. File searches still require ripgrep; Windows requires Git Bash. The standalone build has been tested locally on macOS arm64; other platforms need verification.
 
 ## Authentication and models
 

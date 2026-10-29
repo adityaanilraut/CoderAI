@@ -14,11 +14,12 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "prepack": "node scripts/build.mjs",
-    "dev": "pnpm build && node dist/coderai.mjs",
-    "start": "node dist/coderai.mjs",
+    "dev": "pnpm build && bun dist/coderai.mjs",
+    "start": "bun dist/coderai.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm build && node --test test/*.test.mjs",
-    "build:native": "node scripts/build-native.mjs"
+    "test": "pnpm build && node scripts/test.mjs",
+    "build:native": "node scripts/build-bun.mjs",
+    "build:node-native": "node scripts/build-native.mjs"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",

@@ -7,14 +7,15 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fixture } from './fixture.mjs';
 
-const builtBinary = resolve('dist-native', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'coderai.exe' : 'coderai');
+const builtBinary = process.env.CODERAI_TEST_BINARY ? resolve(process.env.CODERAI_TEST_BINARY) : resolve('dist-native', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'coderai.exe' : 'coderai');
 test('standalone embeds and loads its native clipboard binding', { timeout: 30000, skip: process.platform !== 'darwin' || !existsSync(builtBinary) }, async t => {
   const f = await fixture(); t.after(f.cleanup);
   const dir = join(f.root, 'tmp'); const bin = join(f.root, 'bin'); await mkdir(dir); await mkdir(bin);
   const file = join(f.cwd, 'pixel.png');
   await writeFile(file, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a1kAAAAASUVORK5CYII=', 'base64'));
   const marker = join(f.root, 'binding-loaded');
-  await writeFile(join(bin, 'osascript'), '#!/bin/sh\nls "$TMPDIR"/coderai-native-clipboard-*/clipboard.node > "$CODERAI_BINDING_MARKER"\nprintf "%s" "$CODERAI_CLIPBOARD_RESULT"\n', { mode: 0o755 });
+  const bindingDir = process.env.CODERAI_TEST_BINARY ? 'coderai-bun-*' : 'coderai-native-clipboard-*';
+  await writeFile(join(bin, 'osascript'), `#!/bin/sh\nls "$TMPDIR"/${bindingDir}/clipboard.node > "$CODERAI_BINDING_MARKER"\nprintf "%s" "$CODERAI_CLIPBOARD_RESULT"\n`, { mode: 0o755 });
   Object.assign(f.env, { PATH: `${bin}:${process.env.PATH}`, TMPDIR: dir, CODERAI_MODEL_CAPABILITIES: 'image_in', CODERAI_BINDING_MARKER: marker, CODERAI_CLIPBOARD_RESULT: JSON.stringify({ path: file }) });
   const result = await new Promise((resolveResult, reject) => {
     const child = spawn('python3', [resolve('test/terminal.py')], { stdio: ['pipe', 'pipe', 'pipe'] });

@@ -5,6 +5,7 @@ node_modules/
 # Generated output and temporary files
 dist/
 dist-native/
+dist-bun/
 .tmp/
 coverage/
 *.log

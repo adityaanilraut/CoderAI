@@ -8,7 +8,7 @@ import { fixture, cli } from './fixture.mjs';
 const terminal = (f, actions, args = []) => new Promise((done, reject) => {
   const child = spawn('python3', [resolve('test/terminal.py')], { stdio: ['pipe', 'pipe', 'pipe'] });
   let out = ''; let err = ''; child.stdout.on('data', c => out += c); child.stderr.on('data', c => err += c);
-  child.stdin.end(JSON.stringify({ cwd: f.cwd, node: process.execPath, cli, env: { ...f.env, TERM: 'xterm-256color' }, actions, args }));
+  child.stdin.end(JSON.stringify({ cwd: f.cwd, ...(process.env.CODERAI_TEST_BINARY ? { executable: resolve(process.env.CODERAI_TEST_BINARY) } : { node: process.env.CODERAI_TEST_RUNTIME || process.execPath, cli }), env: { ...f.env, TERM: 'xterm-256color' }, actions, args }));
   child.on('error', reject); child.on('close', code => code === 0 ? done(JSON.parse(out)) : reject(new Error(err + out)));
 });
 test('real PTY: startup trust, chat, approval, denial, slash commands and terminal restoration', { timeout: 90000 }, async t => {

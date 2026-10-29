@@ -1,0 +1,3336 @@
+{
+  "metadata": {
+    "date": "2026-10-29T19:12:21.831Z",
+    "platform": "darwin",
+    "release": "27.2.0",
+    "arch": "arm64",
+    "cpu": "Apple M3",
+    "memoryBytes": 8589934592,
+    "node": "v26.9.0",
+    "bun": "1.4.4",
+    "runs": 12,
+    "warmups": 2,
+    "projectCommit": "06eccf464772a4ccd98d47f66d2890e874a2372d",
+    "dirty": true,
+    "binaries": [
+      {
+        "path": "/Users/aditya/Desktop/coderai-node-baseline-06eccf4/coderai",
+        "bytes": 162444928,
+        "sha256": "fe01cc634d0e190687bb614fd95e39f0c9e169e587ad82467eb89e0ae30e5edb"
+      },
+      {
+        "path": "/Users/aditya/Desktop/coderai/dist-bun/darwin-arm64/coderai",
+        "bytes": 121952738,
+        "sha256": "755ccad769be7ccc947cccf2a32505f0d44ded64a3fd9b2be92deca10e271e4b"
+      }
+    ]
+  },
+  "summaries": {
+    "node": {
+      "help": {
+        "ms": {
+          "median": 299.54,
+          "p10": 290.74,
+          "p90": 443.71,
+          "min": 287.69,
+          "max": 469.54,
+          "mad": 4.42
+        },
+        "firstMs": {
+          "median": 294.86,
+          "p10": 286.06,
+          "p90": 436.54,
+          "min": 283.42,
+          "max": 462.15,
+          "mad": 4.23
+        },
+        "userMs": {
+          "median": 330,
+          "p10": 330,
+          "p90": 340,
+          "min": 330,
+          "max": 340,
+          "mad": 0
+        },
+        "systemMs": {
+          "median": 20,
+          "p10": 20,
+          "p90": 56,
+          "min": 20,
+          "max": 70,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 258648,
+          "p10": 258275.2,
+          "p90": 259835.2,
+          "min": 258256,
+          "max": 260320,
+          "mad": 264
+        }
+      },
+      "simple_turn": {
+        "ms": {
+          "median": 470.93,
+          "p10": 448.47,
+          "p90": 1363.7,
+          "min": 445.42,
+          "max": 1478.23,
+          "mad": 21.7
+        },
+        "firstMs": {
+          "median": 402.87,
+          "p10": 392.29,
+          "p90": 413.82,
+          "min": 386.63,
+          "max": 424.24,
+          "mad": 7.27
+        },
+        "userMs": {
+          "median": 465,
+          "p10": 460,
+          "p90": 480,
+          "min": 460,
+          "max": 490,
+          "mad": 5
+        },
+        "systemMs": {
+          "median": 40,
+          "p10": 40,
+          "p90": 87,
+          "min": 40,
+          "max": 110,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 296528,
+          "p10": 296065.6,
+          "p90": 297329.6,
+          "min": 296016,
+          "max": 297616,
+          "mad": 256
+        }
+      },
+      "large_prompt_66kb": {
+        "ms": {
+          "median": 449.42,
+          "p10": 432.8,
+          "p90": 473.82,
+          "min": 430.91,
+          "max": 511.46,
+          "mad": 14.78
+        },
+        "firstMs": {
+          "median": 381.04,
+          "p10": 372.94,
+          "p90": 406.01,
+          "min": 372.53,
+          "max": 452.21,
+          "mad": 7.41
+        },
+        "userMs": {
+          "median": 470,
+          "p10": 470,
+          "p90": 498,
+          "min": 460,
+          "max": 500,
+          "mad": 0
+        },
+        "systemMs": {
+          "median": 40,
+          "p10": 31,
+          "p90": 49,
+          "min": 30,
+          "max": 50,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 301008,
+          "p10": 300745.6,
+          "p90": 301721.6,
+          "min": 298048,
+          "max": 301824,
+          "mad": 216
+        }
+      },
+      "resume": {
+        "ms": {
+          "median": 462.19,
+          "p10": 446.56,
+          "p90": 469.58,
+          "min": 438.96,
+          "max": 477.48,
+          "mad": 10.77
+        },
+        "firstMs": {
+          "median": 386.97,
+          "p10": 375.03,
+          "p90": 397.43,
+          "min": 371.71,
+          "max": 403.24,
+          "mad": 9.25
+        },
+        "userMs": {
+          "median": 560,
+          "p10": 550,
+          "p90": 570,
+          "min": 550,
+          "max": 580,
+          "mad": 10
+        },
+        "systemMs": {
+          "median": 50,
+          "p10": 40,
+          "p90": 50,
+          "min": 40,
+          "max": 60,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 301616,
+          "p10": 301033.6,
+          "p90": 302275.2,
+          "min": 300688,
+          "max": 303392,
+          "mad": 392
+        }
+      },
+      "session_list": {
+        "ms": {
+          "median": 326.92,
+          "p10": 323.15,
+          "p90": 349,
+          "min": 322.82,
+          "max": 352.71,
+          "mad": 3.97
+        },
+        "firstMs": {
+          "median": 317.97,
+          "p10": 311.91,
+          "p90": 337.99,
+          "min": 311.33,
+          "max": 341.1,
+          "mad": 6.53
+        },
+        "userMs": {
+          "median": 375,
+          "p10": 370,
+          "p90": 399,
+          "min": 370,
+          "max": 450,
+          "mad": 5
+        },
+        "systemMs": {
+          "median": 30,
+          "p10": 30,
+          "p90": 30,
+          "min": 20,
+          "max": 40,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 283696,
+          "p10": 283403.2,
+          "p90": 284262.4,
+          "min": 283280,
+          "max": 285136,
+          "mad": 248
+        }
+      },
+      "session_export": {
+        "ms": {
+          "median": 416.05,
+          "p10": 393.68,
+          "p90": 430.46,
+          "min": 392.66,
+          "max": 444.79,
+          "mad": 13.92
+        },
+        "firstMs": {
+          "median": 383.77,
+          "p10": 374.28,
+          "p90": 412.33,
+          "min": 371.74,
+          "max": 426.09,
+          "mad": 10.15
+        },
+        "userMs": {
+          "median": 460,
+          "p10": 450,
+          "p90": 530,
+          "min": 440,
+          "max": 530,
+          "mad": 15
+        },
+        "systemMs": {
+          "median": 40,
+          "p10": 40,
+          "p90": 49,
+          "min": 30,
+          "max": 50,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 292672,
+          "p10": 292220.8,
+          "p90": 293953.6,
+          "min": 292048,
+          "max": 295232,
+          "mad": 400
+        }
+      },
+      "session_fork": {
+        "ms": {
+          "median": 444.75,
+          "p10": 433.44,
+          "p90": 456.95,
+          "min": 427.52,
+          "max": 459.68,
+          "mad": 6.44
+        },
+        "firstMs": {
+          "median": 427.06,
+          "p10": 417.2,
+          "p90": 435.04,
+          "min": 411.87,
+          "max": 438.84,
+          "mad": 5.81
+        },
+        "userMs": {
+          "median": 550,
+          "p10": 541,
+          "p90": 560,
+          "min": 540,
+          "max": 570,
+          "mad": 0
+        },
+        "systemMs": {
+          "median": 50,
+          "p10": 50,
+          "p90": 50,
+          "min": 50,
+          "max": 60,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 293936,
+          "p10": 293132.8,
+          "p90": 295164.8,
+          "min": 293072,
+          "max": 296544,
+          "mad": 680
+        }
+      },
+      "session_import": {
+        "ms": {
+          "median": 414.47,
+          "p10": 405.06,
+          "p90": 424.45,
+          "min": 404.21,
+          "max": 434.06,
+          "mad": 6.06
+        },
+        "firstMs": {
+          "median": 396.09,
+          "p10": 388.79,
+          "p90": 404.13,
+          "min": 388.29,
+          "max": 405.06,
+          "mad": 5.8
+        },
+        "userMs": {
+          "median": 430,
+          "p10": 430,
+          "p90": 440,
+          "min": 420,
+          "max": 440,
+          "mad": 5
+        },
+        "systemMs": {
+          "median": 40,
+          "p10": 30,
+          "p90": 40,
+          "min": 30,
+          "max": 40,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 288280,
+          "p10": 287980.8,
+          "p90": 288729.6,
+          "min": 287872,
+          "max": 288800,
+          "mad": 184
+        }
+      },
+      "tools_7": {
+        "ms": {
+          "median": 532.75,
+          "p10": 520.76,
+          "p90": 548.04,
+          "min": 513.79,
+          "max": 550.72,
+          "mad": 7.78
+        },
+        "firstMs": {
+          "median": 375.94,
+          "p10": 369.63,
+          "p90": 387.18,
+          "min": 367.91,
+          "max": 392.02,
+          "mad": 6.96
+        },
+        "userMs": {
+          "median": 580,
+          "p10": 570,
+          "p90": 590,
+          "min": 570,
+          "max": 650,
+          "mad": 10
+        },
+        "systemMs": {
+          "median": 50,
+          "p10": 50,
+          "p90": 59,
+          "min": 50,
+          "max": 60,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 310304,
+          "p10": 310052.8,
+          "p90": 310648,
+          "min": 309952,
+          "max": 313024,
+          "mad": 168
+        }
+      },
+      "tools_300_files": {
+        "ms": {
+          "median": 589.57,
+          "p10": 584.45,
+          "p90": 610.06,
+          "min": 582.06,
+          "max": 612.29,
+          "mad": 5.2
+        },
+        "firstMs": {
+          "median": 377.62,
+          "p10": 373.45,
+          "p90": 387.04,
+          "min": 369.43,
+          "max": 398.39,
+          "mad": 1.59
+        },
+        "userMs": {
+          "median": 730,
+          "p10": 720,
+          "p90": 730,
+          "min": 710,
+          "max": 750,
+          "mad": 5
+        },
+        "systemMs": {
+          "median": 70,
+          "p10": 70,
+          "p90": 80,
+          "min": 70,
+          "max": 90,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 331096,
+          "p10": 329844.8,
+          "p90": 331475.2,
+          "min": 329824,
+          "max": 332384,
+          "mad": 264
+        }
+      },
+      "image_2200x1200": {
+        "ms": {
+          "median": 701.62,
+          "p10": 692.32,
+          "p90": 726.43,
+          "min": 691.99,
+          "max": 731.84,
+          "mad": 9.08
+        },
+        "firstMs": {
+          "median": 634.33,
+          "p10": 626.93,
+          "p90": 649.83,
+          "min": 625.43,
+          "max": 658.2,
+          "mad": 7.21
+        },
+        "userMs": {
+          "median": 810,
+          "p10": 800,
+          "p90": 820,
+          "min": 800,
+          "max": 820,
+          "mad": 10
+        },
+        "systemMs": {
+          "median": 50,
+          "p10": 41,
+          "p90": 60,
+          "min": 40,
+          "max": 60,
+          "mad": 5
+        },
+        "peakRssKiB": {
+          "median": 410432,
+          "p10": 410102.4,
+          "p90": 411238.4,
+          "min": 409968,
+          "max": 411424,
+          "mad": 328
+        }
+      },
+      "idle": {
+        "rssKiB": {
+          "median": 288072,
+          "p10": 287478.4,
+          "p90": 288726.4,
+          "min": 287024,
+          "max": 288832,
+          "mad": 384
+        }
+      },
+      "mcp_turn": {
+        "ms": {
+          "median": 461.21,
+          "p10": 458.6,
+          "p90": 476.89,
+          "min": 458.25,
+          "max": 510.53,
+          "mad": 2.78
+        },
+        "firstMs": {
+          "median": 386.86,
+          "p10": 382.37,
+          "p90": 401.12,
+          "min": 380.5,
+          "max": 428.89,
+          "mad": 5.44
+        },
+        "userMs": {
+          "median": 540,
+          "p10": 530,
+          "p90": 550,
+          "min": 530,
+          "max": 570,
+          "mad": 10
+        },
+        "systemMs": {
+          "median": 45,
+          "p10": 40,
+          "p90": 50,
+          "min": 40,
+          "max": 50,
+          "mad": 5
+        },
+        "peakRssKiB": {
+          "median": 306208,
+          "p10": 305816,
+          "p90": 306544,
+          "min": 305648,
+          "max": 308272,
+          "mad": 264
+        }
+      },
+      "cancel": {
+        "cancelMs": {
+          "median": 29.07,
+          "p10": 25.6,
+          "p90": 32.19,
+          "min": 24.29,
+          "max": 33.44,
+          "mad": 2.67
+        },
+        "totalMs": {
+          "median": 478.6,
+          "p10": 469.61,
+          "p90": 500.77,
+          "min": 466.76,
+          "max": 518.69,
+          "mad": 4.23
+        }
+      }
+    },
+    "bun": {
+      "help": {
+        "ms": {
+          "median": 217.34,
+          "p10": 212.64,
+          "p90": 305.12,
+          "min": 211.93,
+          "max": 318.43,
+          "mad": 5.08
+        },
+        "firstMs": {
+          "median": 215.19,
+          "p10": 210.56,
+          "p90": 301.3,
+          "min": 209.75,
+          "max": 315.69,
+          "mad": 5.06
+        },
+        "userMs": {
+          "median": 250,
+          "p10": 250,
+          "p90": 260,
+          "min": 250,
+          "max": 260,
+          "mad": 0
+        },
+        "systemMs": {
+          "median": 10,
+          "p10": 10,
+          "p90": 40,
+          "min": 10,
+          "max": 50,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 154008,
+          "p10": 153761.6,
+          "p90": 154582.4,
+          "min": 153264,
+          "max": 154752,
+          "mad": 320
+        }
+      },
+      "simple_turn": {
+        "ms": {
+          "median": 324.36,
+          "p10": 310.31,
+          "p90": 1216.32,
+          "min": 308.69,
+          "max": 1335.24,
+          "mad": 13.25
+        },
+        "firstMs": {
+          "median": 277.6,
+          "p10": 273.23,
+          "p90": 290.47,
+          "min": 273.19,
+          "max": 291.68,
+          "mad": 4.41
+        },
+        "userMs": {
+          "median": 390,
+          "p10": 380,
+          "p90": 445,
+          "min": 380,
+          "max": 470,
+          "mad": 10
+        },
+        "systemMs": {
+          "median": 30,
+          "p10": 30,
+          "p90": 75,
+          "min": 30,
+          "max": 90,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 202448,
+          "p10": 201572.8,
+          "p90": 202945.6,
+          "min": 201376,
+          "max": 203952,
+          "mad": 440
+        }
+      },
+      "large_prompt_66kb": {
+        "ms": {
+          "median": 314.92,
+          "p10": 306.59,
+          "p90": 1253.14,
+          "min": 306.37,
+          "max": 1318.79,
+          "mad": 8.51
+        },
+        "firstMs": {
+          "median": 275.74,
+          "p10": 270.3,
+          "p90": 295.3,
+          "min": 269.64,
+          "max": 633.61,
+          "mad": 4.43
+        },
+        "userMs": {
+          "median": 390,
+          "p10": 380,
+          "p90": 450,
+          "min": 380,
+          "max": 580,
+          "mad": 10
+        },
+        "systemMs": {
+          "median": 30,
+          "p10": 30,
+          "p90": 97,
+          "min": 30,
+          "max": 110,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 203000,
+          "p10": 201521.6,
+          "p90": 203550.4,
+          "min": 197968,
+          "max": 203776,
+          "mad": 480
+        }
+      },
+      "resume": {
+        "ms": {
+          "median": 316.57,
+          "p10": 309.59,
+          "p90": 333.91,
+          "min": 305.85,
+          "max": 354.16,
+          "mad": 5.96
+        },
+        "firstMs": {
+          "median": 285.64,
+          "p10": 278.94,
+          "p90": 303.3,
+          "min": 275.45,
+          "max": 317.29,
+          "mad": 5.81
+        },
+        "userMs": {
+          "median": 395,
+          "p10": 390,
+          "p90": 409,
+          "min": 390,
+          "max": 440,
+          "mad": 5
+        },
+        "systemMs": {
+          "median": 30,
+          "p10": 30,
+          "p90": 30,
+          "min": 30,
+          "max": 40,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 204656,
+          "p10": 204190.4,
+          "p90": 205318.4,
+          "min": 204064,
+          "max": 206176,
+          "mad": 272
+        }
+      },
+      "session_list": {
+        "ms": {
+          "median": 246.03,
+          "p10": 240.12,
+          "p90": 251.01,
+          "min": 239.89,
+          "max": 257.91,
+          "mad": 4.56
+        },
+        "firstMs": {
+          "median": 239.82,
+          "p10": 234.45,
+          "p90": 244.29,
+          "min": 234.22,
+          "max": 251.91,
+          "mad": 3.97
+        },
+        "userMs": {
+          "median": 290,
+          "p10": 290,
+          "p90": 299,
+          "min": 290,
+          "max": 300,
+          "mad": 0
+        },
+        "systemMs": {
+          "median": 20,
+          "p10": 20,
+          "p90": 20,
+          "min": 10,
+          "max": 20,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 170816,
+          "p10": 170406.4,
+          "p90": 171198.4,
+          "min": 170352,
+          "max": 171328,
+          "mad": 328
+        }
+      },
+      "session_export": {
+        "ms": {
+          "median": 302.43,
+          "p10": 287.82,
+          "p90": 343.51,
+          "min": 287.76,
+          "max": 431.94,
+          "mad": 14.53
+        },
+        "firstMs": {
+          "median": 290.5,
+          "p10": 277.9,
+          "p90": 333.25,
+          "min": 277.67,
+          "max": 417.17,
+          "mad": 12.45
+        },
+        "userMs": {
+          "median": 380,
+          "p10": 370,
+          "p90": 418,
+          "min": 360,
+          "max": 430,
+          "mad": 10
+        },
+        "systemMs": {
+          "median": 30,
+          "p10": 20,
+          "p90": 40,
+          "min": 20,
+          "max": 50,
+          "mad": 5
+        },
+        "peakRssKiB": {
+          "median": 197904,
+          "p10": 197016,
+          "p90": 199153.6,
+          "min": 192864,
+          "max": 199440,
+          "mad": 536
+        }
+      },
+      "session_fork": {
+        "ms": {
+          "median": 317.67,
+          "p10": 306.86,
+          "p90": 353.21,
+          "min": 306.29,
+          "max": 697.76,
+          "mad": 11.1
+        },
+        "firstMs": {
+          "median": 307.27,
+          "p10": 298.23,
+          "p90": 339.88,
+          "min": 297.82,
+          "max": 564.51,
+          "mad": 6.72
+        },
+        "userMs": {
+          "median": 400,
+          "p10": 391,
+          "p90": 410,
+          "min": 390,
+          "max": 470,
+          "mad": 0
+        },
+        "systemMs": {
+          "median": 30,
+          "p10": 30,
+          "p90": 40,
+          "min": 30,
+          "max": 70,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 209752,
+          "p10": 209161.6,
+          "p90": 210379.2,
+          "min": 207216,
+          "max": 210400,
+          "mad": 496
+        }
+      },
+      "session_import": {
+        "ms": {
+          "median": 301.91,
+          "p10": 297.74,
+          "p90": 316.99,
+          "min": 297.21,
+          "max": 486.52,
+          "mad": 4.44
+        },
+        "firstMs": {
+          "median": 281.27,
+          "p10": 276.66,
+          "p90": 299.97,
+          "min": 276.56,
+          "max": 475.6,
+          "mad": 4.7
+        },
+        "userMs": {
+          "median": 365,
+          "p10": 360,
+          "p90": 388,
+          "min": 360,
+          "max": 460,
+          "mad": 5
+        },
+        "systemMs": {
+          "median": 30,
+          "p10": 30,
+          "p90": 30,
+          "min": 30,
+          "max": 50,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 193320,
+          "p10": 192440,
+          "p90": 193640,
+          "min": 187728,
+          "max": 193984,
+          "mad": 288
+        }
+      },
+      "tools_7": {
+        "ms": {
+          "median": 398.08,
+          "p10": 384.41,
+          "p90": 440.57,
+          "min": 381.49,
+          "max": 695.18,
+          "mad": 12.54
+        },
+        "firstMs": {
+          "median": 275.78,
+          "p10": 270.07,
+          "p90": 308.34,
+          "min": 269.62,
+          "max": 439.53,
+          "mad": 5.37
+        },
+        "userMs": {
+          "median": 525,
+          "p10": 511,
+          "p90": 578,
+          "min": 510,
+          "max": 720,
+          "mad": 5
+        },
+        "systemMs": {
+          "median": 50,
+          "p10": 40,
+          "p90": 60,
+          "min": 40,
+          "max": 90,
+          "mad": 10
+        },
+        "peakRssKiB": {
+          "median": 237944,
+          "p10": 236593.6,
+          "p90": 239236.8,
+          "min": 231712,
+          "max": 239680,
+          "mad": 840
+        }
+      },
+      "tools_300_files": {
+        "ms": {
+          "median": 433.98,
+          "p10": 425.38,
+          "p90": 470.06,
+          "min": 425.02,
+          "max": 588.6,
+          "mad": 5.4
+        },
+        "firstMs": {
+          "median": 273.58,
+          "p10": 271.98,
+          "p90": 305.2,
+          "min": 271.7,
+          "max": 419.18,
+          "mad": 1.79
+        },
+        "userMs": {
+          "median": 580,
+          "p10": 570,
+          "p90": 627,
+          "min": 570,
+          "max": 670,
+          "mad": 10
+        },
+        "systemMs": {
+          "median": 70,
+          "p10": 70,
+          "p90": 80,
+          "min": 60,
+          "max": 90,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 287312,
+          "p10": 286142.4,
+          "p90": 290260.8,
+          "min": 285952,
+          "max": 290976,
+          "mad": 816
+        }
+      },
+      "image_2200x1200": {
+        "ms": {
+          "median": 533.79,
+          "p10": 523.69,
+          "p90": 568.89,
+          "min": 519.59,
+          "max": 653.86,
+          "mad": 4.14
+        },
+        "firstMs": {
+          "median": 494.71,
+          "p10": 485.6,
+          "p90": 525.36,
+          "min": 483.74,
+          "max": 611.61,
+          "mad": 5.37
+        },
+        "userMs": {
+          "median": 680,
+          "p10": 670,
+          "p90": 708,
+          "min": 670,
+          "max": 710,
+          "mad": 10
+        },
+        "systemMs": {
+          "median": 40,
+          "p10": 40,
+          "p90": 59,
+          "min": 40,
+          "max": 60,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 317144,
+          "p10": 311950.4,
+          "p90": 319686.4,
+          "min": 311584,
+          "max": 319936,
+          "mad": 2504
+        }
+      },
+      "idle": {
+        "rssKiB": {
+          "median": 189656,
+          "p10": 189348.8,
+          "p90": 190451.2,
+          "min": 189184,
+          "max": 190704,
+          "mad": 288
+        }
+      },
+      "mcp_turn": {
+        "ms": {
+          "median": 344.84,
+          "p10": 335.11,
+          "p90": 359.98,
+          "min": 334.03,
+          "max": 563.53,
+          "mad": 4.08
+        },
+        "firstMs": {
+          "median": 286.43,
+          "p10": 280.57,
+          "p90": 302.99,
+          "min": 278.53,
+          "max": 484.59,
+          "mad": 2.55
+        },
+        "userMs": {
+          "median": 470,
+          "p10": 460,
+          "p90": 497,
+          "min": 460,
+          "max": 590,
+          "mad": 10
+        },
+        "systemMs": {
+          "median": 40,
+          "p10": 40,
+          "p90": 40,
+          "min": 40,
+          "max": 70,
+          "mad": 0
+        },
+        "peakRssKiB": {
+          "median": 216168,
+          "p10": 215809.6,
+          "p90": 216976,
+          "min": 204864,
+          "max": 217328,
+          "mad": 328
+        }
+      },
+      "cancel": {
+        "cancelMs": {
+          "median": 20.03,
+          "p10": 19.79,
+          "p90": 20.8,
+          "min": 19.6,
+          "max": 22,
+          "mad": 0.19
+        },
+        "totalMs": {
+          "median": 341.31,
+          "p10": 331.24,
+          "p90": 360.7,
+          "min": 330.21,
+          "max": 399.08,
+          "mad": 9.18
+        }
+      }
+    }
+  },
+  "samples": {
+    "node": [
+      {
+        "help": {
+          "ms": 292.106834000002,
+          "firstMs": 287.76550000000134,
+          "userMs": 330,
+          "systemMs": 20,
+          "peakRssKiB": 258272
+        },
+        "simple_turn": {
+          "ms": 1478.2277089999989,
+          "firstMs": 407.44787500000166,
+          "userMs": 490,
+          "systemMs": 110,
+          "peakRssKiB": 297616
+        },
+        "large_prompt_66kb": {
+          "ms": 463.893415999999,
+          "firstMs": 388.76091599999927,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 300832
+        },
+        "resume": {
+          "ms": 448.273333000001,
+          "firstMs": 381.8804999999993,
+          "userMs": 560,
+          "systemMs": 50,
+          "peakRssKiB": 301648
+        },
+        "session_list": {
+          "ms": 325.6739170000001,
+          "firstMs": 316.29895899999974,
+          "userMs": 370,
+          "systemMs": 30,
+          "peakRssKiB": 283680
+        },
+        "session_export": {
+          "ms": 430.5706250000003,
+          "firstMs": 412.38633299999856,
+          "userMs": 460,
+          "systemMs": 40,
+          "peakRssKiB": 292768
+        },
+        "session_fork": {
+          "ms": 445.84241699999984,
+          "firstMs": 427.92070800000147,
+          "userMs": 550,
+          "systemMs": 50,
+          "peakRssKiB": 294752
+        },
+        "session_import": {
+          "ms": 420.20545800000036,
+          "firstMs": 403.6047080000026,
+          "userMs": 440,
+          "systemMs": 40,
+          "peakRssKiB": 288736
+        },
+        "tools_7": {
+          "ms": 524.945040999999,
+          "firstMs": 376.2614160000012,
+          "userMs": 580,
+          "systemMs": 50,
+          "peakRssKiB": 310400
+        },
+        "tools_300_files": {
+          "ms": 607.8969169999982,
+          "firstMs": 386.2922089999993,
+          "userMs": 730,
+          "systemMs": 80,
+          "peakRssKiB": 331136
+        },
+        "image_2200x1200": {
+          "ms": 696.0859999999957,
+          "firstMs": 631.3286249999946,
+          "userMs": 810,
+          "systemMs": 40,
+          "peakRssKiB": 410800
+        },
+        "idle": {
+          "rssKiB": 287872
+        },
+        "mcp_turn": {
+          "ms": 458.2506250000006,
+          "firstMs": 386.3216669999965,
+          "userMs": 540,
+          "systemMs": 40,
+          "peakRssKiB": 306384
+        },
+        "cancel": {
+          "cancelMs": 24.29120800000237,
+          "totalMs": 473.116958000006
+        }
+      },
+      {
+        "help": {
+          "ms": 287.6946250000037,
+          "firstMs": 283.4174170000042,
+          "userMs": 330,
+          "systemMs": 20,
+          "peakRssKiB": 258384
+        },
+        "simple_turn": {
+          "ms": 445.41945799999667,
+          "firstMs": 386.62512499999866,
+          "userMs": 460,
+          "systemMs": 40,
+          "peakRssKiB": 296544
+        },
+        "large_prompt_66kb": {
+          "ms": 434.3310410000049,
+          "firstMs": 373.94233299999905,
+          "userMs": 460,
+          "systemMs": 30,
+          "peakRssKiB": 300896
+        },
+        "resume": {
+          "ms": 447.0723749999961,
+          "firstMs": 386.7010419999933,
+          "userMs": 550,
+          "systemMs": 40,
+          "peakRssKiB": 302304
+        },
+        "session_list": {
+          "ms": 322.82345799999894,
+          "firstMs": 311.3296660000051,
+          "userMs": 370,
+          "systemMs": 30,
+          "peakRssKiB": 283280
+        },
+        "session_export": {
+          "ms": 401.6084169999958,
+          "firstMs": 371.74166700000205,
+          "userMs": 520,
+          "systemMs": 40,
+          "peakRssKiB": 293392
+        },
+        "session_fork": {
+          "ms": 427.52037500000006,
+          "firstMs": 411.8689169999998,
+          "userMs": 540,
+          "systemMs": 50,
+          "peakRssKiB": 293392
+        },
+        "session_import": {
+          "ms": 408.1476659999971,
+          "firstMs": 391.99558299999626,
+          "userMs": 430,
+          "systemMs": 30,
+          "peakRssKiB": 287968
+        },
+        "tools_7": {
+          "ms": 527.7994580000013,
+          "firstMs": 369.91075000000274,
+          "userMs": 570,
+          "systemMs": 50,
+          "peakRssKiB": 310048
+        },
+        "tools_300_files": {
+          "ms": 587.8239589999939,
+          "firstMs": 377.11554199999955,
+          "userMs": 720,
+          "systemMs": 70,
+          "peakRssKiB": 331360
+        },
+        "image_2200x1200": {
+          "ms": 693.9024999999965,
+          "firstMs": 627.364999999998,
+          "userMs": 800,
+          "systemMs": 40,
+          "peakRssKiB": 410864
+        },
+        "idle": {
+          "rssKiB": 287024
+        },
+        "mcp_turn": {
+          "ms": 458.79033300000447,
+          "firstMs": 383.8270000000048,
+          "userMs": 530,
+          "systemMs": 40,
+          "peakRssKiB": 306080
+        },
+        "cancel": {
+          "cancelMs": 25.56575000000157,
+          "totalMs": 466.76129100000253
+        }
+      },
+      {
+        "help": {
+          "ms": 469.5448329999999,
+          "firstMs": 462.1517079999976,
+          "userMs": 340,
+          "systemMs": 70,
+          "peakRssKiB": 258304
+        },
+        "simple_turn": {
+          "ms": 501.6287499999962,
+          "firstMs": 424.23908400000073,
+          "userMs": 470,
+          "systemMs": 60,
+          "peakRssKiB": 296528
+        },
+        "large_prompt_66kb": {
+          "ms": 467.3257920000033,
+          "firstMs": 392.9463340000002,
+          "userMs": 480,
+          "systemMs": 40,
+          "peakRssKiB": 301376
+        },
+        "resume": {
+          "ms": 464.6020830000052,
+          "firstMs": 397.440208,
+          "userMs": 560,
+          "systemMs": 50,
+          "peakRssKiB": 301584
+        },
+        "session_list": {
+          "ms": 348.536125000006,
+          "firstMs": 338.6635830000014,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 283808
+        },
+        "session_export": {
+          "ms": 421.8274170000004,
+          "firstMs": 394.53920800000196,
+          "userMs": 460,
+          "systemMs": 50,
+          "peakRssKiB": 292544
+        },
+        "session_fork": {
+          "ms": 443.6552920000031,
+          "firstMs": 426.2013750000042,
+          "userMs": 550,
+          "systemMs": 50,
+          "peakRssKiB": 293072
+        },
+        "session_import": {
+          "ms": 420.95429200000217,
+          "firstMs": 404.1580000000031,
+          "userMs": 440,
+          "systemMs": 40,
+          "peakRssKiB": 288672
+        },
+        "tools_7": {
+          "ms": 548.8774169999961,
+          "firstMs": 392.01524999999674,
+          "userMs": 590,
+          "systemMs": 60,
+          "peakRssKiB": 309952
+        },
+        "tools_300_files": {
+          "ms": 610.296334000006,
+          "firstMs": 387.1237920000058,
+          "userMs": 730,
+          "systemMs": 90,
+          "peakRssKiB": 331104
+        },
+        "image_2200x1200": {
+          "ms": 731.8372090000048,
+          "firstMs": 647.494875000004,
+          "userMs": 820,
+          "systemMs": 60,
+          "peakRssKiB": 410752
+        },
+        "idle": {
+          "rssKiB": 288832
+        },
+        "mcp_turn": {
+          "ms": 510.5288750000036,
+          "firstMs": 428.887917,
+          "userMs": 570,
+          "systemMs": 50,
+          "peakRssKiB": 306544
+        },
+        "cancel": {
+          "cancelMs": 33.43550000000687,
+          "totalMs": 493.2382910000015
+        }
+      },
+      {
+        "help": {
+          "ms": 304.3012500000041,
+          "firstMs": 299.22691699999996,
+          "userMs": 340,
+          "systemMs": 20,
+          "peakRssKiB": 258784
+        },
+        "simple_turn": {
+          "ms": 464.1464579999956,
+          "firstMs": 403.18629099999816,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 296224
+        },
+        "large_prompt_66kb": {
+          "ms": 474.54195799999434,
+          "firstMs": 407.46191700000054,
+          "userMs": 500,
+          "systemMs": 50,
+          "peakRssKiB": 301264
+        },
+        "resume": {
+          "ms": 477.47849999999744,
+          "firstMs": 403.2364579999994,
+          "userMs": 560,
+          "systemMs": 50,
+          "peakRssKiB": 300688
+        },
+        "session_list": {
+          "ms": 352.7067919999972,
+          "firstMs": 341.0997500000012,
+          "userMs": 390,
+          "systemMs": 40,
+          "peakRssKiB": 283600
+        },
+        "session_export": {
+          "ms": 400.0955830000021,
+          "firstMs": 381.88679100000445,
+          "userMs": 450,
+          "systemMs": 40,
+          "peakRssKiB": 292816
+        },
+        "session_fork": {
+          "ms": 457.599000000002,
+          "firstMs": 431.96775000000343,
+          "userMs": 560,
+          "systemMs": 60,
+          "peakRssKiB": 293840
+        },
+        "session_import": {
+          "ms": 412.76695800000016,
+          "firstMs": 396.1635829999941,
+          "userMs": 430,
+          "systemMs": 40,
+          "peakRssKiB": 288352
+        },
+        "tools_7": {
+          "ms": 550.7162499999977,
+          "firstMs": 387.32012499999837,
+          "userMs": 590,
+          "systemMs": 60,
+          "peakRssKiB": 310656
+        },
+        "tools_300_files": {
+          "ms": 612.2909999999974,
+          "firstMs": 398.38983300000837,
+          "userMs": 730,
+          "systemMs": 80,
+          "peakRssKiB": 331088
+        },
+        "image_2200x1200": {
+          "ms": 710.9524999999994,
+          "firstMs": 642.1203749999986,
+          "userMs": 820,
+          "systemMs": 60,
+          "peakRssKiB": 410432
+        },
+        "idle": {
+          "rssKiB": 288496
+        },
+        "mcp_turn": {
+          "ms": 472.7359589999978,
+          "firstMs": 395.6906670000026,
+          "userMs": 550,
+          "systemMs": 50,
+          "peakRssKiB": 305648
+        },
+        "cancel": {
+          "cancelMs": 26.988375000000815,
+          "totalMs": 477.6359999999986
+        }
+      },
+      {
+        "help": {
+          "ms": 303.4311250000028,
+          "firstMs": 298.2249589999992,
+          "userMs": 330,
+          "systemMs": 20,
+          "peakRssKiB": 258656
+        },
+        "simple_turn": {
+          "ms": 477.7196660000045,
+          "firstMs": 414.3224579999951,
+          "userMs": 480,
+          "systemMs": 50,
+          "peakRssKiB": 296016
+        },
+        "large_prompt_66kb": {
+          "ms": 444.6257500000065,
+          "firstMs": 381.67704200001026,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 300992
+        },
+        "resume": {
+          "ms": 467.56791699999303,
+          "firstMs": 396.0707919999986,
+          "userMs": 570,
+          "systemMs": 60,
+          "peakRssKiB": 302016
+        },
+        "session_list": {
+          "ms": 339.20387499999197,
+          "firstMs": 328.64437499998894,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 285136
+        },
+        "session_export": {
+          "ms": 415.5279589999991,
+          "firstMs": 382.5863340000069,
+          "userMs": 450,
+          "systemMs": 40,
+          "peakRssKiB": 292560
+        },
+        "session_fork": {
+          "ms": 451.1084169999958,
+          "firstMs": 435.1833750000078,
+          "userMs": 570,
+          "systemMs": 50,
+          "peakRssKiB": 296544
+        },
+        "session_import": {
+          "ms": 424.84058400000504,
+          "firstMs": 393.67225000000326,
+          "userMs": 430,
+          "systemMs": 40,
+          "peakRssKiB": 287872
+        },
+        "tools_7": {
+          "ms": 529.9222500000033,
+          "firstMs": 375.6264579999988,
+          "userMs": 580,
+          "systemMs": 50,
+          "peakRssKiB": 310240
+        },
+        "tools_300_files": {
+          "ms": 594.4854999999952,
+          "firstMs": 377.87295799999265,
+          "userMs": 730,
+          "systemMs": 80,
+          "peakRssKiB": 331264
+        },
+        "image_2200x1200": {
+          "ms": 707.1473339999939,
+          "firstMs": 639.8637920000037,
+          "userMs": 810,
+          "systemMs": 50,
+          "peakRssKiB": 410096
+        },
+        "idle": {
+          "rssKiB": 288176
+        },
+        "mcp_turn": {
+          "ms": 473.30712500000664,
+          "firstMs": 394.12687500000175,
+          "userMs": 540,
+          "systemMs": 50,
+          "peakRssKiB": 306144
+        },
+        "cancel": {
+          "cancelMs": 29.29833299999882,
+          "totalMs": 518.6947919999948
+        }
+      },
+      {
+        "help": {
+          "ms": 296.4962499999965,
+          "firstMs": 291.8381250000093,
+          "userMs": 330,
+          "systemMs": 20,
+          "peakRssKiB": 258672
+        },
+        "simple_turn": {
+          "ms": 479.50274999999965,
+          "firstMs": 409.31170900000143,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 297376
+        },
+        "large_prompt_66kb": {
+          "ms": 437.8377499999915,
+          "firstMs": 375.92266599999857,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 300992
+        },
+        "resume": {
+          "ms": 469.80841599999985,
+          "firstMs": 387.24608300000546,
+          "userMs": 570,
+          "systemMs": 50,
+          "peakRssKiB": 301232
+        },
+        "session_list": {
+          "ms": 349.0505000000121,
+          "firstMs": 328.2679170000047,
+          "userMs": 450,
+          "systemMs": 30,
+          "peakRssKiB": 284176
+        },
+        "session_export": {
+          "ms": 418.1537499999977,
+          "firstMs": 400.125,
+          "userMs": 530,
+          "systemMs": 40,
+          "peakRssKiB": 292576
+        },
+        "session_fork": {
+          "ms": 448.8440000000119,
+          "firstMs": 430.359083000003,
+          "userMs": 550,
+          "systemMs": 50,
+          "peakRssKiB": 293104
+        },
+        "session_import": {
+          "ms": 413.0233329999901,
+          "firstMs": 396.01716599999054,
+          "userMs": 440,
+          "systemMs": 40,
+          "peakRssKiB": 288144
+        },
+        "tools_7": {
+          "ms": 540.0112500000105,
+          "firstMs": 385.24058300000615,
+          "userMs": 580,
+          "systemMs": 50,
+          "peakRssKiB": 310416
+        },
+        "tools_300_files": {
+          "ms": 590.0434169999935,
+          "firstMs": 376.1476249999978,
+          "userMs": 730,
+          "systemMs": 80,
+          "peakRssKiB": 329840
+        },
+        "image_2200x1200": {
+          "ms": 720.130416999993,
+          "firstMs": 650.0872499999969,
+          "userMs": 820,
+          "systemMs": 60,
+          "peakRssKiB": 411280
+        },
+        "idle": {
+          "rssKiB": 288416
+        },
+        "mcp_turn": {
+          "ms": 477.28854099998716,
+          "firstMs": 401.54308299999684,
+          "userMs": 550,
+          "systemMs": 50,
+          "peakRssKiB": 306272
+        },
+        "cancel": {
+          "cancelMs": 28.835625000006985,
+          "totalMs": 501.609540999998
+        }
+      },
+      {
+        "help": {
+          "ms": 298.2717089999933,
+          "firstMs": 293.6757499999949,
+          "userMs": 330,
+          "systemMs": 20,
+          "peakRssKiB": 258384
+        },
+        "simple_turn": {
+          "ms": 448.94841699999233,
+          "firstMs": 394.77441699999326,
+          "userMs": 460,
+          "systemMs": 40,
+          "peakRssKiB": 296048
+        },
+        "large_prompt_66kb": {
+          "ms": 454.20929199999955,
+          "firstMs": 380.4099580000038,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 301760
+        },
+        "resume": {
+          "ms": 438.9645409999939,
+          "firstMs": 371.7052909999911,
+          "userMs": 550,
+          "systemMs": 40,
+          "peakRssKiB": 301024
+        },
+        "session_list": {
+          "ms": 326.5067909999925,
+          "firstMs": 317.8909159999894,
+          "userMs": 380,
+          "systemMs": 30,
+          "peakRssKiB": 284272
+        },
+        "session_export": {
+          "ms": 411.3723339999997,
+          "firstMs": 381.00470900000073,
+          "userMs": 530,
+          "systemMs": 40,
+          "peakRssKiB": 294016
+        },
+        "session_fork": {
+          "ms": 433.14824999999837,
+          "firstMs": 417.0142920000071,
+          "userMs": 550,
+          "systemMs": 50,
+          "peakRssKiB": 293456
+        },
+        "session_import": {
+          "ms": 409.18220799999835,
+          "firstMs": 393.3111659999995,
+          "userMs": 430,
+          "systemMs": 30,
+          "peakRssKiB": 288096
+        },
+        "tools_7": {
+          "ms": 535.5801250000077,
+          "firstMs": 383.52987500000745,
+          "userMs": 580,
+          "systemMs": 50,
+          "peakRssKiB": 310368
+        },
+        "tools_300_files": {
+          "ms": 589.101416999998,
+          "firstMs": 377.87966700000106,
+          "userMs": 730,
+          "systemMs": 70,
+          "peakRssKiB": 332384
+        },
+        "image_2200x1200": {
+          "ms": 692.7977499999979,
+          "firstMs": 626.8771669999987,
+          "userMs": 810,
+          "systemMs": 50,
+          "peakRssKiB": 410160
+        },
+        "idle": {
+          "rssKiB": 288416
+        },
+        "mcp_turn": {
+          "ms": 460.0998330000002,
+          "firstMs": 384.4832910000114,
+          "userMs": 530,
+          "systemMs": 40,
+          "peakRssKiB": 306416
+        },
+        "cancel": {
+          "cancelMs": 25.89650000000256,
+          "totalMs": 476.67366700001
+        }
+      },
+      {
+        "help": {
+          "ms": 297.3841669999965,
+          "firstMs": 293.1290000000008,
+          "userMs": 340,
+          "systemMs": 20,
+          "peakRssKiB": 260320
+        },
+        "simple_turn": {
+          "ms": 448.4187499999971,
+          "firstMs": 392.16766700000153,
+          "userMs": 460,
+          "systemMs": 40,
+          "peakRssKiB": 296912
+        },
+        "large_prompt_66kb": {
+          "ms": 430.91287499999453,
+          "firstMs": 372.5304579999938,
+          "userMs": 470,
+          "systemMs": 30,
+          "peakRssKiB": 301120
+        },
+        "resume": {
+          "ms": 446.5564999999915,
+          "firstMs": 377.57866600000125,
+          "userMs": 560,
+          "systemMs": 40,
+          "peakRssKiB": 301328
+        },
+        "session_list": {
+          "ms": 323.68920799999614,
+          "firstMs": 315.09991699999955,
+          "userMs": 370,
+          "systemMs": 20,
+          "peakRssKiB": 283648
+        },
+        "session_export": {
+          "ms": 429.4580419999984,
+          "firstMs": 411.814458000008,
+          "userMs": 460,
+          "systemMs": 30,
+          "peakRssKiB": 292048
+        },
+        "session_fork": {
+          "ms": 441.05500000000757,
+          "firstMs": 425.9024170000048,
+          "userMs": 540,
+          "systemMs": 50,
+          "peakRssKiB": 295136
+        },
+        "session_import": {
+          "ms": 404.2095829999889,
+          "firstMs": 388.28862500000105,
+          "userMs": 430,
+          "systemMs": 30,
+          "peakRssKiB": 288288
+        },
+        "tools_7": {
+          "ms": 513.789208000002,
+          "firstMs": 367.9086670000106,
+          "userMs": 570,
+          "systemMs": 50,
+          "peakRssKiB": 310576
+        },
+        "tools_300_files": {
+          "ms": 588.8258750000095,
+          "firstMs": 369.4314169999998,
+          "userMs": 750,
+          "systemMs": 70,
+          "peakRssKiB": 330832
+        },
+        "image_2200x1200": {
+          "ms": 727.1260000000038,
+          "firstMs": 658.200084000011,
+          "userMs": 820,
+          "systemMs": 50,
+          "peakRssKiB": 411424
+        },
+        "idle": {
+          "rssKiB": 288752
+        },
+        "mcp_turn": {
+          "ms": 460.81524999999965,
+          "firstMs": 387.3895840000041,
+          "userMs": 540,
+          "systemMs": 40,
+          "peakRssKiB": 306080
+        },
+        "cancel": {
+          "cancelMs": 31.750041999999667,
+          "totalMs": 481.1551669999899
+        }
+      },
+      {
+        "help": {
+          "ms": 300.81366700000945,
+          "firstMs": 296.0500420000026,
+          "userMs": 340,
+          "systemMs": 20,
+          "peakRssKiB": 259952
+        },
+        "simple_turn": {
+          "ms": 1459.490082999997,
+          "firstMs": 403.29183300001023,
+          "userMs": 480,
+          "systemMs": 90,
+          "peakRssKiB": 296736
+        },
+        "large_prompt_66kb": {
+          "ms": 458.1209999999992,
+          "firstMs": 384.17412499999045,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 300736
+        },
+        "resume": {
+          "ms": 446.6193750000093,
+          "firstMs": 374.74666699999943,
+          "userMs": 550,
+          "systemMs": 50,
+          "peakRssKiB": 301984
+        },
+        "session_list": {
+          "ms": 327.34191600000486,
+          "firstMs": 318.04754099999263,
+          "userMs": 370,
+          "systemMs": 30,
+          "peakRssKiB": 283712
+        },
+        "session_export": {
+          "ms": 416.57262499998615,
+          "firstMs": 384.96066599999904,
+          "userMs": 530,
+          "systemMs": 40,
+          "peakRssKiB": 295232
+        },
+        "session_fork": {
+          "ms": 438.221292000002,
+          "firstMs": 422.50570899999,
+          "userMs": 550,
+          "systemMs": 50,
+          "peakRssKiB": 294416
+        },
+        "session_import": {
+          "ms": 434.05879099998856,
+          "firstMs": 405.06162499998754,
+          "userMs": 440,
+          "systemMs": 40,
+          "peakRssKiB": 288800
+        },
+        "tools_7": {
+          "ms": 540.4985829999932,
+          "firstMs": 385.92387499999313,
+          "userMs": 580,
+          "systemMs": 50,
+          "peakRssKiB": 310096
+        },
+        "tools_300_files": {
+          "ms": 595.443207999997,
+          "firstMs": 377.36962500000664,
+          "userMs": 710,
+          "systemMs": 70,
+          "peakRssKiB": 329888
+        },
+        "image_2200x1200": {
+          "ms": 707.2866670000076,
+          "firstMs": 637.3261250000069,
+          "userMs": 800,
+          "systemMs": 60,
+          "peakRssKiB": 410208
+        },
+        "idle": {
+          "rssKiB": 287536
+        },
+        "mcp_turn": {
+          "ms": 458.6003750000091,
+          "firstMs": 380.50204200000735,
+          "userMs": 530,
+          "systemMs": 50,
+          "peakRssKiB": 306544
+        },
+        "cancel": {
+          "cancelMs": 27.1282910000009,
+          "totalMs": 475.60899999999674
+        }
+      },
+      {
+        "help": {
+          "ms": 290.5913330000185,
+          "firstMs": 285.8714580000087,
+          "userMs": 330,
+          "systemMs": 20,
+          "peakRssKiB": 258688
+        },
+        "simple_turn": {
+          "ms": 451.3422910000081,
+          "firstMs": 397.52854100000695,
+          "userMs": 460,
+          "systemMs": 40,
+          "peakRssKiB": 296528
+        },
+        "large_prompt_66kb": {
+          "ms": 444.00150000001304,
+          "firstMs": 379.47825000001467,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 301824
+        },
+        "resume": {
+          "ms": 464.65199999997276,
+          "firstMs": 391.37320899998304,
+          "userMs": 570,
+          "systemMs": 50,
+          "peakRssKiB": 303392
+        },
+        "session_list": {
+          "ms": 323.094207999995,
+          "firstMs": 311.5516250000219,
+          "userMs": 370,
+          "systemMs": 30,
+          "peakRssKiB": 283504
+        },
+        "session_export": {
+          "ms": 392.66370899998583,
+          "firstMs": 374.57541699998546,
+          "userMs": 440,
+          "systemMs": 40,
+          "peakRssKiB": 292208
+        },
+        "session_fork": {
+          "ms": 436.0792499999807,
+          "firstMs": 418.87508399999933,
+          "userMs": 550,
+          "systemMs": 50,
+          "peakRssKiB": 293840
+        },
+        "session_import": {
+          "ms": 404.72070900001563,
+          "firstMs": 388.4382500000065,
+          "userMs": 420,
+          "systemMs": 30,
+          "peakRssKiB": 288272
+        },
+        "tools_7": {
+          "ms": 520.4673750000075,
+          "firstMs": 369.6017909999937,
+          "userMs": 570,
+          "systemMs": 50,
+          "peakRssKiB": 310192
+        },
+        "tools_300_files": {
+          "ms": 587.863250000024,
+          "firstMs": 379.3352500000037,
+          "userMs": 720,
+          "systemMs": 70,
+          "peakRssKiB": 331488
+        },
+        "image_2200x1200": {
+          "ms": 692.2694579999952,
+          "firstMs": 625.4294579999987,
+          "userMs": 800,
+          "systemMs": 50,
+          "peakRssKiB": 410432
+        },
+        "idle": {
+          "rssKiB": 287472
+        },
+        "mcp_turn": {
+          "ms": 473.09445800000685,
+          "firstMs": 397.33158299999195,
+          "userMs": 550,
+          "systemMs": 40,
+          "peakRssKiB": 308272
+        },
+        "cancel": {
+          "cancelMs": 32.239709000015864,
+          "totalMs": 480.6473330000008
+        }
+      },
+      {
+        "help": {
+          "ms": 459.197542000009,
+          "firstMs": 451.8007499999949,
+          "userMs": 330,
+          "systemMs": 60,
+          "peakRssKiB": 258256
+        },
+        "simple_turn": {
+          "ms": 483.66195899999,
+          "firstMs": 402.56200000000536,
+          "userMs": 460,
+          "systemMs": 50,
+          "peakRssKiB": 296464
+        },
+        "large_prompt_66kb": {
+          "ms": 511.4579590000212,
+          "firstMs": 452.20783400000073,
+          "userMs": 500,
+          "systemMs": 50,
+          "peakRssKiB": 298048
+        },
+        "resume": {
+          "ms": 465.6885000000184,
+          "firstMs": 397.3255000000063,
+          "userMs": 580,
+          "systemMs": 50,
+          "peakRssKiB": 301936
+        },
+        "session_list": {
+          "ms": 341.9707079999789,
+          "firstMs": 331.9410419999913,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 284032
+        },
+        "session_export": {
+          "ms": 444.79404100001557,
+          "firstMs": 426.0902080000087,
+          "userMs": 490,
+          "systemMs": 50,
+          "peakRssKiB": 293296
+        },
+        "session_fork": {
+          "ms": 459.6787079999922,
+          "firstMs": 438.83600000001024,
+          "userMs": 560,
+          "systemMs": 50,
+          "peakRssKiB": 294032
+        },
+        "session_import": {
+          "ms": 420.2664999999979,
+          "firstMs": 403.9223340000026,
+          "userMs": 440,
+          "systemMs": 40,
+          "peakRssKiB": 288448
+        },
+        "tools_7": {
+          "ms": 539.4448749999865,
+          "firstMs": 372.3569159999897,
+          "userMs": 650,
+          "systemMs": 50,
+          "peakRssKiB": 313024
+        },
+        "tools_300_files": {
+          "ms": 582.0574169999745,
+          "firstMs": 376.81729199999245,
+          "userMs": 720,
+          "systemMs": 70,
+          "peakRssKiB": 329824
+        },
+        "image_2200x1200": {
+          "ms": 694.9276249999821,
+          "firstMs": 627.6709580000024,
+          "userMs": 800,
+          "systemMs": 50,
+          "peakRssKiB": 410224
+        },
+        "idle": {
+          "rssKiB": 287968
+        },
+        "mcp_turn": {
+          "ms": 458.59995799997705,
+          "firstMs": 382.72958299997845,
+          "userMs": 530,
+          "systemMs": 40,
+          "peakRssKiB": 305808
+        },
+        "cancel": {
+          "cancelMs": 31.722999999998137,
+          "totalMs": 469.2253330000094
+        }
+      },
+      {
+        "help": {
+          "ms": 303.61966599998414,
+          "firstMs": 298.9533329999831,
+          "userMs": 340,
+          "systemMs": 20,
+          "peakRssKiB": 258640
+        },
+        "simple_turn": {
+          "ms": 449.51141700000153,
+          "firstMs": 393.4160419999971,
+          "userMs": 460,
+          "systemMs": 40,
+          "peakRssKiB": 296320
+        },
+        "large_prompt_66kb": {
+          "ms": 432.632042000012,
+          "firstMs": 372.83170900002006,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 301024
+        },
+        "resume": {
+          "ms": 459.7811249999795,
+          "firstMs": 378.9568329999747,
+          "userMs": 550,
+          "systemMs": 50,
+          "peakRssKiB": 301120
+        },
+        "session_list": {
+          "ms": 325.13879100000486,
+          "firstMs": 315.3554160000058,
+          "userMs": 370,
+          "systemMs": 30,
+          "peakRssKiB": 283392
+        },
+        "session_export": {
+          "ms": 392.97254100002465,
+          "firstMs": 374.2489160000114,
+          "userMs": 450,
+          "systemMs": 40,
+          "peakRssKiB": 292336
+        },
+        "session_fork": {
+          "ms": 450.09633400000166,
+          "firstMs": 433.7839169999934,
+          "userMs": 550,
+          "systemMs": 50,
+          "peakRssKiB": 295168
+        },
+        "session_import": {
+          "ms": 415.9108750000014,
+          "firstMs": 399.24674999999115,
+          "userMs": 430,
+          "systemMs": 30,
+          "peakRssKiB": 288096
+        },
+        "tools_7": {
+          "ms": 523.3914999999979,
+          "firstMs": 370.9025420000253,
+          "userMs": 570,
+          "systemMs": 50,
+          "peakRssKiB": 310176
+        },
+        "tools_300_files": {
+          "ms": 584.0768329999992,
+          "firstMs": 373.15287499999977,
+          "userMs": 720,
+          "systemMs": 70,
+          "peakRssKiB": 330896
+        },
+        "image_2200x1200": {
+          "ms": 691.9861669999955,
+          "firstMs": 627.8456249999872,
+          "userMs": 800,
+          "systemMs": 50,
+          "peakRssKiB": 409968
+        },
+        "idle": {
+          "rssKiB": 287936
+        },
+        "mcp_turn": {
+          "ms": 461.59645800001454,
+          "firstMs": 382.3259170000092,
+          "userMs": 530,
+          "systemMs": 50,
+          "peakRssKiB": 305888
+        },
+        "cancel": {
+          "cancelMs": 30.74749999999767,
+          "totalMs": 479.5545839999977
+        }
+      }
+    ],
+    "bun": [
+      {
+        "help": {
+          "ms": 212.58304200000202,
+          "firstMs": 210.49800000000323,
+          "userMs": 250,
+          "systemMs": 10,
+          "peakRssKiB": 153920
+        },
+        "simple_turn": {
+          "ms": 308.6870000000017,
+          "firstMs": 273.1883330000019,
+          "userMs": 380,
+          "systemMs": 30,
+          "peakRssKiB": 202240
+        },
+        "large_prompt_66kb": {
+          "ms": 315.0408750000024,
+          "firstMs": 278.0345000000016,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 202848
+        },
+        "resume": {
+          "ms": 310.5095000000001,
+          "firstMs": 279.58712500000183,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 204464
+        },
+        "session_list": {
+          "ms": 241.38458399999945,
+          "firstMs": 235.58808399999907,
+          "userMs": 290,
+          "systemMs": 20,
+          "peakRssKiB": 170960
+        },
+        "session_export": {
+          "ms": 299.95424999999886,
+          "firstMs": 282.3381659999977,
+          "userMs": 370,
+          "systemMs": 30,
+          "peakRssKiB": 198736
+        },
+        "session_fork": {
+          "ms": 319.94679200000246,
+          "firstMs": 310.91262500000084,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 209152
+        },
+        "session_import": {
+          "ms": 300.0607920000002,
+          "firstMs": 279.47941699999865,
+          "userMs": 360,
+          "systemMs": 30,
+          "peakRssKiB": 193648
+        },
+        "tools_7": {
+          "ms": 384.33945799999856,
+          "firstMs": 269.84979100000055,
+          "userMs": 520,
+          "systemMs": 40,
+          "peakRssKiB": 237168
+        },
+        "tools_300_files": {
+          "ms": 438.2206670000014,
+          "firstMs": 273.59491700000217,
+          "userMs": 570,
+          "systemMs": 70,
+          "peakRssKiB": 288144
+        },
+        "image_2200x1200": {
+          "ms": 530.1795829999974,
+          "firstMs": 493.3128749999996,
+          "userMs": 670,
+          "systemMs": 40,
+          "peakRssKiB": 317216
+        },
+        "idle": {
+          "rssKiB": 189536
+        },
+        "mcp_turn": {
+          "ms": 339.5149590000001,
+          "firstMs": 284.8517090000023,
+          "userMs": 460,
+          "systemMs": 40,
+          "peakRssKiB": 216240
+        },
+        "cancel": {
+          "cancelMs": 20.240459000000556,
+          "totalMs": 341.9289580000004
+        }
+      },
+      {
+        "help": {
+          "ms": 215.78899999999703,
+          "firstMs": 213.7546250000014,
+          "userMs": 250,
+          "systemMs": 10,
+          "peakRssKiB": 154400
+        },
+        "simple_turn": {
+          "ms": 1311.885291999999,
+          "firstMs": 273.2050420000014,
+          "userMs": 450,
+          "systemMs": 80,
+          "peakRssKiB": 202960
+        },
+        "large_prompt_66kb": {
+          "ms": 676.0147920000018,
+          "firstMs": 633.6076250000042,
+          "userMs": 580,
+          "systemMs": 70,
+          "peakRssKiB": 197968
+        },
+        "resume": {
+          "ms": 316.26062499999534,
+          "firstMs": 286.4024999999965,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 204912
+        },
+        "session_list": {
+          "ms": 251.0638340000005,
+          "firstMs": 244.37733399999706,
+          "userMs": 300,
+          "systemMs": 20,
+          "peakRssKiB": 171328
+        },
+        "session_export": {
+          "ms": 304.1448750000054,
+          "firstMs": 290.19795900000463,
+          "userMs": 380,
+          "systemMs": 30,
+          "peakRssKiB": 199200
+        },
+        "session_fork": {
+          "ms": 314.9647910000058,
+          "firstMs": 305.4002910000054,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 210400
+        },
+        "session_import": {
+          "ms": 317.0839999999953,
+          "firstMs": 300.6404580000017,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 193984
+        },
+        "tools_7": {
+          "ms": 386.01487500000076,
+          "firstMs": 273.2543750000041,
+          "userMs": 520,
+          "systemMs": 40,
+          "peakRssKiB": 237040
+        },
+        "tools_300_files": {
+          "ms": 432.29270800000086,
+          "firstMs": 271.88324999999895,
+          "userMs": 580,
+          "systemMs": 60,
+          "peakRssKiB": 287552
+        },
+        "image_2200x1200": {
+          "ms": 537.6915420000005,
+          "firstMs": 495.521084,
+          "userMs": 680,
+          "systemMs": 50,
+          "peakRssKiB": 311584
+        },
+        "idle": {
+          "rssKiB": 189712
+        },
+        "mcp_turn": {
+          "ms": 345.36370799999713,
+          "firstMs": 284.9985830000005,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 216272
+        },
+        "cancel": {
+          "cancelMs": 19.9385839999959,
+          "totalMs": 351.41649999999936
+        }
+      },
+      {
+        "help": {
+          "ms": 216.0789169999989,
+          "firstMs": 213.91495900000155,
+          "userMs": 260,
+          "systemMs": 10,
+          "peakRssKiB": 153760
+        },
+        "simple_turn": {
+          "ms": 1335.2434589999975,
+          "firstMs": 290.70100000000093,
+          "userMs": 470,
+          "systemMs": 90,
+          "peakRssKiB": 202704
+        },
+        "large_prompt_66kb": {
+          "ms": 331.56466699999874,
+          "firstMs": 294.55337500000314,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 202256
+        },
+        "resume": {
+          "ms": 312.129875000006,
+          "firstMs": 281.226333000006,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 204592
+        },
+        "session_list": {
+          "ms": 246.40370900000562,
+          "firstMs": 240.7794170000052,
+          "userMs": 290,
+          "systemMs": 20,
+          "peakRssKiB": 170896
+        },
+        "session_export": {
+          "ms": 320.3975829999981,
+          "firstMs": 306.96441600000253,
+          "userMs": 400,
+          "systemMs": 40,
+          "peakRssKiB": 197600
+        },
+        "session_fork": {
+          "ms": 697.757749999997,
+          "firstMs": 564.5114160000012,
+          "userMs": 470,
+          "systemMs": 70,
+          "peakRssKiB": 207216
+        },
+        "session_import": {
+          "ms": 486.5184999999983,
+          "firstMs": 475.60445799999434,
+          "userMs": 460,
+          "systemMs": 50,
+          "peakRssKiB": 187728
+        },
+        "tools_7": {
+          "ms": 442.46162500000355,
+          "firstMs": 309.8064999999988,
+          "userMs": 580,
+          "systemMs": 60,
+          "peakRssKiB": 238032
+        },
+        "tools_300_files": {
+          "ms": 471.82241700000304,
+          "firstMs": 307.67683399999805,
+          "userMs": 630,
+          "systemMs": 80,
+          "peakRssKiB": 290976
+        },
+        "image_2200x1200": {
+          "ms": 537.2807919999977,
+          "firstMs": 500.0732500000013,
+          "userMs": 690,
+          "systemMs": 40,
+          "peakRssKiB": 319936
+        },
+        "idle": {
+          "rssKiB": 190336
+        },
+        "mcp_turn": {
+          "ms": 346.18237500000396,
+          "firstMs": 288.00554099999863,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 216480
+        },
+        "cancel": {
+          "cancelMs": 20.811125000000175,
+          "totalMs": 350.12720800000534
+        }
+      },
+      {
+        "help": {
+          "ms": 300.20708300000115,
+          "firstMs": 297.189916000003,
+          "userMs": 260,
+          "systemMs": 50,
+          "peakRssKiB": 154752
+        },
+        "simple_turn": {
+          "ms": 324.86454200001026,
+          "firstMs": 286.4275830000115,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 203952
+        },
+        "large_prompt_66kb": {
+          "ms": 312.00495799999044,
+          "firstMs": 274.45379099999263,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 202992
+        },
+        "resume": {
+          "ms": 319.76091699999233,
+          "firstMs": 285.4554999999964,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 205360
+        },
+        "session_list": {
+          "ms": 246.50274999999965,
+          "firstMs": 240.83487500000047,
+          "userMs": 290,
+          "systemMs": 20,
+          "peakRssKiB": 171184
+        },
+        "session_export": {
+          "ms": 343.5525409999973,
+          "firstMs": 333.62154100000043,
+          "userMs": 380,
+          "systemMs": 30,
+          "peakRssKiB": 197376
+        },
+        "session_fork": {
+          "ms": 315.39166699998896,
+          "firstMs": 306.8528329999972,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 209568
+        },
+        "session_import": {
+          "ms": 307.85779199999524,
+          "firstMs": 287.679667000004,
+          "userMs": 370,
+          "systemMs": 30,
+          "peakRssKiB": 192960
+        },
+        "tools_7": {
+          "ms": 401.45875000000524,
+          "firstMs": 283.833375000002,
+          "userMs": 530,
+          "systemMs": 50,
+          "peakRssKiB": 237952
+        },
+        "tools_300_files": {
+          "ms": 435.21191699999326,
+          "firstMs": 277.940208,
+          "userMs": 590,
+          "systemMs": 70,
+          "peakRssKiB": 286112
+        },
+        "image_2200x1200": {
+          "ms": 536.5982910000021,
+          "firstMs": 498.05441599999904,
+          "userMs": 690,
+          "systemMs": 40,
+          "peakRssKiB": 319696
+        },
+        "idle": {
+          "rssKiB": 189184
+        },
+        "mcp_turn": {
+          "ms": 344.86149999999907,
+          "firstMs": 287.8683749999909,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 215920
+        },
+        "cancel": {
+          "cancelMs": 22.00487499999872,
+          "totalMs": 399.0816659999982
+        }
+      },
+      {
+        "help": {
+          "ms": 232.11204199999338,
+          "firstMs": 229.8347919999942,
+          "userMs": 260,
+          "systemMs": 10,
+          "peakRssKiB": 153264
+        },
+        "simple_turn": {
+          "ms": 314.5902090000018,
+          "firstMs": 278.9348339999997,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 202576
+        },
+        "large_prompt_66kb": {
+          "ms": 313.61233300001186,
+          "firstMs": 277.0227500000037,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 203536
+        },
+        "resume": {
+          "ms": 316.86987500000396,
+          "firstMs": 285.81900000000314,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 204176
+        },
+        "session_list": {
+          "ms": 250.49975000000268,
+          "firstMs": 243.52254199999152,
+          "userMs": 290,
+          "systemMs": 20,
+          "peakRssKiB": 171200
+        },
+        "session_export": {
+          "ms": 313.85899999999674,
+          "firstMs": 294.83920899999794,
+          "userMs": 380,
+          "systemMs": 30,
+          "peakRssKiB": 199440
+        },
+        "session_fork": {
+          "ms": 328.97900000000664,
+          "firstMs": 307.69529099999636,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 209760
+        },
+        "session_import": {
+          "ms": 308.5492080000113,
+          "firstMs": 289.2890410000109,
+          "userMs": 370,
+          "systemMs": 30,
+          "peakRssKiB": 192656
+        },
+        "tools_7": {
+          "ms": 423.5807919999934,
+          "firstMs": 295.17724999999336,
+          "userMs": 560,
+          "systemMs": 60,
+          "peakRssKiB": 239680
+        },
+        "tools_300_files": {
+          "ms": 454.1539579999953,
+          "firstMs": 282.87504099999205,
+          "userMs": 600,
+          "systemMs": 80,
+          "peakRssKiB": 288112
+        },
+        "image_2200x1200": {
+          "ms": 570.2967499999941,
+          "firstMs": 527.005833999996,
+          "userMs": 710,
+          "systemMs": 60,
+          "peakRssKiB": 317072
+        },
+        "idle": {
+          "rssKiB": 189344
+        },
+        "mcp_turn": {
+          "ms": 346.3612080000021,
+          "firstMs": 290.34441599999263,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 217328
+        },
+        "cancel": {
+          "cancelMs": 20.659249999996973,
+          "totalMs": 350.8489580000023
+        }
+      },
+      {
+        "help": {
+          "ms": 305.66195799999696,
+          "firstMs": 301.76087499999267,
+          "userMs": 260,
+          "systemMs": 40,
+          "peakRssKiB": 154480
+        },
+        "simple_turn": {
+          "ms": 329.3895419999899,
+          "firstMs": 291.6763329999958,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 202608
+        },
+        "large_prompt_66kb": {
+          "ms": 314.8090000000084,
+          "firstMs": 277.5485000000044,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 201440
+        },
+        "resume": {
+          "ms": 318.8060830000031,
+          "firstMs": 286.31029199999466,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 204848
+        },
+        "session_list": {
+          "ms": 245.66066700000374,
+          "firstMs": 238.86354200000642,
+          "userMs": 290,
+          "systemMs": 20,
+          "peakRssKiB": 170400
+        },
+        "session_export": {
+          "ms": 300.70900000000256,
+          "firstMs": 290.79654100000334,
+          "userMs": 380,
+          "systemMs": 30,
+          "peakRssKiB": 198032
+        },
+        "session_fork": {
+          "ms": 341.40800000001036,
+          "firstMs": 307.7051250000077,
+          "userMs": 400,
+          "systemMs": 40,
+          "peakRssKiB": 210336
+        },
+        "session_import": {
+          "ms": 303.76566699999967,
+          "firstMs": 283.0667919999978,
+          "userMs": 370,
+          "systemMs": 30,
+          "peakRssKiB": 193232
+        },
+        "tools_7": {
+          "ms": 395.73004100000253,
+          "firstMs": 277.8321250000008,
+          "userMs": 530,
+          "systemMs": 50,
+          "peakRssKiB": 238848
+        },
+        "tools_300_files": {
+          "ms": 434.1748340000049,
+          "firstMs": 278.76541700000234,
+          "userMs": 590,
+          "systemMs": 70,
+          "peakRssKiB": 286992
+        },
+        "image_2200x1200": {
+          "ms": 653.8618339999957,
+          "firstMs": 611.6057500000024,
+          "userMs": 710,
+          "systemMs": 60,
+          "peakRssKiB": 314304
+        },
+        "idle": {
+          "rssKiB": 189472
+        },
+        "mcp_turn": {
+          "ms": 344.8171250000014,
+          "firstMs": 288.7305420000048,
+          "userMs": 470,
+          "systemMs": 40,
+          "peakRssKiB": 215808
+        },
+        "cancel": {
+          "cancelMs": 20.02812499999709,
+          "totalMs": 340.69637499999953
+        }
+      },
+      {
+        "help": {
+          "ms": 218.60100000000966,
+          "firstMs": 216.4580419999984,
+          "userMs": 260,
+          "systemMs": 10,
+          "peakRssKiB": 154496
+        },
+        "simple_turn": {
+          "ms": 323.86062500000116,
+          "firstMs": 285.19800000000396,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 201568
+        },
+        "large_prompt_66kb": {
+          "ms": 336.1554579999938,
+          "firstMs": 295.3881249999977,
+          "userMs": 410,
+          "systemMs": 30,
+          "peakRssKiB": 203072
+        },
+        "resume": {
+          "ms": 354.1628750000091,
+          "firstMs": 317.2863329999964,
+          "userMs": 440,
+          "systemMs": 40,
+          "peakRssKiB": 206176
+        },
+        "session_list": {
+          "ms": 257.908958,
+          "firstMs": 251.90779199999815,
+          "userMs": 300,
+          "systemMs": 20,
+          "peakRssKiB": 170800
+        },
+        "session_export": {
+          "ms": 431.9372500000027,
+          "firstMs": 417.16808299999684,
+          "userMs": 430,
+          "systemMs": 50,
+          "peakRssKiB": 192864
+        },
+        "session_fork": {
+          "ms": 353.38295800000196,
+          "firstMs": 331.06454099999974,
+          "userMs": 410,
+          "systemMs": 40,
+          "peakRssKiB": 209952
+        },
+        "session_import": {
+          "ms": 316.1033749999915,
+          "firstMs": 293.90691700000025,
+          "userMs": 370,
+          "systemMs": 30,
+          "peakRssKiB": 192416
+        },
+        "tools_7": {
+          "ms": 405.1221669999941,
+          "firstMs": 280.5804999999964,
+          "userMs": 530,
+          "systemMs": 50,
+          "peakRssKiB": 239280
+        },
+        "tools_300_files": {
+          "ms": 433.7855000000127,
+          "firstMs": 273.5639160000137,
+          "userMs": 580,
+          "systemMs": 70,
+          "peakRssKiB": 286416
+        },
+        "image_2200x1200": {
+          "ms": 530.978833000001,
+          "firstMs": 493.2802920000104,
+          "userMs": 680,
+          "systemMs": 40,
+          "peakRssKiB": 319328
+        },
+        "idle": {
+          "rssKiB": 189664
+        },
+        "mcp_turn": {
+          "ms": 361.49187499999243,
+          "firstMs": 304.39162500000384,
+          "userMs": 500,
+          "systemMs": 40,
+          "peakRssKiB": 216096
+        },
+        "cancel": {
+          "cancelMs": 19.93445800000336,
+          "totalMs": 339.99037499999395
+        }
+      },
+      {
+        "help": {
+          "ms": 213.16675000000396,
+          "firstMs": 211.08854100000462,
+          "userMs": 250,
+          "systemMs": 10,
+          "peakRssKiB": 153872
+        },
+        "simple_turn": {
+          "ms": 310.68487499999173,
+          "firstMs": 274.7158749999944,
+          "userMs": 380,
+          "systemMs": 30,
+          "peakRssKiB": 202816
+        },
+        "large_prompt_66kb": {
+          "ms": 306.45587499999965,
+          "firstMs": 270.20437500000116,
+          "userMs": 380,
+          "systemMs": 30,
+          "peakRssKiB": 203008
+        },
+        "resume": {
+          "ms": 309.4901669999963,
+          "firstMs": 278.86833299999125,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 204320
+        },
+        "session_list": {
+          "ms": 239.8877499999944,
+          "firstMs": 234.21645799999533,
+          "userMs": 290,
+          "systemMs": 10,
+          "peakRssKiB": 170512
+        },
+        "session_export": {
+          "ms": 287.7591669999965,
+          "firstMs": 277.86212499999965,
+          "userMs": 370,
+          "systemMs": 20,
+          "peakRssKiB": 198448
+        },
+        "session_fork": {
+          "ms": 306.7752920000057,
+          "firstMs": 298.309792,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 209248
+        },
+        "session_import": {
+          "ms": 297.8332500000106,
+          "firstMs": 276.5899580000114,
+          "userMs": 360,
+          "systemMs": 30,
+          "peakRssKiB": 193456
+        },
+        "tools_7": {
+          "ms": 381.4890000000014,
+          "firstMs": 269.62154100000043,
+          "userMs": 510,
+          "systemMs": 40,
+          "peakRssKiB": 237200
+        },
+        "tools_300_files": {
+          "ms": 425.05495900000096,
+          "firstMs": 272.99404199999117,
+          "userMs": 570,
+          "systemMs": 70,
+          "peakRssKiB": 290496
+        },
+        "image_2200x1200": {
+          "ms": 519.5926660000114,
+          "firstMs": 483.7365410000057,
+          "userMs": 670,
+          "systemMs": 40,
+          "peakRssKiB": 315184
+        },
+        "idle": {
+          "rssKiB": 189392
+        },
+        "mcp_turn": {
+          "ms": 334.0250420000084,
+          "firstMs": 278.5268330000108,
+          "userMs": 460,
+          "systemMs": 40,
+          "peakRssKiB": 215920
+        },
+        "cancel": {
+          "cancelMs": 19.778916999988724,
+          "totalMs": 338.5696250000037
+        }
+      },
+      {
+        "help": {
+          "ms": 211.92883400000574,
+          "firstMs": 209.752542000002,
+          "userMs": 250,
+          "systemMs": 10,
+          "peakRssKiB": 154096
+        },
+        "simple_turn": {
+          "ms": 310.26699999999255,
+          "firstMs": 275.0905839999905,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 201376
+        },
+        "large_prompt_66kb": {
+          "ms": 307.841499999995,
+          "firstMs": 271.13466699999117,
+          "userMs": 380,
+          "systemMs": 30,
+          "peakRssKiB": 202896
+        },
+        "resume": {
+          "ms": 310.6959579999966,
+          "firstMs": 280.07391700000153,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 204512
+        },
+        "session_list": {
+          "ms": 240.4256660000101,
+          "firstMs": 234.9344160000037,
+          "userMs": 290,
+          "systemMs": 20,
+          "peakRssKiB": 170464
+        },
+        "session_export": {
+          "ms": 297.46329200000037,
+          "firstMs": 287.28795899999386,
+          "userMs": 380,
+          "systemMs": 30,
+          "peakRssKiB": 197968
+        },
+        "session_fork": {
+          "ms": 307.5908749999944,
+          "firstMs": 298.2192919999943,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 210384
+        },
+        "session_import": {
+          "ms": 299.04170899999735,
+          "firstMs": 278.4432919999963,
+          "userMs": 360,
+          "systemMs": 30,
+          "peakRssKiB": 193408
+        },
+        "tools_7": {
+          "ms": 695.179999999993,
+          "firstMs": 439.53037499998754,
+          "userMs": 720,
+          "systemMs": 90,
+          "peakRssKiB": 231712
+        },
+        "tools_300_files": {
+          "ms": 588.5984170000011,
+          "firstMs": 419.18279199999233,
+          "userMs": 670,
+          "systemMs": 90,
+          "peakRssKiB": 285952
+        },
+        "image_2200x1200": {
+          "ms": 556.2240420000016,
+          "firstMs": 510.55799999999,
+          "userMs": 690,
+          "systemMs": 50,
+          "peakRssKiB": 311888
+        },
+        "idle": {
+          "rssKiB": 190464
+        },
+        "mcp_turn": {
+          "ms": 338.9002499999915,
+          "firstMs": 283.70674999999756,
+          "userMs": 460,
+          "systemMs": 40,
+          "peakRssKiB": 217024
+        },
+        "cancel": {
+          "cancelMs": 19.85733299999265,
+          "totalMs": 330.4292080000014
+        }
+      },
+      {
+        "help": {
+          "ms": 269.9734999999928,
+          "firstMs": 267.6925420000043,
+          "userMs": 250,
+          "systemMs": 40,
+          "peakRssKiB": 153776
+        },
+        "simple_turn": {
+          "ms": 311.5409579999978,
+          "firstMs": 276.26962499998626,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 201616
+        },
+        "large_prompt_66kb": {
+          "ms": 1318.7856670000183,
+          "firstMs": 272.4696670000267,
+          "userMs": 450,
+          "systemMs": 110,
+          "peakRssKiB": 203552
+        },
+        "resume": {
+          "ms": 334.48024999999325,
+          "firstMs": 303.85241700001643,
+          "userMs": 410,
+          "systemMs": 30,
+          "peakRssKiB": 204720
+        },
+        "session_list": {
+          "ms": 240.08333399999538,
+          "firstMs": 234.39387499997974,
+          "userMs": 290,
+          "systemMs": 20,
+          "peakRssKiB": 170832
+        },
+        "session_export": {
+          "ms": 287.80475000001024,
+          "firstMs": 277.66687499999534,
+          "userMs": 370,
+          "systemMs": 20,
+          "peakRssKiB": 196976
+        },
+        "session_fork": {
+          "ms": 306.28920800000196,
+          "firstMs": 297.8199580000073,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 210240
+        },
+        "session_import": {
+          "ms": 297.7247920000227,
+          "firstMs": 277.29025000002,
+          "userMs": 360,
+          "systemMs": 30,
+          "peakRssKiB": 193568
+        },
+        "tools_7": {
+          "ms": 385.06716700000106,
+          "firstMs": 272.002084000007,
+          "userMs": 510,
+          "systemMs": 40,
+          "peakRssKiB": 236544
+        },
+        "tools_300_files": {
+          "ms": 425.0212499999907,
+          "firstMs": 272.8375829999859,
+          "userMs": 580,
+          "systemMs": 70,
+          "peakRssKiB": 287072
+        },
+        "image_2200x1200": {
+          "ms": 523.052291,
+          "firstMs": 485.18437499998254,
+          "userMs": 670,
+          "systemMs": 40,
+          "peakRssKiB": 319600
+        },
+        "idle": {
+          "rssKiB": 189648
+        },
+        "mcp_turn": {
+          "ms": 334.6888329999929,
+          "firstMs": 280.21858300000895,
+          "userMs": 460,
+          "systemMs": 40,
+          "peakRssKiB": 215824
+        },
+        "cancel": {
+          "cancelMs": 19.59816600001068,
+          "totalMs": 330.20825000002515
+        }
+      },
+      {
+        "help": {
+          "ms": 213.34999999997672,
+          "firstMs": 211.1639579999901,
+          "userMs": 250,
+          "systemMs": 10,
+          "peakRssKiB": 153920
+        },
+        "simple_turn": {
+          "ms": 356.2357909999846,
+          "firstMs": 273.46495799999684,
+          "userMs": 380,
+          "systemMs": 30,
+          "peakRssKiB": 202320
+        },
+        "large_prompt_66kb": {
+          "ms": 1317.265458000009,
+          "firstMs": 271.47416599999997,
+          "userMs": 450,
+          "systemMs": 100,
+          "peakRssKiB": 203776
+        },
+        "resume": {
+          "ms": 328.80937500001164,
+          "firstMs": 298.29649999999674,
+          "userMs": 400,
+          "systemMs": 30,
+          "peakRssKiB": 204944
+        },
+        "session_list": {
+          "ms": 248.38683400000446,
+          "firstMs": 242.28095899999607,
+          "userMs": 290,
+          "systemMs": 20,
+          "peakRssKiB": 170352
+        },
+        "session_export": {
+          "ms": 343.09887499999604,
+          "firstMs": 329.90012499998556,
+          "userMs": 420,
+          "systemMs": 40,
+          "peakRssKiB": 197824
+        },
+        "session_fork": {
+          "ms": 351.6151250000112,
+          "firstMs": 340.8632079999952,
+          "userMs": 410,
+          "systemMs": 40,
+          "peakRssKiB": 209744
+        },
+        "session_import": {
+          "ms": 299.43966699999874,
+          "firstMs": 279.15970899999957,
+          "userMs": 360,
+          "systemMs": 30,
+          "peakRssKiB": 193136
+        },
+        "tools_7": {
+          "ms": 400.4380840000231,
+          "firstMs": 273.726250000007,
+          "userMs": 520,
+          "systemMs": 50,
+          "peakRssKiB": 237936
+        },
+        "tools_300_files": {
+          "ms": 428.85391700000037,
+          "firstMs": 272.8393339999893,
+          "userMs": 570,
+          "systemMs": 70,
+          "peakRssKiB": 286864
+        },
+        "image_2200x1200": {
+          "ms": 529.419957999984,
+          "firstMs": 489.33720799998264,
+          "userMs": 680,
+          "systemMs": 40,
+          "peakRssKiB": 319008
+        },
+        "idle": {
+          "rssKiB": 190704
+        },
+        "mcp_turn": {
+          "ms": 341.99420800001826,
+          "firstMs": 284.062042000005,
+          "userMs": 460,
+          "systemMs": 40,
+          "peakRssKiB": 216544
+        },
+        "cancel": {
+          "cancelMs": 20.022166999988258,
+          "totalMs": 339.082000000024
+        }
+      },
+      {
+        "help": {
+          "ms": 318.43029200000456,
+          "firstMs": 315.6880419999943,
+          "userMs": 250,
+          "systemMs": 40,
+          "peakRssKiB": 154592
+        },
+        "simple_turn": {
+          "ms": 325.69583399998373,
+          "firstMs": 288.3482919999806,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 201696
+        },
+        "large_prompt_66kb": {
+          "ms": 306.36766699998407,
+          "firstMs": 269.64112499999464,
+          "userMs": 380,
+          "systemMs": 30,
+          "peakRssKiB": 203424
+        },
+        "resume": {
+          "ms": 305.85241700001643,
+          "firstMs": 275.44633299999987,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 204064
+        },
+        "session_list": {
+          "ms": 243.3454170000041,
+          "firstMs": 237.41224999999395,
+          "userMs": 290,
+          "systemMs": 20,
+          "peakRssKiB": 170528
+        },
+        "session_export": {
+          "ms": 287.99566700001014,
+          "firstMs": 278.22704199998407,
+          "userMs": 360,
+          "systemMs": 20,
+          "peakRssKiB": 197840
+        },
+        "session_fork": {
+          "ms": 311.8649999999907,
+          "firstMs": 302.8031669999764,
+          "userMs": 390,
+          "systemMs": 30,
+          "peakRssKiB": 209664
+        },
+        "session_import": {
+          "ms": 297.2131669999799,
+          "firstMs": 276.56387499999255,
+          "userMs": 360,
+          "systemMs": 30,
+          "peakRssKiB": 193408
+        },
+        "tools_7": {
+          "ms": 390.4727090000233,
+          "firstMs": 272.6317090000084,
+          "userMs": 520,
+          "systemMs": 50,
+          "peakRssKiB": 238192
+        },
+        "tools_300_files": {
+          "ms": 428.2991660000116,
+          "firstMs": 271.6987500000105,
+          "userMs": 570,
+          "systemMs": 70,
+          "peakRssKiB": 287984
+        },
+        "image_2200x1200": {
+          "ms": 530.0137089999916,
+          "firstMs": 493.89037500001723,
+          "userMs": 670,
+          "systemMs": 40,
+          "peakRssKiB": 312512
+        },
+        "idle": {
+          "rssKiB": 190272
+        },
+        "mcp_turn": {
+          "ms": 563.5257500000007,
+          "firstMs": 484.5936250000086,
+          "userMs": 590,
+          "systemMs": 70,
+          "peakRssKiB": 204864
+        },
+        "cancel": {
+          "cancelMs": 20.1644999999844,
+          "totalMs": 361.73191699999734
+        }
+      }
+    ]
+  }
+}

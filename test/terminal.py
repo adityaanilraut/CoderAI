@@ -9,7 +9,7 @@ if pid==0:
     os.chdir(spec['cwd'])
     if 'executable' in spec:
         os.execve(spec['executable'],[spec['executable']]+spec.get('args',[]),spec['env'])
-    os.execve(spec['node'],[spec['node'],spec['cli']]+spec.get('args',[]),spec['env'])
+    os.execvpe(spec['node'],[spec['node'],spec['cli']]+spec.get('args',[]),spec['env'])
 os.close(state_write)
 original_flags=int(os.read(state_read,64))
 os.close(state_read)

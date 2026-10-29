@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { fileURLToPath } from 'node:url';
-import { getAsset, isSea } from 'node:sea';
+import { getAsset, isSea } from './sea.js';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +20,8 @@ if (isSea()) {
   writeFileSync(workerPath, Buffer.from(getAsset('text-build-worker.mjs')));
   process.on('exit', () => rmSync(workerDir, { recursive: true, force: true }));
   configureTextBuildWorkerRuntime(workerPath);
+} else if ((globalThis as typeof globalThis & { __coderaiBunWorker?: string }).__coderaiBunWorker) {
+  configureTextBuildWorkerRuntime((globalThis as typeof globalThis & { __coderaiBunWorker: string }).__coderaiBunWorker);
 } else {
   configureTextBuildWorkerRuntime(fileURLToPath(new URL('./text-build-worker.mjs', import.meta.url)));
 }
