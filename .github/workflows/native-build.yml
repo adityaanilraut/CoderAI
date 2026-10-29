@@ -1,0 +1,50 @@
+name: Build standalone CLI
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+          - os: macos-15-intel
+            target: darwin-x64
+          - os: macos-15
+            target: darwin-arm64
+          - os: windows-2025
+            target: win32-x64
+          - os: windows-11-arm
+            target: win32-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - if: runner.os == 'macOS'
+        run: brew install ripgrep
+      - run: pnpm build:native
+      - if: runner.os != 'Windows'
+        run: node --test test/native.test.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coderai-${{ matrix.target }}
+          path: |
+            dist-native/coderai-${{ matrix.target }}.zip
+            dist-native/coderai-${{ matrix.target }}.zip.sha256
+          if-no-files-found: error

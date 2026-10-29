@@ -1,0 +1,87 @@
+{
+  "name": "coderai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "coderai": "dist/coderai.mjs"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "node scripts/build.mjs",
+    "dev": "pnpm build && node dist/coderai.mjs",
+    "start": "node dist/coderai.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm build && node --test test/*.test.mjs",
+    "build:native": "node scripts/build-native.mjs"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.15.3",
+    "@types/picomatch": "^4.0.3",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/retry": "0.12.0",
+    "@types/semver": "^7.7.0",
+    "@types/tar": "^7.0.87",
+    "@types/ws": "^8.18.0",
+    "@types/yauzl": "^2.10.3",
+    "@types/yazl": "^2.4.6",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.21.0",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@antfu/utils": "^9.3.0",
+    "@anthropic-ai/sdk": "^0.95.2",
+    "@google/genai": "^1.49.0",
+    "@jsquash/webp": "^1.5.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@mozilla/readability": "^0.6.0",
+    "ajv": "^8.18.0",
+    "ajv-formats": "^3.0.1",
+    "chalk": "^5.4.1",
+    "chokidar": "^4.0.3",
+    "cli-highlight": "^2.1.11",
+    "commander": "^13.1.0",
+    "get-east-asian-width": "1.6.0",
+    "ignore": "^5.3.2",
+    "immer": "^11.1.0",
+    "jimp": "^1.6.1",
+    "js-yaml": "^4.1.1",
+    "linkedom": "^0.18.12",
+    "marked": "18.0.11",
+    "openai": "^6.34.0",
+    "pathe": "^2.0.3",
+    "picomatch": "^4.0.4",
+    "proper-lockfile": "^4.1.2",
+    "radashi": "^12.9.1",
+    "retry": "0.13.1",
+    "semver": "^7.7.4",
+    "smol-toml": "^1.6.1",
+    "socks": "^2.8.9",
+    "tar": "^7.5.13",
+    "ulid": "^3.0.1",
+    "undici": "^7.27.1",
+    "ws": "^8.18.0",
+    "xstate": "^5.32.5",
+    "yauzl": "^3.3.0",
+    "yazl": "^3.3.1",
+    "zod": "^4.3.6",
+    "zod-to-json-schema": "^3.25.2"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "packages/pi-tui/LICENSE"
+  ],
+  "optionalDependencies": {
+    "@mariozechner/clipboard": "0.3.9"
+  }
+}

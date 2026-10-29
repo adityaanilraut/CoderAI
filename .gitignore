@@ -1,0 +1,17 @@
+# Dependencies and package-manager caches
+node_modules/
+.pnpm-store/
+
+# Generated output and temporary files
+dist/
+dist-native/
+.tmp/
+coverage/
+*.log
+
+# Local application data, environment files, and OS metadata
+.coderai/
+.env
+.env.*
+!.env.example
+.DS_Store

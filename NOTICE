@@ -1,0 +1,25 @@
+CoderAI contains adapted source from Kimi Code by Moonshot AI:
+https://github.com/MoonshotAI/kimi-code
+Copyright (c) 2026 Moonshot AI. Licensed under the MIT License; see LICENSE.
+The implementation foundation was the user-provided kimi-code-main checkout.
+
+The retained pi-tui library is Moonshot AI's fork of earendil-works/pi:
+https://github.com/earendil-works/pi
+Copyright (c) 2025 Mario Zechner. Licensed under the MIT License;
+see packages/pi-tui/LICENSE (also dist/LICENSE.pi-tui in the built output).
+
+The embedded WebP decoder comes from @jsquash/webp, copyright 2023
+jamsinclair, Apache-2.0, and includes libwebp, distributed under its BSD
+license. See third-party-licenses/ in the source distribution and the
+corresponding LICENSE.jsquash-webp and LICENSE.libwebp files in dist/.
+
+Standalone builds include the @mariozechner/clipboard native binding, an
+MIT-licensed fork of @crosscopy/clipboard. Source and license information:
+https://github.com/badlogic/clipboard and https://github.com/CrossCopy/clipboard.
+
+CoderAI adapts the terminal host, application identity and storage defaults,
+startup probing, default approval policy, built-in product skills, prompt
+wording and packaging. Provider names, OAuth identifiers and persisted Kimi
+engine formats are retained for compatibility. The original checkout is not
+needed at build time or runtime. External npm dependencies retain their own
+licenses in their installed packages.
