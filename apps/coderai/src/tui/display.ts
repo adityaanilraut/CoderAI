@@ -1,22 +1,5 @@
 import type { ToolInputDisplay } from '@coderai/sdk';
-
-function previewDiff(before: string, after: string): string {
-  const oldLines = before.split('\n');
-  const newLines = after.split('\n');
-  let start = 0;
-  while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start++;
-  let end = 0;
-  while (end < oldLines.length - start && end < newLines.length - start && oldLines[oldLines.length - 1 - end] === newLines[newLines.length - 1 - end]) end++;
-  if (start === oldLines.length && start === newLines.length) return '(No changes)';
-  const contextStart = Math.max(0, start - 3);
-  return [
-    `@@ line ${start + 1} @@`,
-    ...oldLines.slice(contextStart, start).map(line => `  ${line}`),
-    ...oldLines.slice(start, oldLines.length - end).map(line => `- ${line}`),
-    ...newLines.slice(start, newLines.length - end).map(line => `+ ${line}`),
-    ...newLines.slice(newLines.length - end, newLines.length - end + Math.min(3, end)).map(line => `  ${line}`),
-  ].join('\n');
-}
+import { previewDiff } from './diff.js';
 
 export function describeGoal(goal: { objective: string; status: string; turnsUsed: number; tokensUsed: number } | null | undefined): string {
   return goal ? `${goal.objective}\nStatus: ${goal.status} · turns ${goal.turnsUsed} · tokens ${goal.tokensUsed}` : 'No active goal.';

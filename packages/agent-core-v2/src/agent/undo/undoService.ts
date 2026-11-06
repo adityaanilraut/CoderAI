@@ -38,6 +38,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ForkLineError, IWireService } from '#/wire/wire';
 
 import { IAgentConversationUndoService, type UndoAvailability } from './undo';
+import { IAgentFileHistoryService } from '#/features/fileHistory/fileHistory';
 
 export class ContextUndone extends AgentEvent2<{
   readonly agentId: string;
@@ -78,6 +79,7 @@ export class AgentConversationUndoService
     @IWireService private readonly wire: IWireService,
     @ILogService private readonly log: ILogService,
     @ISessionRunGate private readonly runGate: ISessionRunGate,
+    @IAgentFileHistoryService private readonly fileHistory: IAgentFileHistoryService,
   ) {
     super();
   }
@@ -90,7 +92,7 @@ export class AgentConversationUndoService
     };
   }
 
-  async undo(turns: number): Promise<number> {
+  async undo(turns: number, options: { readonly revertFiles?: boolean } = {}): Promise<number> {
     if (!isValidUndoCount(turns)) {
       throw new Error2(
         ErrorCodes.REQUEST_INVALID,
@@ -98,7 +100,7 @@ export class AgentConversationUndoService
         { details: { field: 'count' } },
       );
     }
-    const run = this.undoQueue.then(() => this.undoNow(turns));
+    const run = this.undoQueue.then(() => this.undoNow(turns, options));
     this.undoQueue = run.then(
       () => undefined,
       () => undefined,
@@ -106,7 +108,7 @@ export class AgentConversationUndoService
     return run;
   }
 
-  private async undoNow(turns: number): Promise<number> {
+  private async undoNow(turns: number, options: { readonly revertFiles?: boolean }): Promise<number> {
     let quiescence: IDisposable | undefined;
     try {
       quiescence = this.loop.tryAcquireQuiescence();
@@ -124,9 +126,18 @@ export class AgentConversationUndoService
       this.runGate.begin();
       this.assertUndoAvailable(turns);
       const fromTurnId = this.removedFromTurnId(turns);
+      if (options.revertFiles && fromTurnId === undefined) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Cannot determine the pre-turn file snapshots. Withdraw prompts only instead.');
+      }
+      const restore = options.revertFiles ? await this.fileHistory.prepareRestoreTurnFiles(fromTurnId!) : undefined;
+      await restore?.apply();
       try {
         await this.wire.switchBranch({ turns, fromTurnId });
       } catch (error) {
+        if (restore) {
+          try { await restore.rollback(); }
+          catch (rollbackError) { throw new AggregateError([error, rollbackError], 'Undo failed and files could not be recovered. Inspect the workspace before retrying.'); }
+        }
         throw this.forkError(error, turns);
       }
       try {

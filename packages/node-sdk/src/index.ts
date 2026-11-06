@@ -108,6 +108,7 @@ export type {
 } from '#/flag';
 
 export {
+  mediaKindForPath,
   buildDaemonFileUrl,
   buildMediaPathTag,
   isDaemonFileUrl,
@@ -140,3 +141,9 @@ export { configureTextBuildWorkerRuntime } from '@coderai/minidb/worker-runtime'
 export { CoderaiHarness as KimiHarness } from '#/coderai-harness';
 export type { CoderaiHarnessRuntimeOptions as KimiHarnessRuntimeOptions } from '#/coderai-harness';
 export { createCoderaiHarness as createKimiHarness } from '#/sdk-rpc-client-v2';
+
+export { detectFileType, MEDIA_SNIFF_BYTES } from '@coderai/agent-core-v2/agent/media/file-type';
+export { McpServerConfigSchema } from '@coderai/agent-core-v2/mcpCore/config-schema';
+export type { UserToolRegistration, UserToolHandler, ToolCallRequest, ToolCallResponse } from '#/interaction';
+
+export type { TurnChanges, TurnFileDiff } from '#/types';

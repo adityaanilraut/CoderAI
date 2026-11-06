@@ -77,7 +77,7 @@ export interface ReadOptions {
 }
 
 export interface ImportMessage {
-  role: 'user';
+  role: 'user' | 'assistant';
   content: Array<{ type: 'text'; text: string }>;
 }
 

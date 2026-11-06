@@ -96,7 +96,7 @@ interface QuestionInteractionPayload {
 
 /** The v2 user-tool execution payload (`agent-core-v2/src/agent/userTool/userToolService.ts`). */
 interface UserToolInteractionPayload {
-  readonly turnId: number;
+  readonly turnId?: number;
   readonly toolCallId: string;
   readonly name: string;
   readonly args: unknown;
@@ -255,13 +255,19 @@ export class SessionEventWiring {
     const payload = interaction.payload as UserToolInteractionPayload;
     try {
       const result = await this.sink.toolCall({
+        sessionId: this.session.id,
+        agentId: interactionAgentId(interaction) ?? MAIN_AGENT_ID,
+        name: payload.name,
         turnId: payload.turnId,
         toolCallId: payload.toolCallId,
         args: payload.args,
       });
       interactions.respond(interaction.id, result);
-    } catch {
-      // See bridgeApproval.
+    } catch (error) {
+      interactions.respond(interaction.id, {
+        output: error instanceof Error ? error.message : String(error),
+        isError: true,
+      });
     }
   }
 }

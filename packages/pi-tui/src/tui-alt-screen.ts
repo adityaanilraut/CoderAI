@@ -524,6 +524,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 	}
 
+	/** Open transcript search from a host-specific shortcut. */
+	openTranscriptSearch(): void {
+		if (!this.activeSearch) this.toggleSearch();
+	}
+
 	private toggleSearch(): void {
 		if (this.activeSearch) {
 			this.closeSearch();

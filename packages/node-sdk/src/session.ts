@@ -9,6 +9,7 @@ import {
   type QuestionHandler,
   type StaleReloadHandler,
 } from '#/events';
+import type { UserToolHandler, UserToolRegistration } from '#/interaction';
 import type { SDKRpcClientBase } from '#/rpc';
 import type {
   AddAdditionalDirOptions,
@@ -90,6 +91,17 @@ export class Session {
   private readonly rpc: SDKRpcClientBase;
   private readonly onClose?: (() => void | Promise<void>) | undefined;
   private closed = false;
+
+  /** Register a custom tool on the active agent in this session. */
+  async registerTool(tool: UserToolRegistration, handler: UserToolHandler): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.registerTool(this.id, tool, handler);
+  }
+
+  async unregisterTool(name: string): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.unregisterTool(this.id, name);
+  }
 
   constructor(options: SessionOptions) {
     this.id = options.id;
@@ -410,9 +422,25 @@ export class Session {
     await this.rpc.cancelCompaction({ sessionId: this.id });
   }
 
-  async undoHistory(count: number = 1): Promise<void> {
+  async turnChanges(turnId?: number): Promise<import('#/types').TurnChanges> {
     this.ensureOpen();
-    await this.rpc.undoHistory({ sessionId: this.id, count });
+    return this.rpc.turnChanges({ sessionId: this.id, turnId });
+  }
+
+  async turnFileDiff(turnId: number, path: string): Promise<import('#/types').TurnFileDiff> {
+    this.ensureOpen();
+    return this.rpc.turnFileDiff({ sessionId: this.id, turnId, path });
+  }
+
+  /** Disconnect a live server; global configuration is managed by the harness. */
+  async removeMcpServer(name: string): Promise<boolean> {
+    this.ensureOpen();
+    return this.rpc.removeSessionMcpServer({ sessionId: this.id, name });
+  }
+
+  async undoHistory(count: number = 1, options: { revertFiles?: boolean } = {}): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.undoHistory({ sessionId: this.id, count, ...options });
   }
 
   /**
@@ -619,6 +647,11 @@ export class Session {
    * bounded session lifetime (e.g. `kimi -p`) poll this to decide whether
    * pending scheduled work still needs the process alive.
    */
+  async deleteCronTask(id: string): Promise<boolean> {
+    this.ensureOpen();
+    return this.rpc.deleteCronTask({ sessionId: this.id, id });
+  }
+
   async getCronTasks(): Promise<GetCronTasksResult> {
     this.ensureOpen();
     return this.rpc.getCronTasks({ sessionId: this.id });
@@ -847,6 +880,11 @@ function normalizePromptInput(input: string | PromptInput): PromptInput {
             ErrorCodes.REQUEST_PROMPT_INPUT_EMPTY,
             'Prompt input cannot contain empty image URLs',
           );
+        }
+        break;
+      case 'audio_url':
+        if (part.audioUrl.url.trim().length === 0) {
+          throw new KimiError(ErrorCodes.REQUEST_PROMPT_INPUT_EMPTY, 'Prompt input cannot contain empty audio URLs');
         }
         break;
       case 'video_url':

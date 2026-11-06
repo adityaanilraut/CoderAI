@@ -1,9 +1,0 @@
-packages:
-  - packages/*
-  - apps/*
-catalog:
-  zod: 4.3.6
-onlyBuiltDependencies:
-  - esbuild
-ignoredBuiltDependencies:
-  - protobufjs

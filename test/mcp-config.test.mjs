@@ -39,3 +39,22 @@ test('MCP CLI manages user configuration and preserves project configuration', {
   const invalid = await f.run(['mcp', 'add', 'invalid', configPath]);
   assert.equal(invalid.code, 1); assert.match(invalid.stderr, /JSON/);
 });
+
+test('MCP authorization validates URLs, forwards cancellation, and reconnects the active session', async () => {
+  const { authenticateMcpConfiguration } = await import('../apps/coderai/src/mcp-operations.ts');
+  const { browserUrl } = await import('../apps/coderai/src/browser.ts');
+  assert.throws(() => browserUrl('file:///tmp/secret'));
+  assert.throws(() => browserUrl('https://user:secret@example.test'));
+  const opened = []; let reconnected;
+  const runtime = { options: { cwd: '/original' }, session: { workDir: '/active', reconnectMcpServer: async name => { reconnected = name; } }, harness: {
+    authenticateMcpServer: async (name, options) => {
+      assert.equal(name, 'example'); assert.equal(options.cwd, '/active');
+      assert.ok(options.signal instanceof AbortSignal);
+      assert.equal(await options.onAuthorizationUrl('https://example.test/authorize'), true);
+    },
+  } };
+  await authenticateMcpConfiguration(runtime, 'example', { open: async url => { opened.push(url); return false; }, onUrl: () => {} });
+  assert.equal(reconnected, 'example'); assert.deepEqual(opened, ['https://example.test/authorize']);
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(authenticateMcpConfiguration(runtime, 'example', { signal: controller.signal }), { name: 'AbortError' });
+});

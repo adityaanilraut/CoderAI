@@ -42,6 +42,8 @@ export type McpStatusListener = (entry: McpServerEntry) => void;
 
 export interface McpConnectionView {
   readonly oauthService: McpOAuthService | undefined;
+  connect(name: string, config: McpServerConfig): Promise<void>;
+  remove(name: string): Promise<boolean>;
   list(): readonly McpServerEntry[];
   get(name: string): McpServerEntry | undefined;
   deferredOf(name: string): boolean;

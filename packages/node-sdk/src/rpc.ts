@@ -17,6 +17,8 @@ import type {
   QuestionResult,
   ToolCallRequest,
   ToolCallResponse,
+  UserToolHandler,
+  UserToolRegistration,
 } from '#/interaction';
 import type { BeginGlobalMcpServerAuthResult } from '#/mcp';
 import type {
@@ -382,7 +384,10 @@ export abstract class SDKRpcClientBase {
 
   abstract getTodos(input: SessionIdRpcInput): Promise<readonly SessionTodoItem[]>;
 
-  abstract undoHistory(input: SessionIdRpcInput & { count: number }): Promise<void>;
+  abstract turnChanges(input: SessionIdRpcInput & { turnId?: number }): Promise<import('#/types').TurnChanges>;
+  abstract turnFileDiff(input: SessionIdRpcInput & { turnId: number; path: string }): Promise<import('#/types').TurnFileDiff>;
+  abstract removeSessionMcpServer(input: SessionIdRpcInput & { name: string }): Promise<boolean>;
+  abstract undoHistory(input: SessionIdRpcInput & { count: number; revertFiles?: boolean }): Promise<void>;
 
   abstract takeOverSessionLock(input: SessionIdRpcInput): Promise<void>;
 
@@ -434,6 +439,8 @@ export abstract class SDKRpcClientBase {
   abstract cancelGoal(input: SessionIdRpcInput): Promise<GoalSnapshot>;
 
   abstract getCronTasks(input: SessionIdRpcInput): Promise<GetCronTasksResult>;
+  abstract deleteCronTask(input: SessionIdRpcInput & { id: string }): Promise<boolean>;
+  abstract listAgentProfiles(input: SessionIdRpcInput): Promise<readonly { name: string; description?: string; whenToUse?: string }[]>;
 
   abstract listMcpServers(input: SessionIdRpcInput): Promise<readonly McpServerInfo[]>;
 
@@ -572,6 +579,14 @@ export abstract class SDKRpcClientBase {
       });
       return null;
     }
+  }
+
+  async registerTool(_sessionId: string, _tool: UserToolRegistration, _handler: UserToolHandler): Promise<void> {
+    throw new Error('Custom tools require the V2 engine.');
+  }
+
+  async unregisterTool(_sessionId: string, _name: string): Promise<void> {
+    throw new Error('Custom tools require the V2 engine.');
   }
 
   async toolCall(request: ToolCallRequest): Promise<ToolCallResponse> {

@@ -8,6 +8,8 @@ export interface ISessionMcpHandle {
   readonly ready: Promise<void>;
   readonly connectionManager: McpConnectionView;
   isBaselineServer(name: string): boolean;
+  /** Explicit live additions extend this session's frozen server inventory. */
+  includeServer(name: string): void;
 }
 
 export const ISessionMcpHandle: ServiceIdentifier<ISessionMcpHandle> =

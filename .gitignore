@@ -8,6 +8,9 @@ dist-native/
 dist-bun/
 .tmp/
 coverage/
+jobs/
+__pycache__/
+*.py[cod]
 *.log
 
 # Local application data, environment files, and OS metadata

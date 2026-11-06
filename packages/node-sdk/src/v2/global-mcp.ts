@@ -39,7 +39,7 @@ export function parseInlineMcpServer(server: GlobalMcpServerConfig): GlobalMcpSe
       `Invalid MCP server "${server.name}": ${parsed.error.message}`,
     );
   }
-  return { name: server.name, ...parsed.data };
+  return { name: server.name, ...localStdioRuntime(parsed.data) };
 }
 
 /**
@@ -57,11 +57,26 @@ export function parseReconnectMcpServerConfig(
       `Invalid MCP server config for "${name}": ${parsed.error.message}`,
     );
   }
-  return parsed.data;
+  return localStdioRuntime(parsed.data);
 }
 
 export function normalizeServerName(name: string): string {
   const normalized = name.trim();
   if (normalized.length > 0) return normalized;
   throw new KimiError(ErrorCodes.REQUEST_INVALID, 'MCP server name cannot be empty');
+}
+
+/** Session overlays require an explicit binding; CoderAI's default runtime is local. */
+function localStdioRuntime(config: McpServerConfig): McpServerConfig {
+  return config.transport === 'stdio' ? { ...config, runtime_id: config.runtime_id ?? 'local' } : config;
+}
+export function parseSessionMcpServers(servers: Readonly<Record<string, McpServerConfig>> | undefined): Record<string, McpServerConfig> | undefined {
+  if (servers === undefined) return undefined;
+  const result: Record<string, McpServerConfig> = Object.create(null) as Record<string, McpServerConfig>;
+  for (const [name, config] of Object.entries(servers)) {
+    const key = normalizeServerName(name);
+    if (Object.hasOwn(result, key)) throw new KimiError(ErrorCodes.REQUEST_INVALID, `Duplicate MCP server name: ${key}`);
+    result[key] = mcpConfigWithoutName(parseInlineMcpServer({ name: key, ...config }));
+  }
+  return result;
 }

@@ -91,7 +91,7 @@ function createClient(
   }
   return new GenAIClient({
     apiKey: model.apiKey,
-    vertexai: vertexai ? true : undefined,
+    ...(vertexai ? { vertexai: true, project: model.project, location: model.location } : {}),
     httpOptions: Object.keys(httpOptions).length > 0 ? httpOptions : undefined,
   });
 }

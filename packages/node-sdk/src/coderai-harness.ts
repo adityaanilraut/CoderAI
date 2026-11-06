@@ -437,6 +437,11 @@ export class CoderaiHarness {
     return this.rpc.onConfigSectionChanged(listener);
   }
 
+  /** Profiles resolved by the active session catalog, including trusted workspace profiles. */
+  async listAgentProfiles(sessionId: string): Promise<readonly { name: string; description?: string; whenToUse?: string }[]> {
+    return this.rpc.listAgentProfiles({ sessionId });
+  }
+
   async getExperimentalFeatures(): Promise<readonly ExperimentalFeatureState[]> {
     return this.rpc.getExperimentalFeatures();
   }

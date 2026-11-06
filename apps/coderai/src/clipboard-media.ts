@@ -1,11 +1,9 @@
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
-import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { isSea, getAsset } from './sea.js';
-import { mediaKindForPath } from '../../../packages/agent-core-v2/src/agent/media/mediaRef.js';
+import { readFileSync } from 'node:fs';
+import { mediaKindForPath } from '@coderai/sdk/media';
 
 type Result = { kind: 'file'; path: string } | { kind: 'image'; bytes: Buffer };
 type Runner = (command: string, args: string[]) => Promise<Buffer | undefined>;
@@ -17,15 +15,7 @@ function nativeClipboard(): NativeClipboard | undefined {
     const require = createRequire(import.meta.url);
     const bunBinding = (globalThis as typeof globalThis & { __coderaiBunClipboard?: string }).__coderaiBunClipboard;
     if (bunBinding) return require(bunBinding) as NativeClipboard;
-    if (!isSea()) return require('@mariozechner/clipboard') as NativeClipboard;
-    const dir = mkdtempSync(join(tmpdir(), 'coderai-native-clipboard-'));
-    try {
-      const path = join(dir, 'clipboard.node');
-      writeFileSync(path, Buffer.from(getAsset('clipboard.node')), { mode: 0o700, flag: 'wx' });
-      const binding = require(path) as NativeClipboard;
-      process.once('exit', () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* Windows may retain loaded DLLs. */ } });
-      return binding;
-    } catch (error) { rmSync(dir, { recursive: true, force: true }); throw error; }
+    return require('@mariozechner/clipboard') as NativeClipboard;
   } catch { return undefined; }
 }
 

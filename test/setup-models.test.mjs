@@ -1,8 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { register } from 'tsx/esm/api';
-register();
 const { discoverProviderModels } = await import('../apps/coderai/src/setup-models.ts');
 
 async function serverFixture(t, handler) {

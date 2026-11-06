@@ -1,8 +1,10 @@
 import chalk from 'chalk';
 import type { Runtime } from './runtime.js';
-import { setDefaultModel, setModel, setProvider } from './config-commands.js';
+import { importProviders, refreshProviders, removeProvider, setDefaultModel, setModel, setProvider } from './config-commands.js';
 import { discoverProviderModels, type DiscoveredModel } from './setup-models.js';
 import { terminalPrompt, SetupCancelled, singleLine, type Prompt, type SetupOption } from './setup-terminal.js';
+import { colors, loadTheme } from './tui/theme.js';
+import { compactPath } from './tui/welcome.js';
 
 const presets = [
   { name: 'OpenAI', id: 'openai', type: 'openai', url: 'https://api.openai.com/v1', key: 'OPENAI_API_KEY' },
@@ -22,7 +24,7 @@ const protocols = [
 ];
 const nameError = (value: string) => /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value) && !value.startsWith('__') ? '' : 'Use letters, numbers, hyphens, or underscores; start with a letter or number.';
 const note = (text: string) => process.stdout.write(`  ${singleLine(text)}\n`);
-const failure = (text: string) => process.stderr.write(`  ${chalk.yellow('!')} ${singleLine(text)}\n`);
+const failure = (text: string) => process.stderr.write(`  ${chalk.hex(colors.warning)('!')} ${singleLine(text)}\n`);
 const visibleEntries = <T>(entries: Record<string, T>) => Object.entries(entries).filter(([id]) => !id.startsWith('__'));
 function availableName(base: string, entries: Record<string, unknown>): string {
   const cleaned = base.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^[^A-Za-z0-9]+/, '') || 'model';
@@ -33,7 +35,7 @@ function availableName(base: string, entries: Record<string, unknown>): string {
 
 async function ask(prompt: Prompt, label: string, fallback = '', validate: (value: string) => string = value => value ? '' : 'This field is required.', secret = false): Promise<string> {
   for (;;) {
-    const value = (await prompt(`  ${label}${fallback ? chalk.dim(` [${singleLine(fallback)}]`) : ''}: `, secret)).trim() || fallback;
+    const value = (await prompt(`  ${label}${fallback ? chalk.hex(colors.textMuted)(` [${singleLine(fallback)}]`) : ''}: `, secret)).trim() || fallback;
     const error = validate(value);
     if (!error) return value;
     failure(error);
@@ -55,6 +57,8 @@ async function capabilities(prompt: Prompt, initial: string[]): Promise<string> 
     { label: 'Image input', value: 'image_in' },
     { label: 'Video input', value: 'video_in' },
     { label: 'Thinking / reasoning', value: 'thinking' },
+    { label: 'Audio input', value: 'audio_in' },
+    { label: 'Tool Select', value: 'dynamically_loaded_tools' },
   ];
   for (;;) {
     const choice = await menu(prompt, 'Model capabilities · select to toggle', [
@@ -73,7 +77,7 @@ function contextTokens(value: string): number {
 }
 
 export async function runSetup(runtime: Runtime, prompt: Prompt, discover = discoverProviderModels): Promise<void> {
-  process.stdout.write(`\n  ${chalk.bold.cyan('CoderAI')} ${chalk.bold('Setup')}\n  ${chalk.dim(singleLine(runtime.harness.configPath))}\n`);
+  process.stdout.write(`\n  ${chalk.hex(colors.primary).bold('CoderAI')} ${chalk.bold('Setup')}\n  ${chalk.hex(colors.textMuted)(compactPath(runtime.harness.configPath, Math.max(1, (process.stdout.columns || 80) - 3)))}\n`);
   note('Esc goes back · Ctrl+C exits · changes save after each completed step');
 
   const addModel = async (providerID?: string, forceDefault = false) => {
@@ -168,13 +172,61 @@ export async function runSetup(runtime: Runtime, prompt: Prompt, discover = disc
     if (next === 1) await addModel(id);
   };
 
+  const manageProvider = async () => {
+    const config = await runtime.harness.getConfig();
+    const providers = visibleEntries(config.providers);
+    if (!providers.length) { note('No providers configured.'); return; }
+    const selected = await menu(prompt, 'Manage providers', providers.map(([id, provider]) => ({ label: id, description: provider.type })));
+    if (!selected) return;
+    const [id, provider] = providers[selected - 1]!;
+    const action = await menu(prompt, `Provider ${id}`, ['Edit endpoint and credentials', 'Remove provider and its models']);
+    if (!action) return;
+    if (action === 2) {
+      const aliases = Object.entries(config.models ?? {}).filter(([, model]) => model.provider === id).map(([alias]) => alias);
+      note(`This removes ${id} and ${aliases.length} model(s): ${aliases.join(', ') || '(none)'}.`);
+      if (await menu(prompt, 'Remove this provider?', ['Keep provider', 'Remove provider'], 0) === 2) await removeProvider(runtime, id);
+      return;
+    }
+    if (provider.oauth || provider.source) { note('This provider is managed by its source. Import its registry again to replace credentials or models.'); return; }
+    const protocol = await menu(prompt, 'API protocol', protocols, Math.max(0, protocols.findIndex(item => item.type === provider.type)));
+    if (!protocol) return;
+    const url = await ask(prompt, 'API base URL', provider.baseUrl ?? '', value => {
+      try { const parsed = new URL(value); return ['https:', 'http:'].includes(parsed.protocol) && !parsed.username && !parsed.password && !parsed.search && !parsed.hash ? '' : 'Use an HTTP(S) base URL without credentials, query parameters, or fragments.'; }
+      catch { return 'Enter a complete HTTP(S) base URL.'; }
+    });
+    const auth = await menu(prompt, 'Credentials', ['Keep current credentials', 'Use an environment variable', 'Enter a replacement API key']);
+    if (!auth) return;
+    let key = provider.apiKey || undefined;
+    let env = provider.apiKeyEnv ?? presets.find(item => item.type === provider.type)?.key ?? '';
+    if (auth === 2) {
+      env = await ask(prompt, 'Environment variable name', env, value => /^[A-Za-z_][A-Za-z0-9_]*$/.test(value) ? '' : 'Enter an environment variable name.');
+      key = undefined;
+    } else if (auth === 3) {
+      key = await ask(prompt, 'API key (input hidden)', '', value => value && !/[\x00-\x20\x7f]/.test(value) ? '' : 'Enter a nonempty API key without whitespace.', true);
+    }
+    await setProvider(runtime, id, protocols[protocol - 1]!.type, url, env, key, 'update');
+  };
+
+  const editModel = async () => {
+    const config = await runtime.harness.getConfig();
+    const models = visibleEntries(config.models ?? {});
+    if (!models.length) { note('No models configured.'); return; }
+    const selected = await menu(prompt, 'Edit model', models.map(([alias, model]) => ({ label: alias, description: `${model.provider} / ${model.model}` })));
+    if (!selected) return;
+    const [alias, model] = models[selected - 1]!;
+    const modelID = await ask(prompt, 'Model ID', model.model, value => value && !/[\x00-\x1f\x7f-\x9f]/.test(value) ? '' : 'Enter a model ID without control characters.');
+    const context = await ask(prompt, 'Context limit in tokens', String(model.maxContextSize), value => Number.isSafeInteger(contextTokens(value)) && contextTokens(value) > 0 ? '' : 'Enter a positive whole token count.');
+    const caps = await capabilities(prompt, model.capabilities ?? []);
+    await setModel(runtime, alias, model.provider, modelID, String(contextTokens(context)), caps, 'update');
+  };
+
   for (;;) {
     // A configuration read failure cannot be corrected by reprinting the same menu.
     const config = await runtime.harness.getConfig();
     try {
       const providers = visibleEntries(config.providers);
       const models = visibleEntries(config.models ?? {});
-      process.stdout.write(`\n  ${chalk.dim('─'.repeat(Math.max(1, Math.min(64, (process.stdout.columns || 80) - 4))))}\n`);
+      process.stdout.write(`\n  ${chalk.hex(colors.textMuted)('─'.repeat(Math.max(1, Math.min(64, (process.stdout.columns || 80) - 4))))}\n`);
       note(`${providers.length} provider${providers.length === 1 ? '' : 's'} · ${models.length} model${models.length === 1 ? '' : 's'} · Default: ${config.defaultModel || 'not set'}`);
       if (process.env['CODERAI_MODEL_NAME'] || process.env['KIMI_MODEL_NAME']) note('A model environment override is active; it takes precedence over the saved default.');
       const action = await menu(prompt, 'Setup', [
@@ -182,6 +234,11 @@ export async function runSetup(runtime: Runtime, prompt: Prompt, discover = disc
         { label: 'Add a model', description: 'Browse provider models or enter a model ID' },
         { label: 'Choose default model', description: config.defaultModel ? `Current: ${config.defaultModel}` : 'Choose the model used for new conversations' },
         { label: 'View configuration', description: 'Review providers, credentials status, and model aliases' },
+        { label: 'Manage providers', description: 'Edit credentials and endpoints, or remove a provider' },
+        { label: 'Edit a model', description: 'Change an existing model ID, context limit, or capabilities' },
+        { label: 'Import provider registry', description: 'Import or replace providers and models from an api.json URL' },
+        { label: 'Refresh registry models', description: 'Fetch updates from configured provider registries' },
+        { label: 'Configure web search', description: 'Connect a custom Moonshot-compatible search endpoint with an API key' },
       ], 0, 'Finish setup');
       if (!action) {
         note(config.defaultModel && config.models?.[config.defaultModel] ? 'Setup saved. Run coderai to start a conversation.' : 'Setup closed. Run coderai --setup to select a default model before chatting.');
@@ -189,6 +246,27 @@ export async function runSetup(runtime: Runtime, prompt: Prompt, discover = disc
       }
       if (action === 1) await addProvider();
       else if (action === 2) await addModel();
+      else if (action === 5) await manageProvider();
+      else if (action === 6) await editModel();
+      else if (action === 7) {
+        const url = await ask(prompt, 'Registry URL');
+        const keyEnv = await ask(prompt, 'API key environment variable (blank for a public registry)', '', value => !value || /^[A-Za-z_][A-Za-z0-9_]*$/.test(value) ? '' : 'Enter an environment variable name.');
+        await importProviders(runtime, url, keyEnv || undefined);
+      }
+      else if (action === 8) await refreshProviders(runtime);
+      else if (action === 9) {
+        const existing = config.services?.moonshotSearch;
+        const baseUrl = await ask(prompt, 'Search endpoint URL', existing?.baseUrl ?? '', value => {
+          try {
+            const url = new URL(value);
+            return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.hash
+              ? '' : 'Use an HTTP(S) endpoint without embedded credentials or a fragment.';
+          } catch { return 'Enter an absolute HTTP(S) endpoint URL.'; }
+        });
+        const apiKey = await ask(prompt, existing?.apiKey ? 'Search API key (blank keeps saved key)' : 'Search API key', '', value => value || existing?.apiKey ? '' : 'Enter a search API key.', true);
+        await runtime.harness.setConfig({ services: { moonshotSearch: { baseUrl, apiKey: apiKey || existing?.apiKey } } });
+        note('Web search configuration saved.');
+      }
       else if (action === 3) {
         if (!providers.length) { note('Connect a provider, then select its model.'); await addProvider(); continue; }
         const missing = providers.filter(([id]) => !models.some(([, model]) => model.provider === id));
@@ -223,6 +301,7 @@ export async function runSetup(runtime: Runtime, prompt: Prompt, discover = disc
 export async function setup(runtime: Runtime): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('--setup requires an interactive terminal.');
   const previousUmask = process.umask(0o077);
-  try { await runSetup(runtime, terminalPrompt()); }
-  finally { process.stdout.write('\x1b[?25h'); process.umask(previousUmask); }
+  let prompt: Prompt | undefined;
+  try { await loadTheme(runtime.harness.homeDir); prompt = terminalPrompt(runtime.harness.homeDir); await runSetup(runtime, prompt); }
+  finally { prompt?.dispose?.(); process.stdout.write('\x1b[?25h'); process.umask(previousUmask); }
 }

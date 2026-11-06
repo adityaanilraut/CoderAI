@@ -532,6 +532,7 @@ function effectiveRecordOf(definition: CatalogModel): ModelRecord {
   return {
     ...base,
     capabilities: overrides?.capabilities ?? raw.capabilities,
+    metadata: overrides?.metadata ?? raw.metadata,
     maxContextSize: definition.maxContextSize,
     maxInputSize: definition.maxInputSize,
     maxOutputSize: definition.maxOutputSize,
@@ -551,11 +552,14 @@ function buildProtocolProviderOptions(
   provider: CatalogProviderInfo | undefined,
   baseUrl: string | undefined,
 ): ProtocolProviderOptions | undefined {
-  const options: MutableProtocolProviderOptions = {};
+  const options: MutableProtocolProviderOptions = {
+    ...getProviderDefinition(provider?.type ?? protocol)?.providerOptions,
+  };
 
   switch (protocol) {
     case 'anthropic':
       if (model.maxOutputSize !== undefined) options.defaultMaxTokens = model.maxOutputSize;
+      if (model.metadata !== undefined) options.metadata = model.metadata;
       if (model.supportEfforts !== undefined) options.supportEfforts = model.supportEfforts;
       if (model.adaptiveThinking !== undefined) options.adaptiveThinking = model.adaptiveThinking;
       if (model.betaApi !== undefined) options.betaApi = model.betaApi;
@@ -569,7 +573,9 @@ function buildProtocolProviderOptions(
     case 'google-genai': {
       const project = vertexAIProject(provider);
       const location = vertexAILocation(provider, baseUrl);
-      if (project !== undefined && location !== undefined) {
+      const configuredProject = nonEmpty(provider?.project) ?? envValue(provider?.env, 'GOOGLE_CLOUD_PROJECT');
+      const configuredLocation = nonEmpty(provider?.location) ?? envValue(provider?.env, 'GOOGLE_CLOUD_LOCATION') ?? locationFromVertexAIBaseUrl(baseUrl);
+      if (options.vertexai === true || (configuredProject !== undefined && configuredLocation !== undefined)) {
         options.vertexai = true;
         options.project = project;
         options.location = location;
@@ -591,14 +597,14 @@ function buildProtocolProviderOptions(
 }
 
 function vertexAIProject(provider: CatalogProviderInfo | undefined): string | undefined {
-  return envValue(provider?.env, 'GOOGLE_CLOUD_PROJECT');
+  return nonEmpty(provider?.project) ?? envValue(provider?.env, 'GOOGLE_CLOUD_PROJECT') ?? nonEmpty(process.env['GOOGLE_CLOUD_PROJECT']);
 }
 
 function vertexAILocation(
   provider: CatalogProviderInfo | undefined,
   baseUrl: string | undefined,
 ): string | undefined {
-  return envValue(provider?.env, 'GOOGLE_CLOUD_LOCATION') ?? locationFromVertexAIBaseUrl(baseUrl);
+  return nonEmpty(provider?.location) ?? envValue(provider?.env, 'GOOGLE_CLOUD_LOCATION') ?? nonEmpty(process.env['GOOGLE_CLOUD_LOCATION']) ?? locationFromVertexAIBaseUrl(baseUrl);
 }
 
 function envValue(env: Readonly<Record<string, string>> | undefined, key: string): string | undefined {

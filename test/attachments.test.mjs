@@ -40,3 +40,14 @@ test('large image is compressed while its original remains available in the sess
   assert.match(request, /media-originals/);
   assert.match(request, /data:image\//);
 });
+
+test('headless goals accept images and continue to completion', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  f.env.CODERAI_MODEL_CAPABILITIES = 'image_in';
+  const path = join(f.cwd, 'goal.png');
+  await writeFile(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6UAAAAABJRU5ErkJggg==', 'base64'));
+  const result = await f.run(['--trust', '--yolo', '--attach', path, '--json', '-p', '/goal SCENARIO goal']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(f.requests.some(request => JSON.stringify(request).includes('data:image/png;base64,')));
+  assert.match(result.stdout, /"goalStatus":"complete"/);
+});

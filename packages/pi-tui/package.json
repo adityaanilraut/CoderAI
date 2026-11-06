@@ -46,9 +46,6 @@
     "get-east-asian-width": "1.6.0",
     "marked": "18.0.11"
   },
-  "devDependencies": {
-    "chalk": "^5.4.1"
-  },
   "engines": {
     "node": ">=22.19.0"
   }

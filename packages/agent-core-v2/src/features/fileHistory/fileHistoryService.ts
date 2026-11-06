@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { isAbsolute, relative, resolve } from 'pathe';
+import { dirname, isAbsolute, relative, resolve } from 'pathe';
+import { ErrorCodes, Error2 } from '#/errors';
 
 import { Service } from '#/_base/di/service';
 import { unwrapErrorCause } from '#/_base/errors/errors';
@@ -98,6 +99,94 @@ export class AgentFileHistoryService extends Service implements IAgentFileHistor
 
   settled(): Promise<void> {
     return this.queue;
+  }
+
+  async restoreTurnFiles(turnId: number): Promise<readonly string[]> {
+    const restore = await this.prepareRestoreTurnFiles(turnId);
+    await restore.apply();
+    return restore.paths;
+  }
+
+  prepareRestoreTurnFiles(turnId: number): Promise<{
+    paths: readonly string[]; apply(): Promise<void>; rollback(): Promise<void>;
+  }> {
+    return this.enqueueValue(async () => {
+      const fail = (message: string): never => {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, `Cannot revert files: ${message}`);
+      };
+      if (!Number.isSafeInteger(turnId) || turnId < 0) fail('invalid turn ID.');
+      if (this.activeTurnId !== undefined) fail('a turn is still active.');
+      const checkpoints = this.history().checkpoints;
+      const starts = checkpoints.filter(c => checkpointPhaseOf(c) === 'start').toSorted((a, b) => a.turnId - b.turnId);
+      // Retention deliberately keeps only five changed turns. Never pretend an
+      // evicted suffix is an empty diff, or interpret a lost blob as a deletion.
+      if (starts.length >= 5 && turnId < starts[0]!.turnId) fail('snapshots for that turn have expired. Withdraw prompts only instead.');
+      const targets = new Map<string, FileBackupEntry>();
+      for (const start of starts.filter(c => c.turnId >= turnId)) {
+        const end = checkpoints.find(c => c.turnId === start.turnId && checkpointPhaseOf(c) === 'end');
+        if (!end) fail(`turn ${start.turnId} has no completed checkpoint.`);
+        for (const path of Object.keys(end!.entries)) {
+          if (targets.has(path)) continue;
+          const entry = start.entries[path];
+          if (!entry || entry.oversize) fail(`no restorable pre-turn snapshot for ${path}.`);
+          targets.set(path, entry!);
+        }
+      }
+      const lease = this.runtime.acquire(['fs']);
+      try {
+        const fs = lease.runtime.fs;
+        if (!fs) fail('filesystem is unavailable.');
+        const files: { path: string; before?: Uint8Array; current?: Uint8Array }[] = [];
+        for (const [pathKey, entry] of targets) {
+          const path = isAbsolute(pathKey) ? pathKey : resolve(this.workspaceCtx.workDir, pathKey);
+          const before = entry.key === null ? undefined : await this.blobs.get(this.agentCtx.scope(), entry.key);
+          if (entry.key !== null && before === undefined) fail(`backup is missing for ${pathKey}.`);
+          let current: Uint8Array | undefined;
+          try {
+            const info = await fs!.lstat(path);
+            if (!info.isFile || info.isSymbolicLink) fail(`${pathKey} is no longer a regular file.`);
+            current = await fs!.readBytes(path);
+          } catch (error) {
+            if ((unwrapErrorCause(error) as { code?: string } | null)?.code !== 'ENOENT') throw error;
+          }
+          // A symlinked parent could redirect a previously safe path. Refuse it.
+          let parent = dirname(path);
+          while (parent !== this.workspaceCtx.workDir && parent !== dirname(parent)) {
+            try { if ((await fs!.lstat(parent)).isSymbolicLink) fail(`${pathKey} has a symbolic-link parent.`); }
+            catch (error) { if ((unwrapErrorCause(error) as { code?: string } | null)?.code !== 'ENOENT') throw error; }
+            parent = dirname(parent);
+          }
+          files.push({ path, before, current });
+        }
+        const write = async (key: 'before' | 'current') => {
+          const binding = this.runtime.acquire(['fs']);
+          try {
+            const targetFs = binding.runtime.fs!;
+            for (const file of files) {
+              const bytes = file[key];
+              if (bytes === undefined) {
+                try { await targetFs.remove(file.path); }
+                catch (error) { if ((unwrapErrorCause(error) as { code?: string } | null)?.code !== 'ENOENT') throw error; }
+              } else {
+                await targetFs.mkdir(dirname(file.path), { recursive: true });
+                await targetFs.writeBytes(file.path, bytes);
+              }
+            }
+          } finally { binding.dispose(); }
+        };
+        return {
+          paths: [...targets.keys()], rollback: () => write('current'),
+          apply: async () => {
+            try { await write('before'); }
+            catch (error) {
+              try { await write('current'); }
+              catch (rollbackError) { throw new AggregateError([error, rollbackError], 'File restoration and recovery failed; inspect the workspace before retrying.'); }
+              throw error;
+            }
+          },
+        };
+      } finally { lease.dispose(); }
+    });
   }
 
   changes(turnId: number): Promise<FileHistoryChange[]> {
@@ -279,7 +368,7 @@ export class AgentFileHistoryService extends Service implements IAgentFileHistor
     this.queue = run.then(
       () => undefined,
       (error) => {
-        onUnexpectedError(error);
+        if (!(error instanceof Error2 && error.code === ErrorCodes.REQUEST_INVALID)) onUnexpectedError(error);
       },
     );
     return run;

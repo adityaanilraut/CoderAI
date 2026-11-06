@@ -33,15 +33,21 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./media": {
+      "types": "./src/media.ts",
+      "default": "./src/media.ts"
+    },
+    "./mcp-config": {
+      "types": "./src/mcp-config.ts",
+      "default": "./src/mcp-config.ts"
     }
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@antfu/utils": "^9.3.0",
     "smol-toml": "^1.6.1",
-    "yazl": "^3.3.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -50,8 +56,6 @@
     "@coderai/product": "workspace:^",
     "@coderai/klient": "workspace:^",
     "@coderai/kosong": "workspace:^",
-    "@types/yazl": "^2.4.6",
-    "jimp": "^1.6.1",
     "@coderai/minidb": "workspace:*"
   }
 }

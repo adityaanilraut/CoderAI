@@ -88,7 +88,6 @@
     "@types/semver": "^7.7.0",
     "@types/tar": "^7.0.87",
     "@types/yauzl": "^2.10.3",
-    "@types/yazl": "^2.4.6",
-    "tsx": "^4.21.0"
+    "@types/yazl": "^2.4.6"
   }
 }

@@ -9,6 +9,8 @@
     "chalk": "^5.4.1",
     "smol-toml": "^1.6.1",
     "cli-highlight": "^2.1.11",
-    "proper-lockfile": "^4.1.2"
+    "proper-lockfile": "^4.1.2",
+    "@coderai/session-import": "workspace:*",
+    "lovely-mermaid": "0.3.3"
   }
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile, access, readdir, utimes } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
-import { fixture, cli } from './fixture.mjs';
+import { fixture, cli, testRuntime } from './fixture.mjs';
 
 const events = result => result.stdout.trim().split('\n').map(line => JSON.parse(line));
 test('built CLI: help, plain output, JSON, pipes, tools, approvals, validation, persistence and cancellation', { timeout: 120000 }, async t => {
@@ -89,7 +89,7 @@ test('built CLI: help, plain output, JSON, pipes, tools, approvals, validation, 
     assert.match(empty.stderr, /nonempty piped input/);
   });
   await t.test('piped UTF-8 survives byte boundaries and startup input can be cancelled', async () => {
-    const child = spawn(process.execPath, [cli, '-p', 'SCENARIO pipe'], { cwd: f.cwd, env: f.env });
+    const child = spawn(testRuntime, [cli, '-p', 'SCENARIO pipe'], { cwd: f.cwd, env: f.env });
     let stdout = ''; let stderr = '';
     child.stdout.on('data', chunk => stdout += chunk);
     child.stderr.on('data', chunk => stderr += chunk);
@@ -102,7 +102,7 @@ test('built CLI: help, plain output, JSON, pipes, tools, approvals, validation, 
     assert.equal(await closed, 0, stderr);
     assert.ok(stdout.includes(text), stdout);
     for (const signal of ['SIGINT', 'SIGTERM']) {
-      const waiting = spawn(process.execPath, [cli, '-p', 'hello'], { cwd: f.cwd, env: f.env });
+      const waiting = spawn(testRuntime, [cli, '-p', 'hello'], { cwd: f.cwd, env: f.env });
       waiting.stdout.resume(); waiting.stderr.resume();
       const exited = new Promise(resolve => waiting.on('close', (code, signal) => resolve({ code, signal })));
       await new Promise(resolve => setTimeout(resolve, 800));
@@ -154,7 +154,11 @@ test('built CLI: help, plain output, JSON, pipes, tools, approvals, validation, 
     assert.equal(outside.code, 0, outside.stderr);
     assert.ok(!events(outside).some(e => e.type === 'coderai.approval'));
     assert.ok(f.requests.filter(r => JSON.stringify(r.messages).includes('SCENARIO outside')).some(r => JSON.stringify(r.messages).includes('private outside content')));
-    const bg = await f.run(['-p', 'SCENARIO background', '--yolo', '--json']); assert.equal(bg.code, 0, bg.stderr);
+    f.env.KIMI_CODE_BACKGROUND_PRINT_BACKGROUND_MODE = 'exit';
+    let bg;
+    try { bg = await f.run(['-p', 'SCENARIO background', '--yolo', '--json']); }
+    finally { delete f.env.KIMI_CODE_BACKGROUND_PRINT_BACKGROUND_MODE; }
+    assert.equal(bg.code, 0, bg.stderr);
     assert.ok(events(bg).some(e => e.type === 'background.task.started'));
     const pid = Number(await readFile(join(f.cwd, 'background.pid'), 'utf8'));
     assert.throws(() => process.kill(pid, 0));
@@ -182,7 +186,7 @@ test('built CLI: help, plain output, JSON, pipes, tools, approvals, validation, 
     for (const scenario of ['auth', 'missing-model']) { const result = await f.run(['-p', `SCENARIO ${scenario}`]); assert.equal(result.code, 1, result.stderr); }
   });
   await t.test('concurrent session writers are rejected and SIGTERM cancels a shell', async () => {
-    const child = spawn(process.execPath, [cli, '--resume', id, '-p', 'SCENARIO cancel-shell', '--yolo', '--json'], { cwd: f.cwd, env: f.env });
+    const child = spawn(testRuntime, [cli, '--resume', id, '-p', 'SCENARIO cancel-shell', '--yolo', '--json'], { cwd: f.cwd, env: f.env });
     child.stdin.end(); let stderr = ''; child.stdout.resume(); child.stderr.on('data', c => stderr += c);
     await new Promise((resolve, reject) => { const poll = setInterval(async () => { try { await access(join(f.cwd, 'shell.pid')); clearInterval(poll); resolve(); } catch {} }, 20); setTimeout(() => { clearInterval(poll); reject(new Error(stderr)); }, 5000).unref(); });
     const conflict = await f.run(['--resume', id, '-p', 'conflicting']); assert.equal(conflict.code, 1); assert.match(conflict.stderr, /in use/);
@@ -190,7 +194,7 @@ test('built CLI: help, plain output, JSON, pipes, tools, approvals, validation, 
     const pid = Number(await readFile(join(f.cwd, 'shell.pid'), 'utf8')); assert.throws(() => process.kill(pid, 0));
   });
   await t.test('an abandoned session lock is recovered without losing conversation history', async () => {
-    const child = spawn(process.execPath, [cli, '--resume', id, '-p', 'SCENARIO wait', '--json'], { cwd: f.cwd, env: f.env });
+    const child = spawn(testRuntime, [cli, '--resume', id, '-p', 'SCENARIO wait', '--json'], { cwd: f.cwd, env: f.env });
     child.stdin.end(); child.stdout.resume(); let stderr = ''; child.stderr.on('data', c => stderr += c);
     const closed = new Promise(resolve => child.on('close', (code, signal) => resolve({ code, signal })));
     await new Promise((resolve, reject) => {
@@ -213,14 +217,14 @@ test('built CLI: help, plain output, JSON, pipes, tools, approvals, validation, 
   });
   await t.test('SIGINT cancels an active model request and releases locks', async () => {
     const requestCount = f.requests.length;
-    const child = spawn(process.execPath, [cli, '-p', 'SCENARIO wait', '--json'], { cwd: f.cwd, env: f.env });
+    const child = spawn(testRuntime, [cli, '-p', 'SCENARIO wait', '--json'], { cwd: f.cwd, env: f.env });
     child.stdin.end(); let stdout = ''; child.stdout.on('data', c => stdout += c); let stderr = ''; child.stderr.on('data', c => stderr += c);
     await new Promise((resolve, reject) => { const poll = setInterval(() => { if (f.requests.slice(requestCount).some(r => JSON.stringify(r).includes('SCENARIO wait'))) { clearInterval(poll); resolve(); } }, 20); setTimeout(() => { clearInterval(poll); reject(new Error(stderr)); }, 5000).unref(); });
     child.kill('SIGINT'); const code = await new Promise(resolve => child.on('close', resolve)); assert.equal(code, 130, stderr); assert.equal(events({ stdout }).at(-1).exitCode, 130);
     assert.equal((await readdir(join(f.home, 'locks'), { recursive: true })).filter(p => p.endsWith('.lock')).length, 0);
   });
   await t.test('cancellation kills a shell that ignores SIGTERM', async () => {
-    const child = spawn(process.execPath, [cli, '-p', 'SCENARIO stubborn-shell', '--yolo', '--json'], { cwd: f.cwd, env: f.env });
+    const child = spawn(testRuntime, [cli, '-p', 'SCENARIO stubborn-shell', '--yolo', '--json'], { cwd: f.cwd, env: f.env });
     child.stdin.end(); child.stdout.resume(); let stderr = ''; child.stderr.on('data', c => stderr += c);
     const exited = new Promise(resolve => child.on('close', (code, signal) => resolve({ code, signal })));
     await new Promise((resolve, reject) => { const poll = setInterval(async () => { try { await access(join(f.cwd, 'stubborn.pid')); clearInterval(poll); resolve(); } catch {} }, 20); setTimeout(() => { clearInterval(poll); reject(new Error(stderr)); }, 5000).unref(); });

@@ -154,6 +154,11 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     };
   }
 
+  refreshServer(name: string): void {
+    const entry = this.mcpHandle.connectionManager.get(name);
+    if (entry) this.handleMcpServerStatusChange(entry);
+  }
+
   private attachMcpTools(): void {
     for (const entry of this.list()) {
       this.handleMcpServerStatusChange(entry);
@@ -187,10 +192,10 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       this.registerNeedsAuthMcpServer(entry);
       return;
     }
-    if (entry.status === 'failed' || entry.status === 'pending' || entry.status === 'removed') {
+    if (entry.status === 'failed' || entry.status === 'pending') {
       return;
     }
-    if (entry.status === 'disabled') {
+    if (entry.status === 'disabled' || entry.status === 'removed') {
       const removed = this.unregisterMcpServer(entry.name);
       if (removed) {
         void this.dispatcher.dispatch(

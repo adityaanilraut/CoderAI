@@ -14,27 +14,20 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26
-          cache: pnpm
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
-      - run: pnpm install --frozen-lockfile
+      - run: bun install --frozen-lockfile
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - if: runner.os == 'macOS'
         run: brew install ripgrep
-      - run: pnpm typecheck
+      - run: bun run typecheck
       - if: runner.os != 'Windows'
-        run: pnpm test
+        run: bun run test
       # The terminal suite uses POSIX PTYs; Windows still validates compilation
       # and the built CLI until native Windows terminal coverage is available.
       - if: runner.os == 'Windows'
-        run: pnpm build
+        run: bun run build
       - if: runner.os == 'Windows'
         run: bun dist/coderai.mjs --help

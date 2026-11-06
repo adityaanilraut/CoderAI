@@ -262,6 +262,8 @@ export type StdinBufferOptions = {
 	 * (default: 50ms).
 	 */
 	timeout?: number;
+	/** Optional reassembly window for OSC replies; defaults to the ordinary sequence timeout. */
+	oscTimeout?: number;
 	/**
 	 * Maximum time to wait after a lone ESC before treating it as Escape
 	 * (default: 10ms). Increase for high-latency Alt+key input (SSH).
@@ -282,6 +284,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	private buffer: string = "";
 	private timeout: ReturnType<typeof setTimeout> | null = null;
 	private readonly timeoutMs: number;
+	private readonly oscTimeoutMs: number;
 	private readonly escapeTimeoutMs: number;
 	private pasteMode: boolean = false;
 	private pasteBuffer: string = "";
@@ -290,6 +293,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	constructor(options: StdinBufferOptions = {}) {
 		super();
 		this.timeoutMs = options.timeout ?? DEFAULT_SEQUENCE_TIMEOUT_MS;
+		this.oscTimeoutMs = options.oscTimeout ?? this.timeoutMs;
 		this.escapeTimeoutMs = options.escapeTimeout ?? DEFAULT_ESCAPE_TIMEOUT_MS;
 	}
 
@@ -385,7 +389,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 
 		if (this.buffer.length > 0) {
-			const timeoutMs = this.buffer === ESC ? this.escapeTimeoutMs : this.timeoutMs;
+			const timeoutMs = this.buffer === ESC ? this.escapeTimeoutMs : this.buffer.startsWith(`${ESC}]`) ? this.oscTimeoutMs : this.timeoutMs;
 			this.timeout = setTimeout(() => {
 				const flushed = this.flush();
 

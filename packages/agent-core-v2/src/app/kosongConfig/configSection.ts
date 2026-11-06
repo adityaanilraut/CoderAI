@@ -56,6 +56,8 @@ export const ProviderConfigSchema = z.object({
   apiKeyEnv: z.string().optional(),
   oauth: OAuthRefSchema.optional(),
   env: StringRecordSchema.optional(),
+  project: z.string().optional(),
+  location: z.string().optional(),
   source: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -175,6 +177,7 @@ const ModelBaseSchema = z.object({
   reasoningKey: z.string().optional(),
   adaptiveThinking: z.boolean().optional(),
   betaApi: z.boolean().optional(),
+  metadata: StringRecordSchema.optional(),
   supportEfforts: z.array(z.string()).optional(),
   defaultEffort: z.string().optional(),
   offEffort: z.string().optional(),

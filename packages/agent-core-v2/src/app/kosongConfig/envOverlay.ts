@@ -1,7 +1,8 @@
 import { parseBooleanEnv } from '#/_base/utils/env';
 import { Error2 } from '#/_base/errors/errors';
 
-import type { ConfigEffectiveOverlay } from '#/app/config/config';
+import { type ConfigEffectiveOverlay, stripEnvBoundFields } from '#/app/config/config';
+import { registerConfigSection } from '#/app/config/configSectionContributions';
 import { registerConfigOverlay } from '#/app/config/configOverlayContributions';
 import { CONFIG_INVALID_ERROR_CODE } from '#/llm-adapter/contract/errors';
 import { resolveProviderEndpoint } from '#/llm-adapter/provider/provider-definition';
@@ -107,7 +108,7 @@ export const kimiModelEnvOverlay: ConfigEffectiveOverlay = {
         maxCompletionTokens,
       });
       if (modelOverrides !== undefined) {
-        effective['modelOverrides'] = modelOverrides;
+        effective['modelOverrides'] = { ...asRecord(effective['modelOverrides']), ...modelOverrides };
         changed.push('modelOverrides');
       }
       return changed;
@@ -180,7 +181,7 @@ export const kimiModelEnvOverlay: ConfigEffectiveOverlay = {
       maxCompletionTokens,
     });
     if (modelOverrides !== undefined) {
-      effective['modelOverrides'] = modelOverrides;
+      effective['modelOverrides'] = { ...asRecord(effective['modelOverrides']), ...modelOverrides };
       changed.push('modelOverrides');
     }
 
@@ -195,7 +196,7 @@ export const kimiModelEnvOverlay: ConfigEffectiveOverlay = {
         if (value !== ENV_MODEL_ALIAS_KEY) return value;
         return typeof rawSnake['default_model'] === 'string' ? rawSnake['default_model'] : undefined;
       case 'modelOverrides':
-        return undefined;
+        return value;
       default:
         return value;
     }
@@ -225,5 +226,16 @@ function collectModelOverrides(input: {
   }
   return Object.keys(modelOverrides).length > 0 ? modelOverrides : undefined;
 }
+
+// Persist explicit overrides while keeping environment overlays out of config.toml,
+// using the same field-level stripping as the other engine config sections.
+registerConfigSection('modelOverrides', { parse: asRecord }, {
+  stripEnv: stripEnvBoundFields<Record<string, unknown>>({
+    temperature: { env: 'KIMI_MODEL_TEMPERATURE', parse: raw => parseFloatEnv(raw, 'KIMI_MODEL_TEMPERATURE') },
+    topP: { env: 'KIMI_MODEL_TOP_P', parse: raw => parseFloatEnv(raw, 'KIMI_MODEL_TOP_P') },
+    thinkingKeep: { env: 'KIMI_MODEL_THINKING_KEEP', parse: trimmed },
+    maxCompletionTokens: { env: 'KIMI_MODEL_MAX_COMPLETION_TOKENS', deprecatedEnv: 'KIMI_MODEL_MAX_TOKENS', parse: parseCompletionTokens },
+  }),
+});
 
 registerConfigOverlay(kimiModelEnvOverlay);

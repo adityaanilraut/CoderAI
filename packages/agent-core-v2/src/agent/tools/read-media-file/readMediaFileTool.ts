@@ -70,6 +70,7 @@ function buildDescription(capabilities: ModelCapability): string {
   } else {
     lines.push('- The current model does not support image or video input.');
   }
+  lines.push(capabilities.audio_in ? '- Audio files are supported by the current model.' : '- Audio files are not supported by the current model.');
   return lines.join('\n');
 }
 
@@ -84,7 +85,7 @@ interface ImageDelivery {
 }
 
 function buildMediaNote(input: {
-  readonly kind: 'image' | 'video';
+  readonly kind: 'image' | 'video' | 'audio';
   readonly mimeType: string;
   readonly byteSize: number;
   readonly dimensions: { readonly width: number; readonly height: number } | null;
@@ -311,7 +312,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
         return {
           isError: true,
           output:
-            `"${args.path}" is not a supported image or video file. ` +
+            `"${args.path}" is not a supported image, video, or audio file. ` +
             'Use Read for text files, or Bash or an MCP tool for other binary formats.',
         };
       }
@@ -332,6 +333,9 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           isError: true,
           output: buildImageConversionGuidance(source.localPath ?? args.path, fileType.mimeType, env.osKind),
         };
+      }
+      if (fileType.kind === 'audio' && !this.capabilities.audio_in) {
+        return { isError: true, output: 'The current model does not support audio input. Use a model with audio input capability.' };
       }
       if (fileType.kind === 'video' && !this.capabilities.video_in) {
         return {
@@ -355,7 +359,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
         };
       }
 
-      if (fileType.kind === 'video' && (args.region !== undefined || args.full_resolution === true)) {
+      if (fileType.kind !== 'image' && (args.region !== undefined || args.full_resolution === true)) {
         return {
           isError: true,
           output: 'region and full_resolution apply only to image files.',
@@ -509,11 +513,13 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
             dimensions = { width: compressed.originalWidth, height: compressed.originalHeight };
           }
         }
+      } else if (fileType.kind === 'audio') {
+        mediaPart = { type: 'audio_url', audioUrl: { url: `data:${fileType.mimeType};base64,${data.toString('base64')}` } };
       } else {
         mediaPart = await this.videoContentPart(data, fileType.mimeType, safePath, signal);
       }
 
-      const tag = fileType.kind === 'image' ? 'image' : 'video';
+      const tag = fileType.kind;
       const tagPath = isDaemonFileUrl(args.path) ? args.path : safePath;
       const openText = `<${tag} path="${tagPath}">`;
       const closeText = `</${tag}>`;

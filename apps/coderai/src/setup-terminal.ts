@@ -1,32 +1,83 @@
 import { createInterface, emitKeypressEvents } from 'node:readline';
 import type { Key } from 'node:readline';
-import { Writable } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import chalk from 'chalk';
-import { truncateToWidth } from '@coderai/pi-tui';
+import { fuzzyFilter, parseOsc11BackgroundColor, StdinBuffer, truncateToWidth, type RgbColor } from '@coderai/pi-tui';
 import { sanitizeTerminalText } from './tui/sanitize.js';
+import { colors, refreshTerminalTheme } from './tui/theme.js';
 
 export type SetupOption = { label: string; description?: string };
 export type Prompt = ((question: string, secret?: boolean) => Promise<string>) & {
   select?: (title: string, items: SetupOption[], initial: number, back: string) => Promise<number>;
+  dispose?: () => void;
 };
 export class SetupCancelled extends Error {}
 export const setupAbort = () => Object.assign(new Error('Setup cancelled.'), { name: 'AbortError' });
 export const singleLine = (text: string) => sanitizeTerminalText(text).replace(/[\n\t]/g, ' ');
 
+export function setupMenuLines(state: {
+  title: string; items: (SetupOption & { index: number })[]; selected: number;
+  query: string; shortcut: string; columns: number; rows: number;
+}): string[] {
+  const { title, items, selected, query, shortcut } = state;
+  const count = Math.max(1, Math.min(9, state.rows - 7));
+  const start = Math.max(0, Math.min(selected - Math.floor(count / 2), items.length - count));
+  const width = Math.max(1, state.columns - 1);
+  const clip = (text: string) => truncateToWidth(text, width, '…');
+  const muted = (text: string) => chalk.hex(colors.textMuted)(text);
+  const backLabel = items.find(item => item.index === -1)?.label;
+  const backHint = backLabel && backLabel !== 'Back' ? singleLine(backLabel) : 'back';
+  const content = [
+    chalk.hex(colors.primary).bold(`  ${singleLine(title)}`),
+    muted(query ? `  Search: ${singleLine(query)}` : shortcut ? `  Option: ${shortcut} · Enter select` : '  ↑/↓ move · Enter select · type to search'),
+    muted(`  Esc ${backHint} · Ctrl+C exit`),
+    ...items.slice(start, start + count).map((item, index) => {
+      const label = `${item.index === -1 ? '0' : item.index + 1}. ${singleLine(item.label)}`;
+      return start + index === selected ? chalk.hex(colors.primary)(`  ❯ ${label}`) : `    ${label}`;
+    }),
+  ];
+  if (query && items.length === 1 && items[0]?.index === -1) content.push(muted('  No matching options · Backspace to edit'));
+  const row = items[selected];
+  if (row?.description) content.push(muted(`    ${singleLine(row.description)}`));
+  if (items.length > count) content.push(muted(`  ${selected + 1} / ${items.length} options`));
+  return content.map(clip).slice(0, Math.max(1, state.rows - 2));
+}
+
 /** Owns terminal input only for the duration of each question; every exit restores it. */
-export function terminalPrompt(): Prompt {
-  emitKeypressEvents(process.stdin);
+export function terminalPrompt(home?: string): Prompt {
+  const source = process.stdin, stream = new PassThrough();
+  const input = stream as unknown as NodeJS.ReadStream;
+  const wasRaw = source.isRaw;
+  const resume = stream.resume.bind(stream), pause = stream.pause.bind(stream);
+  Object.defineProperties(input, { isTTY: { get: () => source.isTTY }, isRaw: { get: () => source.isRaw } });
+  input.setRawMode = mode => { source.setRawMode(mode); return input; };
+  input.resume = () => { source.resume(); resume(); return input; };
+  input.pause = () => { source.pause(); pause(); return input; };
+  const buffer = new StdinBuffer({ oscTimeout: 1000 });
+  let backgroundReply: ((color: RgbColor | undefined) => void) | undefined;
+  let queried = false;
+  let disposed = false;
+  buffer.on('data', data => {
+    // Replies must never reach readline, even after timeout or while entering a secret.
+    if (data.startsWith('\x1b]11;')) { backgroundReply?.(parseOsc11BackgroundColor(data)); return; }
+    stream.write(data);
+  });
+  buffer.on('paste', content => stream.write(`\x1b[200~${content}\x1b[201~`));
+  const onData = (data: Buffer | string) => buffer.process(data);
+  const onEnd = () => stream.end();
+  source.setEncoding('utf8'); source.on('data', onData); source.once('end', onEnd);
+  emitKeypressEvents(input);
   const prompt: Prompt = (question, secret = false) => new Promise((resolve, reject) => {
     let finished = false;
     const output = new Writable({ write(chunk, _encoding, callback) {
       if (!secret) process.stdout.write(chunk);
       callback();
     } });
-    const readline = createInterface({ input: process.stdin, output, terminal: true, historySize: 0 });
+    const readline = createInterface({ input, output, terminal: true, historySize: 0 });
     const finish = (error?: Error, answer = '') => {
       if (finished) return;
       finished = true;
-      process.stdin.off('keypress', onKey);
+      input.off('keypress', onKey);
       process.off('SIGINT', onInterrupt);
       process.off('SIGTERM', onInterrupt);
       readline.close();
@@ -37,7 +88,7 @@ export function terminalPrompt(): Prompt {
       if (key.name === 'escape') finish(new SetupCancelled());
     };
     const onInterrupt = () => finish(setupAbort());
-    process.stdin.on('keypress', onKey);
+    input.on('keypress', onKey);
     process.on('SIGINT', onInterrupt);
     process.on('SIGTERM', onInterrupt);
     readline.on('SIGINT', onInterrupt);
@@ -47,36 +98,19 @@ export function terminalPrompt(): Prompt {
   });
 
   prompt.select = (title, items, initial, back) => new Promise((resolve, reject) => {
-    const input = process.stdin;
     const output = process.stdout;
     const wasRaw = input.isRaw;
-    const choices = [...items, { label: back }];
+    const choices = [...items.map((item, index) => ({ ...item, index })), { label: back, index: -1 }];
     let selected = Math.max(0, Math.min(initial, choices.length - 1));
     let query = '';
     let shortcut = '';
     let lines = 0;
     let finished = false;
-    const filtered = () => choices.map((item, index) => ({ ...item, index }))
-      .filter(item => item.index === items.length || `${item.label} ${item.description ?? ''}`.toLowerCase().includes(query.toLowerCase()));
+    const filtered = () => [...fuzzyFilter(choices.filter(item => item.index !== -1), query, item => `${item.label} ${item.description ?? ''}`), ...choices.filter(item => item.index === -1)];
     const paint = () => {
       const rows = filtered();
       selected = Math.min(selected, rows.length - 1);
-      const count = Math.max(1, Math.min(9, (output.rows || 24) - 6));
-      const start = Math.max(0, Math.min(selected - Math.floor(count / 2), rows.length - count));
-      const width = Math.max(1, (output.columns || 80) - 1);
-      const clip = (text: string) => truncateToWidth(text, width);
-      const content = [
-        clip(chalk.bold.cyan(`  ${singleLine(title)}`)),
-        clip(chalk.dim(query ? `  Search: ${singleLine(query)}` : shortcut ? `  Option: ${shortcut} · Enter select · Backspace edit` : '  ↑/↓ move · Enter select · type to search · Esc back · Ctrl+C exit')),
-        ...rows.slice(start, start + count).map((item, index) => {
-          const label = `${item.index === items.length ? '0' : item.index + 1}. ${singleLine(item.label)}`;
-          return clip(start + index === selected ? chalk.cyan(`  ❯ ${label}`) : `    ${label}`);
-        }),
-      ];
-      if (query && rows.length === 1) content.push(clip(chalk.dim('  No matching options · Backspace to edit your search')));
-      const row = rows[selected];
-      if (row?.description) content.push(clip(chalk.dim(`    ${singleLine(row.description)}`)));
-      if (rows.length > count) content.push(clip(chalk.dim(`  ${selected + 1} / ${rows.length} options`)));
+      const content = setupMenuLines({ title, items: rows, selected, query, shortcut, columns: output.columns || 80, rows: output.rows || 24 });
       if (lines) output.write(`\x1b[${lines}A`);
       output.write('\r\x1b[J' + content.join('\n') + '\n');
       lines = content.length;
@@ -93,7 +127,7 @@ export function terminalPrompt(): Prompt {
       input.pause();
       if (lines) output.write(`\x1b[${lines}A\r\x1b[J`);
       output.write('\x1b[?25h');
-      if (!error) output.write(`${chalk.dim('  ✓')} ${singleLine(title)} ${chalk.dim('›')} ${singleLine(value ? items[value - 1]!.label : back)}\n`);
+      if (!error) output.write(`${chalk.hex(colors.success)('  ✓')} ${singleLine(title)} ${chalk.hex(colors.textMuted)('›')} ${singleLine(value ? items[value - 1]!.label : back)}\n`);
       error ? reject(error) : resolve(value);
     };
     const onInterrupt = () => finish(0, setupAbort());
@@ -105,7 +139,7 @@ export function terminalPrompt(): Prompt {
       const rows = filtered();
       if (key.name === 'return') {
         if (shortcut) { const value = Number(shortcut); if (value <= items.length) finish(value); else output.write('\x07'); }
-        else { const row = rows[selected]; if (row) finish(row.index === items.length ? 0 : row.index + 1); }
+        else { const row = rows[selected]; if (row) finish(row.index === -1 ? 0 : row.index + 1); }
         return;
       }
       if (key.name === 'up') selected = (selected + rows.length - 1) % rows.length;
@@ -134,6 +168,18 @@ export function terminalPrompt(): Prompt {
     input.resume();
     output.write('\n\x1b[?25l');
     paint();
+    if (home && !queried) {
+      queried = true;
+      void refreshTerminalTheme({
+        queryTerminalBackgroundColor: () => new Promise(resolve => { backgroundReply = resolve; output.write('\x1b]11;?\x07'); }),
+        invalidate() {}, requestRender: () => { if (!finished) paint(); },
+      }, home, () => !disposed).finally(() => { backgroundReply = undefined; });
+    }
   });
+  prompt.dispose = () => {
+    disposed = true;
+    source.off('data', onData); source.off('end', onEnd); source.pause();
+    buffer.destroy(); stream.destroy(); source.setRawMode(!!wasRaw);
+  };
   return prompt;
 }

@@ -1,17 +1,19 @@
-import { mkdir, readFile, realpath } from 'node:fs/promises';
+import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import lockfile from 'proper-lockfile';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { parse } from 'smol-toml';
+import { identity } from './identity.js';
 import {
   createCoderaiHarness,
   type CoderaiHarness, type Session, type Event, type ApprovalHandler, type QuestionHandler,
 } from '@coderai/sdk';
 
-export const identity = { productName: 'coderai', version: '0.1.0', platform: 'kimi_code_cli' };
+export class ModelSetupRequired extends Error {}
 export interface RuntimeOptions {
   cwd: string;
+  interactive?: boolean;
   home?: string;
   model?: string;
   resume?: string;
@@ -72,12 +74,10 @@ export class Runtime {
   constructor(readonly options: RuntimeOptions) {
     const home = validateHome(options.home ?? homePath());
     prepareEnvironment(home);
-    this.harness = createCoderaiHarness({ homeDir: home, configPath: join(home, 'config.toml'), identity, uiMode: 'terminal', uiCapabilities: [], skillDirs: options.skillDirs?.map(path => resolve(options.cwd, path)), agentFiles: options.agentFiles?.map(path => resolve(options.cwd, path)) });
+    this.harness = createCoderaiHarness({ homeDir: home, configPath: join(home, 'config.toml'), identity, uiMode: options.interactive ? 'terminal' : 'print', uiCapabilities: options.interactive ? ['update_panel', 'open_url'] : [], skillDirs: options.skillDirs?.map(path => resolve(options.cwd, path)), agentFiles: options.agentFiles?.map(path => resolve(options.cwd, path)) });
   }
   async validateModel(alias?: string): Promise<void> {
-    if (/^(true|1|yes|on)$/i.test(process.env['KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT']?.trim() ?? '')) {
-      throw new Error('CoderAI must stop owned processes on exit. Set KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT=false.');
-    }
+    if (/^(true|1|yes|on)$/i.test(process.env['KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT']?.trim() ?? '')) throw new Error('Background retention is not supported in this host. Set KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT=false.');
     let text: string | undefined;
     try {
       text = await readFile(this.harness.configPath, 'utf8');
@@ -89,22 +89,20 @@ export class Runtime {
       try { raw = parse(text); }
       catch { throw new Error(`Invalid TOML syntax in ${this.harness.configPath}. Check table names, quotes and brackets.`); }
       if (raw['telemetry'] === true) throw new Error(`Telemetry is unavailable in CoderAI. Set telemetry = false in ${this.harness.configPath}.`);
-      for (const section of ['task', 'background']) {
+      for (const section of ['background', 'task']) {
         const settings = raw[section];
-        if (settings && typeof settings === 'object' && !Array.isArray(settings) && 'keep_alive_on_exit' in settings && settings['keep_alive_on_exit'] === true) {
-          throw new Error(`CoderAI must stop owned processes on exit. Set ${section}.keep_alive_on_exit = false in ${this.harness.configPath}.`);
-        }
+        if (settings && typeof settings === 'object' && !Array.isArray(settings) && 'keep_alive_on_exit' in settings && settings['keep_alive_on_exit'] === true) throw new Error('Background retention is not supported in this host. Set keep_alive_on_exit = false.');
       }
     }
     const diagnostics = await this.harness.getConfigDiagnostics();
     if (diagnostics.warnings.length) throw new Error(`Invalid config: ${diagnostics.warnings.join('; ')}`);
     const config = await this.harness.getConfig();
     const selected = alias ?? this.options.model ?? config.defaultModel;
-    if (!selected) throw new Error(`No model configured. Set CODERAI_MODEL_NAME and OPENAI_API_KEY (OpenAI-compatible API), or configure a provider and model in ${this.harness.configPath}. Set CODERAI_MODEL_BASE_URL for a custom endpoint. No account login is required.`);
+    if (!selected) throw new ModelSetupRequired(`No model configured. Set CODERAI_MODEL_NAME and OPENAI_API_KEY (OpenAI-compatible API), or configure a provider and model in ${this.harness.configPath}. Set CODERAI_MODEL_BASE_URL for a custom endpoint. No account login is required.`);
     const model = config.models?.[selected];
-    if (!model) throw new Error(`Unknown model alias: ${selected}`);
+    if (!model) throw new ModelSetupRequired(`Unknown model alias: ${selected}. Run coderai models list to see configured aliases.`);
     const provider = config.providers[model.provider];
-    if (!provider) throw new Error(`Unknown provider: ${model.provider}`);
+    if (!provider) throw new ModelSetupRequired(`Unknown provider: ${model.provider}`);
     const types = ['kimi', 'openai', 'anthropic', 'openai_responses', 'google-genai', 'vertexai'];
     if (!types.includes(provider.type)) throw new Error(`Unsupported provider: ${provider.type}`);
     const standardEnv: Record<string, string> = { kimi: 'KIMI_API_KEY', openai: 'OPENAI_API_KEY', openai_responses: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY', 'google-genai': 'GOOGLE_API_KEY', vertexai: 'VERTEXAI_API_KEY' };
@@ -113,7 +111,7 @@ export class Runtime {
       ? process.env[provider.apiKeyEnv]?.trim()
       : provider.env?.[standardName]?.trim() || process.env[standardName]?.trim());
     if (!key && !provider.oauth && provider.type !== 'vertexai') {
-      throw new Error(`Missing API key for provider ${model.provider}. Set ${provider.apiKeyEnv ?? standardEnv[provider.type] ?? 'CODERAI_MODEL_API_KEY'} or configure an API key in ${this.harness.configPath}.`);
+      throw new ModelSetupRequired(`Missing API key for provider ${model.provider}. Set ${provider.apiKeyEnv ?? standardEnv[provider.type] ?? 'CODERAI_MODEL_API_KEY'} or configure an API key in ${this.harness.configPath}.`);
     }
   }
   async trust(ask: (text: string, workDir: string) => Promise<boolean>): Promise<void> {
@@ -127,7 +125,17 @@ export class Runtime {
     await this.trustDirectory(cwd);
   }
   private async trustDirectory(cwd: string): Promise<void> {
-    const workDir = await realpath(resolve(cwd));
+    const path = resolve(cwd);
+    let workDir: string;
+    try {
+      workDir = await realpath(path);
+      if (!(await stat(workDir)).isDirectory()) throw new Error(`Workspace path is not a directory: ${path}`);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') throw new Error(`Workspace directory does not exist: ${path}`);
+      if (code === 'EACCES' || code === 'EPERM') throw new Error(`Cannot access workspace directory: ${path}`);
+      throw error;
+    }
     if (this.checkedTrust.has(workDir)) return;
     const info = await this.harness.getWorkspaceTrustInfo(workDir);
     if (info.trusted) { this.checkedTrust.add(workDir); return; }
@@ -190,30 +198,52 @@ export class Runtime {
       throw error;
     }
   }
-  async run(prompt: string, onEvent: (event: Event) => void, approve: ApprovalHandler, question?: QuestionHandler, dispatch?: (session: Session) => Promise<void>, followGoal = false, followCreatedGoals = false): Promise<string> {
+  async run(prompt: string, onEvent: (event: Event) => void, approve: ApprovalHandler, question?: QuestionHandler, dispatch?: (session: Session) => Promise<void>, followGoal = false, followCreatedGoals = false, printCompletion = false, signal?: AbortSignal): Promise<string> {
     const session = this.session;
     if (!session) throw new Error('No active conversation');
     session.setApprovalHandler(approve);
     session.setQuestionHandler(question ?? (() => null));
+    const config = printCompletion ? await this.harness.getConfig() : undefined;
+    const configuredCeiling = config?.task?.['printWaitCeilingS'] ?? config?.background?.printWaitCeilingS;
+    const ceiling = typeof configuredCeiling === 'number' && Number.isFinite(configuredCeiling) && configuredCeiling > 0 ? configuredCeiling : 300;
     return new Promise<string>((resolveTurn, reject) => {
       let activeTurn = false;
       let trackGoal = followGoal;
       let endedReason = 'completed';
       let settled = false;
-      const finish = (reason: string) => { if (!settled) { settled = true; off(); resolveTurn(reason); } };
+      let completionTimer: ReturnType<typeof setTimeout> | undefined;
+      let sequence = 0;
+      let completionSequence = -1;
+      const abort = () => finish('cancelled');
+      const cleanup = () => { off(); if (completionTimer) clearTimeout(completionTimer); signal?.removeEventListener('abort', abort); };
+      const finish = (reason: string) => { if (!settled) { settled = true; cleanup(); resolveTurn(reason); } };
+      const fail = (error: unknown) => { if (!settled) { settled = true; cleanup(); reject(error); } };
+      const complete = (reason: string) => {
+        if (!printCompletion || reason !== 'completed') { finish(reason); return; }
+        const current = sequence;
+        if (completionSequence === current) return;
+        completionSequence = current;
+        void session.handlePrintMainTurnCompleted().then(policy => {
+          if (settled || current !== sequence) return;
+          if (policy === 'finish') finish(reason);
+          else if (!completionTimer) completionTimer = setTimeout(() => finish('background_timeout'), Math.min(ceiling * 1000, 2_147_483_647));
+        }).catch(fail);
+      };
       const off = session.onEvent(event => {
         onEvent(event);
         if (event.agentId !== 'main') return;
-        if (event.type === 'turn.started') activeTurn = true;
+        if (event.type === 'turn.started') { activeTurn = true; sequence++; }
         if (event.type === 'goal.updated' && followCreatedGoals && event.snapshot?.status === 'active') trackGoal = true;
-        if (event.type === 'goal.updated' && trackGoal && !activeTurn && event.snapshot?.status !== 'active') finish(endedReason);
+        if (event.type === 'goal.updated' && trackGoal && !activeTurn && event.snapshot?.status !== 'active') complete(endedReason);
         if (event.type === 'turn.ended') {
           activeTurn = false; endedReason = event.reason;
-          if (!trackGoal || event.reason !== 'completed') { finish(event.reason); return; }
-          void session.getGoal().then(({ goal }) => { if (!activeTurn && goal?.status !== 'active') finish(event.reason); }).catch(error => { if (!settled) { settled = true; off(); reject(error); } });
+          if (!trackGoal || event.reason !== 'completed') { complete(event.reason); return; }
+          void session.getGoal().then(({ goal }) => { if (!activeTurn && goal?.status !== 'active') complete(event.reason); }).catch(fail);
         }
       });
-      (dispatch ? dispatch(session) : session.prompt(prompt)).catch(error => { if (!settled) { settled = true; off(); reject(error); } });
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) { abort(); return; }
+      (dispatch ? dispatch(session) : session.prompt(prompt)).catch(fail);
     });
   }
   close(): Promise<void> {

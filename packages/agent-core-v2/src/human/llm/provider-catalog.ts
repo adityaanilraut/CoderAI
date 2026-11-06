@@ -53,6 +53,8 @@ export interface CatalogProviderInfo {
   readonly oauth?: CatalogOAuthRef;
   readonly env?: Readonly<Record<string, string>>;
   readonly modelSource?: 'static' | 'discover' | 'oauth-catalog';
+  readonly project?: string;
+  readonly location?: string;
   readonly source?: Readonly<Record<string, unknown>>;
 }
 

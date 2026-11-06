@@ -51,8 +51,8 @@ export const ServicesConfigSchema = z
 
 export type ServicesConfig = z.infer<typeof ServicesConfigSchema>;
 
-export const WEB_SEARCH_BASE_URL_ENV = 'KIMI_WEB_SEARCH_BASE_URL';
-export const WEB_SEARCH_API_KEY_ENV = 'KIMI_WEB_SEARCH_API_KEY';
+export const WEB_SEARCH_BASE_URL_ENV = 'CODERAI_SEARCH_BASE_URL';
+export const WEB_SEARCH_API_KEY_ENV = 'CODERAI_SEARCH_API_KEY';
 export const WEB_FETCH_BASE_URL_ENV = 'KIMI_WEB_FETCH_BASE_URL';
 export const WEB_FETCH_API_KEY_ENV = 'KIMI_WEB_FETCH_API_KEY';
 

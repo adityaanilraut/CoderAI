@@ -36,7 +36,7 @@ import type {
   OpenAIWireMessage,
 } from './contract';
 import { lowerMessage } from './lower';
-import { extractToolMedia } from './patterns';
+import { createExtractToolMedia } from './patterns';
 import {
   convertReasoningDetails,
   extractReasoningDetails,
@@ -163,7 +163,7 @@ export function lowerOpenAIMessages(
       ? toolResultToPlainText
       : conversion === 'keep_parts'
         ? undefined
-        : extractToolMedia;
+        : createExtractToolMedia(input.model.capability.audio_in);
   const normalized =
     mediaPattern === undefined ? input.messages : applyPatterns(input.messages, [mediaPattern]);
   return normalized.flatMap((message) =>

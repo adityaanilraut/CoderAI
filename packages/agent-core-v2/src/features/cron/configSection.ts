@@ -1,4 +1,4 @@
-import { type ConfigStripEnv, type EnvBindings, envBindings } from '#/app/config/config';
+import { type EnvBindings, envBindings, stripEnvBoundFields } from '#/app/config/config';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 
 export const CRON_SECTION = 'cron';
@@ -44,7 +44,7 @@ export const cronEnvBindings: EnvBindings<CronConfig> = envBindings(cronConfigSc
   pollIntervalMs: { env: 'KIMI_CRON_POLL_INTERVAL_MS', parse: parsePollIntervalMs },
 });
 
-export const stripCronEnv: ConfigStripEnv<CronConfig> = () => undefined;
+export const stripCronEnv = stripEnvBoundFields(cronEnvBindings);
 
 registerConfigSection(CRON_SECTION, cronConfigSchema, {
   defaultValue: DEFAULT_CRON_CONFIG,

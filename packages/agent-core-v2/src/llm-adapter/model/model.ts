@@ -17,6 +17,7 @@ export interface ModelOverride {
   maxContextSize?: number;
   maxInputSize?: number;
   maxOutputSize?: number;
+  metadata?: Record<string, string>;
   capabilities?: string[];
   displayName?: string;
   reasoningKey?: string;
@@ -43,6 +44,7 @@ export interface ModelRecord {
   maxContextSize?: number;
   maxInputSize?: number;
   maxOutputSize?: number;
+  metadata?: Record<string, string>;
   capabilities?: string[];
   displayName?: string;
   reasoningKey?: string;

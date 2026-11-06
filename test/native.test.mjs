@@ -7,14 +7,16 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fixture } from './fixture.mjs';
 
-const builtBinary = process.env.CODERAI_TEST_BINARY ? resolve(process.env.CODERAI_TEST_BINARY) : resolve('dist-native', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'coderai.exe' : 'coderai');
-test('standalone embeds and loads its native clipboard binding', { timeout: 30000, skip: process.platform !== 'darwin' || !existsSync(builtBinary) }, async t => {
+const builtBinary = resolve(process.env.CODERAI_TEST_BINARY || join('dist-bun', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'coderai.exe' : 'coderai'));
+const standaloneRequested = Boolean(process.env.CODERAI_TEST_BINARY);
+if (standaloneRequested && !existsSync(builtBinary)) throw new Error(`Standalone executable not found: ${builtBinary}`);
+test('standalone extracts its native clipboard binding and handles pasted media', { timeout: 30000, skip: !standaloneRequested || process.platform !== 'darwin' }, async t => {
   const f = await fixture(); t.after(f.cleanup);
   const dir = join(f.root, 'tmp'); const bin = join(f.root, 'bin'); await mkdir(dir); await mkdir(bin);
   const file = join(f.cwd, 'pixel.png');
   await writeFile(file, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a1kAAAAASUVORK5CYII=', 'base64'));
   const marker = join(f.root, 'binding-loaded');
-  const bindingDir = process.env.CODERAI_TEST_BINARY ? 'coderai-bun-*' : 'coderai-native-clipboard-*';
+  const bindingDir = 'coderai-bun-*';
   await writeFile(join(bin, 'osascript'), `#!/bin/sh\nls "$TMPDIR"/${bindingDir}/clipboard.node > "$CODERAI_BINDING_MARKER"\nprintf "%s" "$CODERAI_CLIPBOARD_RESULT"\n`, { mode: 0o755 });
   Object.assign(f.env, { PATH: `${bin}:${process.env.PATH}`, TMPDIR: dir, CODERAI_MODEL_CAPABILITIES: 'image_in', CODERAI_BINDING_MARKER: marker, CODERAI_CLIPBOARD_RESULT: JSON.stringify({ path: file }) });
   const result = await new Promise((resolveResult, reject) => {
@@ -31,7 +33,7 @@ test('standalone embeds and loads its native clipboard binding', { timeout: 3000
   assert.match(await readFile(marker, 'utf8'), /clipboard\.node/);
   assert.match(JSON.stringify(f.requests[0]), /data:image\/png;base64,/);
 });
-test('standalone executable runs the engine and tools outside the checkout', { timeout: 60000, skip: !existsSync(builtBinary) && 'run build:native first' }, async t => {
+test('standalone executable runs the engine and tools outside the checkout', { timeout: 60000, skip: !standaloneRequested && 'run bun run test:native to build and test the Bun executable' }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'coderai-native-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const binary = join(root, process.platform === 'win32' ? 'coderai.exe' : 'coderai');
@@ -50,4 +52,58 @@ test('standalone executable runs the engine and tools outside the checkout', { t
   assert.equal(events.at(-1).exitCode, 0, result.stderr);
   assert.equal(events.filter(event => event.type === 'tool.result').length, 7);
   assert.equal(await readFile(join(f.cwd, 'created.txt'), 'utf8'), 'second\n');
+});
+
+test('standalone embeds a working MiniDb text worker', { timeout: 60000, skip: !standaloneRequested }, async t => {
+  const f = await fixture();
+  const temp = join(f.root, 'tmp'); await mkdir(temp);
+  const child = spawn(builtBinary, ['--trust', '--json', '-p', 'SCENARIO wait'], { cwd: f.cwd, env: { ...f.env, TMPDIR: temp, TMP: temp, TEMP: temp }, stdio: ['ignore', 'ignore', 'pipe'] });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = new Promise(resolve => child.once('close', resolve));
+      child.kill();
+      await closed;
+    }
+    await f.cleanup();
+  });
+  const { readdir } = await import('node:fs/promises');
+  let worker;
+  for (let i = 0; i < 100 && !worker; i++) {
+    const dirs = await readdir(temp);
+    const dir = dirs.find(name => name.startsWith('coderai-bun-'));
+    if (dir && existsSync(join(temp, dir, 'text-build-worker.mjs'))) worker = join(temp, dir, 'text-build-worker.mjs');
+    else await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.ok(worker, 'standalone did not extract its worker');
+  const extracted = join(f.root, 'worker.mjs'); await copyFile(worker, extracted);
+  const entry = join(f.root, 'worker-test.ts');
+  await writeFile(entry, `
+    import worker from './worker.mjs' with { type: 'file' };
+    import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    import { MiniDb } from ${JSON.stringify(resolve('packages/minidb/src/index.ts'))};
+    import { configureTextBuildWorkerRuntime } from ${JSON.stringify(resolve('packages/minidb/src/worker-runtime.ts'))};
+    const dir = mkdtempSync(join(tmpdir(), 'coderai-worker-test-'));
+    const path = join(dir, 'worker.mjs');
+    writeFileSync(path, new Uint8Array(await Bun.file(worker).arrayBuffer()));
+    configureTextBuildWorkerRuntime(path);
+    const db = await MiniDb.open({ dir: join(dir, 'db'), durability: 'relaxed', valueCodec: 'json' });
+    try {
+      await db.mset(Array.from({ length: 5000 }, (_, i) => ['doc' + i, { text: 'searchable document ' + i }]));
+      await db.createTextIndex('text', { fields: ['text'] });
+      const hits = db.search('text', 'searchable', { limit: 10 });
+      if (hits.length !== 10 || hits.some(hit => !hit.value?.text?.includes('searchable'))) throw new Error('worker index search failed');
+      console.log(JSON.stringify(db.stats));
+    } finally { await db.close(); rmSync(dir, { recursive: true, force: true }); }
+  `);
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const exec = promisify(execFile);
+  const harness = join(f.root, process.platform === 'win32' ? 'worker-test.exe' : 'worker-test');
+  await exec(process.execPath, ['build', '--compile', entry, '--outfile', harness], { timeout: 30000 });
+  const result = await exec(harness, [], { timeout: 30000 });
+  const stats = JSON.parse(result.stdout.trim());
+  assert.ok(stats.textWorkerBuilds > 0, result.stdout);
+  assert.equal(stats.textWorkerFallbacks, 0);
 });

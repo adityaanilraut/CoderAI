@@ -147,7 +147,7 @@ function cost(text: string): number {
   return estimateTokens(text) + 1;
 }
 
-function shorten(unit: Unit, budget: number): Excerpt | undefined {
+function shorten(unit: Unit, budget: number): (Excerpt & { unit: Unit }) | undefined {
   const before = unit.before ? omitted(unit.before.length) : '';
   const available = budget - cost(block(unit, before, '', unit.assistant ? ' ' : ''));
   const userCost = estimateTokens(unit.user);
@@ -156,7 +156,7 @@ function shorten(unit: Unit, budget: number): Excerpt | undefined {
   const user = keepUser ? { text: unit.user, removed: 0 } : suffixWithinBudget(unit.user, available - (reply ? estimateTokens(reply.text) : 0));
   if (!user) return undefined;
   const text = block(unit, before, user.text, reply?.text ?? '');
-  return cost(text) <= budget ? { text, removed: unit.before.length + user.removed + (reply ? reply.removed : unit.assistant.length) } : undefined;
+  return cost(text) <= budget ? { text, unit: { ...unit, before, user: user.text, assistant: reply?.text ?? '' }, removed: unit.before.length + user.removed + (reply ? reply.removed : unit.assistant.length) } : undefined;
 }
 
 interface Scope {
@@ -257,7 +257,7 @@ export function renderHistory(
     }
     const shortened = selected.length === 0 ? shorten(unit, remaining) : undefined;
     if (shortened) {
-      selected.unshift({ unit, text: shortened.text });
+      selected.unshift({ unit: shortened.unit, text: shortened.text });
       includedTurns += unit.turns;
       truncatedCharacters = shortened.removed;
     }
@@ -272,7 +272,22 @@ export function renderHistory(
     shortened: truncatedCharacters > 0,
     summary: !hasSummary ? 'none' : selected[0]!.unit.index === 0 ? 'included' : 'omitted',
   });
-  const messages: ImportMessage[] = [{ role: 'user', content: [{ type: 'text', text: [head, ...selected.map(item => item.text), tail].join('\n\n') }] }];
+  // Keep the source's user/assistant boundaries. Tool activity remains textual
+  // historical evidence, as upstream renders it, never executable tool calls.
+  const messages: ImportMessage[] = [];
+  const append = (role: ImportMessage['role'], text: string) => {
+    if (text.trim()) messages.push({ role, content: [{ type: 'text', text }] });
+  };
+  for (const { unit } of selected) {
+    append('assistant', unit.before);
+    append('user', unit.index === 0 ? `<source_summary>\n${unit.user}\n</source_summary>` : unit.user);
+    append('assistant', unit.assistant);
+  }
+  // Attribution, archive references and continuation cautions are retained
+  // around the selected history, including shortened and compacted histories.
+  messages[0]!.content[0]!.text = joined(head, messages[0]!.content[0]!.text);
+  const last = messages.at(-1)!;
+  last.content[0]!.text = joined(last.content[0]!.text, tail);
   const stats: ConversionStats = { tokenBudget, estimatedTokens: estimateMessages(messages), sourceTurns: total, includedTurns, omittedTurns: total - includedTurns, truncatedCharacters };
   if (stats.estimatedTokens > tokenBudget) throw new Error('Rendered import exceeded its token budget.');
   return { messages, stats, truncated: selected.length < all.length || truncatedCharacters > 0 };

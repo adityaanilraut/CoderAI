@@ -1,19 +1,13 @@
 # pi-tui
 
-Vendored fork of [`earendil-works/pi`](https://github.com/earendil-works/pi) `packages/tui`. Keep the fork small so upstream syncs stay cheap.
+Vendored fork of `earendil-works/pi` terminal UI primitives. Keep the fork small so upstream synchronization stays manageable.
 
-## Changing this package
+## Changes
 
-Put TUI product behavior in `apps/kimi-code/src/tui` (composition, subclassing, existing host callbacks). Change this package only when the public API cannot express the behavior.
+Put product behavior in `apps/coderai/src/tui` through composition, subclassing, or existing host callbacks. Change this package only for a library defect or an extension point the app cannot reach.
 
-A patch that lands here must:
+Library changes must preserve default behavior, use additive optional arguments or callbacks, and include a regression test that fails without the change. Do not rewrite a rendering strategy for an application feature.
 
-1. Be a library defect (crash, wrong render) or an extension point the app cannot reach (input state machine, render hot path, tokenizer).
-2. Be additive: optional argument, callback, or default-off switch. Defaults match upstream.
-3. Add a test that fails without the change.
+## Validation
 
-Skip step 3 and the change is not done. Do not rewrite a rendering strategy.
-
-## Tests
-
-This package runs `node --test` via `pnpm --filter @coderai/pi-tui test`. The repo-root vitest run does not execute these tests.
+From the repository root, run `bun run typecheck` and `bun run test`. Input-buffer and terminal-safety regressions belong in `test/terminal-safety.test.mjs`; app rendering and real-terminal interactions are covered by the other root UI tests. The standalone executable is checked with `bun run test:native`.

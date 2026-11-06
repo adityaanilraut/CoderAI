@@ -33,15 +33,15 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const dir = mkdtempSync(join(tmpdir(), 'coderai-bun-'));
+process.on('exit', () => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
 const workerPath = join(dir, 'text-build-worker.mjs');
 writeFileSync(workerPath, new Uint8Array(await Bun.file(worker).arrayBuffer()));
 globalThis.__coderaiBunWorker = workerPath;
 ${clipboard ? "const clipboardPath = join(dir, 'clipboard.node');\nwriteFileSync(clipboardPath, new Uint8Array(await Bun.file(clipboard).arrayBuffer()));\nglobalThis.__coderaiBunClipboard = clipboardPath;" : ''}
-process.on('exit', () => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
 await import('./main.cjs');
 `;
 await writeFile('dist-bun/entry.ts', entry);
-run('bun', ['build', '--compile', 'dist-bun/entry.ts', '--outfile', join(out, executable)]);
+run(process.execPath, ['build', '--compile', 'dist-bun/entry.ts', '--outfile', join(out, executable)]);
 if (process.platform !== 'win32') await chmod(join(out, executable), 0o755);
 const licenses = [['LICENSE','LICENSE'], ['NOTICE','NOTICE'], ['packages/pi-tui/LICENSE','LICENSE.pi-tui'], ['third-party-licenses/jsquash-webp.LICENSE','LICENSE.jsquash-webp'], ['third-party-licenses/libwebp.LICENSE','LICENSE.libwebp']];
 const zip = new ZipFile();

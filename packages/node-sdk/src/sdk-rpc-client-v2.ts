@@ -1,3 +1,7 @@
+import { IAgentMcpService } from '@coderai/agent-core-v2/agent/mcp/mcp';
+import { IAgentFileHistoryService } from '@coderai/agent-core-v2/features/fileHistory/fileHistory';
+import { turnKey } from '@coderai/agent-core-v2/agent/loop/turnOps';
+import { IAgentStateService } from '@coderai/agent-core-v2/agent/state/agentState';
 /**
  * v2 wiring MVP — an `SDKRpcClientBase` backed by the agent-core-v2 engine
  * (DI × Scope) instead of the v1 `KimiCore` RPC pair. The engine is
@@ -96,8 +100,8 @@
  *   handler since the workspace-domain resource consolidation; the v2
  *   `McpServerEntry` is field-identical with v1's `McpServerInfo`.
  *   `reconnectMcpServer` with an explicit config and `addSessionMcpServer`
- *   ride the manager's upserting `connect`; both reject sessions whose
- *   handle is a merged ephemeral-server view (no `connect` on it), and an
+ *   ride the connection view's upserting `connect`, including ephemeral
+ *   overlays. On sessions without an overlay an
  *   unpersisted add is visible to sibling sessions of the workspace (the v2
  *   manager has no session-local `caller` scope).
  * - `onEvent` / `receiveEvent` → the base class registries, fed by a
@@ -129,7 +133,6 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import { encodeWorkDirKey } from '@coderai/agent-core-v2/_base/utils/workdir-slug';
-import { McpConnectionManager } from '@coderai/agent-core-v2/mcpCore/connection-manager';
 import { ITowerRateLimitService } from '@coderai/agent-core-v2/features/tower/towerRateLimit';
 import { readTowerStatusSummary } from '@coderai/agent-core-v2/features/tower/tools/status/statusReader';
 import { loadMcpServers } from '@coderai/agent-core-v2/app/mcpConfig/configLoader';
@@ -173,6 +176,7 @@ import {
   IBootstrapService,
   IConfigService,
   IEventService,
+  IEventDispatcher,
   IFlagService,
   IHostEnvironment,
   IHostFileSystem,
@@ -245,7 +249,10 @@ import { createKlient } from '@coderai/klient/memory';
 import { assertKimiHostIdentity, createKimiDefaultHeaders } from '@coderai/oauth';
 
 import { KimiAuthFacade } from '#/auth';
-import { ensureConfigFile, HookDefSchema } from '#/config/index';
+import { IAgentUserToolService } from '@coderai/agent-core-v2/agent/userTool/userTool';
+import type { ToolCallRequest, ToolCallResponse, UserToolHandler, UserToolRegistration } from '#/interaction';
+
+import { ensureConfigFile } from '#/config/index';
 import type { AgentContextData } from '#/context';
 import { ErrorCodes, isKimiErrorCode, KimiError, type KimiErrorCode } from '#/errors';
 import type { ExperimentalFeatureState } from '#/flag';
@@ -345,6 +352,7 @@ import {
   normalizeServerName,
   parseInlineMcpServer,
   parseReconnectMcpServerConfig,
+  parseSessionMcpServers,
 } from '#/v2/global-mcp';
 import {
   normalizeWorkDir,
@@ -380,6 +388,7 @@ export interface SDKRpcClientV2Options {
 const MAX_TIMER_DELAY_MS = 0x7fffffff;
 
 export class SDKRpcClientV2 extends SDKRpcClientBase {
+  private readonly sessionMcpOverrides = new Map<string, Record<string, import('@coderai/agent-core-v2/mcpCore/config-schema').McpServerConfig>>();
   private readonly explicitAgentFiles: readonly string[];
   readonly homeDir: string;
   readonly configPath: string;
@@ -539,6 +548,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     // idempotent, so the ledger's own teardown turns into a no-op.
     await this.app.accessor.get(IMcpOAuthService).shutdown();
     const appendLogStore = this.app.accessor.get(IAppendLogStore);
+    this.userToolHandlers.clear();
     this.app.dispose();
     await appendLogStore.drainRetirements();
     await drainSessionIndexMirror();
@@ -883,22 +893,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
   }
 
   override async getPluginInfo(id: string): Promise<PluginInfo> {
-    // The v2 engine's hook-event union is a superset of v1's (`TurnStarted`,
-    // `UserPromptQueued`, `TaskStarted`, `SessionHeartbeat` are v2-only). The
-    // SDK contract keeps the v1 `PluginInfo` shape, so hooks using v2-only
-    // events are dropped from the projection — mirroring how the config
-    // mapper drops config domains v1 does not know.
-    const info = await this.klient.global.plugins.info(id);
-    const manifest =
-      info.manifest === undefined
-        ? undefined
-        : {
-            ...info.manifest,
-            hooks: info.manifest.hooks?.filter((hook) =>
-              (HookDefSchema.shape.event.options as readonly string[]).includes(hook.event),
-            ) as NonNullable<PluginInfo['manifest']>['hooks'],
-          };
-    return { ...info, manifest };
+    return this.klient.global.plugins.info(id);
   }
 
   /**
@@ -1075,6 +1070,36 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     }
   }
 
+  private readonly userToolHandlers = new Map<string, Map<string, Map<string, UserToolHandler>>>();
+
+  override async registerTool(sessionId: string, tool: UserToolRegistration, handler: UserToolHandler): Promise<void> {
+    if (!tool.name.trim() || typeof handler !== 'function') throw new TypeError('A tool name and handler are required.');
+    const agent = await this.agentScope(sessionId);
+    agent.accessor.get(IAgentUserToolService).register(tool);
+    let agents = this.userToolHandlers.get(sessionId);
+    if (agents === undefined) this.userToolHandlers.set(sessionId, agents = new Map());
+    let handlers = agents.get(agent.id);
+    if (handlers === undefined) agents.set(agent.id, handlers = new Map());
+    handlers.set(tool.name, handler);
+  }
+
+  override async unregisterTool(sessionId: string, name: string): Promise<void> {
+    const agent = await this.agentScope(sessionId);
+    agent.accessor.get(IAgentUserToolService).unregister(name);
+    this.userToolHandlers.get(sessionId)?.get(agent.id)?.delete(name);
+  }
+
+  override async toolCall(request: ToolCallRequest): Promise<ToolCallResponse> {
+    const agents = this.userToolHandlers.get(request.sessionId);
+    const handler = agents?.get(request.agentId)?.get(request.name) ?? agents?.get(MAIN_AGENT_ID)?.get(request.name);
+    if (handler === undefined) return { output: `No SDK handler registered for tool "${request.name}".`, isError: true };
+    try {
+      return await handler(request.args, request);
+    } catch (error) {
+      return { output: error instanceof Error ? error.message : String(error), isError: true };
+    }
+  }
+
   /**
    * Attach the event/interaction wiring to a freshly materialized session
    * (idempotent). Unwiring needs no call site of its own: every close path
@@ -1083,6 +1108,22 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    */
   private wireSession(handle: ISessionScopeHandle): void {
     if (this.sessionWirings.has(handle.id)) return;
+    // User-tool definitions are durable, while addActiveTool uses a runtime
+    // profile overlay. Reapply this client's registrations after a reload;
+    // the global/session deny policies still govern whether they can run.
+    const handlers = this.userToolHandlers.get(handle.id);
+    if (handlers !== undefined) {
+      const agents = handle.accessor.get(IAgentLifecycleService);
+      for (const entry of agents.list()) {
+        const agent = agents.handleOf(entry.agentId);
+        if (agent === undefined) continue;
+        for (const tool of agent.accessor.get(IAgentUserToolService).list()) {
+          if (handlers.get(agent.id)?.has(tool.name) || handlers.get(MAIN_AGENT_ID)?.has(tool.name)) {
+            agent.accessor.get(IAgentProfileService).addActiveTool(tool.name);
+          }
+        }
+      }
+    }
     this.sessionWirings.set(handle.id, new SessionEventWiring(handle, this));
   }
 
@@ -1388,6 +1429,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
 
   private async doCreateSession(input: CreateSessionOptions): Promise<SessionSummary> {
     const workDir = normalizeRequiredWorkDir('createSession', input.workDir);
+    const mcpServers = parseSessionMcpServers(input.mcpServers);
     if ((input.agentFiles?.length ?? 0) > 1 || (input.agentProfile && input.agentFiles?.length)) throw new Error('Use one --agent-file or --agent, not both.');
     const agentFile = input.agentFiles?.[0];
     let profile = input.agentProfile;
@@ -1412,12 +1454,14 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       sessionId: input.id,
       workDir,
       additionalDirs: input.additionalDirs,
+      mcpServers,
       mainAgentBinding: profile === undefined ? undefined : {
         profile,
         model: input.model,
         thinking: input.thinking,
       },
     });
+    if (mcpServers) this.sessionMcpOverrides.set(handle.id, mcpServers);
     // Wired before the optional main-agent materialization so a profile-bind
     // warning (oversized AGENTS.md) reaches the listeners like v1's create.
     this.wireSession(handle);
@@ -1519,9 +1563,11 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
   }
 
   override async closeSession(input: SessionIdRpcInput): Promise<void> {
-    await this.runSessionAccess(input.sessionId, () =>
-      this.klient.session(input.sessionId).close(),
-    );
+    await this.runSessionAccess(input.sessionId, async () => {
+      await this.klient.session(input.sessionId).close();
+      this.userToolHandlers.delete(input.sessionId);
+      this.sessionMcpOverrides.delete(input.sessionId);
+    });
   }
 
   /**
@@ -1540,6 +1586,8 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     return this.runSessionAccess(input.sessionId, async () => {
       try {
         await this.engineAccessor.get(ISessionManager).delete(input.sessionId);
+        this.userToolHandlers.delete(input.sessionId);
+      this.sessionMcpOverrides.delete(input.sessionId);
       } catch (error) {
         // The session vanished between the index check and the delete: the
         // engine's own not-found crosses as an Error2 — restate it in v1's shape.
@@ -1567,9 +1615,8 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     // v1 re-resolves caller-provided additional dirs on every resume and
     // merges them over the workspace-local set; the engine's resume options
     // union them into the handler's shared in-memory set while the session
-    // scope is materialized. Unlike v1, the v2
-    // engine has no caller `mcpServers` channel on create/resume (caller
-    // servers are an ACP-side concern to be designed separately).
+    // scope is materialized. Ephemeral servers are seeded into the session overlay.
+    const mcpServers = parseSessionMcpServers(input.mcpServers) ?? this.sessionMcpOverrides.get(input.id);
     return this.runSessionAccess(input.id, async () => {
       // The main agent's fold depends only on the persisted wire, never on
       // the restore outcome, so it starts as soon as the wire path is known
@@ -1577,7 +1624,9 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       const mainWireFold = this.startMainWireFold(input.id, input.replayTurnLimit);
       const handle = await resumeSessionById(this.engineAccessor, input.id, {
         additionalDirs: input.additionalDirs,
+        mcpServers,
       });
+      if (mcpServers) this.sessionMcpOverrides.set(input.id, mcpServers);
       if (handle === undefined) throw SDKRpcClientV2.sessionNotFound(input.id);
       if (input.agentProfile !== undefined) {
         const agent = await this.materializeMainAgent(handle);
@@ -1713,7 +1762,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       if (live !== undefined) {
         await closeSessionById(this.engineAccessor, sessionId);
       }
-      const handle = await resumeSessionById(this.engineAccessor, sessionId);
+      const handle = await resumeSessionById(this.engineAccessor, sessionId, { mcpServers: this.sessionMcpOverrides.get(sessionId) });
       if (handle === undefined) throw SDKRpcClientV2.sessionNotFound(sessionId);
       const main = handle.accessor.get(IAgentLifecycleService).handleOf(MAIN_AGENT_ID);
       await main?.accessor.get(IAgentPluginService).refreshSessionStart();
@@ -2028,7 +2077,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       usage.byModel !== undefined || usage.total !== undefined || usage.currentTurn !== undefined;
     return {
       model: profile.modelAlias,
-      mediaCapabilities: { image: capability.image_in, video: capability.video_in },
+      mediaCapabilities: { image: capability.image_in, video: capability.video_in, audio: capability.audio_in },
       thinkingEffort: profile.thinkingLevel,
       permission: agent.accessor.get(IAgentPermissionModeService).mode,
       planMode: plan !== null,
@@ -2099,12 +2148,49 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     return todos.map((todo) => ({ title: todo.title, status: todo.status }));
   }
 
-  override async undoHistory(input: SessionIdRpcInput & { count: number }): Promise<void> {
+  override async turnChanges(input: SessionIdRpcInput & { turnId?: number }): Promise<import('#/types').TurnChanges> {
+    const agent = await this.agentScope(input.sessionId);
+    const state = agent.accessor.get(IAgentStateService).get(turnKey);
+    const turnId = input.turnId ?? state.lastEnded?.turnId ?? state.anchorTurnIds.at(-1) ?? -1;
+    if (!Number.isSafeInteger(turnId) || turnId < 0 || turnId >= state.nextTurnId) {
+      throw new KimiError(ErrorCodes.REQUEST_INVALID, 'No such turn. Turn IDs are nonnegative integers.');
+    }
+    const history = agent.accessor.get(IAgentFileHistoryService);
+    return { turnId, recorded: await history.turnRecorded(turnId), changes: await history.changes(turnId) };
+  }
+
+  override async turnFileDiff(input: SessionIdRpcInput & { turnId: number; path: string }): Promise<import('#/types').TurnFileDiff> {
+    const agent = await this.agentScope(input.sessionId);
+    const history = agent.accessor.get(IAgentFileHistoryService);
+    const change = (await history.changes(input.turnId)).find(change => change.path === input.path);
+    if (!change) throw new KimiError(ErrorCodes.REQUEST_INVALID, 'No recorded change for this path and turn.');
+    const before = await history.contentAt(input.turnId, input.path, 'start');
+    const after = await history.contentAt(input.turnId, input.path, 'end');
+    return { path: input.path, before: before?.content, after: after?.content,
+      binary: change.binary || before?.binary || after?.binary,
+      unavailable: change.oversize || !await history.turnRecorded(input.turnId) };
+  }
+
+  private refreshSessionMcpServer(session: ISessionScopeHandle, name: string): void {
+    const agents = session.accessor.get(IAgentLifecycleService);
+    for (const entry of agents.list()) agents.handleOf(entry.agentId)?.accessor.get(IAgentMcpService).refreshServer(name);
+  }
+
+  override async removeSessionMcpServer(input: SessionIdRpcInput & { name: string }): Promise<boolean> {
+    const mcp = this.requireLiveSession(input.sessionId).accessor.get(ISessionMcpHandle);
+    const name = normalizeServerName(input.name);
+    const removed = await mcp.connectionManager.remove(name);
+    const overrides = this.sessionMcpOverrides.get(input.sessionId);
+    if (overrides?.[name]) overrides[name] = { ...overrides[name], enabled: false };
+    return removed;
+  }
+
+  override async undoHistory(input: SessionIdRpcInput & { count: number; revertFiles?: boolean }): Promise<void> {
     await this.withStaleReload(
       input.sessionId,
       async () => {
         const agent = await this.agentScope(input.sessionId);
-        await agent.accessor.get(IAgentConversationUndoService).undo(input.count);
+        await agent.accessor.get(IAgentConversationUndoService).undo(input.count, { revertFiles: input.revertFiles });
       },
       false,
     );
@@ -2454,6 +2540,20 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    * post-jitter `nextFireAt` comes from the same scheduler read v1's
    * `listTaskSnapshots` forwards to.
    */
+  override async listAgentProfiles(input: SessionIdRpcInput): Promise<readonly { name: string; description?: string; whenToUse?: string }[]> {
+    const agent = await this.agentScope(input.sessionId);
+    const catalog = agent.accessor.get(ISessionAgentProfileCatalog);
+    await catalog.ready;
+    return catalog.list().map(({ name, description, whenToUse }) => ({ name, description, whenToUse }));
+  }
+
+  override async deleteCronTask(input: SessionIdRpcInput & { id: string }): Promise<boolean> {
+    const agent = await this.agentScope(input.sessionId);
+    const removed = agent.accessor.get(IAgentCronService).removeTasks([input.id]);
+    await agent.accessor.get(IEventDispatcher).flush();
+    return removed.includes(input.id);
+  }
+
   override async getCronTasks(input: SessionIdRpcInput): Promise<GetCronTasksResult> {
     await this.agentScope(input.sessionId);
     if (this.interactiveAgentId !== MAIN_AGENT_ID) return { tasks: [] };
@@ -2878,9 +2978,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    * same `mcp.server_not_found` / `mcp.server_disabled` errors, and the tool
    * re-registration rides on the status listeners in both engines. The
    * "name + full config" channel rides the manager's upserting `connect`
-   * (validated exactly like v1's session RPC), which only exists on a plain
-   * manager — a session created with ephemeral MCP servers holds a merged
-   * view instead and rejects loudly.
+   * (validated exactly like v1's session RPC), on both the workspace manager and the session overlay.
    */
   override async reconnectMcpServer(input: ReconnectMcpServerRpcInput): Promise<void> {
     const mcp = this.requireLiveSession(input.sessionId).accessor.get(ISessionMcpHandle);
@@ -2889,12 +2987,6 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       return;
     }
     const manager = mcp.connectionManager;
-    if (!(manager instanceof McpConnectionManager)) {
-      throw new KimiError(
-        ErrorCodes.NOT_IMPLEMENTED,
-        'reconnectMcpServer with an explicit config is not supported for v2 sessions with ephemeral MCP servers',
-      );
-    }
     const replacement = parseReconnectMcpServerConfig(input.name, input.config);
     // Parity with v1's manager reconnect: a disabled replacement is rejected
     // before anything is applied, not upserted over the live connection.
@@ -2904,7 +2996,11 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
         `MCP server is disabled: ${input.name}`,
       );
     }
+    mcp.includeServer(input.name);
     await manager.connect(input.name, replacement);
+    this.refreshSessionMcpServer(this.requireLiveSession(input.sessionId), input.name);
+    const overrides = this.sessionMcpOverrides.get(input.sessionId);
+    if (overrides) overrides[input.name] = replacement;
   }
 
   /**
@@ -2913,8 +3009,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    * `connect`. Two accepted gaps against v1: the v2 entry carries no
    * `source`/`config` tags (the manager does not track origins), and the one
    * shared manager per workspace handler makes an unpersisted add visible to
-   * sibling sessions of the same workspace. The same merged-view limitation
-   * as {@link reconnectMcpServer} applies.
+   * sibling sessions of the same workspace. Sessions with ephemeral servers keep additions in their own overlay.
    */
   override async addSessionMcpServer(input: {
     readonly sessionId: string;
@@ -2924,12 +3019,6 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     const session = this.requireLiveSession(input.sessionId);
     const mcp = session.accessor.get(ISessionMcpHandle);
     const manager = mcp.connectionManager;
-    if (!(manager instanceof McpConnectionManager)) {
-      throw new KimiError(
-        ErrorCodes.NOT_IMPLEMENTED,
-        'addSessionMcpServer is not supported for v2 sessions with ephemeral MCP servers',
-      );
-    }
     const parsed = parseInlineMcpServer(input.server);
     // The store trims names; keep the manager entry and the persisted key on
     // the same normalized identity, like v1's addSessionMcpServer does.
@@ -2939,7 +3028,11 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       await this.rejectProjectLayerPersistedMcpAdd(cwd, target.name);
       await this.mcpManagement((management) => management.addServer(target, { cwd }));
     }
+    mcp.includeServer(target.name);
     await manager.connect(target.name, mcpConfigWithoutName(target));
+    this.refreshSessionMcpServer(session, target.name);
+    const overrides = this.sessionMcpOverrides.get(input.sessionId);
+    if (overrides) overrides[target.name] = mcpConfigWithoutName(target);
     const entry = manager.get(target.name);
     if (entry === undefined) {
       throw new KimiError(

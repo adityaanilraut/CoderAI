@@ -120,7 +120,10 @@ export function prepareAnthropicRequest(
   if (input.responseFormat !== undefined) {
     kwargs = applyAnthropicResponseFormat(kwargs, input.responseFormat);
   }
-  const cap = resolveMaxCompletionCap(input);
+  const cap = resolveMaxCompletionCap({
+    ...input,
+    maxCompletionTokens: input.maxCompletionTokens ?? input.model.defaultMaxTokens,
+  });
   if (cap !== undefined) {
     const capped = resolveDefaultMaxTokens(ctx.model.model, cap);
     kwargs = {

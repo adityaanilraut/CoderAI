@@ -9,7 +9,7 @@ export interface IAgentConversationUndoService {
   readonly _serviceBrand: undefined;
 
   availability(): UndoAvailability;
-  undo(turns: number): Promise<number>;
+  undo(turns: number, options?: { readonly revertFiles?: boolean }): Promise<number>;
 }
 
 export const IAgentConversationUndoService: ServiceIdentifier<IAgentConversationUndoService> =

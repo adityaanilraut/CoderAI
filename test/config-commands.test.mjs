@@ -45,3 +45,19 @@ test('saving configuration keeps credentials private after an atomic rewrite', {
   assert.equal(second.code, 0, second.stderr);
   assert.equal((await stat(path)).mode & 0o777, 0o600);
 });
+
+test('provider and model updates preserve aliases and defaults', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  for (const key of Object.keys(f.env)) if (key.startsWith('CODERAI_MODEL_')) delete f.env[key];
+  for (const args of [
+    ['providers', 'add', 'example', 'openai', 'https://example.test/v1', 'OLD_KEY'],
+    ['models', 'add', 'coding', 'example', 'old-model', '100000', 'image_in'],
+    ['models', 'default', 'coding'],
+    ['providers', 'update', 'example', 'openai', 'https://new.example.test/v1', 'NEW_KEY'],
+    ['models', 'update', 'coding', 'example', 'new-model', '200000'],
+  ]) { const result = await f.run(args); assert.equal(result.code, 0, result.stderr); }
+  const config = await readFile(join(f.home, 'config.toml'), 'utf8');
+  assert.match(config, /NEW_KEY/); assert.doesNotMatch(config, /OLD_KEY/);
+  assert.match(config, /new-model/); assert.match(config, /image_in/);
+  assert.match(config, /default_model = "coding"/);
+});

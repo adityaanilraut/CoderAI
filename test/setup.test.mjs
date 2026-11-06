@@ -4,9 +4,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { register } from 'tsx/esm/api';
-import { fixture as cliFixture, cli } from './fixture.mjs';
-register();
+import { fixture as cliFixture, cli, testRuntime } from './fixture.mjs';
 const { runSetup } = await import('../apps/coderai/src/setup.ts');
 const { SetupCancelled } = await import('../apps/coderai/src/setup-terminal.ts');
 
@@ -112,7 +110,7 @@ test('custom providers use a protocol selector', async () => {
 const terminal = (f, actions) => new Promise((done, reject) => {
   const child = spawn('python3', [resolve('test/terminal.py')], { stdio: ['pipe', 'pipe', 'pipe'] });
   let out = ''; let err = ''; child.stdout.on('data', c => out += c); child.stderr.on('data', c => err += c);
-  child.stdin.end(JSON.stringify({ cwd: f.cwd, node: process.execPath, cli, env: { ...f.env, TERM: 'xterm-256color' }, actions, args: ['--setup'] }));
+  child.stdin.end(JSON.stringify({ cwd: f.cwd, node: testRuntime, cli, env: { ...f.env, TERM: 'xterm-256color' }, actions, args: ['--setup'] }));
   child.on('error', reject); child.on('close', code => code === 0 ? done(JSON.parse(out)) : reject(new Error(err + out)));
 });
 

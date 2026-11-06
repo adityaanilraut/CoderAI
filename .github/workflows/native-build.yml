@@ -26,24 +26,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26
-          cache: pnpm
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
-      - run: pnpm install --frozen-lockfile
+      - run: bun install --frozen-lockfile
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - if: runner.os == 'macOS'
         run: brew install ripgrep
-      - run: pnpm build:native
-      - if: runner.os != 'Windows'
-        run: CODERAI_TEST_BINARY=dist-bun/${{ matrix.target }}/coderai node --test test/native.test.mjs
+      - if: runner.os == 'Windows'
+        run: choco install ripgrep -y --no-progress
+      - run: bun run test:native
       - uses: actions/upload-artifact@v4
         with:
           name: coderai-${{ matrix.target }}
@@ -51,3 +44,25 @@ jobs:
             dist-bun/coderai-bun-${{ matrix.target }}.zip
             dist-bun/coderai-bun-${{ matrix.target }}.zip.sha256
           if-no-files-found: error
+  draft-release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release version
+        run: test "$GITHUB_REF_NAME" = "v$(jq -r .version package.json)"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coderai-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft \
+            --title "CoderAI $GITHUB_REF_NAME" \
+            --notes 'Download the ZIP for your platform and verify it against the matching SHA-256 checksum. Extract the executable, put it on your PATH, and run `coderai --setup`.'

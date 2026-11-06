@@ -12,7 +12,7 @@ import {
 } from '#human/llm-kimi/trait';
 import { classifyKimiQuotaError } from '#human/llm-kimi/errors';
 
-import type { Protocol } from '../protocol/protocol';
+import type { ProtocolProviderOptions, Protocol } from '../protocol/protocol';
 import type { ModelSource } from './provider';
 
 export const openAIConnection: ProviderConnection = {
@@ -50,6 +50,7 @@ export const kimiEndpoint: ProtocolEndpoint = {
 export interface ProviderDefinition<N extends Protocol = Protocol> {
   readonly id: string;
   readonly baseProtocol: N;
+  readonly providerOptions?: ProtocolProviderOptions;
   readonly trait?: ProtocolTraitFor<N>;
   readonly connection?: ProviderConnection;
   readonly classifyError?: LlmErrorClassifier;
@@ -220,6 +221,14 @@ registerProviderDefinition({
   id: 'google-genai',
   baseProtocol: 'google-genai',
   endpoints: [vertexEndpoint, geminiEndpoint],
+});
+
+registerProviderDefinition({
+  id: 'vertexai',
+  baseProtocol: 'google-genai',
+  providerOptions: { vertexai: true },
+  connection: vertexConnection,
+  endpoint: vertexEndpoint,
 });
 
 registerProviderDefinition({

@@ -4,6 +4,7 @@ import type { ApprovalRequest } from '@coderai/sdk';
 import { colors } from './theme.js';
 import { sanitizeTerminalText } from './sanitize.js';
 import { describeToolInput } from './display.js';
+import { styleDiffPreview } from './diff.js';
 
 const choices = [
   { value: 'yes', label: 'Approve once', detail: 'Only this action' },
@@ -54,7 +55,7 @@ export class ApprovalDialog implements Component {
     const inner = Math.max(1, width - 4);
     const muted = (text: string) => chalk.hex(colors.textMuted)(text);
     const border = (text: string) => chalk.hex(colors.warning)(text);
-    const lines = wrapTextWithAnsi(this.preview, inner);
+    const lines = wrapTextWithAnsi(styleDiffPreview(this.preview), inner);
     const compact = this.rows() < 23;
     const previewHeight = Math.max(1, Math.min(9, this.rows() - (compact ? 14 : 19)));
     this.maxScroll = Math.max(0, lines.length - previewHeight);

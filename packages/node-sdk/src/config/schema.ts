@@ -10,13 +10,17 @@ const HOOK_EVENT_TYPES = [
   'PermissionRequest',
   'PermissionResult',
   'UserPromptSubmit',
+  'UserPromptQueued',
+  'TurnStarted',
   'Stop',
   'StopFailure',
   'Interrupt',
   'SessionStart',
   'SessionEnd',
+  'SessionHeartbeat',
   'SubagentStart',
   'SubagentStop',
+  'TaskStarted',
   'PreCompact',
   'PostCompact',
   'Notification',
@@ -51,6 +55,8 @@ export const ProviderConfigSchema = z.object({
   defaultModel: z.string().optional(),
   oauth: OAuthRefSchema.optional(),
   env: StringRecordSchema.optional(),
+  project: z.string().optional(),
+  location: z.string().optional(),
   customHeaders: StringRecordSchema.optional(),
   source: z.record(z.string(), z.unknown()).optional(),
 });
@@ -78,6 +84,7 @@ const ModelAliasBaseSchema = z.object({
   defaultEffort: z.string().optional(),
   offEffort: z.string().optional(),
   betaApi: z.boolean().optional(),
+  metadata: StringRecordSchema.optional(),
   baseUrl: z.string().optional(),
   upgrade: ModelUpgradeSchema.optional(),
 });
@@ -287,7 +294,21 @@ export const McpServerConfigSchema = z.preprocess((raw) => {
 
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 
+const V2ConfigDomains = {
+  cron: z.record(z.string(), z.unknown()).optional(),
+  tools: z.object({ enabled: z.array(z.string()).optional(), disabled: z.array(z.string()).optional() }).optional(),
+  watch: z.object({ enabled: z.boolean().optional() }).optional(),
+  persistence: z.record(z.string(), z.unknown()).optional(),
+  tokenCounting: z.object({ strategy: z.enum(['measured+estimated', 'measured', 'estimated']).optional() }).optional(),
+  agentIdentity: z.record(z.string(), z.unknown()).optional(),
+  modelOverrides: z.record(z.string(), z.unknown()).optional(),
+  database: z.record(z.string(), z.unknown()).optional(),
+  identity: z.object({ name: z.string().optional(), slug: z.string().optional() }).optional(),
+  task: z.record(z.string(), z.unknown()).optional(),
+};
+
 export const KimiConfigSchema = z.object({
+  ...V2ConfigDomains,
   providers: z.record(z.string(), ProviderConfigSchema).default({}),
   defaultProvider: z.string().optional(),
   defaultModel: z.string().optional(),
@@ -339,6 +360,7 @@ const ServicesConfigPatchSchema = z.object({
 
 export const KimiConfigPatchSchema = z
   .object({
+    ...V2ConfigDomains,
     providers: z.record(z.string(), ProviderConfigPatchSchema).optional(),
     defaultProvider: z.string().optional(),
     defaultModel: z.string().optional(),

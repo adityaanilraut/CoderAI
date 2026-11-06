@@ -1,12 +1,11 @@
 import { build } from 'esbuild';
 import { readFile, writeFile, mkdir, chmod, rm, copyFile } from 'node:fs/promises';
-import { resolve, dirname, join } from 'node:path';
+import { resolve, dirname, join, basename } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
-const bunNative = process.argv.includes('--bun-native');
-const native = process.argv.includes('--native') || bunNative;
-const nativeDir = bunNative ? 'dist-bun' : 'dist-native';
+const native = process.argv.includes('--bun-native');
+const nativeDir = 'dist-bun';
 const workspacePackages = new Map();
-for (const folder of ['node-sdk','agent-core-v2','klient','kosong','oauth','product','minidb','tree-sitter-bash','pi-tui']) {
+for (const folder of ['node-sdk','agent-core-v2','klient','kosong','oauth','product','minidb','tree-sitter-bash','pi-tui','session-import']) {
   const root = resolve('packages', folder);
   const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   workspacePackages.set(manifest.name, { root, manifest });
@@ -17,7 +16,7 @@ const aliases = { name: 'workspace-aliases', setup(b) {
     let root = args.resolveDir;
     while (!existsSync(join(root, 'package.json'))) root = dirname(root);
     const mapped = args.path.startsWith('#human/') ? join(resolve('packages/agent-core-v2/src/human'), args.path.slice(7))
-      : join(root, root.endsWith('/human') ? '' : 'src', args.path.slice(2));
+      : join(root, basename(root) === 'human' ? '' : 'src', args.path.slice(2));
     return b.resolve(mapped, { resolveDir: args.resolveDir, kind: args.kind });
   });
   b.onResolve({ filter: /^@coderai\// }, async args => {
@@ -48,7 +47,7 @@ const raw = { name: 'raw-assets', setup(b) {
 } };
 const options = { bundle: true, tsconfigRaw: { compilerOptions: { experimentalDecorators: true } }, platform: 'node', target: 'node24', format: 'esm', sourcemap: true, plugins: [aliases, raw, external], logLevel: 'warning', metafile: true };
 if (native) {
-  const nativeOptions = { ...options, format: 'cjs', sourcemap: false, plugins: [aliases, raw], define: { 'import.meta.url': '__nativeModuleUrl' }, banner: { js: `${bunNative ? 'var' : 'const'} __nativeModuleUrl = require('node:url').pathToFileURL(process.execPath).href;` } };
+  const nativeOptions = { ...options, format: 'cjs', sourcemap: false, plugins: [aliases, raw], define: { 'import.meta.url': '__nativeModuleUrl' }, banner: { js: `var __nativeModuleUrl = require('node:url').pathToFileURL(process.execPath).href;` } };
   await build({ ...nativeOptions, entryPoints: ['apps/coderai/src/main.ts'], outfile: join(nativeDir, 'main.cjs') });
   await build({ ...options, plugins: [aliases, raw], entryPoints: ['packages/minidb/src/worker/text-build-worker.ts'], outfile: join(nativeDir, 'text-build-worker.mjs') });
   console.error('Built native bundles.');

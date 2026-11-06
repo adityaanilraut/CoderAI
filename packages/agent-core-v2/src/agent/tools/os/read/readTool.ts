@@ -284,11 +284,11 @@ export class ReadTool implements IReadTool {
 
       const header = await source.readBytes(MEDIA_SNIFF_BYTES);
       const fileType = detectFileType(source.name, header);
-      if (fileType.kind === 'image' || fileType.kind === 'video') {
+      if (fileType.kind === 'image' || fileType.kind === 'video' || fileType.kind === 'audio') {
         const kind = fileType.kind;
-        const article = kind === 'image' ? 'an' : 'a';
+        const article = kind === 'video' ? 'a' : 'an';
         const capabilities = this.profile.getModelCapabilities();
-        const supported = kind === 'image' ? capabilities.image_in : capabilities.video_in;
+        const supported = capabilities[`${kind}_in`];
         if (!supported) {
           return {
             isError: true,
@@ -301,7 +301,7 @@ export class ReadTool implements IReadTool {
         return {
           isError: true,
           output: mediaToolAvailable
-            ? `"${args.path}" is ${article} ${kind} file. Only text files can be read; use ReadMediaFile for image and video files.`
+            ? `"${args.path}" is ${article} ${kind} file. Only text files can be read; use ReadMediaFile for image, video, and audio files.`
             : `"${args.path}" is ${article} ${kind} file. Only text files can be read.`,
         };
       }

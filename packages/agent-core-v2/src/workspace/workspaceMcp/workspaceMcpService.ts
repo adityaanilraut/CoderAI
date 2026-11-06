@@ -112,7 +112,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       _serviceBrand: undefined,
       ready: this.ready,
       connectionManager: this.manager,
-      isBaselineServer: this.sessionBaseline(this.manager, this.ready),
+      ...this.sessionBaseline(this.manager, this.ready),
     };
   }
 
@@ -148,7 +148,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         _serviceBrand: undefined,
         ready,
         connectionManager: view,
-        isBaselineServer: this.sessionBaseline(this.manager, this.ready, Object.keys(servers)),
+        ...this.sessionBaseline(this.manager, this.ready, Object.keys(servers)),
       },
       shutdown: () => {
         unsubscribeOAuth();
@@ -219,7 +219,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     view: McpConnectionView,
     ready: Promise<void>,
     extra?: readonly string[],
-  ): (name: string) => boolean {
+  ): Pick<ISessionMcpHandle, 'isBaselineServer' | 'includeServer'> {
     let baseline: Set<string> | undefined;
     let frozen = false;
     const snapshot = (): Set<string> => {
@@ -241,13 +241,16 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         frozen = true;
       },
     );
-    return (name) => {
-      const names = snapshot();
-      if (names.has(name)) return true;
-      if (frozen) return false;
-      if (view.get(name) === undefined) return false;
-      names.add(name);
-      return true;
+    return {
+      includeServer: name => { snapshot().add(name); },
+      isBaselineServer: (name) => {
+        const names = snapshot();
+        if (names.has(name)) return true;
+        if (frozen) return false;
+        if (view.get(name) === undefined) return false;
+        names.add(name);
+        return true;
+      },
     };
   }
 

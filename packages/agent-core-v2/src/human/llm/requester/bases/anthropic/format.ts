@@ -239,8 +239,10 @@ export function assembleAnthropicRequest(
     parts.betaApi || input.model.betaApi === true || input.thinking?.keep !== undefined;
   const params: Record<string, unknown> = {
     model: input.model.model,
-    max_tokens: resolveDefaultMaxTokens(input.model.model),
-    metadata: input.cacheKey === undefined ? undefined : { user_id: input.cacheKey },
+    max_tokens: resolveDefaultMaxTokens(input.model.model, input.model.defaultMaxTokens),
+    metadata: input.model.metadata === undefined && input.cacheKey === undefined
+      ? undefined
+      : { ...(input.cacheKey === undefined ? {} : { user_id: input.cacheKey }), ...input.model.metadata },
     ...restKwargs,
     system: input.systemPrompt
       ? [{ type: 'text', text: input.systemPrompt, cache_control: CACHE_CONTROL }]

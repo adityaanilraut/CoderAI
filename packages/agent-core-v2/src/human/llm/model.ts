@@ -6,6 +6,10 @@ export interface LlmConnection {
   readonly defaultHeaders?: Record<string, string>;
   readonly betaApi?: boolean;
   readonly vertexai?: boolean;
+  readonly project?: string;
+  readonly location?: string;
+  readonly defaultMaxTokens?: number;
+  readonly metadata?: Readonly<Record<string, string>>;
 }
 
 export interface LlmModel extends LlmConnection {

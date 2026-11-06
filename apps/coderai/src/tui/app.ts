@@ -1,51 +1,129 @@
-import type { Runtime } from '../runtime.js';
+import { inlineSkillActivations } from '../inline-skills.js';
+import { startSwarm, swarmTask, TOWER_TEARDOWN_PROMPT } from './modes.js';
+import { ModelSetupRequired, type Runtime } from '../runtime.js';
 import { TerminalView } from './view.js';
 import { command, replay, help } from './commands.js';
 import { randomUUID } from 'node:crypto';
 import { describeGoal, describeMcp, describeTask, describeToolInput } from './display.js';
-import type { Session } from '@coderai/sdk';
+import type { PromptInput, Session } from '@coderai/sdk';
 import { basename } from 'node:path';
 import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
 import { copyFile, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { setTheme } from './theme.js';
 import { appendGoalQueueItem, readGoalQueue, removeGoalQueueItem, moveGoalQueueItem, updateGoalQueueItem } from './goal-queue-store.js';
 import { attachmentPrompt } from '../attachments.js';
 import { readClipboardMedia } from '../clipboard-media.js';
-import { mediaKindForPath } from '../../../../packages/agent-core-v2/src/agent/media/mediaRef.js';
+import { mediaKindForPath } from '@coderai/sdk/media';
+import { TurnActivity } from './activity.js';
+import { todoListFromResult } from './todos.js';
+import { renderEventNotice, McpAuthorizationOpener } from '../event-format.js';
+import { openBrowser } from '../browser.js';
+import { BtwPanelController } from './btw-panel.js';
+import { loadTuiConfig, DEFAULT_TUI_CONFIG, saveAutoSessionTitle } from './config.js';
+import { AutoSessionTitle } from './session-title.js';
 
 const commandAliases: Record<string, string> = { '/h': '/help', '/?': '/help', '/yes': '/yolo', '/thinking': '/effort', '/task': '/tasks', '/export': '/export-md', '/q': '/quit', '/auto': '/permissions auto' };
 
 export async function interactive(runtime: Runtime): Promise<void> {
-  try {
-    const theme = (await readFile(join(runtime.harness.homeDir, 'theme'), 'utf8')).trim();
-    if (!await setTheme(theme, runtime.harness.homeDir)) await setTheme('dark', runtime.harness.homeDir);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
   const commands = [...Object.entries(commandAliases).map(([name, target]) => ({ name: name.slice(1), description: `Alias for ${target}` })), ...help.split('\n').map(line => {
     const match = line.match(/^\/(\S+)\s+(.*)$/);
     return { name: match?.[1] ?? '', description: match?.[2] ?? '' };
   }).filter(item => item.name)];
-  const view = new TerminalView(runtime.harness.homeDir, runtime.options.cwd, commands);
+  const preferenceWarnings: string[] = [];
+  let initialPreferences = structuredClone(DEFAULT_TUI_CONFIG);
+  try { initialPreferences = await loadTuiConfig(runtime.harness.homeDir, message => preferenceWarnings.push(message)); }
+  catch (error) { preferenceWarnings.push(`TUI preferences could not be loaded: ${String(error)}`); }
+  const view = new TerminalView(runtime.harness.homeDir, runtime.options.cwd, commands, initialPreferences);
+  view.suggestFiles = (root, query) => runtime.harness.suggestFiles(root, { query, limit: 100 });
+  for (const warning of preferenceWarnings) view.notice(warning);
+  const activity = new TurnActivity(view);
   let busy = true;
   let stopping = false;
   let shellId: string | undefined;
   let editing = false;
   let observingTurn = false;
+  let pendingPrompt: string | undefined;
   let runningGoal = false;
-  let sideSession: Session | undefined;
-  let sideAgentId: string | undefined;
-  let sideTask: Promise<void> | undefined;
+  let autoTitleEnabled = true;
+  view.onPreferencesChanged = config => { autoTitleEnabled = config.autoSessionTitle; };
+  try { await view.applyPreferences(initialPreferences); }
+  catch (error) { view.notice(`TUI preferences could not be loaded: ${String(error)}`); }
+  const titles = new AutoSessionTitle(runtime.harness, () => autoTitleEnabled && !stopping, (id, title) => {
+    if (!stopping && runtime.session?.id === id) view.setSessionTitle(title);
+  });
+  const btw = new BtwPanelController(runtime.harness, panel => {
+    view.btwPane.clear(); if (panel) view.btwPane.addChild(panel);
+  }, () => view.tui.requestRender(), () => view.tui.terminal.rows, error => { if (!stopping) view.error(error); });
+  view.onSessionReloaded = () => { btw.reset(); view.agents.clear(); view.updates.clear(); oauth.clear(); view.setSessionTitle(runtime.session?.summary?.title ?? ''); };
+  view.onPanelScroll = direction => btw.scroll(direction);
+  const oauth = new McpAuthorizationOpener(text => { if (!stopping) view.message(text); }, openBrowser);
+  let agentRender: ReturnType<typeof setTimeout> | undefined;
+  const renderAgents = () => {
+    if (agentRender || stopping) return;
+    agentRender = setTimeout(() => { agentRender = undefined; if (!stopping) view.tui.requestRender(); }, 80);
+  };
   let observedSession: Session | undefined;
   let unsubscribe: (() => void) | undefined;
   const observeBackground = () => {
     const session = runtime.session;
     if (!session || session === observedSession) return;
-    unsubscribe?.(); observedSession = session;
+    unsubscribe?.();
+    if (observedSession && !observedSession.isClosed) observedSession.setStaleReloadHandler(undefined);
+    btw.reset(); view.updates.clear(); view.agents.clear(); oauth.clear(); observedSession = session;
+    view.setSessionTitle(session.summary?.title ?? '');
+    const warnings = async () => {
+      try {
+        const warnings = await session.getSessionWarnings();
+        if (stopping || runtime.session !== session) return;
+        for (const warning of warnings) view.notice(`Warning: ${warning.message}`, '', warning.severity === 'error' ? 'error' : 'warning');
+      } catch { /* Startup warnings are best effort. */ }
+    };
+    session.setStaleReloadHandler(async () => {
+      if (stopping || runtime.session !== session) return;
+      btw.close(); view.agents.clear(); view.clearTranscript();
+      view.message('Session changed on disk; reloaded the latest history.');
+      await replay(runtime, view, true);
+      if (pendingPrompt) view.userMessage(pendingPrompt);
+      view.setSessionTitle(session.summary?.title ?? '');
+      await Promise.all([refreshCommands(), refreshStatus(), warnings()]);
+    });
+    if (session.getResumeState()?.warning) view.notice(`Warning: ${session.getResumeState()!.warning}`);
+    void warnings();
     unsubscribe = session.onEvent(event => {
+      if (stopping || runtime.session !== session) return;
+      if (event.type === 'tool.progress') oauth.handle(event);
+      if (view.updates.handle(event) && event.type === 'tool.result') { view.hideTool(event.agentId, event.toolCallId); view.tui.requestRender(); }
+      if (btw.owns(event.agentId)) return;
+      const record = view.agents.apply(event);
+      if (record) { view.transcript.agentActivity(record); renderAgents(); }
+      if (event.agentId !== 'main') return;
+      renderEventNotice(view, event);
+      if (event.type === 'turn.step.interrupted') view.finishTurn(event.agentId);
+      if (event.type === 'session.meta.updated') {
+        const title = event.title ?? event.patch?.['title'];
+        if (typeof title === 'string') view.setSessionTitle(title);
+        void refreshStatus();
+      }
+      if (event.type === 'tool.list.updated') void refreshCommands().catch(error => view.error(error));
+      if (event.type === 'turn.started') pendingPrompt = undefined;
+      if (event.type === 'turn.ended') {
+        view.agents.finishForeground();
+        if (event.reason === 'completed') { void titles.completed(session.id); view.notifyCompletion(); }
+      }
       if (observingTurn) return;
+      activity.handle(event);
+      switch (event.type) {
+        case 'turn.started': view.beginAssistant(); break;
+        case 'assistant.delta': view.delta(event.delta); break;
+        case 'thinking.delta': view.thinkingDelta(event.delta); break;
+        case 'tool.call.delta': view.toolDelta(event); break;
+        case 'tool.call.started': view.toolStarted(event); break;
+        case 'tool.progress': view.toolProgress(event.agentId, event.toolCallId, event.update.text ?? '', event.update.replace); break;
+        case 'tool.result': view.toolResult(event); break;
+        case 'turn.ended': view.finishTurn(event.agentId); if (!busy) view.setStatus('Idle'); break;
+        case 'error': view.error(event); break;
+        case 'skill.activated': view.message(`Skill activated: ${event.skillName}`); break;
+      }
       if (event.type === 'shell.output' && event.commandId === shellId && event.update.text) view.shellDelta(event.update.text);
       else if (event.type === 'background.task.started' || event.type === 'background.task.terminated') view.message(`Background task: ${describeTask(event.info)}`);
       else if (event.type === 'mcp.server.status') view.message(`MCP: ${describeMcp(event.server)}`);
@@ -59,13 +137,13 @@ export async function interactive(runtime: Runtime): Promise<void> {
     if (!session) return;
     const [skills, plugins] = await Promise.all([session.listSkills(), session.listPluginCommands()]);
     skillCommands.clear(); pluginCommands.clear();
-    const dynamic: { name: string; description?: string }[] = [];
+    const dynamic: { name: string; description?: string; skillName?: string }[] = [];
     for (const skill of skills) {
       if (skill.scopes && !skill.scopes.includes('tui')) continue;
       if (skill.type && !['prompt', 'inline', 'flow'].includes(skill.type)) continue;
       const name = skill.source === 'builtin' || skill.isSubSkill ? skill.name : `skill:${skill.name}`;
       if (commands.some(command => command.name === name)) continue;
-      skillCommands.set(name, skill.name); dynamic.push({ name, description: skill.description });
+      skillCommands.set(name, skill.name); dynamic.push({ name, description: skill.description, skillName: skill.name });
     }
     for (const plugin of plugins) {
       const name = `${plugin.pluginId}:${plugin.name}`;
@@ -76,7 +154,7 @@ export async function interactive(runtime: Runtime): Promise<void> {
     view.setCommands([...commands, ...dynamic], session.workDir, session.summary?.additionalDirs ?? []);
   };
   const queue: { text: string; attachments?: string[] }[] = [];
-  const attachments: string[] = [];
+  const attachments: string[] = [...runtime.options.attachments ?? []];
   let clipboardDir: string | undefined;
   let pasteTask: Promise<boolean> | undefined;
   view.onPasteMedia = () => {
@@ -110,21 +188,36 @@ export async function interactive(runtime: Runtime): Promise<void> {
     })();
     return pasteTask;
   };
+  let statusVersion = 0;
   const refreshStatus = async () => {
     view.setQueue(queue);
-    if (!runtime.session || stopping || view.dialogOpen) return;
+    const session = runtime.session;
+    const version = ++statusVersion;
+    if (stopping) return;
+    if (!session) { if (!busy && !view.dialogOpen) view.setStatus('Use /setup to connect a model · /help for commands'); return; }
+    view.setWorkspaceStatus(session.workDir, attachments);
     try {
-      const status = await runtime.session.getStatus();
-      if (stopping || view.dialogOpen) return;
-      view.setStatus(`${busy ? 'Working' : 'Idle'} · ${status.model ?? 'no model'} · ${status.thinkingEffort} · ${status.permission}${status.planMode ? ' · plan' : ''} · ${basename(runtime.session.workDir)} · context ${status.contextTokens}/${status.maxContextTokens} · queued ${queue.length}${attachments.length ? ` · attachments ${attachments.length}` : ''}`);
+      const [status, config, todos, { goal }, tasks] = await Promise.all([session.getStatus(), runtime.harness.getConfig(), session.getTodos(), session.getGoal(), session.listBackgroundTasks({ activeOnly: true })]);
+      if (stopping || runtime.session !== session || version !== statusVersion) return;
+      const model = status.model ? config.models?.[status.model] : undefined;
+      view.setSessionStatus(status, basename(session.workDir), model?.displayName || model?.model || status.model || 'No model', attachments.length, session.id);
+      view.footer.setActivity(goal?.status ?? '', tasks.length);
+      view.setTodos(todos);
+      if (!busy && !view.dialogOpen) view.setStatus('Idle');
     } catch { /* The session may be closing. */ }
   };
   let finish!: () => void;
   const done = new Promise<void>(resolve => { finish = resolve; });
+  const restoreActivity = () => {
+    if (!busy || stopping || view.dialogOpen) return;
+    if (shellId) view.setActivity('Running shell command');
+
+    else activity.waiting();
+  };
   const exit = () => {
     if (stopping) return; stopping = true;
     view.dismissDialog();
-    if (sideSession && sideAgentId) void runtime.harness.withInteractiveAgent(sideAgentId, () => sideSession!.cancel()).catch(() => {});
+    btw.close();
     void runtime.session?.cancel().catch(() => {}); finish();
   };
   let lastExitRequest = 0;
@@ -144,9 +237,10 @@ export async function interactive(runtime: Runtime): Promise<void> {
     editing = true;
     void view.editExternally().catch(error => view.message(`External editor failed: ${String(error)}`)).finally(() => { editing = false; });
   };
-  view.onInterrupt = () => { if (sideSession && sideAgentId) { void runtime.harness.withInteractiveAgent(sideAgentId, () => sideSession!.cancel()).catch(error => view.message(`Cancellation failed: ${String(error)}`)); view.setStatus('Cancelling side question…'); } else if (busy && runtime.session && !runtime.session.isClosed) { const cancellation = shellId ? runtime.session.cancelShellCommand(shellId) : runtime.session.cancel(); void cancellation.catch(error => view.message(`Cancellation failed: ${String(error)}`)); view.setStatus('Cancelling…'); } else if (view.editor.getText()) { view.editor.setText(''); view.message('Draft cleared. Press Ctrl+C again to exit.'); } else exit(); };
+  view.onInterrupt = () => { if (btw.cancel()) { view.setStatus('Cancelling side question…'); } else if (busy && runtime.session && !runtime.session.isClosed) { activity.cancel(); const cancellation = shellId ? runtime.session.cancelShellCommand(shellId) : runtime.session.cancel(); void cancellation.catch(error => view.message(`Cancellation failed: ${String(error)}`)); view.setStatus('Cancelling…'); } else if (btw.close()) { /* Return to main conversation. */ } else if (view.editor.getText()) { view.editor.setText(''); view.message('Draft cleared. Press Ctrl+C again to exit.'); } else exit(); };
   let lastIdleEscape = 0;
   view.onEscape = () => {
+    if (btw.close()) return true;
     if (busy) { lastIdleEscape = 0; view.onInterrupt?.(); return true; }
     if (view.editor.getText()) { lastIdleEscape = 0; return false; }
     if (Date.now() - lastIdleEscape < 1000) {
@@ -158,7 +252,7 @@ export async function interactive(runtime: Runtime): Promise<void> {
   view.onSteer = () => {
     const text = view.editor.getText();
     if (!busy || !runtime.session || !text.trim()) return;
-    if (shellId || sideSession) { view.message('Steering is available during an agent turn.'); return; }
+    if (shellId) { view.message('Steering is available during an agent turn.'); return; }
     if (attachments.length) { view.message('Steering does not support staged attachments. Send or clear them first.'); return; }
     const session = runtime.session;
     void session.steer(text).then(() => {
@@ -175,10 +269,43 @@ export async function interactive(runtime: Runtime): Promise<void> {
     void refreshStatus();
     return true;
   };
+  view.onTaskBrowser = () => { if (runtime.session) void submit('/tasks').catch(error => view.error(error)); };
+  view.onManageAttachments = () => {
+    if (!attachments.length) { view.setStatus('No attachments staged.'); return; }
+    const staged = [...attachments];
+    void view.choose('Remove staged attachment\nChoose a file to remove. Esc keeps all files.', staged.map((path, index) => {
+      const item = view.attachmentPane.entries[index];
+      return { value: String(index), label: `${index + 1}. ${basename(path)}`, description: `${item?.mimeType ?? 'unknown'} · ${path}${item?.notice ? ` · ${item.notice}` : ''}` };
+    })).then(async answer => {
+      if (answer !== '' && attachments[Number(answer)] === staged[Number(answer)]) {
+        attachments.splice(Number(answer), 1);
+      }
+      await refreshStatus();
+      restoreActivity();
+    }).catch(error => view.error(error));
+  };
   const submit = async (text: string, queuedObjective?: string, queuedAttachments?: string[]) => {
     const match = text.match(/^(\/\S+)(?=\s|$)/);
     if (match && commandAliases[match[1]!]) text = commandAliases[match[1]!]! + text.slice(match[1]!.length);
     if (text === '/quit' || text === '/exit') { exit(); return; }
+    if (!runtime.session && !busy) {
+      if (/^\/(help|settings|config|reload-tui|theme|editor|experiments|experimental|doctor|secondary-model|subagent-model|plugins|skills)(?:\s|$)/.test(text)) { await command(runtime, view, text); await refreshStatus(); return; }
+      if (text !== '/setup') { view.notice('Connect a model with /setup before starting a conversation.'); return; }
+      busy = true;
+      try {
+        await command(runtime, view, text);
+        if (stopping) return;
+        await runtime.open(); observeBackground(); await refreshCommands();
+        view.message(`Session ${runtime.session!.id}`);
+        if (runtime.options.resume) await replay(runtime, view, true);
+      } catch (error) { view.error(error); }
+      finally { busy = false; if (!stopping) await refreshStatus(); }
+      return;
+    }
+    if (runtime.session && /^\/(tasks|output|stop)(?:\s|$)/.test(text)) {
+      try { await command(runtime, view, text); } catch (error) { view.error(error); }
+      await refreshStatus(); restoreActivity(); return;
+    }
     if (text === '/attach' || text.startsWith('/attach ')) {
       const arg = text.slice('/attach'.length).trim();
       if (!arg || arg === 'list') view.message(attachments.length ? `Attachments for the next prompt:\n${attachments.map((path, index) => `${index + 1}. ${path}`).join('\n')}` : 'No attachments staged.');
@@ -260,94 +387,105 @@ export async function interactive(runtime: Runtime): Promise<void> {
       else view.message(queue.length ? `Queued input:\n${queue.map((item, index) => `${index + 1}. ${item.text}${item.attachments?.length ? ` (${item.attachments.length} attachments)` : ''}`).join('\n')}` : 'Queue is empty.');
       await refreshStatus(); return;
     }
+    if (runtime.session && (text === '/auto-title' || text.startsWith('/auto-title '))) {
+      const mode = text.slice('/auto-title'.length).trim();
+      if (mode && mode !== 'on' && mode !== 'off') { view.message('Usage: /auto-title [on|off]'); return; }
+      if (mode) {
+        await saveAutoSessionTitle(runtime.harness.homeDir, mode === 'on'); await view.reloadPreferences();
+      }
+      view.message(`Automatic session titles: ${autoTitleEnabled ? 'on' : 'off'}`); return;
+    }
+    if (runtime.session && (text === '/btw' || text.startsWith('/btw '))) {
+      const argument = text.slice(4).trim();
+      if (argument === 'close') { if (btw.close()) view.message('Side question closed.'); return; }
+      if (btw.isRunning) { view.message('Wait for /btw to finish before sending another question.'); return; }
+      const question = argument || (await view.ask('Side question:', 'Enter question · Esc cancel')).trim();
+      if (question && !stopping) await btw.open(runtime.session, question, inlineSkillActivations(question, skillCommands));
+      return;
+    }
+    if (btw.isActive && !text.startsWith('/') && !text.startsWith('!')) {
+      if (!btw.send(text, inlineSkillActivations(text, skillCommands))) { view.editor.setText(text); view.message('Wait for /btw to finish before sending another question.'); }
+      return;
+    }
     if (busy) {
       if (text.startsWith('/steer ') && shellId) view.message('Cannot steer a shell command; wait for it to finish or cancel it.');
       else if (text.startsWith('/steer ') && runtime.session) { await runtime.session.steer(text.slice(7)); view.message('Steering sent'); }
       else if (runtime.session && /^\/yolo(?:\s|$)/.test(text)) { await command(runtime, view, text); await refreshStatus(); }
       else if (runtime.session && ['/help', '/status', '/context', '/usage', '/mcp', '/skills', '/todos', '/version'].includes(text)) await command(runtime, view, text);
-      else { const staged = !text.startsWith('/') && !text.startsWith('!') ? attachments.splice(0) : undefined; queue.push({ text, attachments: staged }); view.message(`Queued (${queue.length}): ${text}`); await refreshStatus(); }
+      else {
+        const name = text.split(/\s+/)[0]!.slice(1);
+        const takesMedia = swarmTask(text) !== undefined || !text.startsWith('/') && !text.startsWith('!') || text.startsWith('/goal ') || skillCommands.has(name) || pluginCommands.has(name);
+        const staged = takesMedia ? attachments.splice(0) : undefined;
+        queue.push({ text, attachments: staged }); view.message(`Queued (${queue.length}): ${text}`); await refreshStatus();
+      }
       return;
     }
     busy = true;
     let followGoal = false;
     let turnReason: string | undefined;
+    let reportedError = false;
     try {
       let dispatch: ((session: Session) => Promise<void>) | undefined;
       let prompt = text;
-      if (text === '/btw' || text.startsWith('/btw ')) {
-        const question = text.slice(4).trim() || (await view.ask('Side question:', 'Enter question · Esc cancel')).trim();
-        if (!question) return;
-        sideTask = (async () => {
-          const side = await runtime.harness.forkSession({ id: runtime.session!.id });
-          sideSession = side;
-          try {
-          side.setApprovalHandler(() => ({ decision: 'rejected', feedback: 'Side questions do not approve changes.' }));
-          side.setQuestionHandler(() => null);
-          sideAgentId = await side.startBtw();
-          if (stopping) return;
-          const agentId = sideAgentId;
-          view.message(`Side question: ${question}`); view.beginAssistant(); view.setStatus('Answering side question… · Ctrl+C cancel');
-          await new Promise<void>((resolve, reject) => {
-            let settled = false;
-            const finish = (error?: Error) => { if (settled) return; settled = true; off(); error ? reject(error) : resolve(); };
-            const off = side.onEvent(event => {
-              if (event.agentId !== agentId) return;
-              if (event.type === 'assistant.delta') view.delta(event.delta);
-              else if (event.type === 'turn.ended') {
-                if (event.reason !== 'completed') view.message(`Side question ${event.reason}.`);
-                finish();
-              }
-            });
-            void runtime.harness.withInteractiveAgent(agentId, () => side.prompt(question)).catch(error => finish(error instanceof Error ? error : new Error(String(error))));
-          });
-          } finally {
-            sideAgentId = undefined; sideSession = undefined;
-            await runtime.harness.deleteSession(side.id);
-          }
-        })();
-        try { await sideTask; } finally { sideTask = undefined; }
-        return;
-      } else if (text.startsWith('/goal ')) {
-        if ((queuedAttachments ?? attachments).length) { view.message('Attachments are not supported with goals. Clear them with /attach clear or send them in a regular prompt.'); return; }
+      let skill: string | undefined;
+      let plugin: { pluginId: string; name: string } | undefined;
+      let commandArgs = '';
+      let goalAction: (() => Promise<unknown>) | undefined;
+      if (text.startsWith('/goal ')) {
         const argument = text.slice(6).trim();
         if (!argument) { view.message('Usage: /goal <objective>|status|pause|resume|cancel|replace <objective>'); return; }
-        if (argument === 'resume') { if (!queuedObjective) await runtime.session!.resumeGoal(); prompt = queuedObjective ?? 'Resume the active goal.'; }
+        if (argument === 'resume') { if (!queuedObjective) goalAction = () => runtime.session!.resumeGoal(); prompt = queuedObjective ?? 'Resume the active goal.'; }
         else {
           const replace = argument.startsWith('replace ');
           prompt = replace ? argument.slice(8).trim() : argument;
           if (!prompt) { view.message('Provide a goal objective.'); return; }
-          await runtime.session!.createGoal({ objective: prompt, replace });
+          goalAction = () => runtime.session!.createGoal({ objective: prompt, replace });
         }
         followGoal = true;
-        view.message(`Goal started: ${prompt}`);
+      } else if (text === '/tower teardown') {
+        prompt = TOWER_TEARDOWN_PROMPT;
+      } else if (swarmTask(text) !== undefined) {
+        try {
+          if (!await startSwarm(runtime, view, text, 'task')) {
+            if (queuedAttachments?.length) attachments.unshift(...queuedAttachments);
+            return;
+          }
+        } catch (error) {
+          if (queuedAttachments?.length) attachments.unshift(...queuedAttachments);
+          view.editor.setText(text); throw error;
+        }
+        prompt = swarmTask(text)!;
       } else if (text.startsWith('/')) {
-        if (await command(runtime, view, text)) { if (text === '/new' || text === '/resume' || text.startsWith('/resume ')) attachments.length = 0; observeBackground(); await refreshCommands(); return; }
+        const previousSession = runtime.session?.id;
+        if (await command(runtime, view, text)) {
+          if (runtime.session?.id !== previousSession) attachments.length = 0;
+          observeBackground(); await refreshCommands(); return;
+        }
         const [rawName, ...args] = text.trim().split(/\s+/);
         const name = rawName!.slice(1);
-        const skill = skillCommands.get(name);
-        const plugin = pluginCommands.get(name);
-        if ((skill || plugin) && (queuedAttachments ?? attachments).length) { view.message('Attachments are not supported with skill or plugin commands. Clear them with /attach clear or send them in a regular prompt.'); return; }
-        if (skill) dispatch = session => session.promptWithSkills(text, [{ name: skill, args: args.join(' ') || undefined }]);
-        else if (plugin) dispatch = session => session.activatePluginCommand(plugin.pluginId, plugin.name, args.join(' ') || undefined);
-        else { view.message('Unknown command. Use /help.'); return; }
+        skill = skillCommands.get(name);
+        plugin = pluginCommands.get(name);
+        commandArgs = args.join(' ');
+        if (!skill && !plugin) { view.message('Unknown command. Use /help.'); return; }
       }
       if (text.startsWith('!')) {
         const shellCommand = text.slice(1).trim();
         if (!shellCommand) { view.message('Enter a shell command after !'); return; }
         shellId = randomUUID();
-        view.message(`Shell: ${shellCommand}`); view.setStatus('Running shell command… · Ctrl+C cancel');
+        view.message(`Shell: ${shellCommand}`); view.setActivity('Running shell command', `$ ${shellCommand}`);
         view.beginShell();
         try {
           const result = await runtime.session!.runShellCommand(shellCommand, { commandId: shellId });
           if (result.stdout) view.message(result.stdout);
           if (result.stderr) view.message(result.stderr);
           view.message(result.backgrounded ? 'Shell command backgrounded.' : result.isError ? 'Shell command failed.' : 'Shell command completed.');
+          if (result.isError) view.notice('Check the command output above, then edit the command and try again.');
         } finally { view.endShell(); shellId = undefined; }
       } else {
         const staged = queuedAttachments ?? [...attachments];
-        if (!dispatch && !followGoal && staged.length) {
-          let input;
-          try { input = await attachmentPrompt(runtime.harness, runtime.session!, prompt, staged, runtime.session!.workDir); }
+        let input: PromptInput | undefined;
+        if (staged.length) {
+          try { input = await attachmentPrompt(runtime.harness, runtime.session!, plugin ? commandArgs : prompt, staged, runtime.session!.workDir, plugin ? 'references' : 'parts'); }
           catch (error) {
             if (queuedAttachments) {
               attachments.unshift(...queuedAttachments);
@@ -357,31 +495,76 @@ export async function interactive(runtime: Runtime): Promise<void> {
             }
             throw error;
           }
-          dispatch = session => session.prompt(input);
+        }
+        if (goalAction) {
+          try { await goalAction(); }
+          catch (error) {
+            if (queuedAttachments?.length) attachments.unshift(...queuedAttachments);
+            throw error;
+          }
+        }
+        if (followGoal) view.message(`Goal started: ${prompt}`);
+        const inline = inlineSkillActivations(text, skillCommands);
+        if (skill) {
+          const activation = { name: skill, args: commandArgs || undefined };
+          dispatch = session => session.promptWithSkills(input ?? prompt, [activation, ...inline.filter(item => item.name !== skill)]);
+        } else if (plugin) {
+          const { pluginId, name } = plugin;
+          const args = input ? input.filter(part => part.type === 'text').map(part => part.text).join('\n\n') : commandArgs;
+          dispatch = session => session.activatePluginCommand(pluginId, name, args || undefined);
+        } else if (inline.length) {
+          dispatch = session => session.promptWithSkills(input ?? prompt, inline);
+        } else if (input) {
+          const mediaInput = input;
+          dispatch = session => session.prompt(mediaInput);
+        }
+        if (staged.length) {
           if (!queuedAttachments) attachments.splice(0, staged.length);
+          view.setWorkspaceStatus(runtime.session!.workDir, attachments);
           view.message(`Attached: ${staged.join(', ')}`);
         }
-        view.message(`You: ${text}`); view.beginAssistant(); view.setStatus('Working… · Ctrl+C cancel');
+        pendingPrompt = text; view.userMessage(text); activity.waiting();
         observingTurn = true;
         runningGoal = followGoal;
         let goalTurns = 0;
+        const todoCalls = new Set<string>();
         try { turnReason = await runtime.run(prompt, event => {
-          if (event.agentId !== 'main' && (event.type === 'assistant.delta' || event.type === 'thinking.delta')) return;
+          if (event.agentId !== 'main' || event.type.startsWith('subagent.')) return;
+          activity.handle(event);
           switch (event.type) {
             case 'turn.started': if (event.agentId === 'main' && goalTurns++ > 0 && followGoal) { view.beginAssistant(); view.message('Continuing goal…'); } break;
             case 'assistant.delta': view.delta(event.delta); break;
-            case 'tool.call.started': view.detail(`${event.agentId === 'main' ? 'Tool' : `Agent ${event.agentId} · tool`}: ${event.name}${event.description ? ` · ${event.description}` : ''}`, event.display ? describeToolInput(event.display) : JSON.stringify(event.args, null, 2) ?? ''); view.beginAssistant(false); break;
-            case 'tool.result': view.detail(`${event.agentId === 'main' ? 'Tool' : `Agent ${event.agentId} · tool`} ${event.isError ? 'failed' : 'completed'}:`, typeof event.output === 'string' ? event.output : JSON.stringify(event.output, null, 2) ?? ''); break;
-            case 'tool.progress': view.detail(`${event.agentId === 'main' ? 'Tool' : `Agent ${event.agentId} · tool`} progress:`, typeof event.update.text === 'string' ? event.update.text : JSON.stringify(event.update)); break;
-            case 'thinking.delta': view.thinkingDelta(event.delta); view.setStatus('Thinking… · Ctrl+C cancel'); break;
-            case 'error': view.message(`Error: ${JSON.stringify(event)}`); break;
-            case 'warning': view.message(`Warning: ${JSON.stringify(event)}`); break;
-            case 'subagent.spawned': view.message(`Agent ${event.subagentId} · ${event.subagentName} · started${event.description ? ` · ${event.description}` : ''}`); break;
-            case 'subagent.started': view.message(`Agent ${event.subagentId} · running`); break;
-            case 'subagent.suspended': view.message(`Agent ${event.subagentId} · suspended · ${event.reason}`); break;
-            case 'subagent.completed': view.detail(`Agent ${event.subagentId} · completed`, event.resultSummary); break;
-            case 'subagent.failed': view.message(`Agent ${event.subagentId} · failed · ${event.error}`); break;
-            case 'subagent.cancelled': view.message(`Agent ${event.subagentId} · cancelled`); break;
+            case 'tool.call.started':
+              if (event.agentId === 'main' && event.name === 'TodoList') { todoCalls.add(event.toolCallId); view.hideTool(event.agentId, event.toolCallId); view.beginAssistant(false); }
+              else view.toolStarted(event);
+              break;
+            case 'tool.call.delta':
+              if (event.name === 'TodoList') todoCalls.add(event.toolCallId);
+              if (!todoCalls.has(event.toolCallId)) view.toolDelta(event);
+              break;
+            case 'tool.progress': view.toolProgress(event.agentId, event.toolCallId, event.update.text ?? '', event.update.replace); break;
+            case 'tool.result': {
+              const todoCall = event.agentId === 'main' && todoCalls.delete(event.toolCallId);
+              const todos = todoCall && !event.isError ? todoListFromResult(event.output) : undefined;
+              if (todos !== undefined) { view.setTodos(todos); view.showTodos(todos); }
+              else {
+                if (todoCall) view.toolStarted({ agentId: event.agentId, toolCallId: event.toolCallId, name: 'TodoList' });
+                view.toolResult(event);
+              }
+              if (todoCall) void refreshStatus();
+              if (event.isError) view.notice('The action failed. The assistant can adjust it; use /steer to give another direction.');
+              break;
+            }
+            case 'thinking.delta': view.thinkingDelta(event.delta); break;
+            case 'error':
+              if (event.agentId === 'main') { view.error(event); reportedError = true; }
+              else view.notice(`Agent ${event.agentId}: ${event.message}`, '', 'error');
+              break;
+            case 'turn.ended':
+              view.finishTurn(event.agentId);
+              if (event.agentId === 'main' && event.reason === 'failed' && event.error && !reportedError) { view.error(event.error); reportedError = true; }
+              break;
+
             case 'background.task.started': case 'background.task.terminated':
               view.message(`Background task: ${describeTask(event.info)}`); break;
             case 'mcp.server.status': view.message(`MCP: ${describeMcp(event.server)}`); break;
@@ -390,27 +573,30 @@ export async function interactive(runtime: Runtime): Promise<void> {
               if (event.snapshot?.status === 'active') { followGoal = true; runningGoal = true; }
               view.message(`Goal: ${describeGoal(event.snapshot)}`); break;
             case 'agent.status.updated': if (event.agentId === 'main') void refreshStatus(); break;
-            case 'turn.step.retrying': view.setStatus('Retrying model request… · Ctrl+C cancel'); break;
-            case 'compaction.started': view.setStatus('Compacting context…'); break;
             case 'compaction.completed': view.message('Context compaction completed.'); break;
             case 'compaction.cancelled': view.message('Context compaction cancelled.'); break;
+            case 'compaction.blocked': view.notice('Context compaction is blocked.', 'Use /context to inspect usage, /model to change models, or /new to start fresh.'); break;
+            case 'turn.step.completed':
+              if (event.agentId === 'main' && event.providerFinishReason === 'filtered') view.notice('The provider filtered the response.', 'Revise the prompt or choose another model with /model.');
+              else if (event.agentId === 'main' && event.finishReason === 'max_tokens') view.notice('The model reached its output limit.', 'The response or tool call may be incomplete. Ask the assistant to continue or check the model output limit.');
+              break;
           }
         }, async request => {
-          if (request.display.kind === 'plan_review') {
-            const options = request.display.options && request.display.options.length >= 2 ? request.display.options : [{ label: 'Approve', description: 'Approve this plan' }];
-            const choice = await view.choose(`Review plan\n${describeToolInput(request.display)}`, [
-              ...options.map((option, i) => ({ value: `approve:${i}`, label: option.label, description: option.description })),
-              { value: 'reject', label: 'Reject' }, { value: 'revise', label: 'Request revision' },
-            ]);
-            if (!choice) return { decision: 'cancelled' };
-            if (choice === 'revise') {
-              const feedback = await view.ask('What should change?', 'Enter feedback · Esc cancel');
-              return feedback.trim() ? { decision: 'rejected', selectedLabel: 'Revise', feedback } : { decision: 'cancelled' };
-            }
-            if (choice === 'reject') return { decision: 'rejected', selectedLabel: 'Reject' };
-            return { decision: 'approved', selectedLabel: options[Number(choice.slice(8))]?.label };
-          }
           try {
+            if (request.display.kind === 'plan_review') {
+              const options = request.display.options && request.display.options.length >= 2 ? request.display.options : [{ label: 'Approve', description: 'Approve this plan' }];
+              const choice = await view.choose(`Review plan\n${describeToolInput(request.display)}`, [
+                ...options.map((option, i) => ({ value: `approve:${i}`, label: option.label, description: option.description })),
+                { value: 'reject', label: 'Reject' }, { value: 'revise', label: 'Request revision' },
+              ]);
+              if (!choice) return { decision: 'cancelled' };
+              if (choice === 'revise') {
+                const feedback = await view.ask('What should change?', 'Enter feedback · Esc cancel');
+                return feedback.trim() ? { decision: 'rejected', selectedLabel: 'Revise', feedback } : { decision: 'cancelled' };
+              }
+              if (choice === 'reject') return { decision: 'rejected', selectedLabel: 'Reject' };
+              return { decision: 'approved', selectedLabel: options[Number(choice.slice(8))]?.label };
+            }
             const answer = await view.approve(request);
             const normalized = answer.trim().toLowerCase();
             if (normalized === '/yolo' || normalized === '/yolo on') {
@@ -425,41 +611,27 @@ export async function interactive(runtime: Runtime): Promise<void> {
             }
             if (normalized.startsWith('no:')) return { decision: 'rejected', feedback: answer.trim().slice(3).trim() || undefined };
             return { decision: normalized === 'yes' ? 'approved' : 'rejected' };
-          } finally { view.setStatus('Working… · Ctrl+C cancel'); }
+          } finally { activity.waiting(); }
         }, async request => {
-          const answers: Record<string, string> = {};
-          for (const question of request.questions) {
-            const heading = `${question.header ? question.header + '\n' : ''}${question.question}${question.body ? '\n' + question.body : ''}`;
-            let answer: string;
-            if (!question.multiSelect && question.options.length) {
-              const choice = await view.choose(heading, [
-                ...question.options.map((o, i) => ({ value: String(i), label: o.label, description: o.description })),
-                { value: 'other', label: question.otherLabel ?? 'Other', description: question.otherDescription },
-              ]);
-              if (!choice) return null;
-              answer = choice === 'other' ? await view.ask('Enter your answer:', 'Waiting for your answer · Enter submit · Esc dismiss') : question.options[Number(choice)]?.label ?? '';
-            } else if (question.multiSelect && question.options.length) {
-              const choices = await view.chooseMultiple(heading, question.options, question.otherLabel);
-              if (!choices?.length) return null;
-              answer = choices.join(', ');
-            } else {
-              answer = await view.ask(`${heading}\n${question.options.map((o, i) => `${i + 1}. ${o.label}${o.description ? ': ' + o.description : ''}`).join('\n')}\nEnter answers or comma-separated numbers.`, 'Waiting for your answer · Enter submit · Esc dismiss');
-            }
-            if (!answer.trim()) return null;
-            answers[question.question] = answer;
-          }
-          view.setStatus('Working… · Ctrl+C cancel');
-          return answers;
+          try {
+            return await view.answerQuestions(request);
+          } finally { activity.waiting(); }
         }, dispatch, followGoal, true); } catch (error) {
           if (followGoal) await runtime.session?.pauseGoal().catch(() => {});
           throw error;
-        } finally { observingTurn = false; runningGoal = false; }
-        if (turnReason !== 'completed') view.message(`Turn ${turnReason}`);
+        } finally { observingTurn = false; runningGoal = false; pendingPrompt = undefined; }
+        if (turnReason !== 'completed') {
+          view.message(`Turn ${turnReason}`);
+          if (turnReason === 'failed' && !reportedError) view.notice('The turn could not finish.', 'Use ↑ to recall your prompt, or /export-debug to save diagnostics.');
+          if (turnReason === 'blocked') view.notice('The turn is blocked.', 'Review the messages above and give the assistant the missing information or a new direction.');
+        }
       }
-    } catch (error) { view.message(`Error: ${error instanceof Error ? error.message : String(error)}`); }
+    } catch (error) { if (!reportedError) view.error(error); }
     finally {
+      view.finishTurn();
       busy = false;
       if (!stopping) {
+        view.setStatus('Idle');
         await refreshStatus();
         if (turnReason === 'completed' && runtime.session) {
           try {
@@ -492,12 +664,17 @@ export async function interactive(runtime: Runtime): Promise<void> {
       throw error;
     }
     if (stopping) return;
-    await runtime.open();
-    observeBackground();
-    await refreshCommands();
-    if (stopping) return;
-    view.message(`Session ${runtime.session!.id} · ${runtime.session!.workDir}`);
-    if (runtime.options.resume) await replay(runtime, view, true);
+    try { await runtime.open(); }
+    catch (error) {
+      if (!(error instanceof ModelSetupRequired)) throw error;
+      view.notice(error.message, 'Use /setup to connect a provider and model.');
+    }
+    if (runtime.session) {
+      observeBackground(); await refreshCommands();
+      if (stopping) return;
+      view.message(`Session ${runtime.session.id}`);
+      if (runtime.options.resume) await replay(runtime, view, true);
+    }
     if (stopping) return;
     busy = false;
     await refreshStatus();
@@ -505,5 +682,5 @@ export async function interactive(runtime: Runtime): Promise<void> {
     view.setQueue(queue);
     if (next !== undefined) void submit(next.text, undefined, next.attachments);
     await done;
-  } finally { if (sideTask) await sideTask.catch(() => {}); unsubscribe?.(); view.stop(); if (pasteTask) await pasteTask.catch(() => {}); if (clipboardDir) await rm(clipboardDir, { recursive: true, force: true }); process.off('SIGTERM', exit); process.off('SIGINT', exit); }
+  } finally { await btw.dispose(); if (agentRender) clearTimeout(agentRender); unsubscribe?.(); if (observedSession && !observedSession.isClosed) observedSession.setStaleReloadHandler(undefined); view.stop(); await view.flushHistory(); if (pasteTask) await pasteTask.catch(() => {}); if (clipboardDir) await rm(clipboardDir, { recursive: true, force: true }); process.off('SIGTERM', exit); process.off('SIGINT', exit); }
 }

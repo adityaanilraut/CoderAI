@@ -1,7 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { register } from 'tsx/esm/api';
-register();
 const { readClipboardMedia } = await import('../apps/coderai/src/clipboard-media.ts');
 
 test('clipboard reads macOS files and images', async () => {

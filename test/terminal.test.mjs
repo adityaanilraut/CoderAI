@@ -1,15 +1,97 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { readFile, writeFile, access, readdir, mkdir, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { fixture, cli } from './fixture.mjs';
+import { fixture, cli, testRuntime } from './fixture.mjs';
 
-const terminal = (f, actions, args = []) => new Promise((done, reject) => {
+const terminal = (f, actions, args = [], size = {}) => new Promise((done, reject) => {
   const child = spawn('python3', [resolve('test/terminal.py')], { stdio: ['pipe', 'pipe', 'pipe'] });
   let out = ''; let err = ''; child.stdout.on('data', c => out += c); child.stderr.on('data', c => err += c);
-  child.stdin.end(JSON.stringify({ cwd: f.cwd, ...(process.env.CODERAI_TEST_BINARY ? { executable: resolve(process.env.CODERAI_TEST_BINARY) } : { node: process.env.CODERAI_TEST_RUNTIME || process.execPath, cli }), env: { ...f.env, TERM: 'xterm-256color' }, actions, args }));
+  child.stdin.end(JSON.stringify({ cwd: f.cwd, ...(process.env.CODERAI_TEST_BINARY ? { executable: resolve(process.env.CODERAI_TEST_BINARY) } : { node: testRuntime, cli }), env: { ...f.env, TERM: 'xterm-256color' }, actions, args, ...size }));
   child.on('error', reject); child.on('close', code => code === 0 ? done(JSON.parse(out)) : reject(new Error(err + out)));
+});
+
+test('real PTY: live todo cards update, expand through /todos, complete and clear', { timeout: 40000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: 'SCENARIO ui-todos\r' },
+    { wait: 'Todo fixture ready.', send: '/todos\r' },
+    { wait: '○ Last pending item', send: 'SCENARIO ui-todo-complete\r' },
+    { wait: 'Todo fixture completed.', send: 'SCENARIO ui-todo-clear\r' },
+    { wait: 'Todo fixture cleared.', send: '/todos\r' },
+    { wait: 'No todos.', send: '/quit\r' },
+  ]);
+  assert.equal(result.code, 0, result.output);
+  assert.ok(result.terminalRestored);
+  assert.match(result.output, /Todos · 2\/5 done · 1 active/);
+  assert.match(result.output, /● Active task/);
+  assert.match(result.output, /✓ Latest finished/);
+  assert.match(result.output, /Todos · 5\/5 done/);
+  assert.doesNotMatch(result.output, /\[in_progress\]|__kimi_env_model__|queued 0/);
+});
+
+test('real PTY: resumed todos use cards and a new session clears the pinned list', { timeout: 35000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const seed = await f.run(['--trust', '-p', 'SCENARIO ui-todos']);
+  assert.equal(seed.code, 0, seed.stderr);
+  const result = await terminal(f, [
+    { wait: 'Idle', send: '/todos\r' },
+    { wait: '○ Last pending item', send: '/new\r' },
+    { wait: 'New session', send: '/todos\r' },
+    { wait: 'No todos.', send: '/quit\r' },
+  ], ['--continue']);
+  assert.equal(result.code, 0, result.output);
+  assert.ok(result.terminalRestored);
+  assert.match(result.output, /Todos · 2\/5 done · 1 active/);
+  assert.doesNotMatch(result.output, /\[in_progress\]/);
+});
+
+test('real PTY: provider errors show recovery and the UI remains usable', { timeout: 35000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: 'SCENARIO auth\r' },
+    { wait: 'coderai --setup', send: '/new\r' },
+    { wait: 'New session', send: 'hello after recovery\r' },
+    { wait: 'Hello from the deterministic provider.', send: '/quit\r' },
+  ]);
+  assert.equal(result.code, 0, result.output);
+  assert.ok(result.terminalRestored);
+  assert.match(result.output, /Error details · Ctrl\+O to show details/);
+  assert.doesNotMatch(result.output, /"retryable"|"agentId"/);
+});
+
+test('real PTY: retry shows attempts and provider reason while status stays available', { timeout: 35000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: 'SCENARIO ui-retry\r' },
+    { wait: 'Retrying (', send: '/status\r' },
+    { wait: 'Thinking effort:' },
+    { wait: 'Hello from the deterministic provider.', send: '/quit\r' },
+  ]);
+  assert.equal(result.code, 0, result.output);
+  assert.ok(result.terminalRestored);
+  assert.match(result.output, /Retrying \(2\/\d+\) · in \d+s/);
+  assert.match(result.output, /429 · Fixture rate limit/);
+  assert.equal(f.requests.length, 2);
+});
+
+test('real PTY: compact footer and cancellation work in a 50 by 16 terminal', { timeout: 30000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'WORKSPACE TRUST', send: 'yes\r' },
+    { wait: 'Idle', send: '/plan on\r' },
+    { wait: 'Plan mode: on', send: 'SCENARIO wait\r' },
+    { wait: 'Working', send: '\u0003' },
+    { wait: 'Turn cancelled', send: '/quit\r' },
+  ], [], { columns: 50, rows: 16 });
+  assert.equal(result.code, 0, result.output);
+  assert.ok(result.terminalRestored);
+  assert.match(result.output, /\[PLAN\]/);
+  assert.match(result.output, /Context 0%/);
 });
 test('real PTY: startup trust, chat, approval, denial, slash commands and terminal restoration', { timeout: 90000 }, async t => {
   const f = await fixture(); t.after(f.cleanup);
@@ -19,7 +101,8 @@ test('real PTY: startup trust, chat, approval, denial, slash commands and termin
     { wait: 'Trust ', send: 'yes\r' },
     { wait: 'Idle', send: 'hello\r' },
     { wait: 'Hello from the deterministic provider.', send: '/help\r' },
-    { wait: '/quit', send: 'SCENARIO deny\r' },
+    { wait: 'CoderAI help', send: '\u001b' },
+    { wait: 'Idle', send: 'SCENARIO deny\r' },
     { wait: 'Approve Write?', send: 'no\r' },
     { wait: 'The requested action was denied.', send: '/new\r' },
     { wait: 'New session', send: 'SCENARIO deny\r' },
@@ -116,7 +199,7 @@ test('real PTY: queued input can be recalled and edited while work is running', 
   ]);
   assert.equal(result.code, 0, result.output);
   assert.doesNotMatch(result.output, /You: queued draft/);
-  assert.match(result.output, /██████/);
+  assert.match(result.output, /CoderAI · Ready to code/);
   assert.ok(result.terminalRestored);
 });
 
@@ -142,7 +225,8 @@ test('real PTY: double Escape opens undo and command aliases work', { timeout: 3
     { wait: 'Idle', send: '\u001b' },
     { wait: 'Withdraw prompts from context', send: '\u001b' },
     { wait: 'Idle', send: '/h\r' },
-    { wait: '/quit', send: '/q\r' },
+    { wait: 'CoderAI help', send: '\u001b' },
+    { wait: 'Idle', send: '/q\r' },
   ]);
   assert.equal(result.code, 0, result.output);
   assert.ok(result.terminalRestored);
@@ -179,23 +263,21 @@ test('real PTY: queued prompts retain the attachments staged at submission', { t
   assert.ok(f.requests.some(request => JSON.stringify(request).includes('data:image/png;base64,')));
 });
 
-test('real PTY: goals and skills reject staged attachments without consuming them', { timeout: 30000 }, async t => {
+test('real PTY: cancelled resume preserves attachments and session switch clears them', { timeout: 30000 }, async t => {
   const f = await fixture(); t.after(f.cleanup);
-  const skillDir = join(f.cwd, '.coderai', 'skills', 'greet');
-  await mkdir(skillDir, { recursive: true });
-  await writeFile(join(skillDir, 'SKILL.md'), '---\nname: greet\ndescription: A test greeting skill\n---\n\nHello.\n');
+  await f.run(['--trust', '-p', 'ATTACHMENT_TARGET']);
   const result = await terminal(f, [
-    { wait: 'Trust ', send: 'yes\r' },
     { wait: 'Idle', send: '/attach pixel.png\r' },
-    { wait: 'Attachment staged:', send: '/goal test objective\r' },
-    { wait: 'Attachments are not supported with goals.', send: '/skill:greet hello\r' },
-    { wait: 'Attachments are not supported with skill or plugin commands.', send: '/attach list\r' },
-    { wait: 'pixel.png', send: '/attach clear\r' },
-    { wait: 'Attachments cleared.', send: '/quit\r' },
+    { wait: 'Attachment staged:', send: '/resume\r' },
+    { wait: 'Choose a conversation:', send: '\u001b' },
+    { wait: 'Idle', send: '/attach list\r' },
+    { wait: 'Attachments for the next prompt:', send: '/sessions\r' },
+    { wait: 'Choose a conversation:', send: 'ATTACHMENT_TARGET\r' },
+    { wait: 'Resumed ', send: '/attach list\r' },
+    { wait: 'No attachments staged.', send: '/quit\r' },
   ]);
   assert.equal(result.code, 0, result.output);
-  assert.doesNotMatch(result.output, /Goal started: test objective/);
-  assert.equal(f.requests.length, 0);
+  assert.ok(result.terminalRestored);
 });
 
 test('real PTY: exports the persisted conversation without overwriting an existing file', { timeout: 30000 }, async t => {
@@ -217,7 +299,7 @@ test('real PTY: export includes tool activity and turns removed from model conte
   const prior = await f.run(['--trust', '--yolo', '-p', 'SCENARIO deny']);
   assert.equal(prior.code, 0, prior.stderr);
   const result = await terminal(f, [
-    { wait: 'Tool result:', send: '/clear\r' },
+    { wait: 'Tool completed: Write', send: '/clear\r' },
     { wait: 'Context cleared', send: '/export-md history.md\r' },
     { wait: 'Exported conversation', send: '/quit\r' },
   ], ['--continue']);
@@ -260,8 +342,8 @@ test('real PTY: resumed transcript includes recorded tool calls and results', { 
   const prior = await f.run(['--trust', '--yolo', '-p', 'SCENARIO deny']);
   assert.equal(prior.code, 0, prior.stderr);
   const result = await terminal(f, [
-    { wait: 'Tool: Write', send: '' },
-    { wait: 'Tool result:', send: '/quit\r' },
+    { wait: 'Tool completed: Write', send: '\u000f' },
+    { wait: 'Output', send: '/quit\r' },
   ], ['--continue']);
   assert.equal(result.code, 0, result.output);
   assert.ok(result.terminalRestored);
@@ -281,6 +363,49 @@ test('real PTY: browses and stops a background task', { timeout: 30000 }, async 
   assert.ok(result.terminalRestored);
 });
 
+test('real PTY: attachment labels and removal preserve the draft at 50 by 16', { timeout: 30000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  await writeFile(join(f.cwd, 'pixel.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a1kAAAAASUVORK5CYII=', 'base64'));
+  execFileSync('git', ['-C', f.cwd, 'init', '-b', 'phase-three'], { stdio: 'pipe' });
+  const result = await terminal(f, [
+    { wait: 'WORKSPACE TRUST', send: 'yes\r' },
+    { wait: 'git:phase-three dirty', send: '/attach pixel.png\r' },
+    { wait: 'image/png', send: 'draft after removal\u0014' },
+    { wait: 'Remove staged attachment', send: '\r' },
+    { wait: 'Idle', send: '\r' },
+    { wait: 'Hello from the deterministic provider.', send: '/quit\r' },
+  ], [], { columns: 50, rows: 16 });
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+  assert.match(result.output, /Image preview unavailable/);
+  assert.match(JSON.stringify(f.requests.at(-1)), /draft after removal/);
+  assert.doesNotMatch(JSON.stringify(f.requests.at(-1)), /data:image/);
+});
+
+test('real PTY: task output pages, pauses, follows and returns to its draft at 50 by 16', { timeout: 40000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'WORKSPACE TRUST', send: 'yes\r' },
+    { wait: 'Idle', send: 'SCENARIO ui-task-output\r' },
+    { wait: 'Started output fixture.', send: 'SCENARIO wait\r' },
+    { wait: 'Working', send: 'draft survives recovered\u0002' },
+    { wait: 'Choose a background task:', send: '\r' },
+    { wait: 'Task action:', send: '\r' },
+    { wait: 'Task output' },
+    { wait: 'LOG-060', send: '\u001b[5~' },
+    { wait: 'Paused' },
+    { wait: 'new output', send: '\u001b[F' },
+    { wait: 'LIVE-TAIL', send: '\u001b[H' },
+    { wait: 'LOG-001', send: '\u001b[6~' },
+    { wait: 'LOG-009', send: '\u001b' },
+    { wait: 'Working', send: '\u001b' },
+    { wait: 'Turn cancelled', send: '\r' },
+    { wait: 'Started output fixture.', send: '/quit\r' },
+  ], ['--yolo'], { columns: 50, rows: 16 });
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+  assert.match(result.output, /Following/);
+  assert.match(JSON.stringify(f.requests.at(-1)), /draft survives/);
+});
+
 test('real PTY: invokes a discovered project skill', { timeout: 30000 }, async t => {
   const f = await fixture(); t.after(f.cleanup);
   const skillDir = join(f.cwd, '.coderai', 'skills', 'greet');
@@ -298,6 +423,8 @@ test('real PTY: invokes a discovered project skill', { timeout: 30000 }, async t
 
 test('real PTY: local plugin lifecycle exposes its qualified skill', { timeout: 60000 }, async t => {
   const f = await fixture(); t.after(f.cleanup);
+  f.env.CODERAI_MODEL_CAPABILITIES = 'image_in';
+  await writeFile(join(f.cwd, 'pixel.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6UAAAAABJRU5ErkJggg==', 'base64'));
   const plugin = join(f.root, 'example-plugin');
   const skillDir = join(plugin, 'skills', 'greeting');
   await mkdir(skillDir, { recursive: true });
@@ -306,8 +433,10 @@ test('real PTY: local plugin lifecycle exposes its qualified skill', { timeout: 
   const result = await terminal(f, [
     { wait: 'Trust ', send: 'yes\r' },
     { wait: 'Idle', send: `/plugins install ${plugin}\r` },
+    { wait: 'Install plugin?', send: '\x1b[B\r' },
     { wait: 'Plugin installed:', send: '/plugins list\r' },
-    { wait: 'fixture-plugin', send: '/skill:fixture-plugin:greeting hello\r' },
+    { wait: 'fixture-plugin', send: '/attach pixel.png\r' },
+    { wait: 'Attachment staged:', send: '/skill:fixture-plugin:greeting hello\r' },
     { wait: 'Hello from the deterministic provider.', send: '/plugins disable fixture-plugin\r' },
     { wait: 'Plugin fixture-plugin disabled', send: '/plugins enable fixture-plugin\r' },
     { wait: 'Plugin fixture-plugin enabled', send: '/plugins remove fixture-plugin\r' },
@@ -316,6 +445,7 @@ test('real PTY: local plugin lifecycle exposes its qualified skill', { timeout: 
   ]);
   assert.equal(result.code, 0, result.output);
   assert.ok(f.requests.some(request => JSON.stringify(request).includes('PLUGIN_SKILL_MARKER')));
+  assert.ok(f.requests.some(request => JSON.stringify(request).includes('data:image/png;base64,')));
   assert.ok(result.terminalRestored);
 });
 
@@ -353,7 +483,7 @@ test('real PTY: copies the latest assistant text using OSC 52', { timeout: 30000
     { wait: 'Trust ', send: 'yes\r' },
     { wait: 'Idle', send: 'hello\r' },
     { wait: 'Hello from the deterministic provider.', send: '/copy\r' },
-    { wait: 'Clipboard request sent.', send: '/quit\r' },
+    { wait: 'Clipboard:', send: '/quit\r' },
   ]);
   const encoded = Buffer.from('Hello from the deterministic provider.').toString('base64');
   assert.ok(Buffer.from(result.raw, 'base64').includes(Buffer.from(`\x1b]52;c;${encoded}\x07`)));
@@ -393,6 +523,7 @@ test('real PTY: toggles and inspects engine modes', { timeout: 30000 }, async t 
   const result = await terminal(f, [
     { wait: 'Trust ', send: 'yes\r' },
     { wait: 'Idle', send: '/swarm on\r' },
+    { wait: 'Start Swarm with approvals on?', send: '\x1b[B\x1b[B\r' },
     { wait: 'Swarm mode: on', send: '/swarm status\r' },
     { wait: 'Swarm mode: on', send: '/swarm off\r' },
     { wait: 'Swarm mode: off', send: '/quit\r' },
@@ -477,14 +608,15 @@ test('real PTY: plan controls and readable empty lists', { timeout: 30000 }, asy
   assert.ok(result.terminalRestored);
 });
 
-test('real PTY: side question preserves main context and removes its temporary session', { timeout: 35000 }, async t => {
+test('real PTY: in-session side question preserves main context without creating another session', { timeout: 35000 }, async t => {
   const f = await fixture(); t.after(f.cleanup);
   const result = await terminal(f, [
     { wait: 'Trust ', send: 'yes\r' },
     { wait: 'Idle', send: 'main context marker\r' },
     { wait: 'Hello from the deterministic provider.', send: '/btw side-only marker\r' },
-    { wait: 'Side question: side-only marker', send: '' },
-    { wait: 'Idle', send: 'main follow-up\r' },
+    { wait: 'Q: side-only marker' },
+    { wait: 'Completed', send: '/btw close\r' },
+    { wait: 'Side question closed.', send: 'main follow-up\r' },
     { wait: 'Hello from the deterministic provider.', send: '/quit\r' },
   ]);
   assert.equal(result.code, 0, result.output);
@@ -497,6 +629,28 @@ test('real PTY: side question preserves main context and removes its temporary s
   assert.equal(sessions.code, 0, sessions.stderr);
   assert.equal(sessions.stdout.trim().split('\n').length, 1);
   assert.ok(result.terminalRestored);
+});
+
+test('real PTY: /btw answers and accepts follow-ups while the main turn stays busy', { timeout: 35000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: 'SCENARIO wait\r' },
+    { wait: 'Working', send: '/btw side during busy\r' },
+    { wait: 'Q: side during busy' },
+    { wait: 'Completed', send: 'side follow-up\r' },
+    { wait: 'Q: side follow-up' },
+    { wait: 'Completed', send: '/btw close\r' },
+    { wait: 'Working', send: '\u0003' },
+    { wait: 'Turn cancelled', send: '/auto-title off\r' },
+    { wait: 'Automatic session titles: off', send: '/quit\r' },
+  ]);
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+  assert.doesNotMatch(result.output, /Queued \(.*\): \/btw/);
+  const sideRequests = f.requests.filter(request => JSON.stringify(request).includes('side-channel conversation'));
+  assert.equal(sideRequests.length, 2); assert.match(JSON.stringify(sideRequests[1]), /side during busy.*side follow-up/s);
+  assert.match(await readFile(join(f.home, 'tui.toml'), 'utf8'), /auto_session_title = false/);
+  const sessions = await f.run(['sessions', '--json']); assert.equal(JSON.parse(sessions.stdout).length, 1);
 });
 
 test('real PTY: stages an image for one prompt and reports invalid attachments', { timeout: 35000 }, async t => {
@@ -558,6 +712,7 @@ test('real PTY: undo withdraws context and restores the prompt as a draft', { ti
     { wait: 'Idle', send: 'first prompt\r' },
     { wait: 'Hello from the deterministic provider.', send: 'second prompt\r' },
     { wait: 'Hello from the deterministic provider.', send: '/undo 1\r' },
+    { wait: 'Withdraw prompts only', send: '\r' },
     { wait: 'file changes remain.', send: '\u0003' },
     { wait: 'Draft cleared.', send: '\u0003' },
   ]);
@@ -719,4 +874,275 @@ test('real PTY: workspace trust accepts a numbered choice for a directory contai
   ]);
   assert.equal(result.code, 0, result.output);
   assert.ok(result.terminalRestored);
+});
+
+test('real PTY: thinking and grouped reads expand, collapse, and survive resume', { timeout: 35000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const first = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: 'SCENARIO ui-transcript\r' },
+    { wait: 'Transcript fixture complete.', send: '\u000f' },
+    { wait: 'Reviewing the fixture files before answering.' },
+    { wait: 'TEST_INSTRUCTION_42', send: '\u000f' },
+    { wait: 'Read 2 files · completed', send: '/quit\r' },
+  ], [], { columns: 50, rows: 16 });
+  assert.equal(first.code, 0, first.output);
+  assert.ok(first.terminalRestored);
+  assert.match(first.output, /Thinking · Ctrl\+O expand/);
+  const resumed = await terminal(f, [
+    { wait: 'Transcript fixture complete.', send: '\u000f' },
+    { wait: 'Reviewing the fixture files before answering.' },
+    { wait: 'TEST_INSTRUCTION_42', send: '/quit\r' },
+  ], ['--continue'], { columns: 50, rows: 16 });
+  assert.equal(resumed.code, 0, resumed.output);
+  assert.ok(resumed.terminalRestored);
+  assert.match(resumed.output, /Read 2 files · completed/);
+});
+
+test('real PTY: help pages close cleanly and model search returns to the conversation', { timeout: 30000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: '/help\r' },
+    { wait: 'KEYBOARD SHORTCUTS', send: '\u001b[F' },
+    { wait: '/cron', send: '\u001b' },
+    { wait: 'Idle', send: '/model\r' },
+    { wait: 'Choose a provider:', send: 'OpenAI\r' },
+    { wait: 'Choose a model from OpenAI:', send: 'fixture\r' },
+    { wait: 'Model:', send: '/quit\r' },
+  ], [], { columns: 50, rows: 16 });
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+  assert.match(result.output, /\[current\] fixture/);
+});
+
+test('real PTY: prompt history survives restart and stays scoped to its workspace', { timeout: 35000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const first = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: 'remember this prompt 73\r' },
+    { wait: 'Hello from the deterministic provider.', send: '/quit\r' },
+  ]);
+  assert.equal(first.code, 0, first.output);
+  const second = await terminal(f, [
+    { wait: 'Idle', send: '\u001b[A' },
+    { wait: 'remember this prompt 73', send: '\r' },
+    { wait: 'Hello from the deterministic provider.', send: '/quit\r' },
+  ]);
+  assert.equal(second.code, 0, second.output); assert.ok(second.terminalRestored);
+  const other = join(f.root, 'other-history-project'); await mkdir(other);
+  const third = await terminal({ ...f, cwd: other }, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: '\u001b[A/quit\r' },
+  ]);
+  assert.equal(third.code, 0, third.output); assert.ok(third.terminalRestored);
+  assert.equal(f.requests.length, 2);
+});
+
+test('real PTY: session browser filters workspaces, renames and deletes a saved conversation', { timeout: 35000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const saved = await f.run(['--trust', '-p', 'old saved conversation']); assert.equal(saved.code, 0, saved.stderr);
+  const result = await terminal(f, [
+    { wait: 'Idle', send: '/sessions\r' },
+    { wait: 'Choose a conversation:', send: '\u0001' },
+    { wait: 'All workspaces', send: 'old saved\u0012' },
+    { wait: 'Rename conversation', send: '\u0001\u000bRenamed conversation\r' },
+    { wait: 'Title: Renamed conversation', send: 'Renamed\u0018' },
+    { wait: 'Delete conversation?', send: '\u001b[B\r' },
+    { wait: 'Conversation deleted.', send: '\u001b' },
+    { wait: 'Idle', send: '/quit\r' },
+  ]);
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+  const listing = await f.run(['sessions']); assert.doesNotMatch(listing.stdout, /Renamed conversation/);
+});
+
+test('real PTY: guided setup launched from the model picker returns safely', { timeout: 30000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: '/model\r' },
+    { wait: 'Choose a provider:', send: '\u001b[F\r' },
+    { wait: 'Finish setup', send: '\u001b' },
+    { wait: 'Choose a provider:', send: '\u001b' },
+    { wait: 'Idle', send: '/setup\r' },
+    { wait: 'Finish setup', send: '\u0003' },
+    { wait: 'Setup closed. Configuration refreshed.', send: '\u001b[200~after setup\u001b[201~\r' },
+    { wait: 'Hello from the deterministic provider.', send: '/quit\r' },
+  ]);
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+});
+
+test('real PTY: auto theme consumes split and late background replies without changing the draft', { timeout: 35000 }, async t => {
+  for (const delayMs of [0, 400]) {
+    const f = await fixture(); t.after(f.cleanup);
+    delete f.env.NO_COLOR; f.env.FORCE_COLOR = '3';
+    const result = await terminal(f, [
+      { wait: 'WORKSPACE TRUST', send: 'yes\r' },
+      { wait: 'Idle', send: '/help\r' },
+      { wait: 'KEYBOARD SHORTCUTS', send: '\u001b' },
+      { wait: 'Idle', send: 'draft after terminal detection\r' },
+      { wait: 'Hello from the deterministic provider.', send: '/quit\r' },
+    ], [], { columns: 50, rows: 16, backgroundReply: 'rgb:ffff/ffff/ffff', backgroundDelayMs: delayMs, splitBackgroundReply: true });
+    assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+    assert.equal(result.backgroundQueries, 1);
+    const raw = Buffer.from(result.raw, 'base64').toString();
+    assert.match(raw, delayMs ? /\x1b\[(?:38;2;97;175;239|38;5;111)m/ : /\x1b\[(?:38;2;0;90;156|38;5;31)m/);
+    assert.doesNotMatch(JSON.stringify(f.requests), /rgb:|ffff/);
+    assert.match(JSON.stringify(f.requests), /draft after terminal detection/);
+  }
+});
+
+test('real PTY: welcome, dialogs and setup resize in a long-path light-theme workspace', { timeout: 35000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const cwd = join(f.cwd, ...Array.from({ length: 5 }, () => 'a long directory name'), 'project 日'); await mkdir(cwd, { recursive: true });
+  delete f.env.NO_COLOR; f.env.FORCE_COLOR = '3';
+  await writeFile(join(f.home, 'theme'), 'light\n');
+  const result = await terminal({ ...f, cwd }, [
+    { wait: 'WORKSPACE TRUST', send: 'yes\r' },
+    { wait: 'Idle', send: 'draft survives resize' , resize: { columns: 80, rows: 24 } },
+    { wait: 'draft survives resize', resize: { columns: 50, rows: 16 }, send: '\u0002' },
+    { wait: 'No background tasks.', send: '\u0015/setup\r' },
+    { wait: 'Finish setup', resize: { columns: 90, rows: 30 }, send: '\u001b[B' },
+    { wait: 'Add a model', resize: { columns: 50, rows: 16 }, send: '\u001b' },
+    { wait: 'Setup closed. Configuration refreshed.', send: 'after resize\r' },
+    { wait: 'Hello from the deterministic provider.', send: '/quit\r' },
+  ], [], { columns: 50, rows: 16 });
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored); assert.equal(result.backgroundQueries, 0);
+  assert.match(result.output, /Project:.*project 日/);
+  const raw = Buffer.from(result.raw, 'base64').toString(); assert.match(raw, /\x1b\[(?:38;2;0;90;156|38;5;31)m/);
+});
+
+test('real PTY: missing model opens actionable welcome and setup can be cancelled safely', { timeout: 30000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  for (const key of Object.keys(f.env)) if (key.startsWith('CODERAI_MODEL_') || key.startsWith('KIMI_MODEL_')) delete f.env[key];
+  const result = await terminal(f, [
+    { wait: 'WORKSPACE TRUST', send: 'yes\r' },
+    { wait: 'Use /setup to connect a model', send: '/setup\r' },
+    { wait: 'Finish setup', send: '\u001b' },
+    { wait: 'Use /setup to connect a model', send: '/help\r' },
+    { wait: 'KEYBOARD SHORTCUTS', send: '\u001b' },
+    { wait: 'Use /setup to connect a model', send: '/quit\r' },
+  ], [], { columns: 50, rows: 16 });
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored); assert.equal(f.requests.length, 0);
+});
+
+test('real PTY: first-run setup connects a model and opens the conversation without restarting', { timeout: 35000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  for (const key of Object.keys(f.env)) if (key.startsWith('CODERAI_MODEL_') || key.startsWith('KIMI_MODEL_')) delete f.env[key];
+  const result = await terminal(f, [
+    { wait: 'WORKSPACE TRUST', send: 'yes\r' },
+    { wait: 'Use /setup to connect a model', send: '/setup\r' },
+    { wait: 'Finish setup', send: '1\r' },
+    { wait: 'Add provider · choose a service', send: '\r' },
+    { wait: 'Provider ID', send: '\r' },
+    { wait: 'API base URL', send: `http://127.0.0.1:${f.server.address().port}/v1\r` },
+    { wait: 'API key · choose how to save it', send: '\r' },
+    { wait: 'API key (input hidden)', send: 'test-only-key\r' },
+    { wait: 'Select and add a model now', send: '\r' },
+    { wait: 'Add model · openai', send: '\u001b[B\r' },
+    { wait: 'Model ID from your provider', send: 'fixture-model\r' },
+    { wait: 'Model alias', send: 'fixture\r' },
+    { wait: 'Context limit in tokens', send: '128k\r' },
+    { wait: 'Model capabilities', send: '\r' },
+    { wait: 'Use this model by default?', send: '\r' },
+    { wait: 'Finish setup', send: '\u001b' },
+    { wait: 'Idle', send: 'first conversation after setup\r' },
+    { wait: 'Hello from the deterministic provider.', send: '/quit\r' },
+  ], [], { columns: 50, rows: 16 });
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+  assert.match(JSON.stringify(f.requests.at(-1)), /first conversation after setup/);
+  assert.match(result.output, /Ready to code/); assert.doesNotMatch(result.output, /test-only-key/);
+});
+
+test('real PTY: standalone setup detects a light background and restores the terminal', { timeout: 20000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup); delete f.env.NO_COLOR; f.env.FORCE_COLOR = '3';
+  const result = await terminal(f, [
+    { wait: 'Finish setup', send: '\u001b[B' },
+    { wait: 'Add a model', send: '\u001b' },
+  ], ['--setup'], { columns: 50, rows: 16, backgroundReply: 'rgb:ffff/ffff/ffff', splitBackgroundReply: true });
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored); assert.equal(result.backgroundQueries, 1);
+  assert.match(Buffer.from(result.raw, 'base64').toString(), /\x1b\[(?:38;2;0;90;156|38;5;31)m/);
+});
+
+test('real PTY: a late fragmented color reply cannot contaminate a hidden setup key', { timeout: 25000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'Finish setup', send: '1\r' },
+    { wait: 'Add provider · choose a service', send: '\r' },
+    { wait: 'Provider ID', send: '\r' },
+    { wait: 'API base URL', send: '\r' },
+    { wait: 'API key · choose how to save it', send: '\r' },
+    { wait: 'API key (input hidden)', send: '\u001b]11;rgb:ffff' },
+    { wait: '', send: '/ffff/ffff\u0007private-setup-key\r' },
+    { wait: 'Select and add a model now', send: '\u001b[B\r' },
+    { wait: 'Finish setup', send: '\u001b' },
+  ], ['--setup'], { columns: 50, rows: 16 });
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+  assert.doesNotMatch(result.output, /private-setup-key|ffff/);
+  assert.match(await readFile(join(f.home, 'config.toml'), 'utf8'), /api_key = "private-setup-key"/);
+});
+
+test('real PTY: settings aliases, reload and automatic-title preferences persist in a narrow terminal', { timeout: 35000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: '/config\r' },
+    { wait: 'Settings', send: 'Automatic session titles\r' },
+    { wait: 'TUI preferences saved and reloaded.', send: '/auto-title\r' },
+    { wait: 'Automatic session titles: off', send: '/reload-tui\r' },
+    { wait: 'TUI preferences reloaded.', send: '/new\r' },
+    { wait: 'New session', send: '/auto-title\r' },
+    { wait: 'Automatic session titles: off', send: '/quit\r' },
+  ], [], { columns: 50, rows: 16 });
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+  assert.match(await readFile(join(f.home, 'tui.toml'), 'utf8'), /auto_session_title = false/);
+});
+
+test('real PTY: experiments toggle and reload the session through either alias', { timeout: 35000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: '/experimental\r' },
+    { wait: 'Experimental features', send: 'tool_select' },
+    { wait: 'Search: tool_select', send: ' \r' },
+    { wait: 'Experimental features saved.', send: 'hello after experiment reload\r' },
+    { wait: 'Hello from the deterministic provider.', send: '/experiments\r' },
+    { wait: 'Experimental features', send: '\x1b' },
+    { wait: 'Idle', send: '/quit\r' },
+  ]);
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+  assert.match(await readFile(join(f.home, 'config.toml'), 'utf8'), /tool-select = true/);
+});
+
+test('real PTY: persistent approval defaults apply to new sessions and one-shot Swarm cancellation restores the command', { timeout: 35000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: '/swarm inspect this project\r' },
+    { wait: 'Start Swarm with approvals on?', send: '\x1b' },
+    { wait: 'Command restored.', send: '\x03' },
+    { wait: 'Draft cleared.', send: '/permission\r' },
+    { wait: 'Choose approval mode:', send: '\x1b[B\r' },
+    { wait: 'Use this approval mode:', send: '\x1b[B\r' },
+    { wait: 'saved as default for new sessions', send: '/new\r' },
+    { wait: 'New session', send: '/permissions\r' },
+    { wait: 'Permissions: yolo', send: '/swarm inspect this project\r' },
+    { wait: 'Hello from the deterministic provider.', send: '/quit\r' },
+  ]);
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+  assert.match(await readFile(join(f.home, 'config.toml'), 'utf8'), /default_permission_mode = "yolo"/);
+  assert.ok(f.requests.some(request => JSON.stringify(request.messages).includes('inspect this project')));
+});
+
+test('real PTY: interactive host capabilities deliver NotifyUser updates when the experiment is enabled', { timeout: 30000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  await writeFile(join(f.home, 'config.toml'), 'telemetry = false\n[experimental]\nnotify_user = true\n');
+  const result = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: 'SCENARIO phase4-notify\r' },
+    { wait: 'Notification fixture completed.', send: '/quit\r' },
+  ], [], { columns: 50, rows: 16 });
+  assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
+  assert.match(result.output, /Updates · Test progress/);
+  assert.match(result.output, /The interactive update reached the user/);
+  assert.doesNotMatch(result.output, /Tool completed: Result/);
 });

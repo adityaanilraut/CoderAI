@@ -38,7 +38,7 @@ export class WebSearchProviderService implements IWebSearchProviderService {
 
   private configuredSearch(): (ServicesConfig['moonshotSearch'] & { baseUrl: string }) | undefined {
     const search = this.config.get<ServicesConfig>(SERVICES_SECTION)?.moonshotSearch;
-    if (search?.baseUrl === undefined) return undefined;
+    if (nonEmptyString(search?.baseUrl) === undefined) return undefined;
     return search as ServicesConfig['moonshotSearch'] & { baseUrl: string };
   }
 

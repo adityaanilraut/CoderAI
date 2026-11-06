@@ -206,7 +206,7 @@ export interface CreateGoalInput {
 }
 
 export type TextPromptPart = Extract<ContentPart, { type: 'text' }>;
-export type PromptPart = Extract<ContentPart, { type: 'text' | 'image_url' | 'video_url' }>;
+export type PromptPart = Extract<ContentPart, { type: 'text' | 'image_url' | 'video_url' | 'audio_url' }>;
 
 export type PromptInput = readonly PromptPart[];
 
@@ -238,6 +238,8 @@ export interface CoderaiHarnessOptions {
 }
 
 export interface CreateSessionOptions {
+  /** Ephemeral session-only MCP servers; never written to mcp.json. */
+  readonly mcpServers?: Readonly<Record<string, import('@coderai/agent-core-v2/mcpCore/config-schema').McpServerConfig>>;
   readonly id?: string | undefined;
   readonly workDir: string;
   readonly model?: string | undefined;
@@ -281,6 +283,8 @@ export interface GenerateSessionTitleInput {
 }
 
 export interface ResumeSessionInput {
+  /** Re-supply ephemeral servers when reopening a closed session. */
+  readonly mcpServers?: Readonly<Record<string, import('@coderai/agent-core-v2/mcpCore/config-schema').McpServerConfig>>;
   readonly id: string;
   readonly additionalDirs?: readonly string[];
   /** Re-select the session's already-bound main profile; a different name fails. */
@@ -421,7 +425,7 @@ export interface SessionUsage {
 export interface SessionStatus {
   readonly model?: string;
   /** Input media capabilities of the currently bound model, when available. */
-  readonly mediaCapabilities?: { readonly image: boolean; readonly video: boolean };
+  readonly mediaCapabilities?: { readonly image: boolean; readonly video: boolean; readonly audio: boolean };
   readonly thinkingEffort: string;
   readonly permission: PermissionMode;
   readonly planMode: boolean;
@@ -472,3 +476,17 @@ export interface ResumedSessionSummary extends SessionSummary, ResumedSessionSta
 
 /** Compatibility alias for the upstream SDK option name. */
 export type KimiHarnessOptions = CoderaiHarnessOptions;
+
+/** File history uses engine turn IDs (zero based), not prompt positions. */
+export interface TurnChanges {
+  readonly turnId: number;
+  readonly recorded: boolean;
+  readonly changes: readonly import('@coderai/agent-core-v2/features/fileHistory/fileHistory').FileHistoryChange[];
+}
+export interface TurnFileDiff {
+  readonly path: string;
+  readonly before?: string;
+  readonly after?: string;
+  readonly binary?: boolean;
+  readonly unavailable?: boolean;
+}

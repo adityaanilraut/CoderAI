@@ -9,47 +9,52 @@ function isExtractableMedia(part: ContentPart): boolean {
   return part.type === 'video_url' && !part.videoUrl.url.startsWith('data:');
 }
 
-export const extractToolMedia: Pattern<Message> = {
-  name: 'extractToolMedia',
-  rewrite(items, index) {
-    const first = items[index];
-    if (first === undefined || first.role !== 'tool') return null;
-    let end = index;
-    while (end < items.length && items[end]?.role === 'tool') {
-      end += 1;
-    }
-    const run = items.slice(index, end) as ToolMessage[];
-    const media: ContentPart[] = [];
-    for (const message of run) {
-      for (const part of message.content) {
-        if (isExtractableMedia(part)) {
-          media.push(part);
+export function createExtractToolMedia(extractAudio = false): Pattern<Message> {
+  const isMedia = (part: ContentPart): boolean => isExtractableMedia(part) || (extractAudio && part.type === 'audio_url');
+  return {
+    name: 'extractToolMedia',
+    rewrite(items, index) {
+      const first = items[index];
+      if (first === undefined || first.role !== 'tool') return null;
+      let end = index;
+      while (end < items.length && items[end]?.role === 'tool') {
+        end += 1;
+      }
+      const run = items.slice(index, end) as ToolMessage[];
+      const media: ContentPart[] = [];
+      for (const message of run) {
+        for (const part of message.content) {
+          if (isMedia(part)) {
+            media.push(part);
+          }
         }
       }
-    }
-    if (media.length === 0) return null;
-    const stripped = run.map((message) => {
-      const content = message.content.filter((part) => !isExtractableMedia(part));
-      const hadImage = message.content.some((part) => part.type === 'image_url');
-      const hasText = content.some((part) => part.type === 'text' && part.text.length > 0);
-      const hasAudio = content.some((part) => part.type === 'audio_url');
-      const hasDataVideo = content.some((part) => part.type === 'video_url');
-      if (!hasText && !hasAudio && !hasDataVideo && hadImage) {
-        return {
-          ...message,
-          content: [
-            { type: 'text', text: TOOL_RESULT_MEDIA_PLACEHOLDER } as ContentPart,
-            ...message.content.filter((part): part is ThinkPart => part.type === 'think'),
-          ],
-        };
-      }
-      if (content.length === message.content.length) return message;
-      return { ...message, content };
-    });
-    const mediaUser: UserMessage = {
-      role: 'user',
-      content: [{ type: 'text', text: TOOL_RESULT_MEDIA_PROMPT }, ...media],
-    };
-    return { consumed: run.length, replacement: [...stripped, mediaUser] };
-  },
-};
+      if (media.length === 0) return null;
+      const stripped = run.map((message) => {
+        const content = message.content.filter((part) => !isMedia(part));
+        const hadAttachment = message.content.some((part) => part.type === 'image_url' || (extractAudio && part.type === 'audio_url'));
+        const hasText = content.some((part) => part.type === 'text' && part.text.length > 0);
+        const hasAudio = content.some((part) => part.type === 'audio_url');
+        const hasDataVideo = content.some((part) => part.type === 'video_url');
+        if (!hasText && !hasAudio && !hasDataVideo && hadAttachment) {
+          return {
+            ...message,
+            content: [
+              { type: 'text', text: TOOL_RESULT_MEDIA_PLACEHOLDER } as ContentPart,
+              ...message.content.filter((part): part is ThinkPart => part.type === 'think'),
+            ],
+          };
+        }
+        if (content.length === message.content.length) return message;
+        return { ...message, content };
+      });
+      const mediaUser: UserMessage = {
+        role: 'user',
+        content: [{ type: 'text', text: TOOL_RESULT_MEDIA_PROMPT }, ...media],
+      };
+      return { consumed: run.length, replacement: [...stripped, mediaUser] };
+    },
+  };
+}
+
+export const extractToolMedia = createExtractToolMedia();

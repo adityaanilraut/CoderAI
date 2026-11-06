@@ -1,3 +1,5 @@
+import { IFlagService } from '#/app/flag/flag';
+import { FULL_COMPACTION_FLAG_ID } from './flag';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { Service } from "#/_base/di/service";
 import { LifecycleScope } from '#/app/scopes';
@@ -142,6 +144,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   private _compacting: ActiveCompaction | null = null;
 
   constructor(
+    @IFlagService private readonly flags: IFlagService,
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
     @ISessionTokenCountingService private readonly tokenCounting: ISessionTokenCountingService,
     @IAgentLLMRequesterService private readonly llmRequester: IAgentLLMRequesterService,
@@ -199,7 +202,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     this._register(
       this.loopService.registerLoopErrorHandler({
         id: 'full-compaction',
-        match: (context) => this.shouldRecoverFromContextOverflow(context.error),
+        match: (context) => this.flags.enabled(FULL_COMPACTION_FLAG_ID) && this.shouldRecoverFromContextOverflow(context.error),
         handle: (context) => this.recoverFromContextOverflow(context),
       }),
     );
@@ -332,6 +335,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   }
 
   begin(input: FullCompactionInput): boolean {
+    if (!this.flags.enabled(FULL_COMPACTION_FLAG_ID)) throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'Full compaction is disabled. Enable full_compaction in /experiments.');
     if (this._compacting) return false;
     const data: CompactionBeginData = { source: input.source, instruction: input.instruction };
     if (data.source === 'manual') {
@@ -500,6 +504,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private async beforeStep(signal: AbortSignal, turnId?: number): Promise<void> {
     this.activeTurnId = turnId;
+    if (!this.flags.enabled(FULL_COMPACTION_FLAG_ID)) return;
     this.checkAutoCompaction();
     if (this.strategy.shouldBlock(this.tokenCountWithPending())) {
       await this.block(signal, turnId);
@@ -507,6 +512,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   }
 
   private async afterStep(): Promise<void> {
+    if (!this.flags.enabled(FULL_COMPACTION_FLAG_ID)) return;
     this.consecutiveOverflowCompactions = 0;
     if (this.strategy.checkAfterStep) {
       this.checkAutoCompaction(false);

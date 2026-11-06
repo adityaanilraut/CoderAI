@@ -15,3 +15,25 @@ test('startup options expose additional directory access and validate agent sele
   assert.equal(unknown.code, 1);
   assert.match(unknown.stderr, /agent|profile/i);
 });
+
+test('CLI help and startup errors give usable commands without opening a session', { timeout: 15000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const help = await f.run(['--help']);
+  assert.equal(help.code, 0, help.stderr);
+  assert.match(help.stdout, /coderai sessions list --json/);
+  assert.ok(!help.stdout.includes(f.cwd), help.stdout);
+  const models = await f.run(['models', '--help']);
+  assert.match(models.stdout, /set the default model for new conversations/);
+  const empty = await f.run(['--json', '-p', ' \t '], '\n');
+  assert.equal(empty.code, 1);
+  assert.equal(empty.stdout, '');
+  assert.match(empty.stderr, /Use -p TEXT or pipe text/);
+  const missing = await f.run(['-C', join(f.root, 'missing'), '-p', 'hello']);
+  assert.equal(missing.code, 1);
+  assert.match(missing.stderr, /Workspace directory does not exist: .*missing/);
+  const file = join(f.cwd, 'input.txt');
+  const invalid = await f.run(['-C', file, '-p', 'hello']);
+  assert.equal(invalid.code, 1);
+  assert.match(invalid.stderr, /Workspace path is not a directory: .*input\.txt/);
+  assert.equal(f.requests.length, 0);
+});

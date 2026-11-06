@@ -1,23 +1,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, access, mkdtemp, rm, realpath } from 'node:fs/promises';
+import { readFile, writeFile, access, mkdtemp, rm, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { build } from 'esbuild';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fixture } from './fixture.mjs';
+import { fixture, testRuntime } from './fixture.mjs';
 const exec = promisify(execFile);
 
-test('npm archive installs and runs the real engine without either source checkout', { timeout: 120000 }, async t => {
+test('Bun archive installs and runs the real engine without either source checkout', { timeout: 120000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), 'coderai-package-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const packed = await exec('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', dir], { timeout: 30000 });
-  const archive = JSON.parse(packed.stdout)[0];
-  const files = archive.files.map(file => file.path);
+  const packed = await exec('bun', ['pm', 'pack', '--ignore-scripts', '--filename', join(dir, 'coderai.tgz'), '--quiet'], { timeout: 30000 });
+  const archive = join(dir, 'coderai.tgz');
+  const listing = await exec('tar', ['-tzf', archive]);
+  const files = listing.stdout.trim().split('\n').map(file => file.replace(/^package\//, ''));
   for (const name of ['LICENSE', 'NOTICE', 'dist/LICENSE.pi-tui', 'dist/LICENSE.jsquash-webp', 'dist/LICENSE.libwebp', 'dist/text-build-worker.mjs']) assert.ok(files.includes(name), name);
   assert.ok(!files.some(name => name.startsWith('apps/') || name.includes('/src/')));
-  await exec('npm', ['install', '--prefix', dir, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=false', join(dir, archive.filename)], { timeout: 90000 });
+  await writeFile(join(dir, 'package.json'), JSON.stringify({ private: true, dependencies: { coderai: `file:${archive}` } }));
+  await exec('bun', ['install', '--production'], { cwd: dir, timeout: 90000 });
   const executable = join(dir, 'node_modules', '.bin', 'coderai');
   assert.equal(await realpath(executable), await realpath(join(dir, 'node_modules', 'coderai', 'dist', 'coderai.mjs')));
   const f = await fixture(); t.after(f.cleanup);
@@ -49,7 +51,7 @@ test('npm archive installs and runs the real engine without either source checko
       try { resolveRun(JSON.parse(stdout)); } catch (error) { reject(error); }
     });
     child.stdin.end(JSON.stringify({
-      cwd: f.cwd, node: process.execPath, cli: executable,
+      cwd: f.cwd, node: testRuntime, cli: executable,
       env: { ...env, TERM: 'xterm-256color' },
       actions: [
         { wait: 'Idle', send: 'hello\r' },
@@ -91,9 +93,31 @@ test('packaged MiniDb worker builds a real text index', { timeout: 30000 }, asyn
       } finally { await db.close(); }
     `;
     await build({ stdin: { contents: code, resolveDir: process.cwd(), sourcefile: 'worker-test.ts' }, bundle: true, platform: 'node', format: 'esm', target: 'node24', outfile: entry });
-    const result = await exec(process.env.CODERAI_TEST_RUNTIME || process.execPath, [entry], { timeout: 25000 });
+    const result = await exec(testRuntime, [entry], { timeout: 25000 });
     const stats = JSON.parse(result.stdout.trim());
     assert.ok(stats.textWorkerBuilds > 0, result.stdout);
     assert.equal(stats.textWorkerFallbacks, 0);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('CLI fails clearly if its packaged MiniDb worker is missing', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'coderai-missing-worker-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const { copyFile, symlink } = await import('node:fs/promises');
+  await copyFile(resolve('dist/coderai.mjs'), join(dir, 'coderai.mjs'));
+  await symlink(resolve('node_modules'), join(dir, 'node_modules'), 'junction');
+  await assert.rejects(exec(process.execPath, [join(dir, 'coderai.mjs'), '--help']), error => {
+    assert.match(error.stderr, /MiniDb text-build worker entry is not readable/);
+    return true;
+  });
+});
+
+test('standalone tests reject a missing requested executable', async () => {
+  const missing = join(tmpdir(), `coderai-missing-${process.pid}`, 'coderai');
+  await assert.rejects(exec(process.execPath, ['test', resolve('test/native.test.mjs')], {
+    env: { ...process.env, CODERAI_TEST_BINARY: missing }, timeout: 15000,
+  }), error => {
+    assert.match(error.stderr, /Standalone executable not found/);
+    return true;
+  });
 });

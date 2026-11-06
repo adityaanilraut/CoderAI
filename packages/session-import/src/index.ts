@@ -15,3 +15,6 @@ export type {
   SessionCandidate,
   SessionSource,
 } from '#/types';
+
+export { importedSessionDir, writeImportedSession, ensureSessionIndexEntry } from './imported-session.js';
+export type { ImportedSessionInput, ImportedSessionMessage } from './imported-session.js';

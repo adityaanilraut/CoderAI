@@ -26,11 +26,17 @@ const videoUrlPartSchema = z.object({
   videoUrl: z.object({ url: z.string(), id: z.string().optional() }),
 });
 
+const audioUrlPartSchema = z.object({
+  type: z.literal('audio_url'),
+  audioUrl: z.object({ url: z.string(), id: z.string().optional() }),
+});
+
 /** `PromptPart = Extract<ContentPart, { type: 'text' | 'image_url' | 'video_url' }>`. */
 export const promptPartSchema = z.discriminatedUnion('type', [
   textPartSchema,
   imageUrlPartSchema,
   videoUrlPartSchema,
+  audioUrlPartSchema,
 ]);
 
 // ── payloads / results ──────────────────────────────────────────────────────

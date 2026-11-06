@@ -1,7 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { register } from 'tsx/esm/api';
-register();
 const { TrustDialog } = await import('../apps/coderai/src/tui/trust-dialog.ts');
 const { visibleWidth, stripTerminalSequences } = await import('../packages/pi-tui/src/utils.ts');
 

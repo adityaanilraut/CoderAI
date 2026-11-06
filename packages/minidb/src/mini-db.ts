@@ -23,16 +23,15 @@ import { IndexManager } from './index-manager.js';
 import { DtIndex } from './dt-index.js';
 import { TextIndex } from './text-index/index.js';
 import { CompoundIndexManager } from './compound-index.js';
-import { toKStr, writeFileAtomic } from './value-codec.js';
+import { writeFileAtomic } from './value-codec.js';
 import { LockFile } from './lockfile.js';
 import { createSerializer } from './serialize.js';
 import { MaintenanceScheduler, defaultWorkerSlots, TEXT_BUILD_SLOT_WAIT_MS } from './maintenance.js';
 import { MemoryGuard } from './memory-guard.js';
-import { backup as runBackup, backupInProgressError as newBackupInProgressError } from './backup.js';
+import { backup as runBackup } from './backup.js';
 import type { BackupDeps } from './backup.js';
 import { QueryEngine } from './query-engine.js';
 import { GenerationBuilder, TEXT_BUILD_WORKER_MIN_DOCS, GEN_BUILD_WAL_DELTA_BYTES } from './generation-builder.js';
-import type { GenBuildOp } from './generation-builder.js';
 import { WalGroupTracker } from './wal-group.js';
 import { WritePath } from './write-path.js';
 import { withWindowsEpermRetry } from './rename-replace.js';
@@ -94,9 +93,6 @@ export class MiniDb<V = unknown> {
   }
   private get textDefs(): TextIndexDef[] {
     return this.textRegistry.textDefs;
-  }
-  private get textDrops(): Set<string> {
-    return this.textRegistry.textDrops;
   }
 
   /* Non-private (package-internal): lifecycle.ts reads/writes this through its LifecycleHost view. */ codec!: ValueCodec<V>;
@@ -223,16 +219,9 @@ export class MiniDb<V = unknown> {
   private lastGenBuildKickAt = 0;
   private lastGenBuildFailureAt = 0;
   lastGenBuildError: unknown = null;
-  /** Abort handle / mutation queue / single-flight guard / status of the
-   *  generation build all live in the GenerationBuilder facet (declared
-   *  below); these views keep the open / write / close paths' call sites
-   *  unchanged (the write path feeds the SHARED genBuild object by
-   *  reference). */
+  /** GenerationBuilder owns the build state used by the lifecycle paths. */
   private get genBuildAbort(): AbortController | null {
     return this.generationBuilder.genBuildAbort;
-  }
-  private get genBuild(): { queue: GenBuildOp[]; bytes: number; wal: WAL; aborted: boolean } | null {
-    return this.generationBuilder.genBuild;
   }
   private get genBuildPromise(): Promise<void> | null {
     return this.generationBuilder.genBuildPromise;
@@ -538,9 +527,6 @@ export class MiniDb<V = unknown> {
   }
   private decode(b: Buffer | undefined): V | undefined {
     return b === undefined ? undefined : this.codec.decode(b);
-  }
-  private pk(key: string | Buffer): string {
-    return toKStr(key);
   }
   private indexable(v: unknown): v is Record<string, unknown> {
     return v !== null && typeof v === 'object';
@@ -1105,10 +1091,6 @@ export class MiniDb<V = unknown> {
     wal.clearPoison();
   }
 
-  private touchAccess(pk: string): void {
-    this.memoryGuard.touchAccess(pk);
-  }
-
   private seedAccessFromStore(): void {
     this.memoryGuard.seedAccessFromStore();
   }
@@ -1319,13 +1301,6 @@ export class MiniDb<V = unknown> {
    *  query() exactly — keep both in sync when the query planner changes. */
   async queryAsync(q: QueryOptions = {}): Promise<ScanEntry<V>[]> {
     return this.queryEngine.queryAsync(q);
-  }
-
-  /** The rejection a write op gets while a backup holds the write gate: the
-   *  fence is short (file copies) and retryable, so callers can simply
-   *  re-issue the write afterwards. */
-  private backupInProgressError(): Error {
-    return newBackupInProgressError();
   }
 
   /** Write a consistent online backup of this database directory.

@@ -224,7 +224,7 @@ export class SubagentTool implements ISubagentTool {
       }
     });
     if (refs.get(READ_MEDIA_FILE_TOOL_NAME)?.source !== 'user') {
-      if (this.anySubagentModelSupports((capabilities) => capabilities.image_in || capabilities.video_in)) {
+      if (this.anySubagentModelSupports((capabilities) => capabilities.image_in || capabilities.video_in || capabilities.audio_in)) {
         refs.set(READ_MEDIA_FILE_TOOL_NAME, { name: READ_MEDIA_FILE_TOOL_NAME, source: 'builtin' });
       } else {
         refs.delete(READ_MEDIA_FILE_TOOL_NAME);

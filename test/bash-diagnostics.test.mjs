@@ -1,9 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { register } from 'tsx/esm/api';
 import { fixture } from './fixture.mjs';
 
-register();
 const { shellFailureHint } = await import('../packages/agent-core-v2/src/agent/tools/os/bash/shellFailureHint.ts');
 
 test('missing python alias suggests the project interpreter without treating it as a test failure', () => {

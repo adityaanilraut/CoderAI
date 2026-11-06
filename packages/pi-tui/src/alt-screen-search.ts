@@ -250,7 +250,9 @@ export class AltScreenSearchComponent implements Component, Focusable {
 	handleInput(data: string): void {
 		const previous = this.input.getValue();
 		this.input.handleInput(data);
-		const query = this.input.getValue();
+		const rawQuery = this.input.getValue();
+		const query = stripTerminalSequences(rawQuery).replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+		if (query !== rawQuery) this.input.setValue(query);
 		if (query !== previous) this.onQueryChange(query);
 	}
 

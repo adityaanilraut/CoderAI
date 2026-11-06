@@ -44,6 +44,14 @@ export interface IAgentFileHistoryService {
 
   history(): FileHistoryState;
   settled(): Promise<void>;
+  /** Restore changed files to their earliest pre-turn snapshots in this suffix. */
+  restoreTurnFiles(turnId: number): Promise<readonly string[]>;
+  /** Preflight all backups before any mutation; callers hold the agent quiescence lease. */
+  prepareRestoreTurnFiles(turnId: number): Promise<{
+    readonly paths: readonly string[];
+    apply(): Promise<void>;
+    rollback(): Promise<void>;
+  }>;
   captureForActiveTurn(path: string): Promise<void>;
   changes(turnId: number): Promise<FileHistoryChange[]>;
   turnRecorded(turnId: number): Promise<boolean>;

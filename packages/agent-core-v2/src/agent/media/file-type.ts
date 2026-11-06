@@ -9,7 +9,7 @@ export { AUDIO_MIME_BY_SUFFIX, IMAGE_MIME_BY_SUFFIX, VIDEO_MIME_BY_SUFFIX };
 export const MEDIA_SNIFF_BYTES = 512;
 
 export interface FileType {
-  readonly kind: 'text' | 'image' | 'video' | 'unknown';
+  readonly kind: 'text' | 'image' | 'video' | 'audio' | 'unknown';
   readonly mimeType: string;
 }
 
@@ -176,8 +176,20 @@ export function sniffMediaFromMagic(data: Buffer | Uint8Array): FileType | null 
   }
   if (startsWith(header, Buffer.from('RIFF')) && header.length >= 12) {
     const chunk = header.subarray(8, 12).toString('latin1');
+    if (chunk === 'WAVE') return { kind: 'audio', mimeType: 'audio/wav' };
     if (chunk === 'WEBP') return { kind: 'image', mimeType: 'image/webp' };
     if (chunk === 'AVI ') return { kind: 'video', mimeType: 'video/x-msvideo' };
+  }
+  if (startsWith(header, Buffer.from('ID3'))) return { kind: 'audio', mimeType: 'audio/mpeg' };
+  if (header[0] === 0xff && ((header[1] ?? 0) & 0xe0) === 0xe0) {
+    const aac = ((header[1] ?? 0) & 0xf6) === 0xf0;
+    return { kind: 'audio', mimeType: aac ? 'audio/aac' : 'audio/mpeg' };
+  }
+  if (startsWith(header, Buffer.from('fLaC'))) return { kind: 'audio', mimeType: 'audio/flac' };
+  if (startsWith(header, Buffer.from('OggS'))) {
+    return header.includes(Buffer.from('theora'))
+      ? { kind: 'video', mimeType: 'video/ogg' }
+      : { kind: 'audio', mimeType: 'audio/ogg' };
   }
   if (startsWith(header, Buffer.from('FLV'))) {
     return { kind: 'video', mimeType: 'video/x-flv' };
@@ -192,6 +204,7 @@ export function sniffMediaFromMagic(data: Buffer | Uint8Array): FileType | null 
   }
   const brand = sniffFtypBrand(header);
   if (brand !== null && brand !== '') {
+    if (brand === 'm4a' || brand === 'm4b') return { kind: 'audio', mimeType: 'audio/mp4' };
     if (brand in FTYP_IMAGE_BRANDS) {
       return { kind: 'image', mimeType: FTYP_IMAGE_BRANDS[brand]! };
     }
@@ -332,6 +345,8 @@ export function detectFileType(
     mediaHint = { kind: 'text', mimeType: TEXT_MIME_BY_SUFFIX[suffix]! };
   } else if (suffix in IMAGE_MIME_BY_SUFFIX) {
     mediaHint = { kind: 'image', mimeType: IMAGE_MIME_BY_SUFFIX[suffix]! };
+  } else if (suffix in AUDIO_MIME_BY_SUFFIX) {
+    mediaHint = { kind: 'audio', mimeType: AUDIO_MIME_BY_SUFFIX[suffix]! };
   } else if (suffix in VIDEO_MIME_BY_SUFFIX) {
     mediaHint = { kind: 'video', mimeType: VIDEO_MIME_BY_SUFFIX[suffix]! };
   }
@@ -340,7 +355,11 @@ export function detectFileType(
     const buf = toBuffer(header);
     const sniffed = sniffMediaFromMagic(buf);
     if (sniffed) {
-      if (type === 'media') return sniffed;
+      if (type === 'media') {
+        // MP4 is also an audio container; retain a known audio suffix.
+        if (mediaHint?.kind === 'audio' && sniffed.mimeType === 'video/mp4') return mediaHint;
+        return sniffed;
+      }
       if (mediaHint) {
         if (sniffed.kind !== mediaHint.kind) {
           return { kind: 'unknown', mimeType: '' };
@@ -352,7 +371,7 @@ export function detectFileType(
     if (mediaHint?.kind === 'image') {
       return { kind: 'unknown', mimeType: '' };
     }
-    if (type === 'media' && mediaHint?.kind === 'video') {
+    if (type === 'media' && (mediaHint?.kind === 'video' || mediaHint?.kind === 'audio')) {
       return mediaHint;
     }
     if (buf.includes(0x00)) {

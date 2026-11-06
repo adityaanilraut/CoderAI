@@ -484,6 +484,13 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
+	/** Replace recalled prompts when a host switches workspaces. Entries are oldest first. */
+	setHistory(entries: readonly string[]): void {
+		this.exitHistoryBrowsing();
+		this.history = [];
+		for (const entry of entries) this.addToHistory(entry);
+	}
+
 	private isEditorEmpty(): boolean {
 		return this.state.lines.length === 1 && this.state.lines[0] === "";
 	}

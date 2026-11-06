@@ -7,12 +7,13 @@ import type {
 import type { McpOAuthService } from '#/mcpCore/oauth/service';
 import type { MCPClient } from '#/mcpCore/types';
 import { abortable } from '#/_base/utils/abort';
+import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 export class MergedMcpConnectionView implements McpConnectionView {
   constructor(
     private readonly base: McpConnectionManager,
     private readonly overlay: McpConnectionManager,
-    private readonly overlayNames: ReadonlySet<string>,
+    private readonly overlayNames: Set<string>,
   ) {}
 
   get oauthService(): McpOAuthService | undefined {
@@ -46,6 +47,18 @@ export class MergedMcpConnectionView implements McpConnectionView {
 
   reconnect(name: string): Promise<void> {
     return this.owner(name).reconnect(name);
+  }
+
+  async connect(name: string, config: McpServerConfig): Promise<void> {
+    // Explicit session replacements belong to the overlay, including new names.
+    // Mark ownership before connecting so status/tool listeners see one identity.
+    this.overlayNames.add(name);
+    await this.overlay.connect(name, config);
+  }
+
+  async remove(name: string): Promise<boolean> {
+    // Keep a removed overlay name shadowing the base until the session closes.
+    return this.owner(name).remove(name);
   }
 
   reconnectAndJoin(name: string): Promise<void> {

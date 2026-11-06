@@ -1,14 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { register } from 'tsx/esm/api';
 
-register();
 const { headless } = await import('../apps/coderai/src/headless.ts');
 
 test('plain headless output contains only main agent text, while JSON retains attribution', async () => {
-  const session = { id: 'session', workDir: '/test' };
+  const session = { id: 'session', workDir: '/test', setStaleReloadHandler() {}, async getSessionWarnings() { return []; } };
   const runtime = {
-    options: {},
+    options: {}, session,
     open: async () => session,
     run: async (_prompt, emit) => {
       emit({ type: 'assistant.delta', agentId: 'main', delta: 'main ' });

@@ -40,6 +40,8 @@ function camelToSnake(str: string): string {
   return str.replaceAll(/[A-Z]/g, (ch: string) => `_${ch.toLowerCase()}`);
 }
 
+const V2_CONFIG_DOMAINS = ['cron', 'tools', 'watch', 'persistence', 'tokenCounting', 'agentIdentity', 'modelOverrides', 'database', 'identity', 'task'] as const;
+
 const DEFAULT_CONFIG_FILE_TEXT = `# ~/.kimi-code/config.toml
 # Runtime settings for Kimi Code.
 # This file starts empty so built-in defaults can apply.
@@ -285,6 +287,8 @@ export function transformTomlData(data: Record<string, unknown>): Record<string,
       result[targetKey] = transformPlainObject(value);
     } else if (targetKey === 'mcp' && isPlainObject(value)) {
       result[targetKey] = transformPlainObject(value);
+    } else if ((V2_CONFIG_DOMAINS as readonly string[]).includes(targetKey) && isPlainObject(value)) {
+      result[targetKey] = transformPlainObject(value);
     } else if (!isPlainObject(value)) {
       result[targetKey] = value;
     }
@@ -464,6 +468,13 @@ export function configToTomlData(config: KimiConfig): Record<string, unknown> {
   setSection(out, 'experimental', config.experimental, experimentalToToml);
   setSection(out, 'permission', config.permission, permissionToToml);
   setHooks(out, config.hooks);
+  for (const domain of V2_CONFIG_DOMAINS) {
+    setSection(out, camelToSnake(domain), config[domain], (value, raw) => {
+      const section = cloneRecord(raw);
+      for (const [key, field] of Object.entries(value)) setDefined(section, camelToSnake(key), field);
+      return section;
+    });
+  }
 
   return out;
 }

@@ -148,6 +148,7 @@ export function resolveModelProtocol(
   }
   const providerType = provider?.type;
   if (providerType !== undefined) {
+    if (providerType === 'vertexai') return 'google-genai';
     const asProtocol = ProtocolSchema.safeParse(providerType);
     if (asProtocol.success) {
       return asProtocol.data;

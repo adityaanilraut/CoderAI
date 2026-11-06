@@ -66,7 +66,7 @@ interface MediaBudgetEntry {
   readonly partIndex: number;
   readonly key: string;
   readonly fileId?: string;
-  readonly kind: 'image' | 'video';
+  readonly kind: 'image' | 'video' | 'audio';
   readonly bytes: number;
 }
 
@@ -126,7 +126,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
         const resolved =
           daemonPart.kind === 'video'
             ? await this.resolveVideoPart(daemonPart.ref, requester, signal)
-            : await this.resolveImagePart(daemonPart.ref, requester, signal);
+            : daemonPart.kind === 'audio'
+              ? await this.resolveAudioPart(daemonPart.ref, requester, signal)
+              : await this.resolveImagePart(daemonPart.ref, requester, signal);
         budgetEntries.push({
           messageIndex: out.length,
           partIndex: content.length,
@@ -158,8 +160,8 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     const paths = new Map<string, string>();
     for (const message of messages) {
       for (const part of message.content) {
-        if (part.type !== 'image_url' && part.type !== 'video_url') continue;
-        const url = part.type === 'image_url' ? part.imageUrl.url : part.videoUrl.url;
+        if (part.type !== 'image_url' && part.type !== 'video_url' && part.type !== 'audio_url') continue;
+        const url = part.type === 'image_url' ? part.imageUrl.url : part.type === 'audio_url' ? part.audioUrl.url : part.videoUrl.url;
         const ref = parseDaemonFileUrl(url);
         if (ref === undefined || paths.has(url)) continue;
         const path = await this.displayPath(ref);
@@ -226,13 +228,31 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       content[entry.partIndex] = budgetOmittedMedia(entry.kind);
     } else {
       const path = await this.displayPath({ fileId: entry.fileId });
-      content[entry.partIndex] = entry.kind === 'video' ? videoTag(path) : degradedImage(path);
+      content[entry.partIndex] = entry.kind === 'video' ? videoTag(path) : entry.kind === 'audio' ? audioTag(path) : degradedImage(path);
     }
     out[entry.messageIndex] = { ...message, content };
   }
 
   private displayPath(ref: DaemonFileRef): Promise<string | undefined> {
     return this.mediaStore.resolveDisplayPath(ref.fileId);
+  }
+
+  private async resolveAudioPart(
+    ref: DaemonFileRef,
+    requester: ModelRequester,
+    signal: AbortSignal | undefined,
+  ): Promise<ContentPart> {
+    const path = await this.displayPath(ref);
+    if (!requester.model.capabilities.audio_in) return audioTag(path);
+    try {
+      const { bytes, filename } = await this.readMedia(ref, signal);
+      const type = detectFileType(filename, bytes.subarray(0, MEDIA_SNIFF_BYTES), 'media');
+      if (type.kind !== 'audio') return audioTag(path);
+      return { type: 'audio_url', audioUrl: { url: `data:${type.mimeType};base64,${bytes.toString('base64')}` } };
+    } catch (error) {
+      signal?.throwIfAborted();
+      return audioTag(path);
+    }
   }
 
   private async resolveImagePart(
@@ -576,10 +596,10 @@ function inlineMediaBudgetEntry(
   messageIndex: number,
   partIndex: number,
 ): MediaBudgetEntry | undefined {
-  if (part.type !== 'image_url' && part.type !== 'video_url') return undefined;
-  const url = part.type === 'image_url' ? part.imageUrl.url : part.videoUrl.url;
+  if (part.type !== 'image_url' && part.type !== 'video_url' && part.type !== 'audio_url') return undefined;
+  const url = part.type === 'image_url' ? part.imageUrl.url : part.type === 'audio_url' ? part.audioUrl.url : part.videoUrl.url;
   if (!isDataUrl(url)) return undefined;
-  const kind = part.type === 'image_url' ? 'image' : 'video';
+  const kind = part.type === 'image_url' ? 'image' : part.type === 'audio_url' ? 'audio' : 'video';
   const hash = createHash('sha256').update(kind).update('\0').update(url).digest('hex');
   return { messageIndex, partIndex, key: `inline\0${hash}`, kind, bytes: url.length };
 }
@@ -591,10 +611,11 @@ function inlinePartBytes(part: ContentPart): number {
   if (part.type === 'video_url') {
     return isDataUrl(part.videoUrl.url) ? part.videoUrl.url.length : 0;
   }
+  if (part.type === 'audio_url') return isDataUrl(part.audioUrl.url) ? part.audioUrl.url.length : 0;
   return 0;
 }
 
-function budgetOmittedMedia(kind: 'image' | 'video'): ContentPart {
+function budgetOmittedMedia(kind: 'image' | 'video' | 'audio'): ContentPart {
   return { type: 'text', text: `[${kind} omitted: dropped to fit the request media budget]` };
 }
 
@@ -603,8 +624,12 @@ function degradedImage(path: string | undefined): ContentPart {
   return { type: 'text', text: buildMediaPathTag('image', path) };
 }
 
-function unavailableMediaText(kind: 'image' | 'video'): ContentPart {
-  return { type: 'text', text: kind === 'video' ? VIDEO_UNAVAILABLE_TEXT : IMAGE_UNAVAILABLE_TEXT };
+function unavailableMediaText(kind: 'image' | 'video' | 'audio'): ContentPart {
+  return { type: 'text', text: kind === 'video' ? VIDEO_UNAVAILABLE_TEXT : kind === 'audio' ? '[audio omitted: the uploaded file is no longer available]' : IMAGE_UNAVAILABLE_TEXT };
+}
+
+function audioTag(path: string | undefined): ContentPart {
+  return path === undefined ? unavailableMediaText('audio') : { type: 'text', text: buildMediaPathTag('audio', path) };
 }
 
 function videoTag(path: string | undefined): ContentPart {

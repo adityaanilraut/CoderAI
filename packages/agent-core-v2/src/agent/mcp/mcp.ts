@@ -21,6 +21,7 @@ export interface IAgentMcpService {
   waitForInitialLoad(signal?: AbortSignal): Promise<void>;
   initialLoadDurationMs(): number;
   list(): readonly McpServerEntry[];
+  refreshServer(name: string): void;
   resolved(name: string): McpResolvedServer | undefined;
   getRemoteServerUrl(name: string): string | undefined;
   reconnect(name: string, signal?: AbortSignal): Promise<void>;
