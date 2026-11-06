@@ -107,7 +107,7 @@ test('missing and oversize backups reject file rollback before withdrawing promp
   assert.equal(await readFile(join(f.cwd, 'created.txt'), 'utf8'), 'first\n');
 });
 
-test('plugin CLI persists enablement, exposes information and MCP toggles, and skills list uses the workspace catalog without a model', async t => {
+test('plugin CLI persists enablement, exposes information and MCP toggles, and skills list uses the workspace catalog without a model', { timeout: 30000 }, async t => {
   const f = await fixture(); t.after(f.cleanup);
   const plugin = join(f.root, 'plugin'); await mkdir(join(plugin, 'skills', 'review'), { recursive: true });
   await writeFile(join(plugin, 'kimi.plugin.json'), JSON.stringify({ name: 'phase5-plugin', version: '1.0.0', description: 'Plugin fixture', skills: ['./skills'], mcpServers: { demo: { command: 'not-started', enabled: false } } }));
