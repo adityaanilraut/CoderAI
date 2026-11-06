@@ -35,7 +35,8 @@ test('standalone extracts its native clipboard binding and handles pasted media'
 });
 test('standalone executable runs the engine and tools outside the checkout', { timeout: 60000, skip: !standaloneRequested && 'run bun run test:native to build and test the Bun executable' }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'coderai-native-test-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  // Windows can briefly keep the executable locked after the process exits.
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10 }));
   const binary = join(root, process.platform === 'win32' ? 'coderai.exe' : 'coderai');
   await copyFile(builtBinary, binary);
   if (process.platform !== 'win32') await chmod(binary, 0o755);
