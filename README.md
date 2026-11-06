@@ -13,6 +13,8 @@ Starting with **0.6.0**, CoderAI is distributed as standalone executables throug
 3. Install `rg` (ripgrep) for file searches. CoderAI uses Bash to run shell commands. On Windows, install Git for Windows for Git Bash.
 4. Run `coderai --version` to check the installation, then run `coderai --setup` to configure a model provider.
 
+If you also use the Python edition, set `CODERAI_HOME` to a separate directory such as `~/.coderai-bun` before setting up the Bun edition. Both editions use `~/.coderai` by default, with different settings and session formats.
+
 ### Run from source
 
 Install Bun **1.4.4**, ripgrep and Bash (Git Bash on Windows). Python 3 is used by the POSIX terminal tests.

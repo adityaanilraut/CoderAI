@@ -43,11 +43,11 @@ await build({
   } }],
 });
 const api = await import(entry);
-api.configureTextBuildWorkerRuntime(resolve('dist/text-build-worker.mjs'));
 after(() => rm(dir, { recursive: true, force: true }));
 
 const plain = (component, width = 80) => component.render(width).map(stripTerminalSequences).join('\n');
 async function runtimeFixture(t) {
+  api.configureTextBuildWorkerRuntime(resolve('dist/text-build-worker.mjs'));
   const f = await fixture(); t.after(f.cleanup);
   const runtime = new api.Runtime({ home: f.home, cwd: f.cwd, trust: true, interactive: true }); t.after(() => runtime.close());
   await runtime.harness.setConfig({ providers: { local: { type: 'openai', baseUrl: f.env.CODERAI_MODEL_BASE_URL, apiKey: 'test' } }, models: { local: { provider: 'local', model: 'fixture-model', maxContextSize: 131072 } }, defaultModel: 'local', watch: { enabled: false }, database: { search: false } });
