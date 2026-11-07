@@ -107,7 +107,7 @@ test('real PTY: startup trust, chat, approval, denial, slash commands and termin
     { wait: 'The requested action was denied.', send: '/new\r' },
     { wait: 'New session', send: 'SCENARIO deny\r' },
     { wait: 'Approve Write?', send: 'yes\r' },
-    { wait: 'Tool completed:', send: '/context\r' },
+    { wait: 'Used Write', send: '/context\r' },
     { wait: 'messages', send: '/compact\r' },
     { wait: 'Compaction requested', send: '/clear\r' },
     { wait: 'Context cleared', send: '/quit\r' },
@@ -159,7 +159,7 @@ test('real PTY: queued prompts run after the active turn and session picker resu
     { wait: 'Working', send: 'hello queued\r' },
     { wait: 'Queued (1): hello queued', send: '' },
     { wait: 'Approve Write?', send: 'no\r' },
-    { wait: 'You: hello queued', send: '' },
+    { wait: '❯ hello queued', send: '' },
     { wait: 'Idle', send: '/resume\r' },
     { wait: 'Choose a conversation:', send: '\r' },
     { wait: 'Resumed ', send: '/quit\r' },
@@ -179,7 +179,7 @@ test('real PTY: queued input can be removed while work is running', { timeout: 3
     { wait: 'Turn cancelled', send: '/quit\r' },
   ]);
   assert.equal(result.code, 0, result.output);
-  assert.doesNotMatch(result.output, /You: do not run this/);
+  assert.doesNotMatch(result.output, /❯ do not run this/);
   assert.match(result.output, /Queued input · \/queue to manage/);
   assert.ok(result.terminalRestored);
 });
@@ -198,7 +198,7 @@ test('real PTY: queued input can be recalled and edited while work is running', 
     { wait: 'Idle', send: '/quit\r' },
   ]);
   assert.equal(result.code, 0, result.output);
-  assert.doesNotMatch(result.output, /You: queued draft/);
+  assert.doesNotMatch(result.output, /❯ queued draft/);
   assert.match(result.output, /CoderAI · Ready to code/);
   assert.ok(result.terminalRestored);
 });
@@ -256,7 +256,7 @@ test('real PTY: queued prompts retain the attachments staged at submission', { t
     { wait: 'Attachment staged:', send: 'recovered describe queued image\r' },
     { wait: 'Queued (1):', send: '/attach clear\r' },
     { wait: 'Attachments cleared.', send: '\u0003' },
-    { wait: 'You: recovered describe queued image', send: '' },
+    { wait: '❯ recovered describe queued image', send: '' },
     { wait: 'Idle', send: '/quit\r' },
   ]);
   assert.equal(result.code, 0, result.output);
@@ -299,7 +299,7 @@ test('real PTY: export includes tool activity and turns removed from model conte
   const prior = await f.run(['--trust', '--yolo', '-p', 'SCENARIO deny']);
   assert.equal(prior.code, 0, prior.stderr);
   const result = await terminal(f, [
-    { wait: 'Tool completed: Write', send: '/clear\r' },
+    { wait: 'Used Write', send: '/clear\r' },
     { wait: 'Context cleared', send: '/export-md history.md\r' },
     { wait: 'Exported conversation', send: '/quit\r' },
   ], ['--continue']);
@@ -331,7 +331,7 @@ test('real PTY: completes workspace file mentions', { timeout: 30000 }, async t 
     { wait: 'Trust ', send: 'yes\r' },
     { wait: 'Idle', send: '@visible' },
     { wait: 'visible-file.txt', send: '\t\r' },
-    { wait: 'You: @visible-file.txt', send: '/quit\r' },
+    { wait: '❯ @visible-file.txt', send: '/quit\r' },
   ]);
   assert.equal(result.code, 0, result.output);
   assert.ok(result.terminalRestored);
@@ -342,8 +342,8 @@ test('real PTY: resumed transcript includes recorded tool calls and results', { 
   const prior = await f.run(['--trust', '--yolo', '-p', 'SCENARIO deny']);
   assert.equal(prior.code, 0, prior.stderr);
   const result = await terminal(f, [
-    { wait: 'Tool completed: Write', send: '\u000f' },
-    { wait: 'Output', send: '/quit\r' },
+    { wait: 'Used Write', send: '\u000f' },
+    { wait: 'should not exist', send: '/quit\r' },
   ], ['--continue']);
   assert.equal(result.code, 0, result.output);
   assert.ok(result.terminalRestored);
@@ -512,7 +512,7 @@ test('real PTY: external editor restores the terminal and inserts its draft', { 
     { wait: 'Trust ', send: 'yes\r' },
     { wait: 'Idle', send: '\u0007' },
     { wait: 'edited prompt', send: '\r' },
-    { wait: 'You: edited prompt', send: '/quit\r' },
+    { wait: '❯ edited prompt', send: '/quit\r' },
   ]);
   assert.equal(result.code, 0, result.output);
   assert.ok(result.terminalRestored);
@@ -807,7 +807,7 @@ test('real PTY: approval window enables YOLO and /yolo can inspect and disable i
     { wait: 'Trust ', send: 'yes\r' },
     { wait: 'Idle', send: 'SCENARIO deny\r' },
     { wait: 'Approve Write?', send: '3\r' },
-    { wait: 'Tool completed:', send: '/yolo status\r' },
+    { wait: 'Used Write', send: '/yolo status\r' },
     { wait: 'YOLO: on', send: '/yolo off\r' },
     { wait: 'YOLO disabled', send: '/yolo\r' },
     { wait: 'YOLO enabled', send: '/yolo\r' },
@@ -884,11 +884,11 @@ test('real PTY: thinking and grouped reads expand, collapse, and survive resume'
     { wait: 'Transcript fixture complete.', send: '\u000f' },
     { wait: 'Reviewing the fixture files before answering.' },
     { wait: 'TEST_INSTRUCTION_42', send: '\u000f' },
-    { wait: 'Read 2 files · completed', send: '/quit\r' },
+    { wait: 'Read 2 files · 2 lines', send: '/quit\r' },
   ], [], { columns: 50, rows: 16 });
   assert.equal(first.code, 0, first.output);
   assert.ok(first.terminalRestored);
-  assert.match(first.output, /Thinking · Ctrl\+O expand/);
+  assert.match(first.output, /ctrl\+o to expand/);
   const resumed = await terminal(f, [
     { wait: 'Transcript fixture complete.', send: '\u000f' },
     { wait: 'Reviewing the fixture files before answering.' },
@@ -896,7 +896,7 @@ test('real PTY: thinking and grouped reads expand, collapse, and survive resume'
   ], ['--continue'], { columns: 50, rows: 16 });
   assert.equal(resumed.code, 0, resumed.output);
   assert.ok(resumed.terminalRestored);
-  assert.match(resumed.output, /Read 2 files · completed/);
+  assert.match(resumed.output, /Read 2 files · 2 lines/);
 });
 
 test('real PTY: help pages close cleanly and model search returns to the conversation', { timeout: 30000 }, async t => {
@@ -1144,5 +1144,5 @@ test('real PTY: interactive host capabilities deliver NotifyUser updates when th
   assert.equal(result.code, 0, result.output); assert.ok(result.terminalRestored);
   assert.match(result.output, /Updates · Test progress/);
   assert.match(result.output, /The interactive update reached the user/);
-  assert.doesNotMatch(result.output, /Tool completed: Result/);
+  assert.doesNotMatch(result.output, /Used Result|Tool completed: Result/);
 });

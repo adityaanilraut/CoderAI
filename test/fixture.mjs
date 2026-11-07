@@ -166,7 +166,7 @@ export async function fixture() {
     const chunk = d => ({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: body.model, choices: [{ index: 0, delta: d, finish_reason: null }] });
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     if (serialized.includes('SCENARIO ui-transcript') && results.length === 0) {
-      res.write(`data: ${JSON.stringify(chunk({ reasoning_content: 'Reviewing the fixture files before answering.' }))}\n\n`);
+      res.write(`data: ${JSON.stringify(chunk({ reasoning_content: 'First thinking line.\nSecond thinking line.\nThird thinking line.\nReviewing the fixture files before answering.' }))}\n\n`);
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     res.write(`data: ${JSON.stringify(chunk(delta))}\n\n`);

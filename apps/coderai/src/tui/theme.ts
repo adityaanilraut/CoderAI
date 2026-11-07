@@ -6,8 +6,8 @@ import { DEFAULT_THEME, highlight, supportsLanguage, type Theme } from 'cli-high
 import type { EditorTheme, MarkdownTheme, RgbColor } from '@coderai/pi-tui';
 
 const palettes = {
-  dark: { primary: '#61AFEF', textMuted: '#9299A3', success: '#98C379', error: '#E06C75', warning: '#E5C07B' },
-  light: { primary: '#005A9C', textMuted: '#595959', success: '#286329', error: '#A22020', warning: '#785000' },
+  dark: { primary: '#61AFEF', textMuted: '#9299A3', success: '#98C379', error: '#E06C75', warning: '#E5C07B', user: '#FFCB6B' },
+  light: { primary: '#005A9C', textMuted: '#595959', success: '#286329', error: '#A22020', warning: '#785000', user: '#9A4A00' },
 };
 export const colors = { ...palettes.dark };
 const builtInNames = ['auto', 'dark', 'light'] as const;

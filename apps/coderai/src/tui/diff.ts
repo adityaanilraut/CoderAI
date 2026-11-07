@@ -48,6 +48,17 @@ function changes(before: string[], after: string[]): Change[] | undefined {
 }
 
 export function previewDiff(before: string, after: string): string { return formatDiff(before, after, false); }
+
+/** Added/removed line counts for header chips; falls back to whole-side counts when the diff is too large. */
+export function diffStats(before: string, after: string): { added: number; removed: number } {
+  const split = (text: string) => text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const old = split(before), next = split(after);
+  const edits = changes(old, next);
+  if (!edits) return { added: next.length, removed: old.length };
+  let added = 0, removed = 0;
+  for (const edit of edits) { if (edit.kind === 'add') added++; else if (edit.kind === 'delete') removed++; }
+  return { added, removed };
+}
 export function unifiedDiff(before: string, after: string): string { return formatDiff(before, after, true); }
 
 function formatDiff(before: string, after: string, unified: boolean): string {

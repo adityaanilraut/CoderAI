@@ -110,6 +110,13 @@ export async function interactive(runtime: Runtime): Promise<void> {
         view.agents.finishForeground();
         if (event.reason === 'completed') { void titles.completed(session.id); view.notifyCompletion(); }
       }
+      if (event.type === 'skill.activated') view.message(`Skill activated: ${event.skillName}`);
+      else if (event.type === 'background.task.started' || event.type === 'background.task.terminated') view.message(`Background task: ${describeTask(event.info)}`);
+      else if (event.type === 'mcp.server.status') view.message(`MCP: ${describeMcp(event.server)}`);
+      else if (event.type === 'goal.updated') {
+        if (event.snapshot?.status === 'active') runningGoal = true;
+        view.message(`Goal: ${describeGoal(event.snapshot)}`);
+      }
       if (observingTurn) return;
       activity.handle(event);
       switch (event.type) {
@@ -122,12 +129,8 @@ export async function interactive(runtime: Runtime): Promise<void> {
         case 'tool.result': view.toolResult(event); break;
         case 'turn.ended': view.finishTurn(event.agentId); if (!busy) view.setStatus('Idle'); break;
         case 'error': view.error(event); break;
-        case 'skill.activated': view.message(`Skill activated: ${event.skillName}`); break;
       }
       if (event.type === 'shell.output' && event.commandId === shellId && event.update.text) view.shellDelta(event.update.text);
-      else if (event.type === 'background.task.started' || event.type === 'background.task.terminated') view.message(`Background task: ${describeTask(event.info)}`);
-      else if (event.type === 'mcp.server.status') view.message(`MCP: ${describeMcp(event.server)}`);
-      else if (event.type === 'goal.updated') view.message(`Goal: ${describeGoal(event.snapshot)}`);
     });
   };
   const skillCommands = new Map<string, string>();
@@ -479,7 +482,6 @@ export async function interactive(runtime: Runtime): Promise<void> {
           if (result.stdout) view.message(result.stdout);
           if (result.stderr) view.message(result.stderr);
           view.message(result.backgrounded ? 'Shell command backgrounded.' : result.isError ? 'Shell command failed.' : 'Shell command completed.');
-          if (result.isError) view.notice('Check the command output above, then edit the command and try again.');
         } finally { view.endShell(); shellId = undefined; }
       } else {
         const staged = queuedAttachments ?? [...attachments];
@@ -552,7 +554,6 @@ export async function interactive(runtime: Runtime): Promise<void> {
                 view.toolResult(event);
               }
               if (todoCall) void refreshStatus();
-              if (event.isError) view.notice('The action failed. The assistant can adjust it; use /steer to give another direction.');
               break;
             }
             case 'thinking.delta': view.thinkingDelta(event.delta); break;
@@ -565,13 +566,9 @@ export async function interactive(runtime: Runtime): Promise<void> {
               if (event.agentId === 'main' && event.reason === 'failed' && event.error && !reportedError) { view.error(event.error); reportedError = true; }
               break;
 
-            case 'background.task.started': case 'background.task.terminated':
-              view.message(`Background task: ${describeTask(event.info)}`); break;
-            case 'mcp.server.status': view.message(`MCP: ${describeMcp(event.server)}`); break;
-            case 'skill.activated': view.message(`Skill activated: ${event.skillName}`); break;
             case 'goal.updated':
               if (event.snapshot?.status === 'active') { followGoal = true; runningGoal = true; }
-              view.message(`Goal: ${describeGoal(event.snapshot)}`); break;
+              break;
             case 'agent.status.updated': if (event.agentId === 'main') void refreshStatus(); break;
             case 'compaction.completed': view.message('Context compaction completed.'); break;
             case 'compaction.cancelled': view.message('Context compaction cancelled.'); break;

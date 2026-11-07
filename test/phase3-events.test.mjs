@@ -54,7 +54,7 @@ test('streamed tool arguments precede authoritative starts without duplicate car
   transcript.toolStarted({ agentId: 'main', toolCallId: 'call', name: 'Bash', args: { command: 'authoritative' } });
   transcript.setExpanded(true);
   assert.match(plain(transcript), /authoritative/); assert.doesNotMatch(plain(transcript), /partial/);
-  assert.equal((plain(transcript).match(/Tool: Bash/g) ?? []).length, 1);
+  assert.equal((plain(transcript).match(/Running a command/g) ?? []).length, 1);
   transcript.toolStarted({ agentId: 'child', toolCallId: 'call', name: 'Read', args: { path: 'child.txt' } });
   transcript.toolResult({ agentId: 'child', toolCallId: 'call', output: 'child result' });
   transcript.toolResult({ agentId: 'main', toolCallId: 'call', output: 'parent result' });
@@ -89,7 +89,7 @@ test('interleaved AgentSwarm children stream into the parent card and remain ind
   apply(event('background.task.started', { info: { kind: 'agent', agentId: 'two', description: 'second', taskId: 'bg', status: 'running' } }));
   transcript.toolResult({ agentId: 'main', toolCallId: 'parent', output: 'Spawned successfully' });
   apply(event('background.task.terminated', { info: { kind: 'agent', agentId: 'two', taskId: 'bg', status: 'timed_out' } }));
-  assert.match(plain(transcript), /Tool failed: AgentSwarm/);
+  assert.match(plain(transcript), /✗ Used AgentSwarm/);
   apply(event('subagent.completed', { subagentId: 'two', resultSummary: 'late result' }));
   assert.equal(store.get('two').status, 'timed_out');
   apply(spawn('two', { runInBackground: true })); assert.equal(store.get('two').status, 'running'); assert.equal(store.get('two').summary, undefined);
@@ -252,10 +252,10 @@ test('swarm final failures and cancellations are visible when queued members nev
   const transcript = new ConversationTranscript();
   transcript.toolStarted({ agentId: 'main', toolCallId: 'failed-swarm', name: 'AgentSwarm', args: { items: ['not started'] } });
   transcript.toolResult({ agentId: 'main', toolCallId: 'failed-swarm', output: '<subagent index="1" outcome="failed">no capacity</subagent>' });
-  assert.match(plain(transcript), /Tool failed: AgentSwarm/);
+  assert.match(plain(transcript), /✗ Used AgentSwarm/);
   transcript.toolStarted({ agentId: 'main', toolCallId: 'cancelled-swarm', name: 'AgentSwarm', args: { items: ['cancelled'] } });
   transcript.toolResult({ agentId: 'main', toolCallId: 'cancelled-swarm', output: '<subagent index="1" outcome="aborted">user cancelled</subagent>' });
-  assert.match(plain(transcript), /Tool interrupted: AgentSwarm/);
+  assert.match(plain(transcript), /⊘ Interrupted AgentSwarm/);
 });
 
 test('hook output keeps its transcript position between main response deltas', async () => {

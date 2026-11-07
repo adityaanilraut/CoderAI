@@ -6,6 +6,22 @@ CoderAI is a terminal coding assistant built with TypeScript and Bun on the Kimi
 
 Starting with **0.6.0**, CoderAI is distributed as standalone executables through [GitHub Releases](https://github.com/adityaanilraut/CoderAI/releases). The Python edition and its `pip` installation instructions are available on the [legacy branch](https://github.com/adityaanilraut/CoderAI/tree/old-python-stable-legacy).
 
+### Homebrew (macOS and Linux)
+
+Homebrew support starts with the first published stable **0.6.0 or later** release,
+once its generated formula is added by the release workflow:
+
+```sh
+brew tap adityaanilraut/coderai https://github.com/adityaanilraut/CoderAI.git
+brew install adityaanilraut/coderai/coderai
+coderai --setup
+```
+
+Homebrew installs the standalone executable and ripgrep. Bun is embedded, so no
+separate Bun installation is required. Apple Silicon, Intel Macs, and Linux
+ARM64/x64 are supported. Run `brew update && brew upgrade coderai` to update.
+See [Homebrew release maintenance](Formula/README.md) for publishing details.
+
 ### Standalone download
 
 1. Download the `coderai-bun-<platform>-<architecture>.zip` archive for your machine from the 0.6.0 or later release. Each ZIP has a matching `.sha256` checksum file.
@@ -40,7 +56,7 @@ bun run build:native
 
 The executable is written to `dist-bun/<platform>-<architecture>/coderai` (`coderai.exe` on Windows). The ZIP and its SHA-256 checksum are in `dist-bun/`. Use `bun run test:native` to build and exercise the standalone CLI on the current host.
 
-The standalone workflow builds and tests each platform on GitHub Actions. Pushing a version tag that matches `package.json` (for example, `v0.6.0`) prepares a draft GitHub Release with the tested ZIPs and their checksums. Publish the draft from GitHub when the release is ready.
+The standalone workflow builds and tests each platform on GitHub Actions. Pushing a version tag that matches `package.json` (for example, `v0.6.0`) prepares a draft GitHub Release with the tested ZIPs and their checksums. Stable releases also include a generated Homebrew formula, built only after all four macOS/Linux archives pass checksum verification. Publish the draft from GitHub when the release is ready; the Homebrew workflow then updates this repository's tap automatically. See [Homebrew release maintenance](Formula/README.md) for manual updates and branch protection requirements.
 
 ## Authentication and models
 
@@ -110,7 +126,7 @@ Help, selections, questions, and plan reviews open in framed dialogs. Use ↑/�
 
 The `/sessions` picker starts in the current workspace. **Ctrl+A** switches between that workspace and all workspaces, **Ctrl+R** renames the selected conversation, and **Ctrl+X** offers deletion with confirmation. The open conversation cannot be deleted. Rows show relative update times and a current-session marker. Submitted prompts are recalled across restarts with ↑/↓; history is stored separately for each workspace under `~/.coderai/input-history/`, with up to 100 entries of at most 32 KiB each. Slash commands and dialog answers are not persisted in prompt history.
 
-Live and resumed conversations share the same message layout. Tool cards update in place with progress and completion; consecutive file reads collapse into a group. Successful output stays collapsed, while failed actions show an error preview. Thinking shows up to three live rows and collapses after completion. **Ctrl+O** expands or collapses tools and thinking. Diff previews include separate change hunks, old/new line numbers, context, and colored additions/deletions. Very expensive comparisons show an explicit omission notice.
+Live and resumed conversations share the same message layout. User prompts use an amber **❯** marker, and assistant replies use indented Markdown with a bullet. Tool activity updates in place with a command or file path and a short result summary; consecutive file reads collapse into a group with line counts. File contents stay collapsed, shell commands show a short output preview, and failed actions show an error preview. Thinking shows up to two live text rows and retains a bounded preview after completion. **Ctrl+O** expands or collapses tools and thinking. Edit and Write previews show line counts and bounded content or diffs, with old/new line numbers, context, and colored additions/deletions where available. Very expensive comparisons show an explicit omission notice.
 
 The footer keeps the model, workspace, active modes, and context percentage in two lines; `/status` shows exact counts and settings. In Git workspaces it also shows the branch (or detached commit) and `clean`/`dirty` state, including staged and untracked files. Git status refreshes asynchronously every five seconds and when session status refreshes, with a two-second probe timeout; non-Git workspaces omit the badge. Live activity appears above the editor with the current action and elapsed time. Provider retries show the attempt count, remaining delay, and provider message. Errors offer recovery guidance, with diagnostic details available through Ctrl+O. Todo updates use cards with active, pending, and completed markers; the current list stays above the editor, long cards expand with Ctrl+O, and `/todos` prints the full list. Completed lists shrink to a summary, and clearing the list removes it from the pinned area.
 

@@ -262,10 +262,13 @@ test('thinking previews are bounded by rendered rows and remain expandable after
   assert.equal(block.render(30).length, 4);
   assert.match(plain(block.render(30)), /Last thought/);
   block.live = false;
-  assert.equal(block.render(30).length, 1);
-  assert.doesNotMatch(plain(block.render(30)), /secret|Last thought/);
+  assert.equal(block.render(30).length, 4);
+  assert.doesNotMatch(plain(block.render(30)), /Last thought/);
+  assert.match(plain(block.render(30)), /First secret/);
+  assert.match(plain(block.render(50)), /ctrl\+o to expand/);
   block.expanded = true;
   assert.match(plain(block.render(30)), /First secret/);
+  assert.match(plain(block.render(30)), /Last thought/);
   for (const width of [1, 3, 20, 50, 100]) assert.ok(block.render(width).every(line => visibleWidth(line) <= width));
 });
 
@@ -276,16 +279,16 @@ test('tool cards correlate out-of-order results by agent and call and update in 
   transcript.toolResult({ agentId: 'worker', toolCallId: 'same', output: 'Worker failed details', isError: true });
   transcript.toolResult({ agentId: 'main', toolCallId: 'same', output: 'Main success' });
   const collapsed = renderTranscript(transcript);
-  assert.match(collapsed, /Tool completed: Read · main.ts/);
-  assert.match(collapsed, /Agent worker · Tool failed: Read · worker.ts/);
+  assert.match(collapsed, /Used Read \(main\.ts\) · 1 line/);
+  assert.match(collapsed, /✗ Agent worker · Used Read \(worker\.ts\)/);
   assert.match(collapsed, /Worker failed details/);
   assert.doesNotMatch(collapsed, /Main success|running/);
   transcript.setExpanded(true);
   assert.match(renderTranscript(transcript), /Main success/);
-  assert.equal(renderTranscript(transcript).match(/Tool completed: Read/g).length, 1);
+  assert.equal(renderTranscript(transcript).match(/● Used Read/g).length, 1);
   transcript.toolStarted(tool('same', 'another-turn.ts'));
   transcript.finishTurn();
-  assert.match(renderTranscript(transcript), /Tool interrupted: Read · another-turn.ts/);
+  assert.match(renderTranscript(transcript), /⊘ Interrupted Read \(another-turn\.ts\)/);
   transcript.clear();
   assert.equal(transcript.hasDetails, false);
   assert.equal(renderTranscript(transcript), '');
@@ -295,16 +298,16 @@ test('consecutive reads group, expose failures, and preserve every result when e
   const transcript = new ConversationTranscript();
   transcript.toolStarted(tool('1', 'one.ts')); transcript.toolStarted(tool('2', 'two.ts'));
   transcript.toolResult({ agentId: 'main', toolCallId: '2', output: 'Missing two', isError: true });
-  assert.match(renderTranscript(transcript), /Reading 2 files · 1 running · 1 failed/);
-  assert.match(renderTranscript(transcript), /two.ts/);
+  assert.match(renderTranscript(transcript), /Reading 2 files… · 1 failed/);
+  assert.match(renderTranscript(transcript), /two\.ts · failed/);
   transcript.toolResult({ agentId: 'main', toolCallId: '1', output: 'Contents of one' });
-  assert.match(renderTranscript(transcript), /Read 2 files · completed · 1 failed/);
+  assert.match(renderTranscript(transcript), /Read 2 files · 1 line · 1 failed/);
   assert.doesNotMatch(renderTranscript(transcript), /Contents of one/);
   transcript.setExpanded(true);
   assert.match(renderTranscript(transcript), /Contents of one/);
   transcript.delta('Answer');
   transcript.toolStarted(tool('3', 'three.ts'));
-  assert.match(renderTranscript(transcript), /Tool: Read · three.ts/);
+  assert.match(renderTranscript(transcript), /Using Read \(three\.ts\)/);
   assert.doesNotMatch(renderTranscript(transcript), /Read 3 files/);
   for (const width of [1, 3, 20, 50, 100]) assert.ok(transcript.render(width).every(line => visibleWidth(line) <= width));
 });
@@ -345,7 +348,7 @@ test('transcript sanitizes split sequences, keeps missing results visible and ha
   transcript.setExpanded(true);
   assert.doesNotMatch(renderTranscript(transcript), /ATTACK/);
   transcript.finishTurn();
-  assert.match(renderTranscript(transcript), /Tool interrupted: Read/);
+  assert.match(renderTranscript(transcript), /⊘ Interrupted Read/);
   transcript.replayMessage({ role: 'assistant', content: [], toolCalls: [{ name: 'Legacy', id: 'legacy', arguments: '{incomplete' }] });
   transcript.toolResult({ agentId: 'main', toolCallId: 'legacy', output: 'done' });
   assert.match(renderTranscript(transcript), /\{incomplete/);
@@ -357,7 +360,7 @@ test('replayed failed todo tools retain their identity and error preview', () =>
   const transcript = new ConversationTranscript();
   transcript.replayMessage({ role: 'assistant', content: [], toolCalls: [{ id: 'todo', name: 'TodoList', arguments: '{}' }] });
   transcript.replayMessage({ role: 'tool', toolCallId: 'todo', isError: true, content: [{ type: 'text', text: 'Invalid task status' }], toolCalls: [] });
-  assert.match(renderTranscript(transcript), /Tool failed: TodoList/);
+  assert.match(renderTranscript(transcript), /✗ Used TodoList/);
   assert.match(renderTranscript(transcript), /Invalid task status/);
 });
 
@@ -366,7 +369,7 @@ test('tool progress replacements remove old output and workspace paths stay read
   transcript.toolStarted(tool('read', '/example/project/src/file.ts'));
   transcript.toolProgress('main', 'read', 'Old progress');
   transcript.toolProgress('main', 'read', 'Current progress', true);
-  assert.match(renderTranscript(transcript), /Read · src\/file.ts/);
+  assert.match(renderTranscript(transcript), /Using Read \(src\/file\.ts\)/);
   assert.doesNotMatch(renderTranscript(transcript), /example\/project|Old progress/);
   assert.match(renderTranscript(transcript), /Current progress/);
 });

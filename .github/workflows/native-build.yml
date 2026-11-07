@@ -59,6 +59,12 @@ jobs:
           pattern: coderai-*
           path: release-assets
           merge-multiple: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Generate Homebrew formula from verified archives
+        if: ${{ !contains(github.ref_name, '-') && !contains(github.ref_name, '+') }}
+        run: bun scripts/build-homebrew.mjs --assets-dir release-assets --output release-assets/coderai.rb
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
