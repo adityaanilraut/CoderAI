@@ -5,6 +5,7 @@ import { colors } from './theme.js';
 import { sanitizeTerminalText } from './sanitize.js';
 import { describeToolInput } from './display.js';
 import { styleDiffPreview } from './diff.js';
+import { dialogBodyHeight, dialogFrame } from './dialogs.js';
 
 const choices = [
   { value: 'yes', label: 'Approve once', detail: 'Only this action' },
@@ -56,6 +57,14 @@ export class ApprovalDialog implements Component {
     const muted = (text: string) => chalk.hex(colors.textMuted)(text);
     const border = (text: string) => chalk.hex(colors.warning)(text);
     const lines = wrapTextWithAnsi(styleDiffPreview(this.preview), inner);
+    if (this.rows() < 14) {
+      const input = this.input.getValue() ? this.input.render(inner) : [`› ${this.selected + 1}  ${choices[this.selected]!.label}`];
+      const previewHeight = Math.max(0, dialogBodyHeight(this.rows()) - input.length);
+      this.maxScroll = Math.max(0, lines.length - previewHeight);
+      this.scroll = Math.min(this.scroll, this.maxScroll);
+      return dialogFrame(this.title, [...lines.slice(this.scroll, this.scroll + previewHeight), ...input],
+        ['↑/↓ choose · Enter confirm · Esc reject', 'PgUp/PgDn preview · Or type 1–5'], width, this.rows(), colors.warning);
+    }
     const compact = this.rows() < 23;
     const previewHeight = Math.max(1, Math.min(9, this.rows() - (compact ? 14 : 19)));
     this.maxScroll = Math.max(0, lines.length - previewHeight);

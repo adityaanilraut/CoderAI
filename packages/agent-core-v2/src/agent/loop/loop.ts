@@ -130,6 +130,7 @@ export interface Turn {
 export interface LoopSubmitOptions {
   readonly steerIfActive?: boolean;
   readonly onMaterialize?: () => void;
+  readonly signal?: AbortSignal;
 }
 
 export interface LoopSubmitResult {
@@ -172,6 +173,7 @@ export interface PromptHandle extends PromptSnapshot {
 export interface PromptPayload {
   readonly input: readonly ContentPart[];
   readonly promptId?: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface SteerPayload {
@@ -184,6 +186,7 @@ export interface PromptLaunchResult {
 
 export interface PromptSubmitContext {
   readonly promptMessage: ContextMessage;
+  readonly signal: AbortSignal;
   readonly isSteer: boolean;
   readonly hookParts: TextPart[];
   block: boolean;

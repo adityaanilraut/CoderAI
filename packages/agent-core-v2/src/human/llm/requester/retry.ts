@@ -1,6 +1,7 @@
 import { llmStatusErrorMessage, type LlmErrorMessage } from '#/llm/errors';
 
 export const DEFAULT_MAX_RETRY_ATTEMPTS = 10;
+export const MAX_PROVIDER_RETRY_AFTER_MS = 60_000;
 
 const BASE_DELAY_MS = 500;
 const MAX_DELAY_MS = 32_000;
@@ -61,8 +62,16 @@ export function shouldRetry(
   attempt: number,
   error: LlmErrorMessage,
 ): boolean {
-  if (options?.infiniteRetry === true) return true;
-  return isRetryableError(error) && attempt < resolveMaxAttempts(options);
+  const delay = readRetryAfterMs(error);
+  return isRetryableError(error)
+    && (delay === undefined || delay <= MAX_PROVIDER_RETRY_AFTER_MS)
+    && (options?.infiniteRetry === true || attempt < resolveMaxAttempts(options));
+}
+
+export function retryAfterLimitHint(delay: number | null | undefined): string | undefined {
+  return delay !== null && delay !== undefined && delay > MAX_PROVIDER_RETRY_AFTER_MS
+    ? 'The requested wait exceeds the 60-second automatic retry limit. Retry after the provider’s wait has elapsed.'
+    : undefined;
 }
 
 export function retryErrorFields(error: LlmErrorMessage): LlmRetryErrorFields {

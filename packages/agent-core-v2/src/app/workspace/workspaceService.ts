@@ -21,6 +21,9 @@ import {
   dedupeByRoot,
   readSessionIndexEntries,
   readSessionIndexWorkDirs,
+  SESSION_INDEX_KEY,
+  SESSION_INDEX_SCOPE,
+  withSessionIndexFileLock,
 } from './workspaceAlias';
 import { IWorkspacePersistence, type WorkspaceCatalog } from './workspacePersistence';
 
@@ -184,11 +187,11 @@ export class WorkspaceService implements IWorkspaceService {
 
   private async compactSessionIndex(): Promise<void> {
     try {
-      await compactSessionIndexIfStale({
+      await withSessionIndexFileLock(this.storage.pathFor(SESSION_INDEX_SCOPE, SESSION_INDEX_KEY), () => compactSessionIndexIfStale({
         storage: this.storage,
         appendLogs: this.appendLogs,
         sessionDirExists: (dir) => this.sessionDirExists(dir),
-      });
+      }));
     } catch (error) {
       this.log.warn('session index compaction failed; will retry on the next startup', {
         error: error instanceof Error ? error.message : String(error),

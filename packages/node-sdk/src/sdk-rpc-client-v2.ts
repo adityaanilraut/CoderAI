@@ -255,6 +255,7 @@ import type { ToolCallRequest, ToolCallResponse, UserToolHandler, UserToolRegist
 import { ensureConfigFile } from '#/config/index';
 import type { AgentContextData } from '#/context';
 import { ErrorCodes, isKimiErrorCode, KimiError, type KimiErrorCode } from '#/errors';
+import { IAgentPromptChannel } from '@coderai/agent-core-v2/agent/loop/promptChannel';
 import type { ExperimentalFeatureState } from '#/flag';
 import { CoderaiHarness } from '#/coderai-harness';
 import type { BeginGlobalMcpServerAuthResult } from '#/mcp';
@@ -263,6 +264,7 @@ import {
   SDKRpcClientBase,
   type ActivatePluginCommandRpcInput,
   type ActivateSkillRpcInput,
+  type CancelSessionTurnRpcInput,
   type ConfigSectionChange,
   type ImportContextRpcInput,
   type ReconnectMcpServerRpcInput,
@@ -327,6 +329,7 @@ import type {
   SessionPlan,
   SessionStatus,
   SessionSummary,
+  SavedSessionReplay,
   SessionSummaryPage,
   SessionTodoItem,
   SessionUsage,
@@ -346,7 +349,7 @@ import {
 } from '#/v2/config-mapper';
 import { translateGlobalEvent } from '#/v2/event-mapper';
 import { assertImportFits, buildImportContextMessage } from '#/v2/import-context';
-import { foldAgentWireReplay, type FoldedAgentReplay } from '#/v2/resume-replay';
+import { foldAgentWireReplay, foldAgentWireReplayFull, type FoldedAgentReplay } from '#/v2/resume-replay';
 import {
   mcpConfigWithoutName,
   normalizeServerName,
@@ -770,6 +773,11 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     return diagnosticsToConfigDiagnostics(await this.klient.global.config.diagnostics());
   }
 
+  override async ensureModelReady(model?: string): Promise<void> {
+    await this.configReady;
+    await this.klient.global.auth.ensureReady(model);
+  }
+
   override onConfigSectionChanged(
     listener: (change: ConfigSectionChange) => void,
   ): Unsubscribe {
@@ -833,7 +841,14 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     if (plan.clearDefaultProvider) {
       sections['defaultProvider'] = undefined;
     }
-    await this.klient.global.config.replaceSections({ sections });
+    await this.engineAccessor.get(IConfigService).replaceSections(sections, undefined, {
+      expectedValues: {
+        providers: providers.userValue,
+        models: models.userValue,
+        defaultModel: defaultModel.userValue,
+        defaultProvider: defaultProvider.userValue,
+      },
+    });
     return this.getConfig();
   }
 
@@ -1533,7 +1548,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    * (v1: "New Session", v2: "Fork: <source>") — pass an explicit title for
    * identical results.
    */
-  override async forkSession(input: ForkSessionInput): Promise<SessionSummary> {
+  override async forkSession(input: ForkSessionInput, openAfterFork = true): Promise<SessionSummary> {
     // The source session's reads (metadata, wire flush) stay atomic against
     // its close/reload through the per-session queue; an explicit target id
     // takes a second (sorted) queue so fork(A→X) is also atomic against
@@ -1551,6 +1566,11 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
             metadata: input.metadata,
             turnIndex: input.turnIndex,
           });
+          if (!openAfterFork) {
+            const [saved] = await this.listSessions({ sessionId: meta.id, includeArchived: true });
+            if (saved === undefined) throw SDKRpcClientV2.sessionNotFound(meta.id);
+            return saved;
+          }
           const handle = await resumeSessionById(this.engineAccessor, meta.id);
           if (handle === undefined) throw SDKRpcClientV2.sessionNotFound(meta.id);
           this.wireSession(handle);
@@ -1560,6 +1580,28 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
         }
       },
     );
+  }
+
+  override async readSavedSessionReplay(id: string): Promise<SavedSessionReplay> {
+    return this.runSessionAccess(id, async () => {
+      const lease = this.engineAccessor.get(ISessionLockService).lease(id);
+      try {
+        const [session] = await this.listSessions({ sessionId: id, includeArchived: true });
+        if (session === undefined) throw SDKRpcClientV2.sessionNotFound(id);
+        const agentsDir = join(session.sessionDir, 'agents');
+        const entries = await readdir(agentsDir, { withFileTypes: true }).catch(error => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+          throw error;
+        });
+        const ids = entries.filter(entry => entry.isDirectory()).map(entry => entry.name).toSorted();
+        const ordered = ids.includes(MAIN_AGENT_ID) ? [MAIN_AGENT_ID, ...ids.filter(id => id !== MAIN_AGENT_ID)] : ids;
+        const agents: Record<string, FoldedAgentReplay> = Object.create(null);
+        for (const agentId of ordered) {
+          agents[agentId] = await foldAgentWireReplayFull(join(agentsDir, agentId, 'wire.jsonl'), true);
+        }
+        return { session, agents };
+      } finally { lease.release(); }
+    });
   }
 
   override async closeSession(input: SessionIdRpcInput): Promise<void> {
@@ -1858,13 +1900,19 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    * directories out differently by design.
    */
   override async exportSession(input: ExportSessionInput): Promise<ExportSessionResult> {
-    return this.engineAccessor.get(ISessionExportService).export({
-      sessionId: input.id,
-      outputPath: input.outputPath,
-      includeGlobalLog: input.includeGlobalLog,
-      version: input.version,
-      installSource: input.installSource,
-      shellEnv: input.shellEnv,
+    return this.runSessionAccess(input.id, async () => {
+      const lease = this.engineAccessor.get(ISessionLockService).lease(input.id);
+      try {
+        return await this.engineAccessor.get(ISessionExportService).export({
+          sessionId: input.id,
+          outputPath: input.outputPath,
+          outputDirectory: input.outputDirectory,
+          includeGlobalLog: input.includeGlobalLog,
+          version: input.version,
+          installSource: input.installSource,
+          shellEnv: input.shellEnv,
+        });
+      } finally { lease.release(); }
     });
   }
 
@@ -2097,7 +2145,15 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    * keeps off the agent turn lane — its abort controller lives in
    * `ISessionInitService` (a silent no-op when no init is running).
    */
-  override async cancel(input: SessionIdRpcInput): Promise<void> {
+  override async cancel(input: CancelSessionTurnRpcInput): Promise<void> {
+    if (input.turnId !== undefined || input.promptId !== undefined) {
+      const agent = await this.agentScope(input.sessionId);
+      const loop = agent.accessor.get(IAgentLoopService);
+      if (input.promptId === undefined || loop.promptHandle(input.promptId) !== undefined) {
+        loop.cancel({ promptId: input.promptId, turnId: input.turnId });
+      }
+      return;
+    }
     const session = this.requireLiveSession(input.sessionId);
     session.accessor.get(ISessionInitService).cancelInit();
     const agent = await this.agentFacade(input.sessionId);
@@ -2258,6 +2314,12 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    */
   override async prompt(input: SessionPromptRpcInput): Promise<void> {
     await this.withStaleReload(input.sessionId, async () => {
+      if (input.signal !== undefined) {
+        input.signal.throwIfAborted();
+        const agent = await this.agentScope(input.sessionId);
+        await agent.accessor.get(IAgentPromptChannel).submit(input);
+        return;
+      }
       const agent = await this.agentFacade(input.sessionId);
       await agent.prompt({
         input: input.input,
@@ -2274,10 +2336,17 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    */
   override async promptWithSkills(input: SessionPromptWithSkillsRpcInput): Promise<void> {
     await this.withStaleReload(input.sessionId, async () => {
+      if (input.signal !== undefined) {
+        input.signal.throwIfAborted();
+        const agent = await this.agentScope(input.sessionId);
+        await agent.accessor.get(IAgentSkillService).promptWithSkills(input);
+        return;
+      }
       const agent = await this.agentFacade(input.sessionId);
       await agent.promptWithSkills({
         input: input.input,
         skills: input.skills,
+        promptId: input.promptId,
         steerIfActive: input.steerIfActive,
       });
     });
@@ -2357,6 +2426,8 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
         pluginId: input.pluginId,
         commandName: input.commandName,
         args: input.args,
+        promptId: input.promptId,
+        signal: input.signal,
       });
     });
   }
@@ -2425,6 +2496,11 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     const session = this.requireLiveSession(input.sessionId);
     await this.materializeMainAgent(session);
     return session.accessor.get(ISessionBtwService).start();
+  }
+
+  override async closeBtw(input: SessionIdRpcInput & { readonly agentId: string }): Promise<void> {
+    const session = this.requireLiveSession(input.sessionId);
+    await session.accessor.get(ISessionBtwService).close(input.agentId);
   }
 
   /**
@@ -2505,9 +2581,11 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    */
   override async createGoal(input: SessionIdRpcInput & CreateGoalInput): Promise<GoalSnapshot> {
     const agent = await this.agentScope(input.sessionId);
-    return agent.accessor
+    const goal = await agent.accessor
       .get(IAgentGoalService)
-      .createGoal({ objective: input.objective, replace: input.replace });
+      .createGoal({ objective: input.objective, replace: input.replace, goalId: input.goalId });
+    if (input.goalId !== undefined) await agent.accessor.get(IEventDispatcher).flush();
+    return goal;
   }
 
   override async getGoal(input: SessionIdRpcInput): Promise<GoalToolResult> {
@@ -2642,15 +2720,14 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    * config (the `[task]` section layered over `[background]`) — identical
    * unless the config changes mid-session.
    */
-  override async waitForBackgroundTasksOnPrint(input: SessionIdRpcInput & { force?: boolean; timeoutSeconds?: number }): Promise<number> {
+  override async waitForBackgroundTasksOnPrint(input: SessionIdRpcInput & { force?: boolean; timeoutSeconds?: number; signal?: AbortSignal }): Promise<number> {
     const session = this.requireLiveSession(input.sessionId);
     await this.configReady;
     const config = this.engineAccessor.get(IConfigService);
     if (!input.force && resolvePrintBackgroundMode(config) !== 'drain') return this.countActiveBackgroundTasks(session);
     const ceilingS =
       input.timeoutSeconds ?? resolveAgentTaskConfig(config)?.printWaitCeilingS ?? PRINT_WAIT_CEILING_S_DEFAULT;
-    await this.drainBackgroundTasksOnPrint(session, ceilingS);
-    return this.countActiveBackgroundTasks(session);
+    return this.drainBackgroundTasksOnPrint(session, ceilingS, input.signal);
   }
 
   /**
@@ -2663,18 +2740,19 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    * Session-object fields.
    */
   override async handlePrintMainTurnCompleted(
-    input: SessionIdRpcInput,
-  ): Promise<'finish' | 'continue'> {
+    input: SessionIdRpcInput & { signal?: AbortSignal; taskIds?: readonly string[]; forceDrain?: boolean },
+  ): Promise<'finish' | 'continue' | 'timeout'> {
     const session = this.requireLiveSession(input.sessionId);
     await this.configReady;
     const config = this.engineAccessor.get(IConfigService);
     const taskConfig = resolveAgentTaskConfig(config);
-    const ceilingS = taskConfig?.printWaitCeilingS ?? PRINT_WAIT_CEILING_S_DEFAULT;
-    const mode = resolvePrintBackgroundMode(config);
+    const configuredCeilingS = taskConfig?.printWaitCeilingS ?? PRINT_WAIT_CEILING_S_DEFAULT;
+    const ceilingS = input.forceDrain ? Math.min(configuredCeilingS, PRINT_WAIT_CEILING_S_DEFAULT) : configuredCeilingS;
+    const mode = input.forceDrain ? 'drain' : resolvePrintBackgroundMode(config);
     if (mode === 'exit') return 'finish';
+    const taskIds = input.taskIds === undefined ? undefined : new Set(input.taskIds);
     if (mode === 'drain') {
-      await this.drainBackgroundTasksOnPrint(session, ceilingS);
-      return 'finish';
+      return (await this.drainBackgroundTasksOnPrint(session, ceilingS, input.signal, taskIds)) > 0 ? 'timeout' : 'finish';
     }
     // 'steer'
     const maxTurns = taskConfig?.printMaxTurns ?? PRINT_MAX_TURNS_DEFAULT;
@@ -2683,9 +2761,10 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     const now = Date.now();
     state.deadline ??= now + ceilingS * 1000;
     state.turns += 1;
-    if (now >= state.deadline) return 'finish';
+    const pending = this.countActiveBackgroundTasks(session, taskIds);
+    if (now >= state.deadline) return pending > 0 ? 'timeout' : 'finish';
     if (state.turns > maxTurns) return 'finish';
-    if (this.countActiveBackgroundTasks(session) > 0) return 'continue';
+    if (pending > 0) return 'continue';
     return 'finish';
   }
 
@@ -2700,50 +2779,40 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
   private async drainBackgroundTasksOnPrint(
     session: ISessionScopeHandle,
     ceilingS: number,
-  ): Promise<void> {
-    const deadline = Date.now() + ceilingS * 1000;
-    const seen = new Set<string>();
-    const allWaiters: Promise<unknown>[] = [];
-    while (Date.now() < deadline) {
+    signal?: AbortSignal,
+    taskIds?: ReadonlySet<string>,
+  ): Promise<number> {
+    const deadline = performance.now() + ceilingS * 1000;
+    while (true) {
+      signal?.throwIfAborted();
+      const remaining = Math.min(Math.ceil(deadline - performance.now()), MAX_TIMER_DELAY_MS);
+      if (remaining <= 0) return this.countActiveBackgroundTasks(session, taskIds);
       const batch: Promise<unknown>[] = [];
-      const suppressions: Promise<void>[] = [];
-      let activeCount = 0;
       const agentLifecycle = session.accessor.get(IAgentLifecycleService);
       for (const agent of agentLifecycle.list()) {
         const agentHandle = agentLifecycle.handleOf(agent.agentId);
         if (agentHandle === undefined) continue;
         const tasks = agentHandle.accessor.get(IAgentTaskService);
         for (const task of tasks.list(true)) {
-          activeCount++;
-          if (seen.has(task.taskId)) continue;
-          seen.add(task.taskId);
-          suppressions.push(tasks.suppressTerminalNotification(task.taskId));
-          // A configured ceiling above the ~24.8-day timer ceiling overflows
-          // a raw `setTimeout` into an immediate resolve — clamp here (the
-          // engine's `wait` clamps too; this keeps the caller side correct
-          // regardless). The outer loop re-enumerates after an early return,
-          // so semantics are unchanged.
-          const remaining = Math.min(Math.max(1, deadline - Date.now()), MAX_TIMER_DELAY_MS);
-          const waiter = tasks.wait(task.taskId, remaining);
-          batch.push(waiter);
-          allWaiters.push(waiter);
+          if (taskIds !== undefined && !taskIds.has(task.taskId)) continue;
+          batch.push(tasks.suppressTerminalNotification(task.taskId));
+          batch.push(tasks.wait(task.taskId, remaining, signal));
         }
       }
-      if (suppressions.length > 0) await Promise.all(suppressions);
-      if (activeCount === 0 || batch.length === 0) break;
+      if (batch.length === 0) return 0;
       await Promise.all(batch);
     }
-    if (allWaiters.length > 0) await Promise.all(allWaiters);
   }
 
   /** v1's `countActiveBackgroundTasks`: active tasks across every live agent. */
-  private countActiveBackgroundTasks(session: ISessionScopeHandle): number {
+  private countActiveBackgroundTasks(session: ISessionScopeHandle, taskIds?: ReadonlySet<string>): number {
     let count = 0;
     const agentLifecycle = session.accessor.get(IAgentLifecycleService);
     for (const agent of agentLifecycle.list()) {
       const agentHandle = agentLifecycle.handleOf(agent.agentId);
       if (agentHandle === undefined) continue;
-      count += agentHandle.accessor.get(IAgentTaskService).list(true).length;
+      const tasks = agentHandle.accessor.get(IAgentTaskService).list(true);
+      count += taskIds === undefined ? tasks.length : tasks.filter(task => taskIds.has(task.taskId)).length;
     }
     return count;
   }

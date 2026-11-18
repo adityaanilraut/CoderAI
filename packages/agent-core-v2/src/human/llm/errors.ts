@@ -255,10 +255,13 @@ export function parseRetryAfterMs(headers: unknown): number | null {
     typeof (headers as { get?: unknown }).get === 'function'
       ? (headers as { get(name: string): string | null }).get('retry-after')
       : null;
-  if (raw === null || raw === undefined) return null;
-  const seconds = Number.parseInt(raw, 10);
-  if (!Number.isFinite(seconds) || seconds < 0) return null;
-  return seconds * 1000;
+  const value = raw?.trim();
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return Math.min(Number(value) * 1000, Number.MAX_SAFE_INTEGER);
+  const httpDate = /^(?:[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT|[A-Za-z]+, \d{2}-[A-Za-z]{3}-\d{2} \d{2}:\d{2}:\d{2} GMT|[A-Za-z]{3} [A-Za-z]{3} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/;
+  if (!httpDate.test(value)) return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? Math.max(0, time - Date.now()) : null;
 }
 
 export function headersToRecord(headers: unknown): Record<string, string> | null {

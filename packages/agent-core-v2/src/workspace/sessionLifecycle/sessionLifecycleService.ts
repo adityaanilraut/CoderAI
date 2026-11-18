@@ -26,6 +26,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IEventService } from '#/app/event/event';
 import { IFlagService } from '#/app/flag/flag';
+import { SESSION_INDEX_KEY, SESSION_INDEX_SCOPE, withSessionIndexFileLock } from '#/app/workspace/workspaceAlias';
 import { CHILD_SESSION_KIND,
   CHILD_SESSION_KIND_KEY,
   ISessionIndex,
@@ -334,12 +335,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
   private async appendSessionIndexEntry(sessionId: string, workDir: string): Promise<void> {
     const sessionDir = sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sessionId);
-    this.appendLogStore.append('', 'session_index.jsonl', {
-      sessionId,
-      sessionDir,
-      workDir,
+    await this.appendSessionIndexRecord({ sessionId, sessionDir, workDir });
+  }
+
+  private async appendSessionIndexRecord(record: Record<string, unknown>): Promise<void> {
+    await withSessionIndexFileLock(this.storage.pathFor(SESSION_INDEX_SCOPE, SESSION_INDEX_KEY), async () => {
+      this.appendLogStore.append(SESSION_INDEX_SCOPE, SESSION_INDEX_KEY, record);
+      await this.appendLogStore.flushLog(SESSION_INDEX_SCOPE, SESSION_INDEX_KEY);
     });
-    await this.appendLogStore.flush();
   }
 
   private async announceCreated(event: SessionCreatedEvent): Promise<void> {
@@ -498,8 +501,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await this.hostFs.remove(sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sessionId));
       await this.index.remove(sessionId);
       await dropFileHistorySession({ docs: this.docs, workspaceId: this.workspaceId, sessionId });
-      this.appendLogStore.append('', 'session_index.jsonl', { sessionId, deleted: true });
-      await this.appendLogStore.flush();
+      await this.appendSessionIndexRecord({ sessionId, deleted: true });
       this.event.publish(
         new SessionDeleted({
           payload: { sessionId, workspaceId: this.workspaceContext.workspaceId },
@@ -603,10 +605,16 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             );
 
       targetSessionDir = sessionDirOf(this.bootstrap.homeDir, this.handlerScope, targetId);
+      const sourceSessionDir = sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sourceId);
+      const importedFrom = sourceMeta?.custom?.['imported_from'];
+      const rebaseAttachments = importedFrom === 'codex' || importedFrom === 'claude-code'
+        ? importedAttachmentRebaser(sourceSessionDir, targetSessionDir)
+        : undefined;
       await this.copySessionFiles(
-        sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sourceId),
+        sourceSessionDir,
         targetSessionDir,
         turnSlice !== undefined,
+        rebaseAttachments,
       );
 
       const sourceAgents = sourceMeta?.agents ?? {};
@@ -632,6 +640,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             agentId,
             targetSessionId: targetId,
             records: slicedRecords,
+            rebaseAttachments,
           });
           retained.push(agentId);
         }
@@ -665,6 +674,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           labels: labelsFromAgentMeta(sourceAgent),
         };
       }
+      const lastPrompt = turnSlice === undefined ? sourceMeta?.lastPrompt : turnSlice.lastPrompt;
       const meta: SessionMeta = {
         id: targetId,
         version: SESSION_META_VERSION,
@@ -677,7 +687,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         forkedFrom: sourceId,
         agents,
         custom: forkCustomMetadata(sourceMeta?.custom, opts.metadata),
-        lastPrompt: turnSlice === undefined ? sourceMeta?.lastPrompt : turnSlice.lastPrompt,
+        lastPrompt: lastPrompt === undefined || rebaseAttachments === undefined ? lastPrompt : rebaseAttachments(lastPrompt),
         lastTurnReason: sourceMeta?.lastTurnReason,
       };
       await this.docs.set(
@@ -744,11 +754,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     readonly agentId: string;
     readonly targetSessionId: string;
     readonly records?: readonly WireRecord[];
+    readonly rebaseAttachments?: (text: string) => string;
   }): Promise<void> {
-    const records = [
-      ...(args.records ??
-        (await this.readSourceWireRecords(args.sourceHandle, args.sourceSessionId, args.agentId))),
-    ];
+    const sourceRecords = args.records ??
+      (await this.readSourceWireRecords(args.sourceHandle, args.sourceSessionId, args.agentId));
+    const rebase = args.rebaseAttachments;
+    const records = rebase === undefined ? [...sourceRecords] :
+      sourceRecords.map((record): WireRecord => JSON.parse(rebase(JSON.stringify(record))));
     if (records.length === 0) {
       records.push(createWireMetadataRecord());
     } else if (records[0]?.type !== 'metadata') {
@@ -859,6 +871,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     sourceDir: string,
     targetDir: string,
     excludeWire: boolean,
+    rebaseAttachments?: (text: string) => string,
   ): Promise<void> {
     let entries: readonly HostDirEntry[];
     try {
@@ -867,7 +880,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (isMissingFileError(error)) return;
       throw error;
     }
-    await this.copySessionDirEntries(sourceDir, targetDir, entries, '', excludeWire);
+    await this.copySessionDirEntries(sourceDir, targetDir, entries, '', excludeWire, rebaseAttachments);
   }
 
   private async copySessionDirEntries(
@@ -876,6 +889,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     entries: readonly HostDirEntry[],
     relBase: string,
     excludeWire: boolean,
+    rebaseAttachments?: (text: string) => string,
   ): Promise<void> {
     const fileWrites: Promise<void>[] = [];
     for (const entry of entries) {
@@ -896,13 +910,26 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           throw error;
         }
         await this.hostFs.mkdir(targetPath, { recursive: true });
-        await this.copySessionDirEntries(sourcePath, targetPath, children, rel, excludeWire);
+        await this.copySessionDirEntries(sourcePath, targetPath, children, rel, excludeWire, rebaseAttachments);
       } else if (entry.isFile) {
         fileWrites.push(
           (async () => {
-            const data = await this.hostFs.readBytes(sourcePath);
             await this.hostFs.mkdir(targetDir, { recursive: true });
-            await this.hostFs.writeBytes(targetPath, data);
+            if (rebaseAttachments !== undefined && isImportedReferenceDocument(rel)) {
+              // Import archives can be large. Rewrite generated text in batches
+              // while leaving the original source archive byte-for-byte intact.
+              await this.hostFs.writeText(targetPath, '');
+              let batch = '';
+              for await (const line of this.hostFs.readLines(sourcePath)) {
+                batch += rebaseAttachments(line);
+                if (batch.length < 64 * 1024) continue;
+                await this.hostFs.appendText(targetPath, batch);
+                batch = '';
+              }
+              if (batch) await this.hostFs.appendText(targetPath, batch);
+            } else {
+              await this.hostFs.writeBytes(targetPath, await this.hostFs.readBytes(sourcePath));
+            }
           })(),
         );
       }
@@ -913,6 +940,34 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   private async readMetaFromDisk(sessionId: string): Promise<SessionMeta | undefined> {
     return this.docs.get<SessionMeta>(sessionScopeOf(this.handlerScope, sessionId), 'state.json');
   }
+}
+
+function isImportedReferenceDocument(relativePath: string): boolean {
+  return /^agents\/[^/]+\/wire\.jsonl$/.test(relativePath) ||
+    /^attachments\/(?:effective-history-[a-f0-9]{64}\.jsonl|images\/references-[a-f0-9]{64}\.json)$/.test(relativePath);
+}
+
+function importedAttachmentRebaser(sourceDir: string, targetDir: string): (text: string) => string {
+  const replacements = new Map<string, string>();
+  for (const folder of ['attachments/source', 'attachments/images/', 'attachments/effective-history-']) {
+    const from = `${sourceDir}/${folder}`;
+    const to = `${targetDir}/${folder}`;
+    for (const backslash of [false, true]) {
+      let oldPath = backslash ? from.replaceAll('/', '\\') : from;
+      let newPath = backslash ? to.replaceAll('/', '\\') : to;
+      // JSON documents store paths in strings, and rendered image references
+      // embed a second JSON string in their own text.
+      for (let depth = 0; depth <= 2; depth++) {
+        replacements.set(oldPath, newPath);
+        oldPath = JSON.stringify(oldPath).slice(1, -1);
+        newPath = JSON.stringify(newPath).slice(1, -1);
+      }
+    }
+  }
+  return text => {
+    for (const [from, to] of replacements) text = text.replaceAll(from, () => to);
+    return text;
+  };
 }
 
 async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {

@@ -1,4 +1,4 @@
-import { abortable } from '#/_base/utils/abort';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export const DEFAULT_MAX_RETRY_ATTEMPTS = 10;
 
@@ -35,12 +35,12 @@ export function readRetryAfterMs(error: unknown): number | null {
 
 export async function sleepForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
-  const sleepPromise = sleep(delayMs);
-  if (signal === undefined) {
-    await sleepPromise;
-    return;
+  try {
+    await delay(delayMs, undefined, { signal });
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
   }
-  await abortable(sleepPromise, signal);
 }
 
 export function retryErrorFields(error: unknown): RetryErrorFields {
@@ -49,12 +49,6 @@ export function retryErrorFields(error: unknown): RetryErrorFields {
     errorMessage: error instanceof Error ? error.message : String(error),
     statusCode: maybeStatusCode(error),
   };
-}
-
-function sleep(delayMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, delayMs);
-  });
 }
 
 function maybeStatusCode(error: unknown): number | undefined {

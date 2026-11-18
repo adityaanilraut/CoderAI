@@ -10,6 +10,7 @@ import { BugIndicatingError, Error2, ErrorCodes, PluginErrors } from '#/errors';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 import { downloadZip, extractZip } from './archive';
+import { tagMcpCredentialOrigin } from '#/mcpCore/credential-policy';
 import { loadPluginCommand } from './commands';
 import { resolveGithubCommitSha, resolveGithubSource } from './github-resolver';
 import { parseManifest, type ParsedManifestResult } from './manifest';
@@ -359,11 +360,12 @@ export class PluginManager {
       if (!record.enabled || record.state !== 'ok' || record.manifest === undefined) continue;
       for (const [name, config] of Object.entries(record.manifest.mcpServers ?? {})) {
         if (!isMcpServerEnabled(record, name, config)) continue;
-        out[pluginMcpRuntimeName(record.id, name)] = withPluginMcpRuntime(
+        const effective = withPluginMcpRuntime(
           withMcpServerEnabled(config, true),
           record.root,
           this.kimiHomeDir,
         );
+        out[pluginMcpRuntimeName(record.id, name)] = tagMcpCredentialOrigin(effective, `plugin:${record.id}`);
       }
     }
     return out;
@@ -382,7 +384,7 @@ export class PluginManager {
         );
         out.push({
           name: pluginMcpRuntimeName(record.id, name),
-          config: effective,
+          config: tagMcpCredentialOrigin(effective, `plugin:${record.id}`),
           pluginId: record.id,
           serverName: name,
         });
@@ -690,8 +692,6 @@ function pluginMcpRuntimeName(pluginId: string, serverName: string): string {
   return `plugin-${pluginId}:${serverName}`;
 }
 
-const KIMI_NODE_FALLBACK_SUBCOMMAND = '__plugin_run_node';
-
 function withMcpServerEnabled(config: McpServerConfig, enabled: boolean): McpServerConfig {
   return { ...config, enabled };
 }
@@ -719,25 +719,11 @@ function withPluginMcpRuntime(
     };
   }
 
-  if (config.command === 'node' && isKimiNativeBinary()) {
-    return {
-      ...config,
-      command: process.execPath,
-      args: [KIMI_NODE_FALLBACK_SUBCOMMAND, ...(config.args ?? [])],
-      cwd: config.cwd ?? pluginRoot,
-      env,
-    };
-  }
-
   return { ...config, cwd: config.cwd ?? pluginRoot, env };
 }
 
 function isElectron(): boolean {
   return typeof process.versions['electron'] === 'string';
-}
-
-function isKimiNativeBinary(): boolean {
-  return !path.basename(process.execPath).toLowerCase().startsWith('node');
 }
 
 async function countDiscoveredPluginSkills(

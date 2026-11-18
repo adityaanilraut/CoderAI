@@ -607,9 +607,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   async readOutput(taskId: string, tail?: number): Promise<string> {
-    const output = (await this.getOutputSnapshot(taskId, Number.MAX_SAFE_INTEGER)).preview;
-    if (tail === undefined) return output;
-    const tailChars = Math.max(0, Math.trunc(tail));
+    const tailChars = Math.max(0, Math.trunc(tail ?? 0));
+    // Three UTF-8 bytes per UTF-16 code unit and room for a partial leading code point.
+    const maxBytes = tailChars > 0 ? Math.min(tailChars * 3 + 4, Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER;
+    const output = (await this.getOutputSnapshot(taskId, maxBytes)).preview;
     if (tailChars === 0) return output;
     return output.slice(codePointBoundaryStart(output, Math.max(0, output.length - tailChars)));
   }

@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { McpServerConfigSchema } from '@coderai/sdk/mcp-config';
 import type { McpServerConfig } from '@coderai/sdk';
 import type { Runtime } from './runtime.js';
+import { writeTerminalOutput } from './tui/sanitize.js';
 import { browserUrl, openBrowser } from './browser.js';
 
 /** List the merged configuration without printing credential values. */
@@ -58,7 +59,7 @@ export async function authenticateMcpConfiguration(runtime: Runtime, name: strin
       onAuthorizationUrl: async value => {
         controller.signal.throwIfAborted();
         const url = browserUrl(value);
-        (options.onUrl ?? (url => process.stdout.write(`Open this URL to authorize ${name}:\n${url}\n`)))(url);
+        (options.onUrl ?? (url => writeTerminalOutput(`Open this URL to authorize ${name}:\n${url}\n`)))(url);
         await (options.open ?? openBrowser)(url);
         return !controller.signal.aborted;
       },

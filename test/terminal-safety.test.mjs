@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { resolve } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { fixture, cli, testRuntime } from './fixture.mjs';
 const { StdinBuffer } = await import('../packages/pi-tui/src/stdin-buffer.ts');
 const { setTimeout: delay } = await import('node:timers/promises');
@@ -47,6 +48,30 @@ test('real PTY: headless text also filters fragmented model escape sequences', {
   const result = JSON.parse(out);
   assert.equal(result.code, 0);
   assert.doesNotMatch(Buffer.from(result.raw, 'base64').toString('utf8'), /TERMINAL_INJECTION/);
+});
+
+test('real PTY: skills list displays plain text for styled project metadata', { timeout: 30000 }, async t => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  const skill = join(f.cwd, '.coderai', 'skills', 'formatting-fixture');
+  await mkdir(skill, { recursive: true });
+  const description = JSON.stringify('Sample \x1b[32mstyled\x1b[0m text');
+  await writeFile(join(skill, 'SKILL.md'), `---\nname: formatting-fixture\ndescription: ${description}\n---\nFixture skill.\n`);
+
+  const child = spawn('python3', [resolve('test/terminal.py')], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const closed = new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
+  child.stdin.end(JSON.stringify({
+    cwd: f.cwd, node: testRuntime, cli, env: { ...f.env, TERM: 'xterm-256color' },
+    args: ['skills', 'list'], actions: [{ wait: 'Sample styled text' }],
+  }));
+  assert.equal(await closed, 0, stderr);
+  const result = JSON.parse(stdout);
+  assert.equal(result.code, 0, result.output);
+  assert.doesNotMatch(Buffer.from(result.raw, 'base64').toString('utf8'), /\x1b\[32mstyled/);
 });
 
 test('fullscreen search strips terminal controls from bracketed paste before rendering or querying', async () => {

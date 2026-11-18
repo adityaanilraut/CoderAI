@@ -268,6 +268,7 @@ export function encodeAnthropicRequest(
 export function createAnthropicFormat(): ProtocolFormat<AnthropicRawStreamEvent> {
   return {
     createStreamParser() {
+      let finish: FinishInfo | undefined;
       return (chunk, sink) => {
         if (chunk.type === 'message_start') {
           const messageId = chunk.message?.id;
@@ -289,8 +290,12 @@ export function createAnthropicFormat(): ProtocolFormat<AnthropicRawStreamEvent>
           }
           const stopReason = chunk.delta?.stop_reason;
           if (stopReason !== undefined && stopReason !== null) {
-            sink.onFinish(normalizeStopReason(stopReason));
+            finish = normalizeStopReason(stopReason);
           }
+          return;
+        }
+        if (chunk.type === 'message_stop' && finish !== undefined) {
+          sink.onFinish(finish);
           return;
         }
         if (chunk.type === 'content_block_start' && chunk.content_block !== undefined) {

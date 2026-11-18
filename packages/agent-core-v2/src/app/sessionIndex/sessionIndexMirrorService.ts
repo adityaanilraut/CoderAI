@@ -17,6 +17,7 @@ import {
   recencyColumn,
   sessionCollection,
   sessionCountersCollection,
+  serializeSessionIndexWrite,
   withRecencyField,
   type SessionWorkspaceCounts,
 } from './sessionIndexModel';
@@ -118,7 +119,7 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
   }
 
   private flush(): Promise<void> {
-    this.flushing ??= this.flushChunk().finally(() => {
+    this.flushing ??= serializeSessionIndexWrite(this.queryStore, () => this.flushChunk()).finally(() => {
       this.flushing = undefined;
       if (this.pendingMap.size > 0 && this.consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
         this.timer.cancelAndSet(() => void this.flush(), FLUSH_INTERVAL_MS);

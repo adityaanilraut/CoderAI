@@ -166,7 +166,7 @@ function customRegistrySourceKey(source: CustomRegistrySource): string {
 }
 
 function customRegistrySourceCredentialKey(source: CustomRegistrySource): string {
-  return JSON.stringify([source.url, source.apiKey]);
+  return JSON.stringify([source.url, source.apiKeyEnv, source.apiKey]);
 }
 
 async function fetchCustomRegistryFromSources(
@@ -825,7 +825,8 @@ export async function refreshProviderModels(
         }
         const existed = existingProvider !== undefined;
         try {
-          applyCustomRegistryProvider(next, entry, source);
+          const existingSource = readCustomRegistrySource(existingProvider);
+          applyCustomRegistryProvider(next, entry, existingSource?.url === source.url ? existingSource : source);
         } catch (error) {
           failed.push({
             provider: providerId,

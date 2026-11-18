@@ -77,7 +77,8 @@ function contextTokens(value: string): number {
 }
 
 export async function runSetup(runtime: Runtime, prompt: Prompt, discover = discoverProviderModels): Promise<void> {
-  process.stdout.write(`\n  ${chalk.hex(colors.primary).bold('CoderAI')} ${chalk.bold('Setup')}\n  ${chalk.hex(colors.textMuted)(compactPath(runtime.harness.configPath, Math.max(1, (process.stdout.columns || 80) - 3)))}\n`);
+  const configPath = compactPath(singleLine(runtime.harness.configPath), Math.max(1, (process.stdout.columns || 80) - 3));
+  process.stdout.write(`\n  ${chalk.hex(colors.primary).bold('CoderAI')} ${chalk.bold('Setup')}\n  ${chalk.hex(colors.textMuted)(configPath)}\n`);
   note('Esc goes back · Ctrl+C exits · changes save after each completed step');
 
   const addModel = async (providerID?: string, forceDefault = false) => {
@@ -187,7 +188,7 @@ export async function runSetup(runtime: Runtime, prompt: Prompt, discover = disc
       if (await menu(prompt, 'Remove this provider?', ['Keep provider', 'Remove provider'], 0) === 2) await removeProvider(runtime, id);
       return;
     }
-    if (provider.oauth || provider.source) { note('This provider is managed by its source. Import its registry again to replace credentials or models.'); return; }
+    if (provider.oauth) { note('This provider is managed by OAuth. Reconnect it through its source.'); return; }
     const protocol = await menu(prompt, 'API protocol', protocols, Math.max(0, protocols.findIndex(item => item.type === provider.type)));
     if (!protocol) return;
     const url = await ask(prompt, 'API base URL', provider.baseUrl ?? '', value => {

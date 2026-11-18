@@ -43,5 +43,5 @@ export async function writeMainAgentWire(sessionDir: string, input: WireWriteInp
       }),
     );
   }
-  await writeFile(join(wireDir, 'wire.jsonl'), lines.join('\n') + '\n', 'utf-8');
+  await writeFile(join(wireDir, 'wire.jsonl'), lines.join('\n') + '\n', { mode: 0o600, flag: 'wx' });
 }

@@ -1,11 +1,19 @@
 import { writeFile } from 'node:fs/promises';
-import type { Session } from '@coderai/sdk';
+import type { SavedSessionReplay, Session } from '@coderai/sdk';
 
 /** Export the durable replay rather than the model context, which can be compacted or cleared. */
 export async function exportMarkdown(session: Session, path: string): Promise<void> {
   const state = await session.getPersistedReplay();
+  await exportMarkdownReplay(session, state.agents, path);
+}
+
+export async function exportMarkdownReplay(
+  session: Pick<SavedSessionReplay['session'], 'id' | 'workDir'>,
+  agents: SavedSessionReplay['agents'],
+  path: string,
+): Promise<void> {
   const sections: string[] = [`# CoderAI conversation\n\nSession: ${session.id}\n\nWorkspace: ${session.workDir}`];
-  for (const [agentId, agent] of Object.entries(state.agents)) {
+  for (const [agentId, agent] of Object.entries(agents)) {
     if (agentId !== 'main') sections.push(`## Agent ${agentId}`);
     for (const record of agent.replay) {
       if (record.type === 'message') {
@@ -21,7 +29,9 @@ export async function exportMarkdown(session: Session, path: string): Promise<vo
         for (const call of message.toolCalls ?? []) {
           const args = call.arguments ?? '';
           // Choose a fence longer than any run in the data so tool output cannot close it.
-          const fence = '`'.repeat(Math.max(3, ...Array.from(args.matchAll(/`+/g), match => match[0].length + 1)));
+          let length = 3;
+          for (const run of args.matchAll(/`+/g)) length = Math.max(length, run[0].length + 1);
+          const fence = '`'.repeat(length);
           sections.push(`### Tool call: ${call.name}\n\n${fence}\n${args}\n${fence}`);
         }
       } else if (record.type === 'compaction') {

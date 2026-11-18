@@ -30,6 +30,7 @@ export interface StdioMcpClientOptions {
   readonly runtimeResolver: IRuntimeResolver;
   readonly workspaceId: string;
   readonly runtimeId: string;
+  readonly inheritedVariables?: ReadonlySet<string>;
 }
 
 const STDERR_BUFFER_CAPACITY = 4 * 1024;
@@ -182,22 +183,26 @@ class RuntimeStdioTransport implements Transport {
     try {
       const base = lease.runtime.path.resolve(this.options.defaultCwd ?? lease.runtime.environment.homeDir);
       const cwd = this.config.cwd === undefined ? base : lease.runtime.path.resolve(base, this.config.cwd);
-      const process = lease.track(await lease.runtime.process!.spawn(
+      const child = lease.track(await lease.runtime.process!.spawn(
         this.config.command,
         this.config.args,
-        { cwd, env: mergeStdioEnv(this.config.env) },
+        {
+          cwd,
+          env: mergeStdioEnv(this.config.env, process.env, this.options.inheritedVariables),
+          inheritEnv: this.options.inheritedVariables === undefined,
+        },
       ));
-      this.process = process;
+      this.process = child;
       lease.track(this);
-      process.stdin.on('error', (error: Error) => this.onerror?.(error));
-      process.stdout.on('data', (chunk: Buffer | string) => this.onData(chunk));
-      process.stdout.on('end', () => this.finish());
-      process.stdout.on('error', (error: Error) => this.onerror?.(error));
-      process.stderr.on('data', (chunk: Buffer | string) => {
+      child.stdin.on('error', (error: Error) => this.onerror?.(error));
+      child.stdout.on('data', (chunk: Buffer | string) => this.onData(chunk));
+      child.stdout.on('end', () => this.finish());
+      child.stdout.on('error', (error: Error) => this.onerror?.(error));
+      child.stderr.on('data', (chunk: Buffer | string) => {
         this.stderr.push(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
       });
-      process.stderr.on('error', (error: Error) => this.onerror?.(error));
-      void process.wait().then(
+      child.stderr.on('error', (error: Error) => this.onerror?.(error));
+      void child.wait().then(
         () => this.finish(),
         (error: unknown) => {
           this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -286,13 +291,26 @@ class BoundedTail {
   }
 }
 
+const SAFE_INHERITED_VARIABLES = new Set([
+  'PATH', 'HOME', 'USERPROFILE', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
+  'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM',
+]);
+
 export function mergeStdioEnv(
   configEnv?: Record<string, string>,
   parentEnv: Readonly<Record<string, string | undefined>> = process.env,
+  inheritedVariables?: ReadonlySet<string>,
 ): Record<string, string> {
-  const merged: Record<string, string> = {};
+  const merged: Record<string, string> = Object.create(null);
   for (const [key, value] of Object.entries(parentEnv)) {
-    if (value !== undefined) merged[key] = value;
+    if (value !== undefined && (inheritedVariables === undefined ||
+      SAFE_INHERITED_VARIABLES.has(key.toUpperCase()))) merged[key] = value;
+  }
+  if (inheritedVariables !== undefined) {
+    for (const key of inheritedVariables) {
+      const value = parentEnv[key];
+      if (value !== undefined) merged[key] = value;
+    }
   }
   if (configEnv !== undefined) Object.assign(merged, configEnv);
   Object.assign(merged, proxyEnvForChild(merged));

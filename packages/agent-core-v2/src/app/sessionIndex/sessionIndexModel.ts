@@ -1,14 +1,24 @@
 import type { SessionSummary } from './sessionIndex';
+import type { IQueryStore } from '#/persistence/interface/queryStore';
 
 export const SESSION_INDEX_MANIFEST = 'sessionIndex';
 
-export const SESSION_INDEX_SCHEMA_VERSION = 2;
+export const SESSION_INDEX_SCHEMA_VERSION = 3;
 
 export const PARENT_INDEX_NAME = 'byParent';
 
 export interface SessionWorkspaceCounts {
   readonly active: number;
   readonly archived: number;
+}
+
+const writes = new WeakMap<IQueryStore, Promise<void>>();
+
+/** Keep counter read/modify/write operations serialized with row updates. */
+export function serializeSessionIndexWrite<T>(store: IQueryStore, operation: () => Promise<T>): Promise<T> {
+  const result = (writes.get(store) ?? Promise.resolve()).then(operation);
+  writes.set(store, result.then(() => undefined, () => undefined));
+  return result;
 }
 
 export function sessionCollection(generation: number): string {

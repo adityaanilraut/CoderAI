@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { thirdPartyLicenseFile, verifyArchiveChecksum } from './release-archive.mjs';
 
 const { values } = parseArgs({ options: {
   version: { type: 'string' },
@@ -15,14 +14,7 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Homebrew requires a stabl
 const checksums = new Map();
 for (const target of ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64']) {
   const name = `coderai-bun-${target}.zip`;
-  const archive = join(values['assets-dir'], name);
-  const checksum = (await readFile(`${archive}.sha256`, 'utf8')).trim();
-  const match = /^([a-f0-9]{64}) {2}(\S+)$/.exec(checksum);
-  if (!match || match[2] !== name) throw new Error(`Invalid checksum file for ${name}`);
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(archive)) hash.update(chunk);
-  if (hash.digest('hex') !== match[1]) throw new Error(`Checksum mismatch for ${name}`);
-  checksums.set(target, match[1]);
+  checksums.set(target, await verifyArchiveChecksum(join(values['assets-dir'], name)));
 }
 
 const platform = (os, arch) => `    on_${arch === 'arm64' ? 'arm' : 'intel'} do
@@ -52,7 +44,8 @@ ${platform('linux', 'x64')}
 
   def install
     bin.install "coderai"
-    prefix.install "NOTICE", "LICENSE.pi-tui", "LICENSE.jsquash-webp", "LICENSE.libwebp"
+    prefix.install "LICENSE", "NOTICE", "LICENSE.pi-tui", "LICENSE.jsquash-webp", "LICENSE.libwebp"
+    prefix.install "${thirdPartyLicenseFile}" if File.file?("${thirdPartyLicenseFile}")
   end
 
   def caveats

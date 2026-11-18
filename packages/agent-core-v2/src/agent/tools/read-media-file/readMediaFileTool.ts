@@ -16,7 +16,7 @@ import {
   type ExecutableToolResult,
   type ToolExecution,
 } from '#/tool/toolContract';
-import { resolvePathAccessPath, type WorkspaceConfig } from '#/tool/path-access';
+import { resolveToolPath, type CredentialLocation, type WorkspaceConfig } from '#/tool/path-access';
 import {
   MEDIA_SNIFF_BYTES,
   detectFileType,
@@ -39,7 +39,7 @@ import {
 } from '#/agent/media/image-format-policy';
 import { providerImagePolicy } from '#human/llm/media/image-formats';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { literalRulePattern, matchesGlobRuleSubject, matchesPathRuleSubject } from '#/tool/rule-match';
+import { literalRulePattern, matchesGlobRuleSubject, matchesToolPathRule } from '#/tool/rule-match';
 import { renderPrompt } from '#/_base/utils/render-prompt';
 import {
   MAX_MEDIA_BYTES,
@@ -193,6 +193,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     private readonly runtime: IAgentRuntimeService,
     private readonly workspace: WorkspaceConfig,
     private readonly capabilities: ModelCapability,
+    private readonly credentials: CredentialLocation,
     private readonly videoUploader?: VideoUploader,
     telemetry?: ITelemetryService,
     inlineVideoSupported?: boolean,
@@ -228,7 +229,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     return inlineVideoPart(data, mimeType);
   }
 
-  resolveExecution(args: ReadMediaFileInput): ToolExecution | Promise<ToolExecution> {
+  async resolveExecution(args: ReadMediaFileInput): Promise<ToolExecution> {
     if (!args.path) {
       return { isError: true, output: 'File path cannot be empty.' };
     }
@@ -242,18 +243,19 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
       additionalDirs: this.workspace.additionalDirs,
     });
     const workspace = { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
-    const path = resolvePathAccessPath(args.path, {
+    const target = await resolveToolPath(inspected.fs!, args.path, {
       env,
       workspace,
       operation: 'read',
-    });
+    }, this.credentials);
+    const { path, requestedPath } = target;
     return {
-      accesses: ToolAccesses.readFile(path),
+      accesses: ToolAccesses.file('read', path, { requestedPath }),
       description: `Reading media: ${args.path}`,
       display: { kind: 'file_io', operation: 'read', path },
       approvalRule: literalRulePattern(this.name, path),
-      matchesRule: (ruleArgs) =>
-        matchesPathRuleSubject(ruleArgs, path, {
+      matchesRule: (ruleArgs, includeRequestedPath) =>
+        matchesToolPathRule(ruleArgs, target, includeRequestedPath, {
           cwd: this.workspace.workspaceDir,
           pathClass: env.pathClass,
           homeDir: env.homeDir,
@@ -264,6 +266,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           if (lease.runtime.identity.generation !== inspected.identity.generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
+          await target.assertUnchanged(lease.runtime.fs!);
           return await this.execution(args, runtimeFileSource(lease.runtime.fs!, path), env, signal);
         } finally {
           lease.dispose();

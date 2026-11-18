@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -100,7 +100,7 @@ export async function writeExportZip(args: {
     };
     args.signal?.addEventListener('abort', onAbort, { once: true });
 
-    const destination = createWriteStream(tempOutputPath, { flags: 'wx' });
+    const destination = createWriteStream(tempOutputPath, { flags: 'wx', mode: 0o600 });
     writing = pipeline(output, destination, { signal: args.signal });
 
     const activate = (source: ZipSource): Readable => {
@@ -193,7 +193,7 @@ export async function writeExportZip(args: {
       onAbort = undefined;
     }
     args.signal?.throwIfAborted();
-    await rename(tempOutputPath, args.outputPath);
+    await link(tempOutputPath, args.outputPath);
   } catch (error) {
     failure = { error };
     stop(asError(error));

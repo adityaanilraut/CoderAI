@@ -51,6 +51,16 @@ test('long previews scroll independently while choices stay visible and dialogs 
   }
 });
 
+test('eight-row dialogs keep the active choice and reply field visible below a long preview', () => {
+  const preview = 'A long preview that needs several rows. '.repeat(15);
+  const picker = new ChoiceDialog(`Review\n${preview}`, [{ value: 'accept', label: 'Accept' }, { value: 'cancel', label: 'Cancel' }], () => 8, () => {}, () => {}, { searchable: true });
+  const prompt = new PromptDialog(`Question\n${preview}`, () => 8, () => {}, () => {});
+  for (const component of [picker, prompt]) assert.ok(component.render(44).length <= 6);
+  assert.match(plain(picker.render(44)), /› Accept/);
+  picker.handleInput('\u001b[B'); assert.match(plain(picker.render(44)), /› Cancel/);
+  assert.match(plain(prompt.render(44)), /Reply:/);
+});
+
 test('multi-select supports Space and Enter, requires a selection, and returns checked items in order', () => {
   const { picker, answers } = dialog([{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }, { value: '\0done', label: 'Done' }], { multiple: true });
   picker.render(50); picker.handleInput('\u001b[F'); picker.handleInput('\r');

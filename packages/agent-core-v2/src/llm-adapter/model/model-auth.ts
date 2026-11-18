@@ -1,4 +1,5 @@
 import { Error2 } from '#/_base/errors/errors';
+import { isRegistryCredential, readCustomRegistrySource } from '@coderai/oauth';
 import {
   credentialConflictMessage,
   declaredProviderCredential,
@@ -12,7 +13,7 @@ import {
 import { CONFIG_INVALID_ERROR_CODE } from '../contract/errors';
 import { ProtocolSchema, type Protocol } from '../protocol/protocol';
 import type { ProviderConfig } from '../provider/provider';
-import { explainProviderEndpoint, getProviderDefinition } from '../provider/provider-definition';
+import { explainProviderEndpoint, getProviderDefinition, usesVertexAI } from '../provider/provider-definition';
 
 import type { ModelRecord } from './model';
 import type { ResolvedModelAuthMaterial } from './model.types';
@@ -25,6 +26,11 @@ export function resolveModelAuthMaterial(args: {
   readonly providerName: string;
 }): ResolvedModelAuthMaterial {
   const modelApiKey = nonEmpty(args.model.apiKey);
+  const registry = readCustomRegistrySource(args.provider);
+  const credentialError = () => new Error2(
+    CONFIG_INVALID_ERROR_CODE,
+    `Provider "${args.providerName}" requires inference credentials separate from its registry authentication. Configure an inference API key in /setup or with providers update.`,
+  );
   if (modelApiKey !== undefined && args.model.oauth !== undefined) {
     throw new Error2(
       CONFIG_INVALID_ERROR_CODE,
@@ -32,6 +38,7 @@ export function resolveModelAuthMaterial(args: {
     );
   }
   if (modelApiKey !== undefined) {
+    if (isRegistryCredential(args.provider, modelApiKey)) throw credentialError();
     return { apiKey: modelApiKey };
   }
   if (args.model.oauth !== undefined) {
@@ -41,12 +48,14 @@ export function resolveModelAuthMaterial(args: {
     };
   }
 
-  const providerAuthType = args.provider?.type ?? args.model.protocol;
+  const providerAuthType = endpointTypeForModel(args.model, args.provider);
   const providerEndpoint =
     providerAuthType === undefined
       ? {}
       : explainProviderEndpoint(providerAuthType, args.provider?.env ?? {});
-  const declared = declaredProviderCredential(args.provider ?? {}, args.providerName);
+  const providerKey = nonEmpty(args.provider?.apiKey);
+  const usesRegistryKey = providerKey !== undefined && isRegistryCredential(args.provider, providerKey);
+  const declared = declaredProviderCredential(usesRegistryKey ? { ...args.provider, apiKey: undefined } : args.provider ?? {}, args.providerName);
   if (declared.kind === 'conflict') {
     throw new Error2(CONFIG_INVALID_ERROR_CODE, declared.message);
   }
@@ -54,8 +63,12 @@ export function resolveModelAuthMaterial(args: {
     return { apiKey: declared.apiKey };
   }
   if (declared.kind === 'env') {
+    if (registry?.apiKeyEnv === declared.apiKeyEnv || isRegistryCredential(args.provider, process.env[declared.apiKeyEnv]?.trim() ?? '', declared.apiKeyEnv)) {
+      throw credentialError();
+    }
     return { apiKeyEnv: declared.apiKeyEnv };
   }
+  if (registry !== undefined) throw credentialError();
   const endpointApiKey = nonEmpty(providerEndpoint.apiKey);
   if (endpointApiKey !== undefined && args.provider?.oauth !== undefined) {
     throw new Error2(
@@ -72,6 +85,9 @@ export function resolveModelAuthMaterial(args: {
       oauthProviderKey: args.model.providerId ?? args.model.provider,
     };
   }
+  if (providerAuthType === undefined) return {};
+  const standard = explainProviderEndpoint(providerAuthType);
+  if (standard.apiKey !== undefined) return { apiKey: standard.apiKey };
   return {};
 }
 
@@ -173,10 +189,17 @@ export function resolveEndpointBaseUrl(
   if (fromProvider !== undefined) {
     return fromProvider;
   }
-  const endpointType = provider.type ?? model.protocol;
+  const endpointType = endpointTypeForModel(model, provider);
   const endpoint =
     endpointType === undefined ? {} : explainProviderEndpoint(endpointType, provider.env ?? {});
   return nonEmpty(endpoint.baseUrl);
+}
+
+function endpointTypeForModel(model: ModelRecord, provider: ProviderConfig | undefined): string | undefined {
+  const type = provider?.type ?? model.protocol;
+  return type === 'google-genai' && usesVertexAI(provider, nonEmpty(model.baseUrl))
+    ? 'vertexai'
+    : type;
 }
 
 export type ModelReadyFailureReason =

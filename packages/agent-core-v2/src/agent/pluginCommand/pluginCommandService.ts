@@ -46,6 +46,7 @@ export class AgentPluginCommandService implements IAgentPluginCommandService {
       );
     }
     const commandArgs = payload.args ?? '';
+    payload.signal?.throwIfAborted();
     const expanded = expandCommandArguments(def.body, commandArgs);
     const origin = {
       kind: 'plugin_command' as const,
@@ -67,8 +68,8 @@ export class AgentPluginCommandService implements IAgentPluginCommandService {
     );
     this.loop.submit({
       message: { role: 'user', content: [{ type: 'text', text: expanded }] },
-      meta: { origin, tracked: true },
-    });
+      meta: { origin, tracked: true, promptId: payload.promptId },
+    }, { signal: payload.signal });
     if (this.scopeContext.agentId === MAIN_AGENT_ID) {
       await applyPromptMetadataUpdate(
         {

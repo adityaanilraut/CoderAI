@@ -113,15 +113,15 @@ test('activity captures agents without spawn events, bounds retained steps/argum
 });
 
 function btwFixture() {
-  const listeners = new Set(), calls = [], cancellations = [], errors = []; let target = 'main', next = 0, panel;
+  const listeners = new Set(), calls = [], cancellations = [], closed = [], errors = []; let target = 'main', next = 0, panel;
   const session = { id: 'current-session', isClosed: false, async startBtw() { return `btw-${++next}`; },
     onEvent(fn) { listeners.add(fn); return () => listeners.delete(fn); },
-    async prompt(text) { calls.push({ agentId: target, text }); }, async cancel() { cancellations.push(target); },
+    async prompt(text) { calls.push({ agentId: target, text }); }, async cancel() { cancellations.push(target); }, async closeBtw(id) { closed.push(id); },
   };
   const harness = { withInteractiveAgent(id, fn) { const previous = target; target = id; try { return fn(); } finally { target = previous; } } };
   const controller = new BtwPanelController(harness, value => panel = value, () => {}, () => 16, error => errors.push(error));
   const emit = e => { for (const fn of listeners) fn(e); };
-  return { controller, session, calls, cancellations, errors, emit, listeners, get panel() { return panel; } };
+  return { controller, session, calls, cancellations, closed, errors, emit, listeners, get panel() { return panel; } };
 }
 
 test('/btw uses the active session, isolates main output, supports follow-ups and targets cancellation to its child', async () => {
@@ -139,6 +139,7 @@ test('/btw uses the active session, isolates main output, supports follow-ups an
   f.emit(event('turn.ended', { agentId: 'btw-1', reason: 'cancelled' }));
   assert.equal(f.controller.close(), true); assert.equal(f.panel, undefined); assert.equal(f.listeners.size, 0);
   assert.deepEqual(f.errors, []); await f.controller.dispose();
+  assert.deepEqual(f.closed, ['btw-1']); assert.equal(f.controller.owns('btw-1'), false);
 });
 
 test('/btw drops late startup after close and failed dispatch leaves a usable panel', async () => {
@@ -152,6 +153,7 @@ test('/btw drops late startup after close and failed dispatch leaves a usable pa
   assert.equal(f.controller.isRunning, false); assert.match(plain(f.panel), /provider unavailable/);
   for (const width of [1, 10, 50]) assert.ok(f.panel.render(width).every(line => visibleWidth(line) <= width));
   await f.controller.dispose();
+  assert.deepEqual(f.closed, ['late-agent', 'new-agent']);
 });
 
 test('automatic titles coalesce concurrent completions, stop after success, honor both preferences and cap unavailable retries', async () => {
@@ -187,7 +189,7 @@ test('headless plain diagnostics handle ignored events and stale warnings while 
     event('tool.call.delta', { toolCallId: 'call', name: 'Read', argumentsPart: '{"path":' }),
     event('tool.list.updated', { serverName: 'server', reason: 'mcp.connected' }), event('assistant.delta', { delta: 'answer' })];
   let handler; const session = { id: 's', workDir: '/test', getSessionWarnings: async () => [{ message: 'session warning', severity: 'warning' }], setStaleReloadHandler(fn) { handler = fn; } };
-  const runtime = { session, options: {}, open: async () => session, async run(_prompt, emit) { await handler(); for (const e of events) emit(e); return 'completed'; } };
+  const runtime = { session, options: {}, open: async () => session, async run(_prompt, emit) { await handler(); for (const e of events) emit(e, true); return 'completed'; } };
   const originalOut = process.stdout.write, originalErr = process.stderr.write; let out = '', err = '';
   try {
     process.stdout.write = chunk => { out += chunk; return true; }; process.stderr.write = chunk => { err += chunk; return true; };

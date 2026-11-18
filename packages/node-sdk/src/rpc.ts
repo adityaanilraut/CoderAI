@@ -70,6 +70,7 @@ import type {
   RefreshProviderModelsOptions,
   RefreshProviderModelsResponse,
   SessionSummary,
+  SavedSessionReplay,
   SessionSummaryPage,
   SkillSummary,
   PluginCommandDef,
@@ -86,6 +87,7 @@ export interface SessionPromptRpcInput {
   readonly sessionId: string;
   readonly input: PromptInput;
   readonly promptId?: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface SessionPromptWithSkillsRpcInput extends SessionPromptRpcInput {
@@ -95,6 +97,11 @@ export interface SessionPromptWithSkillsRpcInput extends SessionPromptRpcInput {
 
 export interface SessionIdRpcInput {
   readonly sessionId: string;
+}
+
+export interface CancelSessionTurnRpcInput extends SessionIdRpcInput {
+  readonly promptId?: string;
+  readonly turnId?: number;
 }
 
 export interface ImportContextRpcInput extends SessionIdRpcInput {
@@ -149,6 +156,8 @@ export interface ActivatePluginCommandRpcInput extends SessionIdRpcInput {
   readonly pluginId: string;
   readonly commandName: string;
   readonly args?: string | undefined;
+  readonly promptId?: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface RunCommandRpcInput extends SessionIdRpcInput {
@@ -202,7 +211,9 @@ export abstract class SDKRpcClientBase {
 
   abstract reloadSession(input: ReloadSessionRpcInput): Promise<ResumedSessionSummary>;
 
-  abstract forkSession(input: ForkSessionInput): Promise<SessionSummary>;
+  abstract forkSession(input: ForkSessionInput, openAfterFork?: boolean): Promise<SessionSummary>;
+
+  abstract readSavedSessionReplay(id: string): Promise<SavedSessionReplay>;
 
   abstract closeSession(input: SessionIdRpcInput): Promise<void>;
 
@@ -227,6 +238,8 @@ export abstract class SDKRpcClientBase {
   abstract getConfig(input?: GetConfigOptions): Promise<KimiConfig>;
 
   abstract getConfigDiagnostics(): Promise<ConfigDiagnostics>;
+
+  abstract ensureModelReady(model?: string): Promise<void>;
 
   abstract onConfigSectionChanged(listener: (change: ConfigSectionChange) => void): Unsubscribe;
 
@@ -345,7 +358,9 @@ export abstract class SDKRpcClientBase {
 
   abstract startBtw(input: SessionIdRpcInput): Promise<string>;
 
-  abstract cancel(input: SessionIdRpcInput): Promise<void>;
+  abstract closeBtw(input: SessionIdRpcInput & { readonly agentId: string }): Promise<void>;
+
+  abstract cancel(input: CancelSessionTurnRpcInput): Promise<void>;
 
   abstract clearContext(input: SessionIdRpcInput): Promise<void>;
 
@@ -424,9 +439,9 @@ export abstract class SDKRpcClientBase {
     input: SessionIdRpcInput & { taskId: string },
   ): Promise<BackgroundTaskInfo | undefined>;
 
-  abstract waitForBackgroundTasksOnPrint(input: SessionIdRpcInput & { force?: boolean; timeoutSeconds?: number }): Promise<number>;
+  abstract waitForBackgroundTasksOnPrint(input: SessionIdRpcInput & { force?: boolean; timeoutSeconds?: number; signal?: AbortSignal }): Promise<number>;
 
-  abstract handlePrintMainTurnCompleted(input: SessionIdRpcInput): Promise<'finish' | 'continue'>;
+  abstract handlePrintMainTurnCompleted(input: SessionIdRpcInput & { signal?: AbortSignal; taskIds?: readonly string[]; forceDrain?: boolean }): Promise<'finish' | 'continue' | 'timeout'>;
 
   abstract createGoal(input: SessionIdRpcInput & CreateGoalInput): Promise<GoalSnapshot>;
 

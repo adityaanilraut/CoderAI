@@ -6,6 +6,8 @@ export interface ActivatePluginCommandPayload {
   readonly pluginId: string;
   readonly commandName: string;
   readonly args?: string | undefined;
+  readonly promptId?: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface PluginCommandActivatedPayload {

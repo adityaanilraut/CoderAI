@@ -5,6 +5,7 @@ import { findGitWorkTree } from '#/app/git/workTree';
 import { resolvePath } from '#/_base/utils/paths';
 import { ErrorCodes, Error2 } from '#/errors';
 import { McpServerConfigSchema, type McpServerConfig } from '#/mcpCore/config-schema';
+import { tagMcpCredentialOrigin } from '#/mcpCore/credential-policy';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { OsFsErrors, HostFsError } from '#/os/interface/hostFsErrors';
 
@@ -71,7 +72,7 @@ export async function loadMcpServersDetailed(
   const origins: Record<string, string> = Object.create(null);
   for (const [path, layer] of layers) {
     for (const [name, config] of Object.entries(layer)) {
-      servers[name] = config;
+      servers[name] = path === paths.user ? config : tagMcpCredentialOrigin(config, path);
       origins[name] = path;
     }
   }

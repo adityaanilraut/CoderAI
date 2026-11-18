@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
-import { mediaKindForPath } from '@coderai/sdk/media';
+import { MAX_MEDIA_BYTES, MAX_MEDIA_MEGABYTES, mediaKindForPath } from '@coderai/sdk/media';
 
 type Result = { kind: 'file'; path: string } | { kind: 'image'; bytes: Buffer };
 type Runner = (command: string, args: string[]) => Promise<Buffer | undefined>;
@@ -27,6 +27,15 @@ function isWsl(): boolean {
 const run: Runner = (command, args) => new Promise(resolve => {
   execFile(command, args, { encoding: 'buffer', timeout: 5000, maxBuffer: 128 * 1024 * 1024 }, (error, stdout) => resolve(error ? undefined : stdout));
 });
+
+function clipboardImage(bytes: Buffer | number[] | string): Result | undefined {
+  if (typeof bytes === 'string' && bytes.length > Math.ceil(MAX_MEDIA_BYTES / 3) * 4 || typeof bytes !== 'string' && bytes.length > MAX_MEDIA_BYTES) {
+    throw new RangeError(`Clipboard image exceeds the ${MAX_MEDIA_MEGABYTES} MiB limit.`);
+  }
+  const buffer = typeof bytes === 'string' ? Buffer.from(bytes, 'base64') : Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  if (buffer.length > MAX_MEDIA_BYTES) throw new RangeError(`Clipboard image exceeds the ${MAX_MEDIA_MEGABYTES} MiB limit.`);
+  return buffer.length ? { kind: 'image', bytes: buffer } : undefined;
+}
 
 const macScript = `ObjC.import('AppKit'); ObjC.import('Foundation');
 const pb = $.NSPasteboard.generalPasteboard;
@@ -55,7 +64,7 @@ function filePath(text: string): string | undefined {
 /** Read a clipboard file or image on demand, without invoking a shell. */
 export async function readClipboardMedia(platform = process.platform, runner: Runner = run, native: NativeClipboard | undefined = runner === run ? nativeClipboard() : undefined): Promise<Result | undefined> {
   if (process.env['TERMUX_VERSION']) return;
-  let macImage: Buffer | undefined;
+  let macImage: string | undefined;
   if (platform === 'darwin') {
     const output = await runner('osascript', ['-l', 'JavaScript', '-e', macScript]);
     try {
@@ -63,7 +72,7 @@ export async function readClipboardMedia(platform = process.platform, runner: Ru
       const path = filePath((value.paths ?? (value.path ? [value.path] : [])).join('\n'));
       if (path) return { kind: 'file', path };
       if (value.paths?.length || value.path) return;
-      if (value.image) macImage = Buffer.from(value.image, 'base64');
+      if (value.image) macImage = value.image;
     } catch { /* Continue with the native clipboard. */ }
   } else if (platform === 'linux') {
     for (const [command, list, read] of [
@@ -80,20 +89,21 @@ export async function readClipboardMedia(platform = process.platform, runner: Ru
         const selected = types.find(value => value.toLowerCase().split(';')[0] === type);
         if (!selected && (command !== 'xclip' || types.length)) continue;
         const bytes = await runner(command, read(selected ?? type));
-        if (bytes?.length) return { kind: 'image', bytes };
+        if (bytes?.length) return clipboardImage(bytes);
       }
     }
     if (isWsl()) {
       const value = (await runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $i=[System.Windows.Forms.Clipboard]::GetImage(); if ($i) { $s=New-Object System.IO.MemoryStream; $i.Save($s,[System.Drawing.Imaging.ImageFormat]::Png); [Console]::Out.Write([Convert]::ToBase64String($s.ToArray())) }"]))?.toString('utf8').trim();
-      if (value) return { kind: 'image', bytes: Buffer.from(value, 'base64') };
+      if (value) return clipboardImage(value);
     }
   } else if (platform === 'win32') {
     const script = "Add-Type -AssemblyName System.Windows.Forms; if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) { [Console]::Out.WriteLine([System.Windows.Forms.Clipboard]::GetFileDropList()[0]) } elseif ([System.Windows.Forms.Clipboard]::ContainsImage()) { $s=New-Object System.IO.MemoryStream; [System.Windows.Forms.Clipboard]::GetImage().Save($s,[System.Drawing.Imaging.ImageFormat]::Png); [Console]::Out.WriteLine('data:'+[Convert]::ToBase64String($s.ToArray())) }";
     const value = (await runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', script]))?.toString('utf8').trim();
-    if (value?.startsWith('data:')) return { kind: 'image', bytes: Buffer.from(value.slice(5), 'base64') };
+    if (value?.startsWith('data:')) return clipboardImage(value.slice(5));
     if (value && isAbsolute(value)) return { kind: 'file', path: value };
   }
   if (native) {
+    let image: number[] | undefined;
     try {
       const fileLike = native.availableFormats?.().some(format => /file.url|nsfilenames|finder|text\/uri-list/i.test(format)) ?? false;
       if (fileLike && native.getText) {
@@ -101,12 +111,9 @@ export async function readClipboardMedia(platform = process.platform, runner: Ru
         if (path) return { kind: 'file', path };
         if (platform === 'darwin') return;
       }
-      if (native.hasImage()) {
-        const bytes = Buffer.from(await native.getImageBinary());
-        if (bytes.length) return { kind: 'image', bytes };
-      }
+      if (native.hasImage()) image = await native.getImageBinary();
     } catch { /* Continue with platform fallback. */ }
+    if (image?.length) return clipboardImage(image);
   }
-  if (macImage?.length) return { kind: 'image', bytes: macImage };
-  return;
+  return macImage ? clipboardImage(macImage) : undefined;
 }

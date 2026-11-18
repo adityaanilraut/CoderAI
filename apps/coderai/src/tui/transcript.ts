@@ -497,7 +497,7 @@ export class ConversationTranscript extends Container {
     const text = parts.map(part => part.type === 'text' ? part.text : part.type === 'think' ? '' : `[${part.type} attachment]`).join('');
     if (message.role === 'tool') {
       const todoCall = this.replayTodoCalls.delete(message.toolCallId ?? '');
-      const todos = !message.isError ? todoListFromResult(text) : undefined;
+      const todos = todoCall && !message.isError ? todoListFromResult(text) : undefined;
       if (todos !== undefined) {
         const card = new TodoListComponent(); card.setItems(todos); card.expanded = this.expanded;
         this.expandable.push(card); this.addChild(card); this.breakGroup();

@@ -58,7 +58,7 @@ export class TerminalView {
   readonly attachmentPane = new AttachmentPane(() => this.tui.requestRender(), () => this.tui.terminal.rows);
   private gitBranch: string | null = null;
   private readonly git = new GitStatusPoller(status => { this.gitBranch = status?.branch ?? null; this.footer.setGitStatus(status); if (this.statusPayload) { this.statusPayload = { ...this.statusPayload, gitBranch: this.gitBranch }; this.statusCommand?.maybeRefresh(this.statusPayload); } this.tui.requestRender(); });
-  private dialog?: { resolve: (answer: string) => void; onCancel?: (data: string) => void };
+  private dialog?: { resolve: (answer: string) => void; onCancel?: (data: string) => void; exitOnEof?: boolean };
   private dialogs = Promise.resolve('');
   private stopped = false;
   private started = false;
@@ -141,18 +141,25 @@ export class TerminalView {
     this.tui.addInputListener(data => {
       if (data === '/' && this.tui instanceof TuiAltScreen && !this.tui.isFollowingOutput && !this.tui.hasOverlay() && !this.dialog && !this.editor.getText()) { this.tui.openTranscriptSearch(); return { consume: true }; }
       if (data === '\x1b[I' || data === '\x1b[O') { this.terminalFocused = data === '\x1b[I'; return { consume: true }; }
-      if (this.dialog?.onCancel && (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl('c')))) {
-        this.dialog.onCancel(data); return { consume: true };
+      if (this.dialog) {
+        if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl('c'))) {
+          if (this.dialog.onCancel) this.dialog.onCancel(data);
+          else this.dismissDialog();
+          return { consume: true };
+        }
+        if (this.dialog.exitOnEof && matchesKey(data, Key.ctrl('d'))) {
+          this.onExit?.(); return { consume: true };
+        }
+        return undefined;
       }
-      if (!this.dialog && !this.editor.getText() && (matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown)) && this.onPanelScroll?.(matchesKey(data, Key.pageUp) ? 'up' : 'down')) return { consume: true };
+      if (!this.editor.getText() && (matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown)) && this.onPanelScroll?.(matchesKey(data, Key.pageUp) ? 'up' : 'down')) return { consume: true };
       if (matchesKey(data, Key.ctrl('c'))) {
-        this.dismissDialog();
         this.onInterrupt?.(); return { consume: true };
       }
       if (this.pastePending) { this.pasteInput.push(data); return { consume: true }; }
-      if (!this.dialog && matchesKey(data, Key.ctrl('t'))) { this.onManageAttachments?.(); return { consume: true }; }
-      if (!this.dialog && matchesKey(data, Key.ctrl('b'))) { this.onTaskBrowser?.(); return { consume: true }; }
-      if (!this.dialog && this.onPasteMedia && matchesKey(data, process.platform === 'win32' ? 'alt+v' : Key.ctrl('v'))) {
+      if (matchesKey(data, Key.ctrl('t'))) { this.onManageAttachments?.(); return { consume: true }; }
+      if (matchesKey(data, Key.ctrl('b'))) { this.onTaskBrowser?.(); return { consume: true }; }
+      if (this.onPasteMedia && matchesKey(data, process.platform === 'win32' ? 'alt+v' : Key.ctrl('v'))) {
         const paste = this.onPasteMedia;
         this.pastePending = true;
         void paste().then(handled => { if (!handled && !this.stopped && !this.dialog) this.editor.handleInput(data); }).catch(error => this.message(`Clipboard paste failed: ${String(error)}`)).finally(async () => {
@@ -168,21 +175,18 @@ export class TerminalView {
         return { consume: true };
       }
       if (matchesKey(data, Key.ctrl('d')) && !this.editor.getText()) { this.onExit?.(); return { consume: true }; }
-      if (matchesKey(data, Key.escape) && this.dialog) {
-        this.dismissDialog(); return { consume: true };
-      }
       if (matchesKey(data, Key.escape) && this.onEscape?.()) return { consume: true };
-      if (!this.dialog && matchesKey(data, Key.ctrl('s'))) {
+      if (matchesKey(data, Key.ctrl('s'))) {
         this.onSteer?.(); return { consume: true };
       }
-      if (!this.dialog && !this.editor.getText() && matchesKey(data, Key.up) && this.onRecallQueue?.()) return { consume: true };
-      if (matchesKey(data, Key.shift('tab')) && !this.dialog) {
+      if (!this.editor.getText() && matchesKey(data, Key.up) && this.onRecallQueue?.()) return { consume: true };
+      if (matchesKey(data, Key.shift('tab'))) {
         this.onPlanToggle?.(); return { consume: true };
       }
-      if (matchesKey(data, Key.ctrl('g')) && !this.dialog) {
+      if (matchesKey(data, Key.ctrl('g'))) {
         this.onExternalEditor?.(); return { consume: true };
       }
-      if (matchesKey(data, Key.ctrl('o')) && !this.dialog) {
+      if (matchesKey(data, Key.ctrl('o'))) {
         this.detailsExpanded = !this.detailsExpanded;
         for (const detail of this.details) this.renderDetail(detail);
         for (const card of this.todoCards) card.expanded = this.detailsExpanded;
@@ -341,7 +345,7 @@ export class TerminalView {
   thinkingDelta(text: string): void {
     this.transcript.thinkingDelta(text); this.refreshTranscript();
   }
-  setQueue(items: readonly { text: string; attachments?: string[] }[]): void {
+  setQueue(items: readonly { text: string; attachments?: readonly string[] }[]): void {
     const lines = items.slice(0, 3).map((item, index) => `  ${index + 1}. ${item.text.replace(/\s+/g, ' ').slice(0, 100)}${item.attachments?.length ? ` (${item.attachments.length} attachments)` : ''}`);
     this.queuePane.setText(items.length ? sanitizeTerminalText(`Queued input · /queue to manage\n${lines.join('\n')}${items.length > 3 ? `\n  … ${items.length - 3} more` : ''}`) : '');
     this.tui.requestRender();
@@ -424,6 +428,7 @@ export class TerminalView {
     const answer = await this.showDialog(
       finish => new TrustDialog(workDir, exitOnCancel, () => this.tui.terminal.rows, finish, () => this.tui.requestRender(), disclosure),
       `Waiting for workspace trust · choose Trust and continue or ${exitOnCancel ? 'exit' : 'cancel'}`,
+      { exitOnEof: exitOnCancel },
     );
     return answer === 'yes';
   }
@@ -433,7 +438,7 @@ export class TerminalView {
       'Waiting for approval · choose an action in the approval window',
     );
   }
-  async showDialog(create: (finish: (answer: string) => void) => Component, status: string, options: { onCancel?: (data: string) => void; onDismiss?: () => void } = {}): Promise<string> {
+  async showDialog(create: (finish: (answer: string) => void) => Component, status: string, options: { onCancel?: (data: string) => void; onDismiss?: () => void; exitOnEof?: boolean } = {}): Promise<string> {
     const answer = this.dialogs.then(() => {
       if (this.stopped) return '';
       const draft = this.editor.getText();
@@ -442,7 +447,7 @@ export class TerminalView {
       return new Promise<string>(resolve => {
         const card = create(value => this.dismissDialog(value));
         const overlay = this.tui.showOverlay(card, { width: 88, anchor: 'center', margin: 1 });
-        this.dialog = { onCancel: options.onCancel, resolve: value => {
+        this.dialog = { onCancel: options.onCancel, exitOnEof: options.exitOnEof, resolve: value => {
           options.onDismiss?.();
           overlay.hide();
           if (!this.stopped) { this.tui.setFocus(this.editor); this.editor.setText(draft); }

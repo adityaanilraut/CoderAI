@@ -1,6 +1,7 @@
 import { readFile, mkdir, writeFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import lockfile from 'proper-lockfile';
 import { parse, stringify } from 'smol-toml';
 import { z } from 'zod';
 
@@ -48,22 +49,21 @@ export async function loadTuiConfig(home: string, warn: (message: string) => voi
     statusLine: { items: items ? [...new Set(items)] : null, command: raw.status_line?.command?.trim() ?? '' },
   };
 }
-const pending = new Map<string, Promise<void>>();
 /** Serialize read/merge/atomic-replace, preserving unknown preferences and Phase 3 settings. */
 export async function saveTuiConfig(home: string, patch: TuiConfigPatch): Promise<void> {
-  const task = (pending.get(home) ?? Promise.resolve()).catch(() => {}).then(async () => {
+  await mkdir(home, { recursive: true, mode: 0o700 });
+  const configPath = join(home, 'tui.toml');
+  const release = await lockfile.lock(configPath, { realpath: false, retries: { retries: 8, minTimeout: 25, maxTimeout: 100 } });
+  try {
     const raw = await readRaw(home);
     const merged = { ...raw, ...patch };
     for (const key of ['editor', 'notifications', 'markdown', 'status_line'] as const) {
       if (patch[key]) merged[key] = { ...raw[key], ...patch[key] } as never;
     }
     fileSchema.parse(merged);
-    await mkdir(home, { recursive: true, mode: 0o700 });
     const temp = join(home, `.tui-${randomUUID()}.toml`);
-    try { await writeFile(temp, stringify(merged), { mode: 0o600, flag: 'wx' }); await rename(temp, join(home, 'tui.toml')); }
+    try { await writeFile(temp, stringify(merged), { mode: 0o600, flag: 'wx' }); await rename(temp, configPath); }
     finally { await unlink(temp).catch(() => {}); }
-  });
-  pending.set(home, task);
-  try { await task; } finally { if (pending.get(home) === task) pending.delete(home); }
+  } finally { await release(); }
 }
 export async function saveAutoSessionTitle(home: string, enabled: boolean): Promise<void> { await saveTuiConfig(home, { auto_session_title: enabled }); }

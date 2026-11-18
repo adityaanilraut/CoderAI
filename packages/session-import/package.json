@@ -8,12 +8,6 @@
   "files": ["dist"],
   "imports": { "#/*": "./src/*.ts" },
   "exports": { ".": { "types": "./src/index.ts", "default": "./src/index.ts" } },
-  "scripts": {
-    "build": "tsdown",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
-    "clean": "rm -rf dist"
-  },
   "dependencies": {
     "@coderai/agent-core-v2": "workspace:^"
   }

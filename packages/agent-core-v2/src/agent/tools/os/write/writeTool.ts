@@ -1,3 +1,4 @@
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { dirname } from 'pathe';
 
 import type { HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -13,11 +14,11 @@ import {
 } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import {
-  resolvePathAccessPath,
+  resolveToolPath,
   type WorkspaceConfig,
 } from '#/tool/path-access';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { literalRulePattern, matchesPathRuleSubject } from '#/tool/rule-match';
+import { literalRulePattern, matchesToolPathRule } from '#/tool/rule-match';
 import { IWriteTool, WriteInputSchema, type WriteInput } from './write';
 import WRITE_DESCRIPTION from './write.md?raw';
 
@@ -28,6 +29,7 @@ export class WriteTool implements IWriteTool {
   readonly parameters: Record<string, unknown> = toInputJsonSchema(WriteInputSchema);
 
   constructor(
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
     @ISessionSkillCatalog private readonly skillCatalog?: ISessionSkillCatalog,
@@ -37,7 +39,7 @@ export class WriteTool implements IWriteTool {
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
   }
 
-  resolveExecution(args: WriteInput): ToolExecution {
+  async resolveExecution(args: WriteInput): Promise<ToolExecution> {
     const inspected = inspectAgentRuntime(this.runtime);
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
@@ -48,18 +50,19 @@ export class WriteTool implements IWriteTool {
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const workspace = this.workspaceConfig(view);
-    const path = resolvePathAccessPath(args.path, {
+    const target = await resolveToolPath(inspected.fs!, args.path, {
       env,
       workspace,
       operation: 'write',
-    });
+    }, this.bootstrap);
+    const { path, requestedPath } = target;
     return {
-      accesses: ToolAccesses.writeFile(path),
+      accesses: ToolAccesses.file('write', path, { requestedPath }),
       description: `Writing ${args.path}`,
       display: { kind: 'file_io', operation: 'write', path, content: args.content },
       approvalRule: literalRulePattern(this.name, path),
-      matchesRule: (ruleArgs) =>
-        matchesPathRuleSubject(ruleArgs, path, {
+      matchesRule: (ruleArgs, includeRequestedPath) =>
+        matchesToolPathRule(ruleArgs, target, includeRequestedPath, {
           cwd: workspace.workspaceDir,
           pathClass: env.pathClass,
           homeDir: env.homeDir,
@@ -70,6 +73,7 @@ export class WriteTool implements IWriteTool {
           if (lease.runtime.identity.generation !== inspected.identity.generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
+          await target.assertUnchanged(lease.runtime.fs!);
           return await this.execution(lease.runtime.fs!, args, path);
         } finally {
           lease.dispose();

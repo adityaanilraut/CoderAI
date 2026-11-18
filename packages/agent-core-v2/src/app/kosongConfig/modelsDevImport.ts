@@ -38,6 +38,8 @@ export interface ImportModelsDevProviderResult {
 
 export interface ImportCustomRegistryOptions {
   readonly url: string;
+  readonly apiKeyEnv?: string;
+  /** One-time catalog authentication. Use apiKeyEnv to enable authenticated refreshes. */
   readonly apiKey?: string;
   readonly setDefaultWhenUnset?: boolean;
 }

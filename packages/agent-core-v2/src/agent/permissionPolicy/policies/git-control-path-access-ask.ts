@@ -35,18 +35,20 @@ export class GitControlPathAccessAskPermissionPolicyService implements Permissio
     const lease = this.runtime.acquire();
     const pathClass = lease.runtime.environment.pathClass;
     lease.dispose();
-    const accesses = fileAccesses(context);
+    const accesses = fileAccesses(context).flatMap(({ path, requestedPath }) =>
+      requestedPath === undefined || requestedPath === path ? [path] : [path, requestedPath],
+    );
     if (accesses.length === 0) return undefined;
 
-    const directGitAccess = accesses.find((fileAccess) =>
-      hasGitPathComponent(fileAccess.path, cwd, pathClass),
+    const directGitAccess = accesses.find((path) =>
+      hasGitPathComponent(path, cwd, pathClass),
     );
     if (directGitAccess !== undefined) return { kind: 'ask' };
 
     const marker = await this.git.findWorkTree(cwd);
     if (marker === null) return undefined;
-    const access = accesses.find((fileAccess) =>
-      isGitControlPath(fileAccess.path, marker, pathClass),
+    const access = accesses.find((path) =>
+      isGitControlPath(path, marker, pathClass),
     );
     return access === undefined ? undefined : { kind: 'ask' };
   }

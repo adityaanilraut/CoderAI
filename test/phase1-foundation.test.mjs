@@ -2,9 +2,9 @@ import { test, after } from 'node:test';
 import { stringify } from 'smol-toml';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
+import { engineBundlePlugins } from '../scripts/bundle-options.mjs';
 import { fixture } from './fixture.mjs';
 const { runSetup } = await import('../apps/coderai/src/setup.ts');
 const { setupMenuLines } = await import('../apps/coderai/src/setup-terminal.ts');
@@ -34,17 +34,7 @@ await build({
   ` },
   outfile: entry, bundle: true, platform: 'node', format: 'esm', target: 'node24',
   tsconfigRaw: { compilerOptions: { experimentalDecorators: true } },
-  plugins: [{ name: 'engine-aliases', setup(b) {
-    b.onResolve({ filter: /^#/ }, async args => {
-      let root = args.resolveDir;
-      while (!existsSync(join(root, 'package.json'))) root = dirname(root);
-      const path = args.path.startsWith('#human/')
-        ? resolve('packages/agent-core-v2/src/human', args.path.slice(7))
-        : join(root, basename(root) === 'human' ? '' : 'src', args.path.slice(2));
-      return b.resolve(path, { resolveDir: args.resolveDir, kind: args.kind });
-    });
-    b.onResolve({ filter: /\?raw$/ }, args => ({ path: resolve(args.resolveDir, args.path.slice(0, -4)), namespace: 'raw' }));
-    b.onLoad({ filter: /.*/, namespace: 'raw' }, async args => ({ contents: await readFile(args.path, 'utf8'), loader: 'text' }));
+  plugins: [{ name: 'google-fixture', setup(b) {
     b.onResolve({ filter: /^@google\/genai$/ }, () => ({ path: 'google', namespace: 'fake' }));
     b.onLoad({ filter: /.*/, namespace: 'fake' }, () => ({ contents: `
       export class ApiError extends Error {}
@@ -54,11 +44,7 @@ await build({
         models = { async generateContentStream() { return (async function* () {})(); } };
       }
     ` }));
-    b.onResolve({ filter: /^[\w@][^:]*$/ }, args => {
-      if (args.path.startsWith('@coderai/') || args.path.startsWith('#')) return;
-      return { path: /^ajv\/dist\/(2019|2020)$/.test(args.path) ? args.path + '.js' : args.path, external: true };
-    });
-  } }],
+  } }, ...engineBundlePlugins()],
 });
 const api = await import(entry);
 api.configureTextBuildWorkerRuntime(resolve('dist/text-build-worker.mjs'));

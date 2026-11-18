@@ -4,6 +4,7 @@ import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
 import { denyToolExecution } from '#/agent/toolExecutor/beforeToolExecuteEvent';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import type { AgentContext } from '#/agent/agentContext/agentContext';
 import { ErrorCodes, Error2 } from '#/errors';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 
@@ -17,6 +18,7 @@ import {
 
 export class SessionBtwService extends Disposable implements ISessionBtwService {
   declare readonly _serviceBrand: undefined;
+  private readonly sideAgents = new Map<string, AgentContext>();
 
   constructor(
     @IAgentLifecycleService private readonly agentLifecycle: IAgentLifecycleService,
@@ -47,10 +49,23 @@ export class SessionBtwService extends Disposable implements ISessionBtwService 
       main.accessor.get(IAgentScopeContext).agentContext,
       { labels: { [BTW_AGENT_LABEL]: 'true' } },
     );
-    const child = this.agentLifecycle.handleOf(childContext.agentId)!;
-    child.accessor
-      .get(IAgentReminderService)
-      .notify(SIDE_QUESTION_SYSTEM_REMINDER, { variant: 'btw' });
+    this.sideAgents.set(childContext.agentId, childContext);
+    try {
+      const child = this.agentLifecycle.handleOf(childContext.agentId)!;
+      child.accessor
+        .get(IAgentReminderService)
+        .notify(SIDE_QUESTION_SYSTEM_REMINDER, { variant: 'btw' });
+    } catch (error) {
+      await this.close(childContext.agentId);
+      throw error;
+    }
     return childContext.agentId;
+  }
+
+  async close(agentId: string): Promise<void> {
+    const context = this.sideAgents.get(agentId);
+    if (!context) return;
+    this.sideAgents.delete(agentId);
+    await this.agentLifecycle.remove(context);
   }
 }

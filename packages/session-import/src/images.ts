@@ -227,7 +227,11 @@ function referenceText(reference: ImageTarget): string {
   return `[Imported image reference: ${target}; read this file to view the image]`;
 }
 
-export async function createImageStore({ directory, cwd }: { directory: string; cwd?: string }) {
+export async function createImageStore({ directory, publishedDirectory = directory, cwd }: {
+  directory: string;
+  publishedDirectory?: string;
+  cwd?: string;
+}) {
   const references: ImageReference[] = [];
   const counters: ImageCounters = {
     embeddedReferences: 0,
@@ -243,11 +247,12 @@ export async function createImageStore({ directory, cwd }: { directory: string; 
 
   async function saveImage(payload: unknown, mimeType: unknown): Promise<ImageTarget> {
     const decoded = decodeImage(payload, mimeType);
-    const { path, reused } = await writeAttachmentFile(directory, `${decoded.sha256}.${formats.get(decoded.mimeType)}`, decoded.bytes);
+    const filename = `${decoded.sha256}.${formats.get(decoded.mimeType)}`;
+    const { reused } = await writeAttachmentFile(directory, filename, decoded.bytes);
     counters.embeddedReferences++;
     counters.decodedBytes += decoded.bytes.length;
     counters[reused ? 'reusedFiles' : 'savedFiles']++;
-    return { kind: 'embedded', path, sha256: decoded.sha256, bytes: decoded.bytes.length, mimeType: decoded.mimeType };
+    return { kind: 'embedded', path: join(publishedDirectory, filename), sha256: decoded.sha256, bytes: decoded.bytes.length, mimeType: decoded.mimeType };
   }
 
   async function rewrite<T>(value: T, context: ImageContext = {}): Promise<T> {
@@ -330,7 +335,9 @@ export async function createImageStore({ directory, cwd }: { directory: string; 
   async function saveManifest(): Promise<string | undefined> {
     if (references.length === 0) return undefined;
     const bytes = Buffer.from(JSON.stringify(references, null, 2) + '\n');
-    return (await writeAttachmentFile(directory, `references-${hash(bytes)}.json`, bytes)).path;
+    const filename = `references-${hash(bytes)}.json`;
+    await writeAttachmentFile(directory, filename, bytes);
+    return join(publishedDirectory, filename);
   }
 
   return { rewrite, saveManifest, report: () => ({ ...counters }), manifest: () => references.map((reference) => ({ ...reference })) };

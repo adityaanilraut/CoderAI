@@ -2,10 +2,11 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile, copyFile, chmod, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { resolve, join } from 'node:path';
-import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { ZipFile } from 'yazl';
+import { archiveSha256, nativeArtifactLicenses, thirdPartyLicenseFile } from './release-archive.mjs';
+import { writeNativeLicenses } from './native-licenses.mjs';
 
 const run = (cmd, args) => {
   const result = spawnSync(cmd, args, { stdio: 'inherit' });
@@ -27,6 +28,8 @@ let clipboard;
 for (const name of targets) { try { clipboard = clipboardRequire?.resolve(`@mariozechner/clipboard-${name}`); break; } catch {} }
 if (clipboardRequire && targets.length && !clipboard) throw new Error(`No native clipboard binary available for ${target}`);
 if (clipboard) await copyFile(clipboard, 'dist-bun/clipboard.node');
+const metafiles = JSON.parse(await readFile('dist-bun/metafiles.json', 'utf8'));
+await writeNativeLicenses(out, metafiles, clipboard);
 const entry = `import worker from './text-build-worker.mjs' with { type: 'file' };
 ${clipboard ? "import clipboard from './clipboard.node' with { type: 'file' };" : ''}
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -43,12 +46,12 @@ await import('./main.cjs');
 await writeFile('dist-bun/entry.ts', entry);
 run(process.execPath, ['build', '--compile', 'dist-bun/entry.ts', '--outfile', join(out, executable)]);
 if (process.platform !== 'win32') await chmod(join(out, executable), 0o755);
-const licenses = [['LICENSE','LICENSE'], ['NOTICE','NOTICE'], ['packages/pi-tui/LICENSE','LICENSE.pi-tui'], ['third-party-licenses/jsquash-webp.LICENSE','LICENSE.jsquash-webp'], ['third-party-licenses/libwebp.LICENSE','LICENSE.libwebp']];
 const zip = new ZipFile();
 zip.addFile(join(out, executable), executable, { mode: 0o100755 });
-for (const [src, name] of licenses) { await copyFile(src, join(out, name)); zip.addFile(src, name); }
+for (const [src, name] of nativeArtifactLicenses) { await copyFile(src, join(out, name)); zip.addFile(src, name); }
+zip.addFile(join(out, thirdPartyLicenseFile), thirdPartyLicenseFile);
 zip.end();
 const archive = resolve('dist-bun', `coderai-bun-${target}.zip`);
 await pipeline(zip.outputStream, createWriteStream(archive));
-await writeFile(`${archive}.sha256`, `${createHash('sha256').update(await readFile(archive)).digest('hex')}  coderai-bun-${target}.zip\n`);
+await writeFile(`${archive}.sha256`, `${await archiveSha256(archive)}  coderai-bun-${target}.zip\n`);
 run(join(out, executable), ['--help']);

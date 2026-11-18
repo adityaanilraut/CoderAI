@@ -113,6 +113,7 @@ export interface GoalClear {
 
 export interface GoalUpdatedPayload {
   readonly agentId: string;
+  readonly goalId?: string;
   snapshot: GoalSnapshot | null;
   change?: GoalChange;
 }
@@ -125,6 +126,7 @@ export interface GoalUpdated extends GoalUpdatedPayload {}
 
 export interface GoalUpdatedEvent {
   readonly type: 'goal.updated';
+  readonly goalId?: string;
   readonly snapshot: GoalSnapshot | null;
   readonly change?: GoalChange;
 }

@@ -186,70 +186,70 @@ export async function openMiniDb<V>(db: LifecycleHost<V>, opts: OpenOptions, hoo
     },
   });
 
-  if (!db.readOnly) {
-    db.lock = new LockFile(path.join(db.dir, 'db.lock'));
-    const got = await db.lock.acquire();
-    if (!got) {
-      if (opts.onLockFail === 'readonly') {
-        db.readOnly = true;
-        db.lock = null;
+  try {
+    if (!db.readOnly) {
+      db.lock = new LockFile(path.join(db.dir, 'db.lock'));
+      const got = await db.lock.acquire();
+      if (!got) {
+        if (opts.onLockFail === 'readonly') {
+          db.readOnly = true;
+          db.lock = null;
+        } else {
+          throw new LockError(`database is locked by another process: ${db.dir}`);
+        }
       } else {
-        throw new LockError(`database is locked by another process: ${db.dir}`);
-      }
-    } else {
-      // Report the held token BEFORE the heavy recovery work below: a
-      // supervisor (another thread orchestrating this open) learns the lock
-      // identity immediately and can reap the lock if this opener dies
-      // mid-recovery. The callback is purely observational — a throwing
-      // supervisor must not fail this open with the lock already held.
-      const heldToken = db.lock.heldToken;
-      if (heldToken !== undefined) {
-        try {
-          opts.onLockAcquired?.({ token: heldToken });
-        } catch {
-          // Intentionally swallowed — see above.
+        // Report the held token BEFORE the heavy recovery work below: a
+        // supervisor (another thread orchestrating this open) learns the lock
+        // identity immediately and can reap the lock if this opener dies
+        // mid-recovery. The callback is purely observational — a throwing
+        // supervisor must not fail this open with the lock already held.
+        const heldToken = db.lock.heldToken;
+        if (heldToken !== undefined) {
+          try {
+            opts.onLockAcquired?.({ token: heldToken });
+          } catch {
+            // Intentionally swallowed — see above.
+          }
         }
       }
     }
-  }
 
-  // Remove stale temp files left behind by an interrupted previous run (a
-  // compaction's snapshot/WAL temps, sidecar-definition temps — the atomic
-  // write siblings of every persistent file, derived from the authoritative
-  // module). Only the sole writer may delete them — a read-only opener must
-  // never touch a live writer's in-flight temps.
-  if (!db.readOnly) {
-    for (const tmp of STALE_TMP_FILES) {
-      await fs.rm(path.join(db.dir, tmp), { force: true });
-    }
-    for (const f of await fs.readdir(db.dir)) {
-      // Unique-suffixed sidecar temps (`<file>.tmp-<pid>-<seq>`) orphaned by
-      // a crashed writeFileAtomic — whitelisted per known file so a live
-      // LockFile's db.lock.tmp-* is never matched (isStaleTmpFile).
-      if (isStaleTmpFile(f)) {
-        await fs.rm(path.join(db.dir, f), { force: true });
-        continue;
+    // Remove stale temp files left behind by an interrupted previous run (a
+    // compaction's snapshot/WAL temps, sidecar-definition temps — the atomic
+    // write siblings of every persistent file, derived from the authoritative
+    // module). Only the sole writer may delete them — a read-only opener must
+    // never touch a live writer's in-flight temps.
+    if (!db.readOnly) {
+      for (const tmp of STALE_TMP_FILES) {
+        await fs.rm(path.join(db.dir, tmp), { force: true });
       }
-      // A failed postings rebuild orphans `db.text-*.postings.tmp` (its atomic
-      // rename never ran). Postings are pure derived state — rebuilt from the
-      // Store on open and after compaction — so such temps are always safe to
-      // delete, for any index name.
-      if (STALE_POSTINGS_TMP_PATTERN.test(f)) await fs.rm(path.join(db.dir, f), { force: true });
+      for (const f of await fs.readdir(db.dir)) {
+        // Unique-suffixed sidecar temps (`<file>.tmp-<pid>-<seq>`) orphaned by
+        // a crashed writeFileAtomic — whitelisted per known file so a live
+        // LockFile's db.lock.tmp-* is never matched (isStaleTmpFile).
+        if (isStaleTmpFile(f)) {
+          await fs.rm(path.join(db.dir, f), { force: true });
+          continue;
+        }
+        // A failed postings rebuild orphans `db.text-*.postings.tmp` (its atomic
+        // rename never ran). Postings are pure derived state — rebuilt from the
+        // Store on open and after compaction — so such temps are always safe to
+        // delete, for any index name.
+        if (STALE_POSTINGS_TMP_PATTERN.test(f)) await fs.rm(path.join(db.dir, f), { force: true });
+      }
+      // Stranded generation build tmp dirs (a crashed build never published):
+      // only the sole writer may delete them.
+      await sweepGenerationTemps(db.dir);
     }
-    // Stranded generation build tmp dirs (a crashed build never published):
-    // only the sole writer may delete them.
-    await sweepGenerationTemps(db.dir);
-  }
 
-  db.store = new Store({
-    activeExpireIntervalMs: opts.activeExpireIntervalMs ?? 100,
-    onExpire: (k, rec) => hooks.onStoreExpire(k, rec),
-    readValue: (loc) => {
-      if (!db.valueReader) throw new Error('ValueReader is not open');
-      return db.valueReader.read(loc);
-    },
-  });
-  try {
+    db.store = new Store({
+      activeExpireIntervalMs: opts.activeExpireIntervalMs ?? 100,
+      onExpire: (k, rec) => hooks.onStoreExpire(k, rec),
+      readValue: (loc) => {
+        if (!db.valueReader) throw new Error('ValueReader is not open');
+        return db.valueReader.read(loc);
+      },
+    });
     db.wal = new WAL(db.walPath, { fsyncPolicy: db.fsyncPolicy, syncIntervalMs: db.syncIntervalMs, stats: db.stats });
     // A read-only instance must not create or modify any file: the WAL is
     // constructed but never opened (opening with 'a' would create db.wal on

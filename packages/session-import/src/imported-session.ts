@@ -1,7 +1,8 @@
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { open, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { SESSION_META_VERSION } from '@coderai/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { SESSION_INDEX_KEY, withSessionIndexFileLock } from '@coderai/agent-core-v2/app/workspace/workspaceAlias';
 
 import { encodeWorkDirKey } from '@coderai/agent-core-v2/_base/utils/workdir-slug';
 import { writeMainAgentWire } from './wire-writer.js';
@@ -31,13 +32,12 @@ export function importedSessionDir(targetHome: string, workDir: string, sessionI
  * Write a session converted from another tool as an ordinary CoderAI session.
  *
  * The main agent wire gets the same synthesized turn records as migrated
- * kimi-cli sessions. `state.json` is written last, so a directory without it
- * is an interrupted write the caller can remove and retry. The generated
- * title kind keeps the imported title when the session is continued.
+ * kimi-cli sessions. The generated title kind keeps the imported title when
+ * the session is continued. The staging directory is published by the caller.
  */
-export async function writeImportedSession(input: ImportedSessionInput): Promise<string> {
+export async function writeImportedSession(input: ImportedSessionInput, stagingDir: string): Promise<void> {
   const sessionDir = importedSessionDir(input.targetHome, input.workDir, input.sessionId);
-  await writeMainAgentWire(sessionDir, {
+  await writeMainAgentWire(stagingDir, {
     createdAtMs: input.updatedAtMs,
     messages: input.messages.map((message) => ({ role: message.role, content: message.content, toolCalls: [] })),
   });
@@ -56,23 +56,32 @@ export async function writeImportedSession(input: ImportedSessionInput): Promise
     agents: { main: { homedir: join(sessionDir, 'agents', 'main'), type: 'main', parentAgentId: null } },
     custom: input.custom,
   };
-  await writeFile(join(sessionDir, 'state.json'), JSON.stringify(state, null, 2), 'utf-8');
-  await ensureSessionIndexEntry(input.targetHome, { sessionId: input.sessionId, sessionDir, workDir: input.workDir });
-  return sessionDir;
+  await writeFile(join(stagingDir, 'state.json'), JSON.stringify(state, null, 2), { mode: 0o600, flag: 'wx' });
 }
 
 /** Keep lookup by id working immediately, including after a retried index write. */
 export async function ensureSessionIndexEntry(targetHome: string, entry: { sessionId: string; sessionDir: string; workDir: string }): Promise<void> {
-  const path = join(targetHome, 'session_index.jsonl');
-  let contents: string;
-  try { contents = await readFile(path, 'utf8'); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    contents = '';
-  }
-  for (const line of contents.split(/\r?\n/)) {
-    try { if (JSON.parse(line)?.sessionId === entry.sessionId) return; } catch { /* Skip malformed index rows. */ }
-  }
-  await mkdir(targetHome, { recursive: true, mode: 0o700 });
-  await appendFile(path, JSON.stringify(entry) + '\n', 'utf8');
+  const path = join(targetHome, SESSION_INDEX_KEY);
+  await withSessionIndexFileLock(path, async () => {
+    let contents: string;
+    try { contents = await readFile(path, 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      contents = '';
+    }
+    for (const line of contents.trimEnd().split(/\r?\n/).reverse()) {
+      try {
+        const existing = JSON.parse(line);
+        if (existing?.sessionId !== entry.sessionId) continue;
+        if (existing.sessionDir === entry.sessionDir && existing.workDir === entry.workDir) return;
+        break;
+      } catch { /* Skip malformed index rows. */ }
+    }
+    const file = await open(path, 'a', 0o600);
+    try {
+      const separator = contents && !contents.endsWith('\n') ? '\n' : '';
+      await file.writeFile(`${separator}${JSON.stringify(entry)}\n`);
+      await file.sync();
+    } finally { await file.close(); }
+  });
 }

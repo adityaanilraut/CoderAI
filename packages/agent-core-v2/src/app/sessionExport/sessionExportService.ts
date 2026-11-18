@@ -103,7 +103,7 @@ export class SessionExportService implements ISessionExportService {
     let exportSummary: ExportSessionDirectorySummary = {
       id: summary.id,
       title: summary.title,
-      workspaceDir: workspace?.root,
+      workspaceDir: workspace?.root ?? summary.cwd,
       sessionDir,
     };
     const handle = this.liveSession(summary.id);
@@ -229,7 +229,7 @@ export async function exportSessionDirectory(input: {
     const outputPath =
       input.request.outputPath !== undefined
         ? resolve(input.request.outputPath)
-        : resolve(defaultExportZipName(input.summary.id, now));
+        : resolve(input.request.outputDirectory ?? '.', defaultExportZipName(input.summary.id, now));
     const extras: ExtraZipEntry[] = [];
     if (input.webLog !== undefined) {
       extras.push({ data: Buffer.from(input.webLog, 'utf8'), target: WEB_LOG_REL });

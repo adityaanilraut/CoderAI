@@ -8,7 +8,7 @@ import { runImportSessionsCommand } from './session-import/command.js';
 import { headless } from './headless.js';
 import { interactive } from './tui/app.js';
 import { setup } from './setup.js';
-import { sanitizeTerminalText } from './tui/sanitize.js';
+import { sanitizeTerminalText, writeTerminalOutput } from './tui/sanitize.js';
 import { latestSessionId } from './session-selection.js';
 import { forkSession, exportSessionMarkdown, exportSessionZip, importSession, listSessions, parseLimit, parseTurn } from './session-operations.js';
 import { doctor, importProviders, refreshProviders, listProviders, setProvider, removeProvider, listModels, setModel, setDefaultModel, setDefaultPermission } from './config-commands.js';
@@ -36,7 +36,7 @@ const program = new Command().name('coderai').description('CoderAI — a termina
   .option('--yolo', 'automatically approve ordinary tool actions (explicit opt-in)')
   .option('--trust', 'trust this workspace and activate its configuration');
 program.command('login', { hidden: true }).description('show API-key setup guidance').action(() => {
-  process.stdout.write('CoderAI does not require an account login.\nSet CODERAI_MODEL_NAME and OPENAI_API_KEY to use an OpenAI-compatible API.\nFor a custom endpoint, also set CODERAI_MODEL_BASE_URL.\nSee README.md for other providers and config.toml examples.\n');
+  writeTerminalOutput('CoderAI does not require an account login.\nSet CODERAI_MODEL_NAME and OPENAI_API_KEY to use an OpenAI-compatible API.\nFor a custom endpoint, also set CODERAI_MODEL_BASE_URL.\nSee README.md for other providers and config.toml examples.\n');
 });
 async function withRuntime(run: (runtime: Runtime) => Promise<void>, useModelOverride = false): Promise<void> {
   const opts = program.opts();
@@ -62,41 +62,41 @@ models.command('default <alias>').description('set the default model for new con
 models.command('secondary <alias>').description('set the default model for new subagents').action((alias: string) => withRuntime(runtime => setDefaultModel(runtime, alias, true)));
 program.command('permission-default <mode>').description('set default permission mode').action((mode: string) => withRuntime(runtime => setDefaultPermission(runtime, mode)));
 const mcp = program.command('mcp').description('manage local MCP server configuration');
-mcp.command('list').action(() => withRuntime(async runtime => { process.stdout.write(`${await listMcpConfiguration(runtime)}\n`); }));
-mcp.command('add <name> <json-file>').action((name: string, path: string) => withRuntime(async runtime => { await writeMcpConfiguration(runtime, 'add', name, path); process.stdout.write(`MCP server ${name} added.\n`); }));
-mcp.command('update <name> <json-file>').action((name: string, path: string) => withRuntime(async runtime => { await writeMcpConfiguration(runtime, 'update', name, path); process.stdout.write(`MCP server ${name} updated.\n`); }));
-mcp.command('remove <name>').action((name: string) => withRuntime(async runtime => { await removeMcpConfiguration(runtime, name); process.stdout.write(`MCP server ${name} removed.\n`); }));
-mcp.command('test <name>').action((name: string) => withRuntime(async runtime => { process.stdout.write(`${await testMcpConfiguration(runtime, name)}\n`); }));
+mcp.command('list').action(() => withRuntime(async runtime => { writeTerminalOutput(`${await listMcpConfiguration(runtime)}\n`); }));
+mcp.command('add <name> <json-file>').action((name: string, path: string) => withRuntime(async runtime => { await writeMcpConfiguration(runtime, 'add', name, path); writeTerminalOutput(`MCP server ${name} added.\n`); }));
+mcp.command('update <name> <json-file>').action((name: string, path: string) => withRuntime(async runtime => { await writeMcpConfiguration(runtime, 'update', name, path); writeTerminalOutput(`MCP server ${name} updated.\n`); }));
+mcp.command('remove <name>').action((name: string) => withRuntime(async runtime => { await removeMcpConfiguration(runtime, name); writeTerminalOutput(`MCP server ${name} removed.\n`); }));
+mcp.command('test <name>').action((name: string) => withRuntime(async runtime => { writeTerminalOutput(`${await testMcpConfiguration(runtime, name)}\n`); }));
 mcp.command('auth <name>').description('authorize an MCP server in your browser').option('--no-browser', 'print the authorization URL without opening a browser').action((name: string, options: { browser: boolean }) => withRuntime(async runtime => {
   await authenticateMcpConfiguration(runtime, name, { open: options.browser ? undefined : async () => false });
-  process.stdout.write(`MCP server ${name} authorized.\n`);
+  writeTerminalOutput(`MCP server ${name} authorized.\n`);
 }));
-mcp.command('logout <name>').description('remove saved MCP authorization').action((name: string) => withRuntime(async runtime => { await resetMcpAuthentication(runtime, name); process.stdout.write(`MCP authorization removed: ${name}\n`); }));
+mcp.command('logout <name>').description('remove saved MCP authorization').action((name: string) => withRuntime(async runtime => { await resetMcpAuthentication(runtime, name); writeTerminalOutput(`MCP authorization removed: ${name}\n`); }));
 const plugins = program.command('plugins').description('manage local plugins and capabilities');
-plugins.action(() => withRuntime(async runtime => { process.stdout.write(await pluginAction(runtime.harness, 'list', []) + '\n'); }));
+plugins.action(() => withRuntime(async runtime => { writeTerminalOutput(await pluginAction(runtime.harness, 'list', []) + '\n'); }));
 for (const [spec, action] of [
   ['list', 'list'], ['info <id>', 'info'], ['install <source>', 'install'],
   ['enable <id>', 'enable'], ['disable <id>', 'disable'], ['remove <id>', 'remove'], ['reload', 'reload'],
 ] as const) plugins.command(spec).action((...values: unknown[]) => withRuntime(async runtime => {
   const args = values.filter((value): value is string => typeof value === 'string');
   if (action === 'install') args[0] = resolvePluginSource(args[0]!, runtime.options.cwd);
-  process.stdout.write(await pluginAction(runtime.harness, action, args) + '\n');
+  writeTerminalOutput(await pluginAction(runtime.harness, action, args) + '\n');
 }));
 plugins.command('mcp <action> <id> <server>').description('enable or disable a plugin MCP server')
-  .action((action: string, id: string, server: string) => withRuntime(async runtime => { process.stdout.write(await pluginAction(runtime.harness, 'mcp', [action, id, server]) + '\n'); }));
+  .action((action: string, id: string, server: string) => withRuntime(async runtime => { writeTerminalOutput(await pluginAction(runtime.harness, 'mcp', [action, id, server]) + '\n'); }));
 plugins.command('capabilities [action] [id]').description('list, inspect or install a capability')
   .action((action?: string, id?: string) => withRuntime(async runtime => {
     if (action === 'install' && id) {
       const abort = new AbortController(); const cancel = () => abort.abort();
       process.on('SIGINT', cancel); process.on('SIGTERM', cancel);
-      try { process.stdout.write(capabilityText(await installCapabilityAndWait(runtime.harness, id, { signal: abort.signal })) + '\n'); }
+      try { writeTerminalOutput(capabilityText(await installCapabilityAndWait(runtime.harness, id, { signal: abort.signal })) + '\n'); }
       finally { process.off('SIGINT', cancel); process.off('SIGTERM', cancel); }
-    } else process.stdout.write(await pluginAction(runtime.harness, 'capabilities', [action, id].filter((value): value is string => value !== undefined)) + '\n');
+    } else writeTerminalOutput(await pluginAction(runtime.harness, 'capabilities', [action, id].filter((value): value is string => value !== undefined)) + '\n');
   }));
 program.command('skills').description('inspect available skills').command('list').action(() => withRuntime(async runtime => {
   if (runtime.options.trust) await runtime.trust(async () => false);
   const skills = await runtime.harness.listWorkspaceSkills(runtime.options.cwd);
-  process.stdout.write((skills.map(skill => `${skill.name} (${skill.source})${skill.description ? ` — ${skill.description}` : ''}`).join('\n') || 'No skills available.') + '\n');
+  writeTerminalOutput((skills.map(skill => `${skill.name} (${skill.source})${skill.description ? ` — ${skill.description}` : ''}`).join('\n') || 'No skills available.') + '\n');
 }));
 program.command('import-sessions').description('import recent Claude Code and Codex sessions').action(() => withRuntime(runImportSessionsCommand));
 const sessions = program.command('sessions').description('manage saved conversations');
@@ -104,31 +104,36 @@ function listOptions(cmd: Command): Command {
   return cmd.option('--all', 'list across every workspace').option('--archived', 'include archived conversations')
     .option('--limit <n>', 'show at most n conversations', parseLimit).option('--json', 'emit session summaries as JSON');
 }
-const printSessions = (options: { all?: boolean; archived?: boolean; limit?: number; json?: boolean }) => withRuntime(async runtime => { process.stdout.write(`${await listSessions(runtime, { ...options, json: options.json ?? program.opts()['json'] })}\n`); });
+const printSessions = (options: { all?: boolean; archived?: boolean; limit?: number; json?: boolean }) => withRuntime(async runtime => {
+  const json = options.json ?? program.opts()['json'];
+  const output = `${await listSessions(runtime, { ...options, json })}\n`;
+  if (json) process.stdout.write(output);
+  else writeTerminalOutput(output);
+});
 listOptions(sessions).action(printSessions);
 listOptions(sessions.command('list').description('list saved conversations, newest first')).action(options => printSessions({ ...sessions.opts(), ...options }));
 sessions.command('delete <id>').description('delete a saved conversation').action((id: string) => withRuntime(async runtime => {
-  await runtime.harness.deleteSession(id); process.stdout.write(`Deleted ${id}\n`);
+  await runtime.harness.deleteSession(id); writeTerminalOutput(`Deleted ${id}\n`);
 }));
 sessions.command('rename <id> <title>').description('rename a saved conversation').action((id: string, title: string) => withRuntime(async runtime => {
   if (!title.trim()) throw new Error('Title must not be empty.');
-  await runtime.harness.renameSession({ id, title: title.trim() }); process.stdout.write(`Renamed ${id}\n`);
+  await runtime.harness.renameSession({ id, title: title.trim() }); writeTerminalOutput(`Renamed ${id}\n`);
 }));
 sessions.command('fork <id>').description('fork a saved conversation')
   .option('--turn <n>', 'retain through this zero-based turn', parseTurn).option('--title <title>', 'title for the fork')
   .action((id: string, options: { turn?: number; title?: string }) => withRuntime(async runtime => {
-    process.stdout.write(`${await forkSession(runtime, id, { turnIndex: options.turn, title: options.title })}\n`);
+    writeTerminalOutput(`${await forkSession(runtime, id, { turnIndex: options.turn, title: options.title })}\n`);
   }));
 sessions.command('export <id> [path]').description('export a saved conversation as Markdown or a ZIP archive')
   .option('--zip', 'export a diagnostic ZIP archive')
   .action((id: string, path: string | undefined, options: { zip?: boolean }) => withRuntime(async runtime => {
     if (!options.zip && !path) throw new Error('A Markdown output path is required. Use --zip for an archive.');
-    process.stdout.write(`${options.zip ? await exportSessionZip(runtime, id, path) : await exportSessionMarkdown(runtime, id, path!)}\n`);
+    writeTerminalOutput(`${options.zip ? await exportSessionZip(runtime, id, path) : await exportSessionMarkdown(runtime, id, path!)}\n`);
   }));
 sessions.command('import <source> <path>').description('import a local codex or claude-code session').action((source: string, path: string) => withRuntime(async runtime => {
   if (source !== 'codex' && source !== 'claude-code') throw new Error('Import source must be codex or claude-code.');
   const result = await importSession(runtime, source, path);
-  process.stdout.write(`${result.id}\t${result.status}\n`);
+  writeTerminalOutput(`${result.id}\t${result.status}\n`);
   for (const issue of result.issues) process.stderr.write(`Import: ${sanitizeTerminalText(issue)}\n`);
 }, true));
 program.action(async options => {

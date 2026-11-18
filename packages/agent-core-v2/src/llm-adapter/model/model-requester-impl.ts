@@ -5,7 +5,7 @@ import { performance, type EventLoopUtilization } from 'node:perf_hooks';
 import { AsyncEventQueue } from '#/_base/asyncEventQueue';
 import type { LlmErrorMessage } from '#human/llm/errors';
 import { emptyResponseError } from '#human/llm/empty-response';
-import { NO_FINISH, type FinishInfo } from '#human/llm/finish-reason';
+import type { FinishInfo } from '#human/llm/finish-reason';
 import type { ProviderMediaContribution, ImageUploadInput, VideoUploadInput } from '#human/llm/media/upload';
 import { createMessageAccumulator, type ImageURLPart, type VideoURLPart } from '#human/llm/message';
 import type { LlmModel } from '#human/llm/model';
@@ -19,6 +19,7 @@ import {
   type LlmRequester,
 } from '#human/llm/requester/requester';
 import type { TokenUsage } from '#human/llm/usage';
+import { readRetryAfterMs, retryAfterLimitHint } from '#human/llm/requester/retry';
 
 import {
   ChatProviderError,
@@ -190,6 +191,7 @@ export class ModelRequesterImpl implements ModelRequester {
                 accumulator = createMessageAccumulator();
                 usage = undefined;
                 finish = undefined;
+                streamEndedAt = undefined;
                 messageId = undefined;
               }
               requestSentAt = now;
@@ -235,6 +237,7 @@ export class ModelRequesterImpl implements ModelRequester {
               accumulator = createMessageAccumulator();
               usage = undefined;
               finish = undefined;
+              streamEndedAt = undefined;
               messageId = undefined;
               return;
             }
@@ -253,11 +256,21 @@ export class ModelRequesterImpl implements ModelRequester {
       },
     );
 
+    signal?.throwIfAborted();
     if (failed !== undefined) {
-      throw errorFromLlmMessage(failed);
+      const hint = retryAfterLimitHint(readRetryAfterMs(failed));
+      throw errorFromLlmMessage(hint === undefined ? failed : { ...failed, message: `${failed.message} ${hint}` });
     }
 
-    const emptyError = emptyResponseError(accumulator.finish(), config.model, finish ?? NO_FINISH);
+    if (streamEndedAt === undefined || finish === undefined || finish.finishReason === null) {
+      throw errorFromLlmMessage({ kind: 'connection', message: 'The provider stream ended before reporting completion.' });
+    }
+
+    const message = accumulator.finish();
+    if (message.toolCalls.length > 0 && finish.finishReason !== 'completed' && finish.finishReason !== 'tool_calls') {
+      throw errorFromLlmMessage({ kind: 'connection', message: 'The provider stream ended before completing its tool calls.' });
+    }
+    const emptyError = emptyResponseError(message, config.model, finish);
     if (emptyError !== null) {
       throw errorFromLlmMessage(emptyError);
     }
@@ -267,9 +280,9 @@ export class ModelRequesterImpl implements ModelRequester {
     }
     queue.push({
       type: 'finish',
-      message: fromLlmAssistantMessage(accumulator.finish()),
-      providerFinishReason: finish?.finishReason ?? undefined,
-      rawFinishReason: finish?.rawFinishReason ?? undefined,
+      message: fromLlmAssistantMessage(message),
+      providerFinishReason: finish.finishReason,
+      rawFinishReason: finish.rawFinishReason ?? undefined,
       id: messageId,
       traceId: traceId ?? undefined,
     });

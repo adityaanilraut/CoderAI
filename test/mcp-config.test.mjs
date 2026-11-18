@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fixture } from './fixture.mjs';
+import { checkNodePlugin } from './plugin-mcp-fixture.mjs';
 
 test('MCP CLI manages user configuration and preserves project configuration', { timeout: 40000 }, async t => {
   const f = await fixture(); t.after(f.cleanup);
@@ -57,4 +58,9 @@ test('MCP authorization validates URLs, forwards cancellation, and reconnects th
   assert.equal(reconnected, 'example'); assert.deepEqual(opened, ['https://example.test/authorize']);
   const controller = new AbortController(); controller.abort();
   await assert.rejects(authenticateMcpConfiguration(runtime, 'example', { signal: controller.signal }), { name: 'AbortError' });
+});
+
+test('a configured plugin Node MCP server starts under the Bun CLI', { timeout: 20000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  await checkNodePlugin(f, f.run);
 });

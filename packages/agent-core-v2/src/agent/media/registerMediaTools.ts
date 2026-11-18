@@ -5,7 +5,7 @@ import type { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { ISessionMediaStore } from './sessionMediaStore';
 
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
-import type { WorkspaceConfig } from '#/tool/path-access';
+import type { CredentialLocation, WorkspaceConfig } from '#/tool/path-access';
 import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import type { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { ReadMediaFileTool } from '#/agent/tools/read-media-file/readMediaFileTool';
@@ -15,6 +15,7 @@ export interface RegisterMediaToolsDeps {
   readonly attachmentStore?: ISessionMediaStore;
   readonly runtime: IAgentRuntimeService;
   readonly workspace: WorkspaceConfig;
+  readonly credentials: CredentialLocation;
   readonly capabilities: ModelCapability;
   readonly videoUploader?: VideoUploader;
   readonly telemetry?: ITelemetryService;
@@ -37,6 +38,7 @@ export function registerMediaTools(
       deps.runtime,
       deps.workspace,
       deps.capabilities,
+      deps.credentials,
       deps.videoUploader,
       deps.telemetry,
       deps.inlineVideoSupported,

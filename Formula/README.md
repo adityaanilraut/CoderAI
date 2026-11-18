@@ -8,6 +8,9 @@ The first published stable Bun release (0.6.0 or later) enables the tap. The
 `Update Homebrew tap` workflow writes `Formula/coderai.rb` to the default branch
 after a stable release is published. It can also be run manually with the latest
 published stable tag. Drafts and prereleases are never installed through the tap.
+Before publishing the formula, the workflow rechecks the latest stable tag.
+If the default branch advances during the update, the workflow retries against
+the new branch head.
 The workflow uses this repository's `GITHUB_TOKEN`; no separate tap repository or
 personal access token is needed. Repository rules must allow the workflow to
 commit this file to the default branch. If branch protection requires a pull
@@ -21,8 +24,9 @@ bun scripts/build-homebrew.mjs --version 0.6.0 \
   --assets-dir release-assets --output Formula/coderai.rb
 ```
 
-The standalone release workflow also attaches `coderai.rb` to its draft release
-for review. Generation fails if any archive is missing, has an invalid checksum
+The standalone release workflow attaches `coderai.rb` to stable draft releases
+for review. The formula installs the bundled dependency notices from the ZIP.
+Generation fails if any archive is missing, has an invalid checksum
 file, or differs from its checksum. All platforms must finish building before
 the formula can be generated.
 

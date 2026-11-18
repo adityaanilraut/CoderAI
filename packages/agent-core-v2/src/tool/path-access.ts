@@ -6,6 +6,8 @@ import {
   type ShellPathBridge,
 } from '#/_base/execEnv/shellPathBridge';
 import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
+import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { unwrapErrorCause } from '#/_base/errors/errors';
 
 export interface WorkspaceConfig {
   readonly workspaceDir: string;
@@ -300,6 +302,87 @@ export function resolvePathAccessPath(
     homeDir: expandHome ? env.homeDir : undefined,
     shellPathBridge: env.pathClass === 'win32' ? getShellPathBridge(env) : undefined,
   }).path;
+}
+
+export interface CredentialLocation {
+  readonly homeDir: string;
+  readonly configPath: string;
+}
+
+export interface ResolvedToolPath {
+  readonly requestedPath: string;
+  readonly path: string;
+  isCredentialPath(path: string): boolean;
+  assertUnchanged(fs: IHostFileSystem): Promise<void>;
+}
+
+export async function resolveToolPath(
+  fs: IHostFileSystem,
+  rawPath: string,
+  options: ResolvePathAccessPathOptions,
+  credentials: CredentialLocation,
+): Promise<ResolvedToolPath> {
+  const requestedPath = resolvePathAccessPath(rawPath, options);
+  const pathClass = options.env.pathClass;
+  const exact = [credentials.configPath, pathe.join(credentials.homeDir, 'mcp.json')];
+  const trees = ['credentials', 'oauth'].map(dir => pathe.join(credentials.homeDir, dir));
+  const [path, resolvedExact, resolvedTrees] = await Promise.all([
+    resolveExistingAncestors(fs, requestedPath, pathClass),
+    Promise.all(exact.map(candidate => resolveExistingAncestors(fs, candidate, pathClass))),
+    Promise.all(trees.map(candidate => resolveExistingAncestors(fs, candidate, pathClass))),
+  ]);
+  const protectedFiles = [...exact, ...resolvedExact];
+  const protectedTrees = [...trees, ...resolvedTrees];
+  const isCredentialPath = (candidate: string): boolean =>
+    protectedFiles.some(p => isWithinDirectory(candidate, p, pathClass) &&
+      isWithinDirectory(p, candidate, pathClass)) ||
+    protectedTrees.some(p => isWithinDirectory(candidate, p, pathClass));
+  if (isCredentialPath(requestedPath) || isCredentialPath(path) ||
+      ((options.policy?.checkSensitive ?? true) && isSensitiveFile(path))) {
+    throw new PathSecurityError('PATH_SENSITIVE', rawPath, path,
+      `Access to "${rawPath}" is blocked to protect secrets.`);
+  }
+  return {
+    requestedPath,
+    path,
+    isCredentialPath,
+    async assertUnchanged(currentFs) {
+      const requested = resolveExistingAncestors(currentFs, requestedPath, pathClass);
+      const [currentRequested, currentResolved] = await Promise.all([requested,
+        requestedPath === path ? requested : resolveExistingAncestors(currentFs, path, pathClass)]);
+      if (currentRequested !== path || currentResolved !== path) {
+        throw new PathSecurityError('PATH_INVALID', rawPath, path,
+          `The target of "${rawPath}" changed before execution. Retry the tool call.`);
+      }
+    },
+  };
+}
+
+async function resolveExistingAncestors(fs: IHostFileSystem, path: string, pathClass: PathClass): Promise<string> {
+  try {
+    const resolved = await fs.realpath(path);
+    if (pathClass === 'posix' && resolved.includes('\\')) {
+      throw new PathSecurityError('PATH_INVALID', path, resolved, `Unsupported backslash in resolved POSIX path "${path}".`);
+    }
+    return pathe.normalize(resolved);
+  } catch (error) {
+    if (!isMissingPath(error)) throw error;
+    const parent = pathe.dirname(path);
+    if (parent === path) throw error;
+    const stat = await fs.lstat(path).catch((lstatError: unknown) => {
+      if (!isMissingPath(lstatError)) throw lstatError;
+      return undefined;
+    });
+    if (stat?.isSymbolicLink) {
+      throw new PathSecurityError('PATH_INVALID', path, path, `Cannot resolve symbolic link "${path}".`);
+    }
+    return pathe.join(await resolveExistingAncestors(fs, parent, pathClass), pathe.basename(path));
+  }
+}
+
+function isMissingPath(error: unknown): boolean {
+  const code = (unwrapErrorCause(error) as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'ENOENT' || code === 'os.fs.not_found';
 }
 
 export function assertPathAllowed(

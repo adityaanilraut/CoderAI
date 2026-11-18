@@ -16,6 +16,7 @@ import {
   recencyColumn,
   sessionCollection,
   sessionCountersCollection,
+  serializeSessionIndexWrite,
   withRecencyField,
   type SessionWorkspaceCounts,
 } from './sessionIndexModel';
@@ -102,12 +103,14 @@ export class SessionIndexProjector {
   }
 
   async project(generation: number): Promise<ProjectionResult> {
-    const scan = this.sharedScan();
-    try {
-      return await this.doProject(generation, scan);
-    } finally {
-      if (this.scanSlot?.promise === scan) this.scanSlot = undefined;
-    }
+    return serializeSessionIndexWrite(this.deps.queryStore, async () => {
+      const scan = this.sharedScan();
+      try {
+        return await this.doProject(generation, scan);
+      } finally {
+        if (this.scanSlot?.promise === scan) this.scanSlot = undefined;
+      }
+    });
   }
 
   private async doProject(
@@ -169,6 +172,10 @@ export class SessionIndexProjector {
   }
 
   async reconcile(generation: number): Promise<ReconcileResult> {
+    return serializeSessionIndexWrite(this.deps.queryStore, () => this.doReconcile(generation));
+  }
+
+  private async doReconcile(generation: number): Promise<ReconcileResult> {
     const { queryStore, docs, storage, log, sessionsScope } = this.deps;
     const epoch = queryStore.storeEpoch();
     const collection = sessionCollection(generation);
@@ -207,7 +214,7 @@ export class SessionIndexProjector {
       const summary =
         workspaceId === undefined
           ? undefined
-          : await readSessionSummary(docs, sessionsScope, workspaceId, sessionId);
+          : await readSessionSummary(docs, sessionsScope, workspaceId, sessionId, true);
       if (summary === undefined) {
         if (olds.get(sessionId) !== undefined) {
           removals.push({ kind: 'delete', collection, key: sessionId });
@@ -327,7 +334,7 @@ export class SessionIndexProjector {
           nextCache.set(check.sessionId, check.cached);
           return check.cached.summary;
         }
-        const summary = await readSessionSummary(docs, sessionsScope, workspaceId, check.sessionId);
+        const summary = await readSessionSummary(docs, sessionsScope, workspaceId, check.sessionId, true);
         if (summary === undefined) return undefined;
         nextCache.set(check.sessionId, {
           ws: workspaceId,

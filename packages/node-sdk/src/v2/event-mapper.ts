@@ -23,9 +23,9 @@ import type { Event2 } from '@coderai/agent-core-v2';
  *   `task.notified`, `plan.revision`, and the `permission.approval.*` pair
  *   (v1 surfaces approvals through the `requestApproval` callback, never as
  *   events).
- * - `prompt.*`: the v2 prompt service publishes them on the agent bus, but in
- *   v1 they are synthesized by the daemon services layer onto the global
- *   `IEventService` — the in-process SDK client never sees them.
+ * - Prompt submission and steering facts belong to the daemon services layer.
+ *   Completion and abort events reach SDK clients so they can settle prompts
+ *   that never start a turn.
  */
 const DROPPED_DOMAIN_EVENT_TYPES: ReadonlySet<string> = new Set([
   'context.spliced',
@@ -34,8 +34,6 @@ const DROPPED_DOMAIN_EVENT_TYPES: ReadonlySet<string> = new Set([
   'permission.approval.requested',
   'permission.approval.resolved',
   'prompt.submitted',
-  'prompt.completed',
-  'prompt.aborted',
   'prompt.started',
   'prompt.steered',
 ]);

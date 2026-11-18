@@ -1,8 +1,8 @@
 import { readdir, stat } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { readJsonLines } from '#/jsonl';
-import type { FindSessionsOptions, SessionCandidate } from '#/types';
+import type { FindSessionsOptions, SessionCandidate, SessionSource } from '#/types';
 
 const CLAUDE_HEAD_LINES = 100;
 const CLAUDE_CONTROL_TEXT = /^(?:<command-name>|<local-command|<command-message>|\[Request interrupted by user)/;
@@ -98,6 +98,48 @@ async function rolloutPaths(directory: string, found: string[] = []): Promise<st
   return found;
 }
 
+function descendants(spawned: ReadonlyMap<string, Array<{ id: string; path: string }>>, id: string): string[] {
+  const paths = new Set<string>();
+  const seen = new Set([id]);
+  const pending = [id];
+  while (pending.length > 0) {
+    for (const child of spawned.get(pending.pop()!) ?? []) {
+      paths.add(child.path);
+      if (!seen.has(child.id)) {
+        seen.add(child.id);
+        pending.push(child.id);
+      }
+    }
+  }
+  return [...paths].toSorted();
+}
+
+/** Read direct-import metadata without scanning an unrelated source home. */
+export async function findSessionDetails(source: SessionSource, sourcePath: string, codexHome: string): Promise<SessionCandidate | undefined> {
+  if (source === 'claude-code') return claudeSession(sourcePath, 0);
+  const meta = await codexMeta(sourcePath);
+  if (!meta) return undefined;
+  const candidate = await codexSession(sourcePath, meta, 0);
+  if (!candidate) return undefined;
+  candidate.stateDatabasePath = await stateDatabase(codexHome);
+  const directory = resolve(codexHome, 'sessions');
+  const local = relative(directory, sourcePath);
+  if (!local || local === '..' || local.startsWith(`..${sep}`) || isAbsolute(local)) return candidate;
+  const spawned = new Map<string, Array<{ id: string; path: string }>>();
+  for (const path of await rolloutPaths(directory)) {
+    if (path === sourcePath) continue;
+    const child = await codexMeta(path);
+    const parent = child && parentThread(child);
+    if (child && parent) {
+      const entries = spawned.get(parent) ?? [];
+      entries.push({ id: child['id'] as string, path });
+      spawned.set(parent, entries);
+    }
+  }
+  candidate.subagentPaths = descendants(spawned, candidate.sourceId);
+  return candidate;
+}
+
 export async function findSessions(options: FindSessionsOptions): Promise<SessionCandidate[]> {
   const sessions: SessionCandidate[] = [];
   const projects = join(options.claudeHome, 'projects');
@@ -120,15 +162,10 @@ export async function findSessions(options: FindSessionsOptions): Promise<Sessio
     const known = session && threads.get(session.sourceId);
     if (session && (!known || known.modifiedAt < session.modifiedAt)) threads.set(session.sourceId, session);
   }
-  const subagentPaths = (id: string, seen: Set<string>): string[] => (spawned.get(id) ?? []).flatMap((child) => {
-    if (seen.has(child.id)) return [child.path];
-    seen.add(child.id);
-    return [child.path, ...subagentPaths(child.id, seen)];
-  });
   const stateDatabasePath = await stateDatabase(options.codexHome);
   for (const session of threads.values()) {
-    const paths = subagentPaths(session.sourceId, new Set([session.sourceId]));
-    if (paths.length > 0) session.subagentPaths = paths.toSorted();
+    const paths = descendants(spawned, session.sourceId);
+    if (paths.length > 0) session.subagentPaths = paths;
     session.stateDatabasePath = stateDatabasePath;
   }
   return [...sessions, ...threads.values()].toSorted((a, b) => b.modifiedAt - a.modifiedAt);

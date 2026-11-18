@@ -5,6 +5,8 @@ export interface TrustGatedMcpServer {
   readonly transport: 'stdio' | 'http' | 'sse';
   readonly command?: string;
   readonly args?: readonly string[];
+  readonly argumentCount?: number;
+  readonly environmentNames?: readonly string[];
   readonly cwd?: string;
   readonly url?: string;
   readonly origin: string;

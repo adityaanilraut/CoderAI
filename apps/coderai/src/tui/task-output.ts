@@ -9,6 +9,7 @@ export const TASK_OUTPUT_LIMIT = 1024 * 1024;
 export class TaskOutputViewer implements Component {
   private output = '';
   private latest = '';
+  private lastRawOutput?: string;
   private status = 'Loading…';
   private error = '';
   private following = true;
@@ -22,7 +23,11 @@ export class TaskOutputViewer implements Component {
     private readonly finish: (answer: string) => void, private readonly refresh: () => void) {}
 
   setOutput(output: string, status: string): void {
-    this.latest = sanitizeTerminalText(output).replace(/\t/g, '   ');
+    if (this.lastRawOutput === output && this.status === status && !this.error) return;
+    if (this.lastRawOutput !== output) {
+      this.lastRawOutput = output;
+      this.latest = sanitizeTerminalText(output).replace(/\t/g, '   ');
+    }
     // Freeze the reading snapshot while paused, including when the SDK ring buffer rotates.
     if (this.following) this.output = this.latest;
     this.status = singleLine(status); this.error = ''; this.refresh();
@@ -65,15 +70,17 @@ export class TaskOutputViewer implements Component {
 export function watchTaskOutput(session: Pick<Session, 'getBackgroundTaskOutput' | 'listBackgroundTasks'>,
   taskId: string, viewer: TaskOutputViewer, interval = 750): () => void {
   let disposed = false;
+  let finished = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const poll = async () => {
     try {
-      const [output, tasks] = await Promise.all([
-        session.getBackgroundTaskOutput(taskId, { tail: TASK_OUTPUT_LIMIT }), session.listBackgroundTasks(),
-      ]);
-      if (!disposed) viewer.setOutput(output, tasks.find(task => task.taskId === taskId)?.status ?? 'Task unavailable');
+      const task = (await session.listBackgroundTasks()).find(task => task.taskId === taskId);
+      if (disposed) return;
+      const output = await session.getBackgroundTaskOutput(taskId, { tail: TASK_OUTPUT_LIMIT });
+      if (!disposed) viewer.setOutput(output, task?.status ?? 'Task unavailable');
+      finished = task?.endedAt != null;
     } catch (error) { if (!disposed) viewer.setError(error); }
-    finally { if (!disposed) { timer = setTimeout(() => void poll(), interval); timer.unref(); } }
+    finally { if (!disposed && !finished) { timer = setTimeout(() => void poll(), interval); timer.unref(); } }
   };
   void poll();
   return () => { disposed = true; if (timer) clearTimeout(timer); };

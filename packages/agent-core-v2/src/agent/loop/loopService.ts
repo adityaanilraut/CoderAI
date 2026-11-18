@@ -227,7 +227,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
               step: this.active.gatedSteps,
             },
       gate: (signal) => this.gate(signal),
-      promptGate: (queueItemId, message) => this.runPromptGate(queueItemId, message),
+      promptGate: (queueItemId, message, signal) => this.runPromptGate(queueItemId, message, signal),
       onTrace: (trace) => {
         this.activeRequestTrace = trace;
       },
@@ -311,6 +311,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   submit(input: UserEntry, options?: LoopSubmitOptions): LoopSubmitResult {
     if (this.disposing) throw abortError('Agent loop disposed');
+    const signal = options?.signal;
+    signal?.throwIfAborted();
     this.runGate.begin();
     const meta = input.meta;
     const id = meta?.promptId ?? newMessageId();
@@ -321,6 +323,13 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     const waiter = this.createWaiter(id, meta?.promptId, options?.onMaterialize);
     this.terminalStates.delete(id);
     this.promptWaiters.set(id, waiter);
+    if (signal !== undefined) {
+      const cancel = () => {
+        if (this.promptWaiters.get(id) === waiter) this.cancelWaiter(waiter, signal.reason);
+      };
+      signal.addEventListener('abort', cancel, { once: true });
+      void waiter.completion.then(() => signal.removeEventListener('abort', cancel));
+    }
     const message: ContextMessage = {
       role: 'user',
       content: [...input.message.content],
@@ -343,6 +352,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       message: { role: 'user', content: [...input.message.content] },
       meta: { promptId: id, origin, tracked, createdAt, userMessageId },
     };
+    if (signal?.aborted) return { id };
     if (this.engine !== undefined) {
       try {
         this.machineEngine().submit(entry);
@@ -590,6 +600,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private async runPromptGate(
     queueItemId: string | undefined,
     message: UserMessage,
+    signal: AbortSignal,
   ): Promise<PromptGateVerdict> {
     const waiter = queueItemId === undefined ? undefined : this.promptWaiters.get(queueItemId);
     const entry =
@@ -608,11 +619,13 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     };
     const ctx: PromptSubmitContext = {
       promptMessage,
+      signal,
       isSteer: false,
       hookParts: [],
       block: false,
     };
     await this.hooks.onBeforeSubmitPrompt.run(ctx);
+    signal.throwIfAborted();
     if (ctx.block) return { block: true };
     await this.materializeDaemonRefs(promptMessage);
     return {

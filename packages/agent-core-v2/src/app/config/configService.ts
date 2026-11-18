@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 import { join, normalize } from 'pathe';
+import lockfile from 'proper-lockfile';
 import { parse as parseToml } from 'smol-toml';
 
 import { type CollectionView } from '#/_base/di/collection';
@@ -931,11 +934,37 @@ export class ConfigService extends Disposable implements IConfigService {
     exactKeys?: Readonly<Record<string, readonly string[]>>,
     expectedValues?: Readonly<Record<string, unknown>>,
   ): Promise<void> {
+    const configPath = this.bootstrap.configPath;
+    await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
+    let compromised: Error | undefined;
+    const release = await lockfile.lock(configPath, {
+      realpath: false,
+      retries: { retries: 8, minTimeout: 25, maxTimeout: 100 },
+      onCompromised: error => { compromised = error; },
+    });
+    try {
+      await this.persistDomainsUnderLock(domains, rebase, preserveUnknown, exactKeys, expectedValues, () => {
+        if (compromised !== undefined) throw compromised;
+      });
+    } finally {
+      if (compromised === undefined) await release();
+    }
+  }
+
+  private async persistDomainsUnderLock(
+    domains: readonly string[],
+    rebase: (stagedRaw: ResolvedConfig, stagedRawSnake: ResolvedConfig) => void,
+    preserveUnknown: boolean,
+    exactKeys: Readonly<Record<string, readonly string[]>> | undefined,
+    expectedValues: Readonly<Record<string, unknown>> | undefined,
+    assertOwnership: () => void,
+  ): Promise<void> {
     this.assertPersistable();
     let onDisk: ResolvedConfig = {};
+    let onDiskText: string | undefined;
     try {
-      const data = await this.documentStore.get<ResolvedConfig>(CONFIG_SCOPE, this.configKey);
-      onDisk = data !== undefined && isPlainObject(data) ? data : {};
+      onDiskText = await this.documentStore.getText(CONFIG_SCOPE, this.configKey);
+      if (onDiskText?.trim()) onDisk = parseToml(onDiskText);
     } catch (error) {
       const message =
         error instanceof TomlError
@@ -952,12 +981,6 @@ export class ConfigService extends Disposable implements IConfigService {
         `Refusing to persist config: ${this.bootstrap.configPath} could not be read; fix the file and reload before writing.`,
         { cause: error },
       );
-    }
-    let onDiskText: string | undefined;
-    try {
-      onDiskText = await this.documentStore.getText(CONFIG_SCOPE, this.configKey);
-    } catch {
-      onDiskText = undefined;
     }
     const stagedRawSnake = cloneRecord(onDisk);
     const stagedRaw = transformTomlData(onDisk, this.registry);
@@ -998,6 +1021,7 @@ export class ConfigService extends Disposable implements IConfigService {
             }),
             stagedRawSnake,
           );
+    assertOwnership();
     if (plannedText === undefined) {
       await this.documentStore.set(CONFIG_SCOPE, this.configKey, stagedRawSnake);
     } else if (plannedText !== onDiskText) {

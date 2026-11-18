@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { createDecorator } from '#/_base/di/instantiation';
+import { abortError } from '#/_base/utils/abort';
 import type {
   BundledSkillActivation,
   PromptOrigin,
@@ -145,6 +146,7 @@ export class AgentSkillService implements IAgentSkillService {
         promptMetadataTextFromContentParts(input.input, input.clientMetadata),
       );
     }
+    input.signal?.throwIfAborted();
     for (const activation of prepared) {
       void this.recordActivation(activation.origin);
     }
@@ -160,6 +162,7 @@ export class AgentSkillService implements IAgentSkillService {
           content: [...prepared.map((activation) => activation.part), ...input.input],
         },
         meta: {
+          promptId: input.promptId,
           origin: {
             kind: 'user',
             skillActivations: prepared.map((activation) => activation.entry),
@@ -169,7 +172,7 @@ export class AgentSkillService implements IAgentSkillService {
           tracked: true,
         },
       },
-      { steerIfActive: input.steerIfActive },
+      { steerIfActive: input.steerIfActive, signal: input.signal },
     );
     const handle = this.loop.promptHandle(id)!;
     if (!steerable && (status.state === 'running' || status.paused || status.queue.length > 0)) {
@@ -177,6 +180,10 @@ export class AgentSkillService implements IAgentSkillService {
     }
     await Promise.race([handle.launched, handle.completion]);
     const turn = await handle.launched;
+    if (turn === undefined && handle.state === 'cancelled') {
+      input.signal?.throwIfAborted();
+      throw abortError('Skill prompt cancelled');
+    }
     if (turn === undefined && handle.state !== 'blocked') {
       throw new Error2(ErrorCodes.INTERNAL, 'promptWithSkills failed to launch a turn');
     }

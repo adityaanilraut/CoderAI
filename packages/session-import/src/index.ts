@@ -1,5 +1,5 @@
 export { convertSession } from '#/convert';
-export { findSessions } from '#/discover';
+export { findSessionDetails, findSessions } from '#/discover';
 export { DEFAULT_IMPORT_RATIO, estimateMessages, estimateTokens } from '#/render';
 export type {
   ConversionIssue,

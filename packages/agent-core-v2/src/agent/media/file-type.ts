@@ -7,6 +7,8 @@ import {
 export { AUDIO_MIME_BY_SUFFIX, IMAGE_MIME_BY_SUFFIX, VIDEO_MIME_BY_SUFFIX };
 
 export const MEDIA_SNIFF_BYTES = 512;
+export const MAX_MEDIA_MEGABYTES = 100;
+export const MAX_MEDIA_BYTES = MAX_MEDIA_MEGABYTES * 1024 * 1024;
 
 export interface FileType {
   readonly kind: 'text' | 'image' | 'video' | 'audio' | 'unknown';

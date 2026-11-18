@@ -57,4 +57,5 @@ export interface CreateGoalInput {
   readonly objective: string;
   readonly completionCriterion?: string;
   readonly replace?: boolean;
+  readonly goalId?: string;
 }

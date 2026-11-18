@@ -248,6 +248,15 @@ export class ImportSessionsScreenComponent extends Container implements Focusabl
         lines.push(muted(`   and ${String(report.failed.length - MAX_LISTED_FAILURES)} more`));
       }
     }
+    if (report.warnings?.length) {
+      lines.push(chalk.hex(colors.warning)(` Import warnings (${String(report.warnings.length)}):`));
+      for (const warning of report.warnings.slice(0, MAX_LISTED_FAILURES)) {
+        lines.push(muted(`   ${sanitizeTerminalText(basename(warning.path))}: ${sanitizeTerminalText(warning.message)}`));
+      }
+      if (report.warnings.length > MAX_LISTED_FAILURES) {
+        lines.push(muted(`   and ${String(report.warnings.length - MAX_LISTED_FAILURES)} more`));
+      }
+    }
     if (report.imported.length > 0) {
       lines.push('', muted(' Find them with /sessions; ctrl+a shows all projects.'));
     }

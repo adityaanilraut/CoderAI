@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { build } from 'esbuild';
+import { engineBundlePlugins } from '../scripts/bundle-options.mjs';
 import { fixture, cli, testRuntime } from './fixture.mjs';
 
 const dir = await mkdtemp(resolve('node_modules/.phase2-'));
@@ -21,20 +22,7 @@ await build({
   ` },
   outfile: entry, bundle: true, platform: 'node', format: 'esm', target: 'node24',
   tsconfigRaw: { compilerOptions: { experimentalDecorators: true } },
-  plugins: [{ name: 'engine-assets', setup(b) {
-    b.onResolve({ filter: /^#/ }, async args => {
-      let root = args.resolveDir;
-      while (!existsSync(join(root, 'package.json'))) root = dirname(root);
-      const path = args.path.startsWith('#human/') ? resolve('packages/agent-core-v2/src/human', args.path.slice(7)) : join(root, basename(root) === 'human' ? '' : 'src', args.path.slice(2));
-      return b.resolve(path, { resolveDir: args.resolveDir, kind: args.kind });
-    });
-    b.onResolve({ filter: /\?raw$/ }, args => ({ path: resolve(args.resolveDir, args.path.slice(0, -4)), namespace: 'raw' }));
-    b.onLoad({ filter: /.*/, namespace: 'raw' }, async args => ({ contents: await readFile(args.path, 'utf8'), loader: 'text' }));
-    b.onResolve({ filter: /^[\w@][^:]*$/ }, args => {
-      if (args.path.startsWith('@coderai/') || args.path.startsWith('#')) return;
-      return { path: /^ajv\/dist\/(2019|2020)$/.test(args.path) ? args.path + '.js' : args.path, external: true };
-    });
-  } }],
+  plugins: engineBundlePlugins(),
 });
 const api = await import(entry);
 api.configureTextBuildWorkerRuntime(resolve('dist/text-build-worker.mjs'));
@@ -149,20 +137,71 @@ test('structured history resumes, replays and continues after imported turns, pr
   await session.close();
 });
 
+test('full and turn-limited import forks keep references to their own attachments', { timeout: 30000 }, async t => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  const source = join(f.root, 'fork-origin.jsonl');
+  const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a1kAAAAASUVORK5CYII=';
+  const original = lines([
+    { type: 'user', uuid: 'u1', cwd: f.cwd, message: { role: 'user', content: [
+      { type: 'text', text: 'First question with an image' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: image } },
+    ] } },
+    { type: 'assistant', uuid: 'a1', parentUuid: 'u1', cwd: f.cwd, message: { role: 'assistant', content: 'First answer' } },
+    { type: 'user', uuid: 'u2', parentUuid: 'a1', cwd: f.cwd, message: { role: 'user', content: 'Second question' } },
+    { type: 'assistant', uuid: 'a2', parentUuid: 'u2', cwd: f.cwd, message: { role: 'assistant', content: 'Second answer' } },
+  ]);
+  await writeFile(source, original);
+  const h = await harness(f);
+  t.after(() => h.close());
+  await h.trustWorkspace(f.cwd);
+  const imported = candidate(source, f.cwd, 'fork-origin');
+  const report = await api.importSessions([imported], importOptions(f));
+  assert.deepEqual(report.imported, [imported.sessionId], JSON.stringify(report));
+  const fork = await h.forkSession({ id: imported.sessionId });
+  const sliced = await h.forkSession({ id: imported.sessionId, turnIndex: 0 });
+  const sourceDir = api.importedSessionDir(f.home, f.cwd, imported.sessionId);
+  await h.deleteSession(imported.sessionId);
+  assert.ok(!existsSync(sourceDir));
+
+  const portable = path => path.replaceAll('\\', '/');
+  for (const session of [fork, sliced]) {
+    const assets = join(api.importedSessionDir(f.home, f.cwd, session.id), 'attachments');
+    const sourceCopy = join(assets, 'source', basename(source));
+    const history = join(assets, (await readdir(assets)).find(name => name.startsWith('effective-history-')));
+    const images = join(assets, 'images');
+    const index = join(images, (await readdir(images)).find(name => name.startsWith('references-')));
+    const [entry] = JSON.parse(await readFile(index, 'utf8'));
+    assert.ok(portable(entry.path).startsWith(`${portable(images)}/`));
+    assert.deepEqual(await readFile(entry.path), Buffer.from(image, 'base64'));
+    assert.equal(await readFile(sourceCopy, 'utf8'), original);
+    const historyHeader = JSON.parse((await readFile(history, 'utf8')).split('\n')[0]);
+    assert.equal(portable(historyHeader.imageReferenceIndexPath), portable(index));
+    const messages = (await session.getContext()).history.flatMap(message => message.content.map(part => part.text));
+    const text = messages.join('\n');
+    assert.ok(portable(text).includes(portable(history)));
+    assert.ok(portable(text).includes(portable(join(assets, 'source'))));
+    assert.ok(!portable(text).includes(portable(sourceDir)));
+    assert.equal(text.includes('Second question'), session === fork);
+    await session.close();
+  }
+});
+
 test('imports clean interrupted writes, classify failures, skip missing folders and stop between sessions', async t => {
   const f = await fixture(); t.after(f.cleanup);
   const empty = join(f.root, 'empty.jsonl'); await writeFile(empty, '');
   const unsupported = join(f.root, 'forked.jsonl'); await codex(unsupported, f.cwd, 'forked', 'cli', { history_base: { path: 'old.jsonl' } });
   const good = join(f.root, 'good.jsonl'); await claude(good, f.cwd);
   const pending = api.importedSessionDir(f.home, f.cwd, 'ses_good');
-  await mkdir(pending, { recursive: true }); await writeFile(join(pending, 'leftover'), 'interrupted');
+  const incomplete = join(pending, 'attachments', `effective-history-${'a'.repeat(64)}.jsonl`);
+  await mkdir(dirname(incomplete), { recursive: true }); await writeFile(incomplete, 'interrupted');
   const report = await api.importSessions([
     candidate(empty, f.cwd, 'empty'), candidate(unsupported, f.cwd, 'forked', 'codex'),
     candidate(good, join(f.root, 'gone'), 'missing'), candidate(join(f.root, 'absent'), f.cwd, 'absent'), candidate(good, f.cwd, 'good'),
   ], importOptions(f));
   assert.equal(report.empty, 1); assert.equal(report.unsupported, 1); assert.equal(report.missingFolder, 1); assert.equal(report.failed.length, 1);
   assert.deepEqual(report.imported, ['ses_good']);
-  assert.equal(existsSync(join(pending, 'leftover')), false);
+  assert.equal(existsSync(incomplete), false);
   for (const id of ['empty', 'forked', 'absent']) assert.equal(existsSync(api.importedSessionDir(f.home, f.cwd, `ses_${id}`)), false);
   const stopped = await api.importSessions([candidate(good, f.cwd, 'stop')], { ...importOptions(f), shouldStop: () => true });
   assert.equal(stopped.stopped, true); assert.equal(stopped.imported.length, 0);

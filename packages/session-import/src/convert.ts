@@ -1,4 +1,4 @@
-import { isAbsolute, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 import { lstat, stat } from 'node:fs/promises';
 import { readClaudeSession } from '#/claude-code';
 import { readRolloutSession } from '#/rollout';
@@ -23,8 +23,12 @@ function fallbackTitle(turns: readonly HistoryTurn[]): string | undefined {
   for (const turn of turns) {
     const line = promptText(turn.user).split('\n').map(part => part.trim()).find(part => /[\p{L}\p{N}]/u.test(part));
     if (!line) continue;
-    const graphemes = Array.from(GRAPHEMES.segment(line), ({ segment }) => segment);
-    return graphemes.length > 120 ? `${graphemes.slice(0, 117).join('')}...` : line;
+    const graphemes: string[] = [];
+    for (const { segment } of GRAPHEMES.segment(line)) {
+      if (graphemes.length === 120) return `${graphemes.slice(0, 117).join('')}...`;
+      graphemes.push(segment);
+    }
+    return line;
   }
   return undefined;
 }
@@ -71,7 +75,12 @@ export async function convertSession(options: ConversionOptions): Promise<Conver
     } catch (error) {
       if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
     }
-    const readOptions = { imageDirectory: join(options.attachmentDirectory, 'images'), stateDatabasePath: options.stateDatabasePath };
+    const publishedDirectory = options.publishedAttachmentDirectory ?? options.attachmentDirectory;
+    const readOptions = {
+      imageDirectory: join(options.attachmentDirectory, 'images'),
+      publishedImageDirectory: join(publishedDirectory, 'images'),
+      stateDatabasePath: options.stateDatabasePath,
+    };
     stage = 'source';
     const before = await stat(options.sourcePath, { bigint: true });
     const parsed = options.source === 'claude-code'
@@ -81,8 +90,10 @@ export async function convertSession(options: ConversionOptions): Promise<Conver
     if (!history.summary?.trim() && !history.turns.some(turn => turn.user.trim())) throw Object.assign(new Error('The source session contains no conversation to import.'), { code: 'EMPTY_SOURCE_HISTORY' });
     const issues = sourceIssues(history);
     stage = 'attachment';
-    const historyPath = await saveEffectiveHistory(history, options.attachmentDirectory, issues);
-    const sourceCopy = await saveSourceCopy(history.source, options.sourcePath, options.attachmentDirectory, options.subagentPaths);
+    const savedHistory = await saveEffectiveHistory(history, options.attachmentDirectory, issues);
+    const historyPath = join(publishedDirectory, basename(savedHistory));
+    const savedSource = await saveSourceCopy(history.source, options.sourcePath, options.attachmentDirectory, options.subagentPaths);
+    const sourceCopy = { ...savedSource, directory: join(publishedDirectory, basename(savedSource.directory)) };
     const after = await stat(options.sourcePath, { bigint: true });
     if (after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ino !== before.ino) {
       stage = 'source';

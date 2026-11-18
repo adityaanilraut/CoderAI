@@ -1,3 +1,4 @@
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { normalize } from 'pathe';
 
 import { ToolOutputAccumulator } from '#/tool/output-accumulator';
@@ -18,7 +19,7 @@ import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionSkillCatalog } from '#/features/skill/session/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
-  resolvePathAccessPath,
+  resolveToolPath,
   type PathClass,
   isSensitiveFile,
   SENSITIVE_DOT_VARIANT_SUFFIXES,
@@ -69,6 +70,7 @@ export class GrepTool implements IGrepTool {
   readonly description = GREP_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(GrepInputSchema);
   constructor(
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
     @ITelemetryService private readonly telemetry: ITelemetryService,
@@ -80,7 +82,7 @@ export class GrepTool implements IGrepTool {
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
   }
 
-  resolveExecution(args: GrepInput): ToolExecution {
+  async resolveExecution(args: GrepInput): Promise<ToolExecution> {
     const inspected = inspectAgentRuntime(this.runtime);
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
@@ -91,19 +93,16 @@ export class GrepTool implements IGrepTool {
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const workspace = this.workspace(view);
-    let path: string | undefined;
-    if (args.path !== undefined) {
-      path = resolvePathAccessPath(args.path, {
-        env,
-        workspace,
-        operation: 'search',
-        policy: { guardMode: 'absolute-outside-allowed', checkSensitive: false },
-      });
-    }
-    const searchPaths = [path ?? workspace.workspaceDir];
+    const target = await resolveToolPath(inspected.fs!, args.path ?? workspace.workspaceDir, {
+      env,
+      workspace,
+      operation: 'search',
+      policy: { guardMode: 'absolute-outside-allowed', checkSensitive: false },
+    }, this.bootstrap);
+    const searchPaths = [target.path];
     const searchPath = args.path ?? workspace.workspaceDir;
     return {
-      accesses: ToolAccesses.searchTree(searchPaths[0]!),
+      accesses: ToolAccesses.file('search', target.path, { recursive: true, requestedPath: target.requestedPath }),
       description: `Searching for '${args.pattern}' in ${searchPath}`,
       display: { kind: 'file_io', operation: 'grep', path: searchPaths[0]! },
       approvalRule: literalRulePattern(this.name, args.pattern),
@@ -114,7 +113,8 @@ export class GrepTool implements IGrepTool {
           if (lease.runtime.identity.generation !== inspected.identity.generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
-          return await this.execution(lease.runtime.process!, lease.runtime.fs!, env, workspace, args, signal, searchPaths);
+          await target.assertUnchanged(lease.runtime.fs!);
+          return await this.execution(lease.runtime.process!, lease.runtime.fs!, env, workspace, args, signal, searchPaths, target.isCredentialPath);
         } finally {
           lease.dispose();
         }
@@ -130,6 +130,7 @@ export class GrepTool implements IGrepTool {
     args: GrepInput,
     signal: AbortSignal,
     searchPaths: string[],
+    isCredentialPath: (path: string) => boolean,
   ): Promise<ExecutableToolResult> {
     if (signal.aborted) {
       return { isError: true, output: 'Aborted before search started' };
@@ -212,7 +213,7 @@ export class GrepTool implements IGrepTool {
     const rawLines = parseRipgrepOutput(stdoutText, mode);
 
     const filteredSensitive = new Set<string>();
-    const keptLines = filterSensitiveLines(rawLines, mode, filteredSensitive, pathClass);
+    const keptLines = filterSensitiveLines(rawLines, mode, filteredSensitive, pathClass, isCredentialPath);
     let orderedLines: ParsedGrepLine[];
     try {
       orderedLines =
@@ -428,7 +429,7 @@ function buildRgArgs(
   searchPaths: readonly string[],
   singleThreaded = false,
 ): string[] {
-  const cmd: string[] = [rgPath];
+  const cmd: string[] = [rgPath, '--no-config'];
   if (singleThreaded) cmd.push('-j', '1');
   cmd.push('--hidden');
   const mode = args.output_mode ?? 'files_with_matches';
@@ -650,6 +651,7 @@ function filterSensitiveLines(
   mode: GrepMode,
   filteredPaths: Set<string>,
   pathClass: PathClass,
+  isCredentialPath: (path: string) => boolean,
 ): ParsedGrepLine[] {
   const kept: ParsedGrepLine[] = [];
   for (const line of lines) {
@@ -658,7 +660,7 @@ function filterSensitiveLines(
       continue;
     }
     const filePath = parsedFilePath(line, mode, pathClass);
-    if (filePath !== undefined && isSensitiveFile(filePath)) {
+    if (filePath !== undefined && (isSensitiveFile(filePath) || isCredentialPath(filePath))) {
       filteredPaths.add(filePath);
       continue;
     }

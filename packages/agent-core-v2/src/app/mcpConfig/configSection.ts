@@ -10,6 +10,12 @@ export const McpSectionSchema = z.object({
   startupTimeoutMs: McpTimeoutMsSchema.optional(),
   toolTimeoutMs: McpTimeoutMsSchema.optional(),
   defaultDeferred: z.boolean().optional(),
+  credentialGrants: z.array(z.object({
+    server: z.string().min(1),
+    origin: z.string().min(1),
+    target: z.string().min(1),
+    variables: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)).min(1),
+  })).optional(),
 });
 
 export type McpSection = z.infer<typeof McpSectionSchema>;

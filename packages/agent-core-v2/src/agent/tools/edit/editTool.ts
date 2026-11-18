@@ -1,9 +1,10 @@
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import {
-  resolvePathAccessPath,
+  resolveToolPath,
   type WorkspaceConfig,
 } from '#/tool/path-access';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { literalRulePattern, matchesPathRuleSubject } from '#/tool/rule-match';
+import { literalRulePattern, matchesToolPathRule } from '#/tool/rule-match';
 import { IFileEditService } from '#/app/edit/fileEdit';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { Runtime } from '#/runtime/runtime';
@@ -28,6 +29,7 @@ export class EditTool implements IEditTool {
   readonly parameters: Record<string, unknown> = toInputJsonSchema(EditInputSchema);
 
   constructor(
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IFileEditService private readonly editor: IFileEditService,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
@@ -45,17 +47,18 @@ export class EditTool implements IEditTool {
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
   }
 
-  resolveExecution(args: EditInput): ToolExecution {
+  async resolveExecution(args: EditInput): Promise<ToolExecution> {
     const inspected = inspectAgentRuntime(this.runtime);
     const env = inspected.environment;
     const workspace = this.workspaceConfig(inspected);
-    const path = resolvePathAccessPath(args.path, {
+    const target = await resolveToolPath(inspected.fs!, args.path, {
       env,
       workspace,
       operation: 'write',
-    });
+    }, this.bootstrap);
+    const { path, requestedPath } = target;
     return {
-      accesses: ToolAccesses.readWriteFile(path),
+      accesses: ToolAccesses.file('readwrite', path, { requestedPath }),
       description: `Editing ${args.path}`,
       display: {
         kind: 'file_io',
@@ -65,8 +68,8 @@ export class EditTool implements IEditTool {
         after: args.new_string,
       },
       approvalRule: literalRulePattern(this.name, path),
-      matchesRule: (ruleArgs) =>
-        matchesPathRuleSubject(ruleArgs, path, {
+      matchesRule: (ruleArgs, includeRequestedPath) =>
+        matchesToolPathRule(ruleArgs, target, includeRequestedPath, {
           cwd: workspace.workspaceDir,
           pathClass: env.pathClass,
           homeDir: env.homeDir,
@@ -77,6 +80,7 @@ export class EditTool implements IEditTool {
           if (lease.runtime.identity.generation !== inspected.identity.generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
+          await target.assertUnchanged(lease.runtime.fs!);
           return await this.execution(args, path, lease.runtime.fs!);
         } finally {
           lease.dispose();

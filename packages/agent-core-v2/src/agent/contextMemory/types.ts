@@ -77,6 +77,7 @@ export interface CompactionSummaryOrigin {
 export interface SystemTriggerOrigin {
   readonly kind: 'system_trigger';
   readonly name: string;
+  readonly goalId?: string;
 }
 
 export interface TaskOrigin {

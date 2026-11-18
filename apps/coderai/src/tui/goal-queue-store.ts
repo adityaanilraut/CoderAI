@@ -95,6 +95,31 @@ export async function removeGoalQueueItem(
   });
 }
 
+export async function promoteNextGoalQueueItem(
+  session: GoalQueueSession,
+  start: (goal: UpcomingGoal) => Promise<boolean>,
+): Promise<UpcomingGoal | undefined> {
+  return withQueueMutationLock(session, async () => {
+    const state = await readQueueFile(session);
+    const goal = state.goals[0];
+    if (!goal || !await start(goal)) return undefined;
+    await writeQueueFile(session, { ...state, goals: state.goals.slice(1) });
+    return goal;
+  });
+}
+
+/** A crash can leave the selected item queued after its goal was saved. */
+export async function reconcilePromotedGoal(
+  session: GoalQueueSession,
+  goalId: string,
+): Promise<void> {
+  await withQueueMutationLock(session, async () => {
+    const state = await readQueueFile(session);
+    const goals = state.goals.filter(goal => goal.id !== goalId);
+    if (goals.length !== state.goals.length) await writeQueueFile(session, { ...state, goals });
+  });
+}
+
 export async function restoreGoalQueueItem(
   session: GoalQueueSession,
   goal: UpcomingGoal,

@@ -10,8 +10,17 @@ export async function discoverProviderModels(provider: ProviderConfig, signal?: 
   if (provider.type === 'vertexai') throw new Error('Vertex AI model discovery is unavailable. Enter a model ID manually.');
   if (!provider.baseUrl) throw new Error('This provider has no base URL. Enter a model ID manually.');
   const standard: Record<string, string> = { openai: 'OPENAI_API_KEY', openai_responses: 'OPENAI_API_KEY', kimi: 'KIMI_API_KEY', anthropic: 'ANTHROPIC_API_KEY', 'google-genai': 'GOOGLE_API_KEY' };
-  const envName = provider.apiKeyEnv || standard[provider.type] || '';
+  const source = record(provider.source);
+  const registry = source['kind'] === 'apiJson';
+  const envName = provider.apiKeyEnv || (registry ? '' : standard[provider.type]) || '';
   const key = provider.apiKey?.trim() || (provider.apiKeyEnv ? process.env[envName]?.trim() : provider.env?.[envName]?.trim() || process.env[envName]?.trim());
+  if (registry) {
+    const registryKeyEnv = typeof source['apiKeyEnv'] === 'string' ? source['apiKeyEnv'] : undefined;
+    const registryKey = registryKeyEnv ? process.env[registryKeyEnv]?.trim() : undefined;
+    if (!key || key === source['apiKey'] || key === registryKey || envName === registryKeyEnv) {
+      throw new Error('Configure separate inference credentials for this provider before discovering models, or enter a model ID manually.');
+    }
+  }
   if (!key) throw new Error(`Set ${envName || 'the provider API key'} before discovering models, or enter a model ID manually.`);
   const google = provider.type === 'google-genai';
   const anthropic = provider.type === 'anthropic';

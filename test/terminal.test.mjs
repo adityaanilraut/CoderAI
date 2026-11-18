@@ -263,6 +263,36 @@ test('real PTY: queued prompts retain the attachments staged at submission', { t
   assert.ok(f.requests.some(request => JSON.stringify(request).includes('data:image/png;base64,')));
 });
 
+test('real PTY: queued input stays with its original conversation across a workspace switch', { timeout: 40000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const other = join(f.root, 'other'); await mkdir(other);
+  f.env.CODERAI_MODEL_CAPABILITIES = 'image_in';
+  await writeFile(join(f.cwd, 'pixel.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a1kAAAAASUVORK5CYII=', 'base64'));
+  const seed = async (cwd, prompt) => {
+    const result = await f.run(['--trust', '--cwd', cwd, '--json', '-p', prompt]);
+    assert.equal(result.code, 0, result.stderr);
+    return result.stdout.trim().split('\n').map(line => JSON.parse(line)).find(event => event.type === 'coderai.session').sessionId;
+  };
+  const original = await seed(f.cwd, 'Original conversation seed');
+  const destination = await seed(other, 'Destination conversation seed');
+  const result = await terminal(f, [
+    { wait: 'Idle', send: 'SCENARIO wait\r' },
+    { wait: 'Working', send: `/resume ${destination}\r` },
+    { wait: 'Queued (1):', send: '/attach pixel.png\r' },
+    { wait: 'Attachment staged:', send: 'recovered original queue entry\r' },
+    { wait: 'Queued (2):', send: '\u0003' },
+    { wait: 'Queued input is held for the previous session.', send: '/queue\r' },
+    { wait: 'Queue is empty.', send: `/resume ${original}\r` },
+    { wait: '❯ recovered original queue entry' },
+    { wait: 'Idle', send: '/quit\r' },
+  ], ['--resume', original]);
+  assert.equal(result.code, 0, result.output);
+  const requests = f.requests.map(request => JSON.stringify(request.messages)).filter(messages => messages?.includes('recovered original queue entry'));
+  assert.ok(requests.length > 0);
+  assert.ok(requests.every(messages => messages.includes('Original conversation seed') && !messages.includes('Destination conversation seed')));
+  assert.ok(requests.some(messages => messages.includes('data:image/png;base64,')));
+});
+
 test('real PTY: cancelled resume preserves attachments and session switch clears them', { timeout: 30000 }, async t => {
   const f = await fixture(); t.after(f.cleanup);
   await f.run(['--trust', '-p', 'ATTACHMENT_TARGET']);
@@ -379,6 +409,23 @@ test('real PTY: attachment labels and removal preserve the draft at 50 by 16', {
   assert.match(result.output, /Image preview unavailable/);
   assert.match(JSON.stringify(f.requests.at(-1)), /draft after removal/);
   assert.doesNotMatch(JSON.stringify(f.requests.at(-1)), /data:image/);
+});
+
+test('real PTY: Ctrl+C cancels the attachment picker and preserves the composer draft', { timeout: 30000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const result = await terminal(f, [
+    { wait: 'Trust ', send: 'yes\r' },
+    { wait: 'Idle', send: '/attach placeholder.png\r' },
+    { wait: 'Attachment staged:', send: 'draft through modal cancel\u0014' },
+    { wait: 'Remove staged attachment', send: '\u0003' },
+    { wait: 'draft through modal cancel', send: '\u0014' },
+    { wait: 'Remove staged attachment', send: '\r' },
+    { wait: 'Idle', send: '\r' },
+    { wait: 'Hello from the deterministic provider.', send: '/quit\r' },
+  ]);
+  assert.equal(result.code, 0, result.output);
+  assert.match(JSON.stringify(f.requests.at(-1)), /draft through modal cancel/);
+  assert.doesNotMatch(result.output, /Draft cleared/);
 });
 
 test('real PTY: task output pages, pauses, follows and returns to its draft at 50 by 16', { timeout: 40000 }, async t => {

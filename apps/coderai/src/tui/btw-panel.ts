@@ -45,31 +45,37 @@ export class BtwPanel implements Component {
 /** Uses a child agent in the current session; never forks or changes main-turn busy state. */
 export class BtwPanelController {
   private active?: { session: Session; agentId: string; panel: BtwPanel; off: () => void };
-  private opening = false;
+  private opening?: Promise<void>;
   private readonly agentIds = new Set<string>();
+  private readonly releasing = new Set<Promise<void>>();
   private generation = 0;
   private task?: Promise<void>;
   constructor(private readonly harness: Pick<CoderaiHarness, 'withInteractiveAgent'>,
     private readonly mount: (panel?: BtwPanel) => void, private readonly refresh: () => void, private readonly rows: () => number,
     private readonly error: (error: unknown) => void) {}
   get isActive(): boolean { return this.active !== undefined; }
-  get isRunning(): boolean { return this.opening || this.active?.panel.running === true; }
+  get isRunning(): boolean { return this.opening !== undefined || this.active?.panel.running === true; }
   owns(agentId: string): boolean { return this.agentIds.has(agentId); }
-  reset(): void { this.close(); this.agentIds.clear(); }
+  reset(): void { this.close(); }
   async open(session: Session, question: string, skills: readonly PromptSkillActivation[] = []): Promise<void> {
     if (this.opening) return;
-    this.close(); this.opening = true;
+    this.close();
     const generation = this.generation;
+    const opening = this.start(session, generation, question, skills);
+    this.opening = opening;
+    try { await opening; }
+    finally { if (this.opening === opening) this.opening = undefined; }
+  }
+  private async start(session: Session, generation: number, question: string, skills: readonly PromptSkillActivation[]): Promise<void> {
     try {
       const agentId = await session.startBtw();
-      if (generation !== this.generation || session.isClosed) return;
       this.agentIds.add(agentId);
+      if (generation !== this.generation || session.isClosed) { this.release(session, agentId); return; }
       const panel = new BtwPanel(this.rows);
       const off = session.onEvent(event => { if (event.agentId === agentId) { this.route(event); } });
       this.active = { session, agentId, panel, off }; this.mount(panel);
       this.send(question, skills);
-    } catch (error) { this.error(error); }
-    finally { this.opening = false; }
+    } catch (error) { if (generation === this.generation && !session.isClosed) this.error(error); }
   }
   send(question: string, skills: readonly PromptSkillActivation[] = []): boolean {
     const active = this.active;
@@ -102,9 +108,22 @@ export class BtwPanelController {
   }
   close(): boolean {
     this.generation++;
-    const active = this.active; if (!active) return false;
-    this.cancel(); active.off(); this.active = undefined; this.mount(); this.refresh(); return true;
+    const active = this.active; if (!active) return this.opening !== undefined;
+    active.off(); this.active = undefined; this.mount(); this.refresh();
+    this.release(active.session, active.agentId);
+    return true;
+  }
+  private release(session: Session, agentId: string): void {
+    if (session.isClosed) { this.agentIds.delete(agentId); return; }
+    const closing = session.closeBtw(agentId).catch(error => { if (!session.isClosed) this.error(error); }).finally(() => {
+      this.agentIds.delete(agentId); this.releasing.delete(closing);
+    });
+    this.releasing.add(closing);
   }
   scroll(direction: 'up' | 'down'): boolean { if (!this.active) return false; this.active.panel.scroll(direction); this.refresh(); return true; }
-  async dispose(): Promise<void> { this.close(); await this.task; }
+  async dispose(): Promise<void> {
+    this.close();
+    await this.opening;
+    await Promise.all([this.task, ...this.releasing]);
+  }
 }

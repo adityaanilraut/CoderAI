@@ -1,4 +1,4 @@
-import { parseKimiCodeCustomHeaders } from '@coderai/oauth';
+import { isRegistryCredential, parseKimiCodeCustomHeaders, readCustomRegistrySource } from '@coderai/oauth';
 import {
   apiKeyEnvMissingMessage,
   declaredProviderCredential,
@@ -27,6 +27,8 @@ import { IProviderService } from '../provider/provider';
 import {
   getProviderDefinition,
   resolveProviderEndpoint,
+  usesVertexAI,
+  vertexLocationFromBaseUrl,
 } from '../provider/provider-definition';
 
 import {
@@ -573,9 +575,7 @@ function buildProtocolProviderOptions(
     case 'google-genai': {
       const project = vertexAIProject(provider);
       const location = vertexAILocation(provider, baseUrl);
-      const configuredProject = nonEmpty(provider?.project) ?? envValue(provider?.env, 'GOOGLE_CLOUD_PROJECT');
-      const configuredLocation = nonEmpty(provider?.location) ?? envValue(provider?.env, 'GOOGLE_CLOUD_LOCATION') ?? locationFromVertexAIBaseUrl(baseUrl);
-      if (options.vertexai === true || (configuredProject !== undefined && configuredLocation !== undefined)) {
+      if (usesVertexAI(provider, baseUrl)) {
         options.vertexai = true;
         options.project = project;
         options.location = location;
@@ -604,31 +604,25 @@ function vertexAILocation(
   provider: CatalogProviderInfo | undefined,
   baseUrl: string | undefined,
 ): string | undefined {
-  return nonEmpty(provider?.location) ?? envValue(provider?.env, 'GOOGLE_CLOUD_LOCATION') ?? nonEmpty(process.env['GOOGLE_CLOUD_LOCATION']) ?? locationFromVertexAIBaseUrl(baseUrl);
+  return nonEmpty(provider?.location) ?? envValue(provider?.env, 'GOOGLE_CLOUD_LOCATION') ?? nonEmpty(process.env['GOOGLE_CLOUD_LOCATION']) ?? vertexLocationFromBaseUrl(baseUrl);
 }
 
 function envValue(env: Readonly<Record<string, string>> | undefined, key: string): string | undefined {
   return nonEmpty(env?.[key]);
 }
 
-function locationFromVertexAIBaseUrl(baseUrl: string | undefined): string | undefined {
-  const url = nonEmpty(baseUrl);
-  if (url === undefined) return undefined;
-  try {
-    const host = new URL(url).hostname;
-    const suffix = '-aiplatform.googleapis.com';
-    return host.endsWith(suffix) ? nonEmpty(host.slice(0, -suffix.length)) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function hasConfiguredApiKey(provider: CatalogProviderInfo): boolean {
-  if (nonEmpty(provider.apiKey) !== undefined) return true;
+  const configuredKey = nonEmpty(provider.apiKey);
+  if (configuredKey !== undefined && !isRegistryCredential(provider, configuredKey)) return true;
   const apiKeyEnv = nonEmpty(provider.apiKeyEnv);
-  if (apiKeyEnv !== undefined) return nonEmpty(process.env[apiKeyEnv]) !== undefined;
+  if (apiKeyEnv !== undefined) {
+    const key = nonEmpty(process.env[apiKeyEnv]);
+    return key !== undefined && !isRegistryCredential(provider, key, apiKeyEnv);
+  }
+  if (readCustomRegistrySource(provider) !== undefined) return false;
   if (provider.type === undefined) return false;
-  return resolveProviderEndpoint(provider.type, provider.env ?? {}).apiKey !== undefined;
+  const type = provider.type === 'google-genai' && usesVertexAI(provider) ? 'vertexai' : provider.type;
+  return nonEmpty(resolveProviderEndpoint(type, provider.env ?? {}).apiKey ?? resolveProviderEndpoint(type).apiKey) !== undefined;
 }
 
 registerScopedService(

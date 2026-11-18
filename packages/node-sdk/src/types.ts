@@ -136,6 +136,8 @@ export interface WorkspaceTrustMcpServerInfo {
   readonly transport: 'stdio' | 'http' | 'sse';
   readonly command?: string;
   readonly args?: readonly string[];
+  readonly argumentCount?: number;
+  readonly environmentNames?: readonly string[];
   readonly cwd?: string;
   readonly url?: string;
   /** Absolute path of the config file declaring this server. */
@@ -203,6 +205,8 @@ export interface UploadFileOptions {
 export interface CreateGoalInput {
   readonly objective: string;
   readonly replace?: boolean;
+  /** Identity supplied by a persistent queue to make promotion idempotent. */
+  readonly goalId?: string;
 }
 
 export type TextPromptPart = Extract<ContentPart, { type: 'text' }>;
@@ -331,6 +335,7 @@ export interface ForkSessionInput {
 export interface ExportSessionInput {
   readonly id: string;
   readonly outputPath?: string | undefined;
+  readonly outputDirectory?: string | undefined;
   readonly includeGlobalLog?: boolean | undefined;
   /** Host version to record in the export manifest. */
   readonly version: string;
@@ -461,6 +466,11 @@ export interface SessionSummary {
   readonly additionalDirs?: readonly string[];
   /** Terminal outcome of the session's latest main turn, when one ended. */
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+}
+
+export interface SavedSessionReplay {
+  readonly session: SessionSummary;
+  readonly agents: Readonly<Record<string, { readonly replay: readonly import('#/replay').AgentReplayRecord[] }>>;
 }
 
 export interface AddAdditionalDirResult {

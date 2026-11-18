@@ -87,6 +87,7 @@ import {
   sleepForRetry,
 } from '#/_base/utils/retry';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { MAX_PROVIDER_RETRY_AFTER_MS } from '#human/llm/requester/retry';
 
 const EMPTY_TOOL_PARAMETERS: Record<string, unknown> = {
   type: 'object',
@@ -538,17 +539,19 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
           continue;
         }
         const raw = unwrapErrorCause(error);
+        const retryAfter = readRetryAfterMs(raw);
         if (
           !this.infiniteRetryEnabled ||
           isAbortError(error) ||
           signal?.aborted === true ||
-          raw instanceof APIContextOverflowError
+          raw instanceof APIContextOverflowError ||
+          (retryAfter !== null && retryAfter > MAX_PROVIDER_RETRY_AFTER_MS)
         ) {
           throw error;
         }
         infiniteRetryAttempt += 1;
         const delayMs =
-          readRetryAfterMs(raw) ??
+          retryAfter ??
           retryBackoffDelay(infiniteRetryAttempt - 1);
         this.log.warn('llm request failed; retrying indefinitely (KIMI_CODE_INFINITE_RETRY)', {
           model: request.model.name,

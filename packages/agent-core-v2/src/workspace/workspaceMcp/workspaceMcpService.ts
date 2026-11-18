@@ -66,6 +66,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       workspaceId: workspace.workspaceId,
       runtimeId: 'local',
       resolveDefaults: () => this.mcpConfig.tunables(),
+      resolveCredentialGrants: () => this.mcpConfig.tunables().credentialGrants,
       resolveClientName: this.resolveClientName,
     });
     this._register({ dispose: () => void this.manager.shutdown() });

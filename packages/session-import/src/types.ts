@@ -73,6 +73,7 @@ export interface SourceCopy {
 
 export interface ReadOptions {
   imageDirectory: string;
+  publishedImageDirectory?: string;
   stateDatabasePath?: string;
 }
 
@@ -92,6 +93,7 @@ export interface ConversionOptions {
   source: SessionSource;
   sourcePath: string;
   attachmentDirectory: string;
+  publishedAttachmentDirectory?: string;
   contextWindow: number;
   tokenBudget?: number;
   stateDatabasePath?: string;

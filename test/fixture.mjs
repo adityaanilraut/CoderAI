@@ -177,8 +177,8 @@ export async function fixture() {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith('KIMI_') || key.startsWith('CODERAI_')) delete env[key];
   Object.assign(env, { CODERAI_HOME: home, CODERAI_MODEL_NAME: 'fixture-model', CODERAI_MODEL_PROVIDER_TYPE: 'openai', CODERAI_MODEL_API_KEY: 'test-only-key', CODERAI_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`, CODERAI_MODEL_CAPABILITIES: 'none', KIMI_LOG_LEVEL: 'off', NO_COLOR: '1' });
-  const run = (args = [], input = '') => new Promise((resolveRun, reject) => {
-    const child = spawn(testRuntime, [cli, ...args], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  const run = (args = [], input = '', { env: runEnv = env } = {}) => new Promise((resolveRun, reject) => {
+    const child = spawn(testRuntime, [cli, ...args], { cwd, env: runEnv, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
     child.stdout.on('data', c => stdout += c); child.stderr.on('data', c => stderr += c);
     child.on('error', reject); child.on('close', (code, signal) => resolveRun({ code, signal, stdout, stderr }));

@@ -364,6 +364,17 @@ test('replayed failed todo tools retain their identity and error preview', () =>
   assert.match(renderTranscript(transcript), /Invalid task status/);
 });
 
+test('replay keeps a non-TodoList result with todo-shaped content on its original card', () => {
+  const transcript = new ConversationTranscript();
+  transcript.replayMessage({ role: 'assistant', content: [], toolCalls: [{ id: 'read', name: 'Read', arguments: '{"path":"todo.txt"}' }] });
+  transcript.replayMessage({ role: 'tool', toolCallId: 'read', content: 'Current todo list:\n  [pending] example output' });
+  transcript.finishTurn(); transcript.setExpanded(true);
+  const output = renderTranscript(transcript);
+  assert.match(output, /Used Read/);
+  assert.match(output, /\[pending\] example output/);
+  assert.doesNotMatch(output, /Interrupted Read|Todos ·/);
+});
+
 test('tool progress replacements remove old output and workspace paths stay readable', () => {
   const transcript = new ConversationTranscript(); transcript.setWorkspace('/example/project');
   transcript.toolStarted(tool('read', '/example/project/src/file.ts'));

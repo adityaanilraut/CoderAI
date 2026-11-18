@@ -96,25 +96,6 @@ function createClient(
   });
 }
 
-function createAbortException(): DOMException {
-  return new DOMException('The operation was aborted.', 'AbortError');
-}
-
-async function abortPromise(signal: AbortSignal): Promise<never> {
-  if (signal.aborted) {
-    throw createAbortException();
-  }
-  return new Promise((_, reject) => {
-    signal.addEventListener(
-      'abort',
-      () => {
-        reject(createAbortException());
-      },
-      { once: true },
-    );
-  });
-}
-
 interface GoogleGenAITransport {
   readonly connection: GoogleGenAIRequesterOptions['connection'];
   readonly ctx: TraitContext;
@@ -128,7 +109,10 @@ async function executeGoogleGenAIRequest(
   request: GoogleGenAIRequestParams,
   transport: GoogleGenAITransport,
 ): Promise<void> {
-  const { connection, ctx, format, resolveClient, signal, onEvent } = transport;
+  const { connection, ctx, format, resolveClient, onEvent } = transport;
+  const requestController = new AbortController();
+  const signal = AbortSignal.any([transport.signal, requestController.signal]);
+  signal.throwIfAborted();
   const client = resolveClient({
     model: ctx.model,
     headers: mergeRequestHeaders(
@@ -142,16 +126,27 @@ async function executeGoogleGenAIRequest(
       params: GenerateContentParameters,
     ): Promise<AsyncIterable<Record<string, unknown>>>;
   };
-  const stream = await Promise.race([
-    models.generateContentStream(request.params),
-    abortPromise(signal),
-  ]);
+  try {
+    await consumeGoogleStream(models.generateContentStream({
+      ...request.params,
+      config: { ...request.params.config, abortSignal: signal },
+    }), format, signal, onEvent);
+  } finally {
+    requestController.abort();
+  }
+}
+
+async function consumeGoogleStream(
+  response: Promise<AsyncIterable<Record<string, unknown>>>,
+  format: GoogleGenAITransport['format'],
+  signal: AbortSignal,
+  onEvent: GoogleGenAITransport['onEvent'],
+): Promise<void> {
+  const stream = await response;
   const parse = format.createStreamParser();
   let messageId: string | undefined;
   for await (const chunk of stream) {
-    if (signal.aborted) {
-      throw createAbortException();
-    }
+    signal.throwIfAborted();
     let failed = false;
     parse(chunk, {
       onDelta: (part) => onEvent?.({ type: 'llm.streaming.part', part }),
@@ -171,6 +166,7 @@ async function executeGoogleGenAIRequest(
       return;
     }
   }
+  signal.throwIfAborted();
   onEvent?.({ type: 'llm.done' });
 }
 

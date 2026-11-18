@@ -167,10 +167,19 @@ export class ProviderDiscoveryService extends Disposable implements IProviderDis
   }
 
   private buildRefreshHost(exclusion: StaticExclusion, userAgent: string): RefreshProviderHost {
+    const snapshot = () => Object.fromEntries(
+      [PROVIDERS_SECTION, MODELS_SECTION, DEFAULT_MODEL_SECTION, THINKING_SECTION]
+        .map(domain => [domain, this.config.inspect(domain).userValue]),
+    );
+    let expectedValues = snapshot();
     return {
       getConfig: async () => this.readUserConfigShape(exclusion),
       removeProvider: (providerId) => this.shapeWithoutProvider(providerId),
-      setConfig: (patch) => this.applyRefreshPatch(patch, exclusion),
+      setConfig: async (patch) => {
+        const result = await this.applyRefreshPatch(patch, exclusion, expectedValues);
+        expectedValues = snapshot();
+        return result;
+      },
       resolveOAuthToken: (providerName, oauthRef) => this.resolveOAuthToken(providerName, oauthRef),
       userAgent,
     };
@@ -218,6 +227,7 @@ export class ProviderDiscoveryService extends Disposable implements IProviderDis
   private async applyRefreshPatch(
     patch: ManagedKimiConfigShape,
     exclusion: StaticExclusion,
+    expectedValues: Record<string, unknown>,
   ): Promise<ManagedKimiConfigShape> {
     const userProviders =
       this.config.inspect<Record<string, ProviderConfig>>(PROVIDERS_SECTION).userValue ?? {};
@@ -245,7 +255,7 @@ export class ProviderDiscoveryService extends Disposable implements IProviderDis
     if ('thinking' in patch) {
       sections[THINKING_SECTION] = restoreDefault ? exclusion.thinking : patch.thinking;
     }
-    await this.config.replaceSections(sections);
+    await this.config.replaceSections(sections, undefined, { expectedValues });
     return {
       providers:
         patch.providers !== undefined

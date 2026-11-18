@@ -110,16 +110,12 @@ export async function statSessionStateFile(
       meta === META_KEY
         ? `${sessionsScope}/${workspaceId}/${sessionId}`
         : `${sessionsScope}/${workspaceId}/${sessionId}/${META_SCOPE}`;
-    try {
-      const [mtimeMs, size] = await Promise.all([
-        storage.mtime(scope, META_KEY),
-        storage.size(scope, META_KEY),
-      ]);
-      if (mtimeMs === undefined || size === undefined) continue;
-      return { meta, mtimeMs, size };
-    } catch {
-      continue;
-    }
+    const [mtimeMs, size] = await Promise.all([
+      storage.mtime(scope, META_KEY),
+      storage.size(scope, META_KEY),
+    ]);
+    if (mtimeMs === undefined || size === undefined) continue;
+    return { meta, mtimeMs, size };
   }
   return undefined;
 }
@@ -210,13 +206,9 @@ export async function listWorkspaceIds(
   storage: IFileSystemStorageService,
   sessionsScope: string,
 ): Promise<readonly string[]> {
-  try {
-    return (await storage.list(sessionsScope)).filter(
-      (entry) => entry !== SESSION_INDEX_DIRTY_DIR && entry !== SESSION_INDEX_SCAN_CACHE_DIR,
-    );
-  } catch {
-    return [];
-  }
+  return (await storage.list(sessionsScope)).filter(
+    (entry) => entry !== SESSION_INDEX_DIRTY_DIR && entry !== SESSION_INDEX_SCAN_CACHE_DIR,
+  );
 }
 
 export async function listSessionIds(
@@ -224,11 +216,7 @@ export async function listSessionIds(
   sessionsScope: string,
   workspaceId: string,
 ): Promise<readonly string[]> {
-  try {
-    return await storage.list(`${sessionsScope}/${workspaceId}`);
-  } catch {
-    return [];
-  }
+  return storage.list(`${sessionsScope}/${workspaceId}`);
 }
 
 export async function readSessionSummary(
@@ -236,9 +224,10 @@ export async function readSessionSummary(
   sessionsScope: string,
   workspaceId: string,
   sessionId: string,
+  failOnUnreadable = false,
 ): Promise<SessionSummary | undefined> {
   const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
-  const meta = (await readMeta(docs, base)) ?? (await readMeta(docs, `${base}/${META_SCOPE}`));
+  const meta = (await readMeta(docs, base, failOnUnreadable)) ?? (await readMeta(docs, `${base}/${META_SCOPE}`, failOnUnreadable));
   if (meta === undefined) return undefined;
   const rawCustom = meta['custom'];
   const custom =
@@ -263,10 +252,12 @@ export async function readSessionSummary(
 async function readMeta(
   docs: IAtomicDocumentStore,
   scope: string,
+  failOnUnreadable: boolean,
 ): Promise<Record<string, unknown> | undefined> {
   try {
     return await docs.get<Record<string, unknown>>(scope, META_KEY);
-  } catch {
+  } catch (error) {
+    if (failOnUnreadable) throw error;
     return undefined;
   }
 }

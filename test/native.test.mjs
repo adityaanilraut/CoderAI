@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFile, chmod, mkdtemp, readFile, rm, mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fixture } from './fixture.mjs';
+import { checkToolScenario } from './tool-scenario.mjs';
+import { checkNodePlugin } from './plugin-mcp-fixture.mjs';
 
 const builtBinary = resolve(process.env.CODERAI_TEST_BINARY || join('dist-bun', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'coderai.exe' : 'coderai'));
 const standaloneRequested = Boolean(process.env.CODERAI_TEST_BINARY);
@@ -33,26 +34,26 @@ test('standalone extracts its native clipboard binding and handles pasted media'
   assert.match(await readFile(marker, 'utf8'), /clipboard\.node/);
   assert.match(JSON.stringify(f.requests[0]), /data:image\/png;base64,/);
 });
-test('standalone executable runs the engine and tools outside the checkout', { timeout: 60000, skip: !standaloneRequested && 'run bun run test:native to build and test the Bun executable' }, async t => {
-  const root = await mkdtemp(join(tmpdir(), 'coderai-native-test-'));
-  // Windows can briefly keep the executable locked after the process exits.
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10 }));
-  const binary = join(root, process.platform === 'win32' ? 'coderai.exe' : 'coderai');
-  await copyFile(builtBinary, binary);
-  if (process.platform !== 'win32') await chmod(binary, 0o755);
-  const f = await fixture(); t.after(f.cleanup);
-  const result = await new Promise((resolveRun, reject) => {
-    const child = spawn(binary, ['--trust', '--yolo', '--json', '-p', 'SCENARIO tools'], { cwd: f.cwd, env: f.env });
+function runStandalone(fixture, args) {
+  return new Promise((resolveRun, reject) => {
+    const child = spawn(builtBinary, args, { cwd: fixture.cwd, env: fixture.env });
     let stdout = '', stderr = '';
-    child.stdout.on('data', data => stdout += data); child.stderr.on('data', data => stderr += data);
-    child.on('error', reject); child.on('close', (code, signal) => resolveRun({ code, signal, stdout, stderr }));
+    child.stdout.on('data', data => stdout += data);
+    child.stderr.on('data', data => stderr += data);
+    child.on('error', reject);
+    child.on('close', (code, signal) => resolveRun({ code, signal, stdout, stderr }));
     child.stdin.end();
   });
-  assert.equal(result.code, 0, result.stderr || `signal: ${result.signal}`);
-  const events = result.stdout.trim().split('\n').map(line => JSON.parse(line));
-  assert.equal(events.at(-1).exitCode, 0, result.stderr);
-  assert.equal(events.filter(event => event.type === 'tool.result').length, 7);
-  assert.equal(await readFile(join(f.cwd, 'created.txt'), 'utf8'), 'second\n');
+}
+
+test('standalone executable runs the engine and tools outside the checkout', { timeout: 60000, skip: !standaloneRequested && 'run bun run test:native to build and test the Bun executable' }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  await checkToolScenario(args => runStandalone(f, args), f);
+});
+
+test('standalone starts a configured Node MCP plugin', { timeout: 30000, skip: !standaloneRequested }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  await checkNodePlugin(f, args => runStandalone(f, args));
 });
 
 test('standalone embeds a working MiniDb text worker', { timeout: 60000, skip: !standaloneRequested }, async t => {

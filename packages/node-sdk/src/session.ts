@@ -58,6 +58,11 @@ export interface SessionOptions {
   readonly onClose?: (() => void | Promise<void>) | undefined;
 }
 
+export interface PromptSubmissionOptions {
+  readonly promptId?: string;
+  readonly signal?: AbortSignal;
+}
+
 /**
  * The capability surface (built-in product capabilities: kimi-cu,
  * kimi-webbridge) exists only on the v2 engine — v1 has no capability
@@ -90,7 +95,7 @@ export class Session {
 
   private readonly rpc: SDKRpcClientBase;
   private readonly onClose?: (() => void | Promise<void>) | undefined;
-  private closed = false;
+  private closing?: Promise<void>;
 
   /** Register a custom tool on the active agent in this session. */
   async registerTool(tool: UserToolRegistration, handler: UserToolHandler): Promise<void> {
@@ -114,7 +119,7 @@ export class Session {
 
   /** True once {@link close} began — the session may still be closing in the engine. */
   get isClosed(): boolean {
-    return this.closed;
+    return this.closing !== undefined;
   }
 
   getResumeState(): ResumedSessionState | undefined {
@@ -135,9 +140,14 @@ export class Session {
       sessionId: this.id,
       forcePluginSessionStartReminder: options?.forcePluginSessionStartReminder,
     });
+    this.applyResumedSummary(summary);
+    return summary;
+  }
+
+  /** @internal */
+  applyResumedSummary(summary: ResumedSessionSummary): void {
     this.summary = summary;
     this.resumeState = resumeStateFromSummary(summary);
-    return summary;
   }
 
   onEvent(listener: (event: Event) => void): Unsubscribe {
@@ -172,13 +182,12 @@ export class Session {
       return;
     }
     this.rpc.setStaleReloadHandler(this.id, async (summary) => {
-      this.summary = summary;
-      this.resumeState = resumeStateFromSummary(summary);
+      this.applyResumedSummary(summary);
       await handler();
     });
   }
 
-  async prompt(input: string | PromptInput, options?: { promptId?: string }): Promise<void> {
+  async prompt(input: string | PromptInput, options?: PromptSubmissionOptions): Promise<void> {
     this.ensureOpen();
     if (options?.promptId !== undefined && options.promptId.length === 0) {
       throw new TypeError('promptId must not be empty');
@@ -187,20 +196,24 @@ export class Session {
       sessionId: this.id,
       input: normalizePromptInput(input),
       promptId: options?.promptId,
+      signal: options?.signal,
     });
   }
 
   async promptWithSkills(
     input: string | PromptInput,
     skills: readonly PromptSkillActivation[],
-    options?: { readonly steerIfActive?: boolean },
+    options?: PromptSubmissionOptions & { readonly steerIfActive?: boolean },
   ): Promise<void> {
     this.ensureOpen();
+    if (options?.promptId === '') throw new TypeError('promptId must not be empty');
     await this.rpc.promptWithSkills({
       sessionId: this.id,
       input: normalizePromptInput(input),
       skills,
       steerIfActive: options?.steerIfActive,
+      promptId: options?.promptId,
+      signal: options?.signal,
     });
   }
 
@@ -275,9 +288,14 @@ export class Session {
     return this.rpc.startBtw({ sessionId: this.id });
   }
 
-  async cancel(): Promise<void> {
+  async closeBtw(agentId: string): Promise<void> {
+    if (this.isClosed) return;
+    await this.rpc.closeBtw({ sessionId: this.id, agentId });
+  }
+
+  async cancel(target?: { readonly promptId?: string; readonly turnId?: number }): Promise<void> {
     this.ensureOpen();
-    await this.rpc.cancel({ sessionId: this.id });
+    await this.rpc.cancel({ sessionId: this.id, ...target });
   }
 
   async setModel(model: string): Promise<void> {
@@ -593,7 +611,7 @@ export class Session {
    * fallback), so background subagents get a chance to complete before the process
    * exits. No-op in other modes. Bounded by `background.print_wait_ceiling_s`.
    */
-  async waitForBackgroundTasksOnPrint(options: { force?: boolean; timeoutSeconds?: number } = {}): Promise<number> {
+  async waitForBackgroundTasksOnPrint(options: { force?: boolean; timeoutSeconds?: number; signal?: AbortSignal } = {}): Promise<number> {
     this.ensureOpen();
     return this.rpc.waitForBackgroundTasksOnPrint({ sessionId: this.id, ...options });
   }
@@ -602,13 +620,14 @@ export class Session {
    * Used by `kimi -p` after the main agent's turn ends with `reason ===
    * 'completed'`. Returns `'finish'` when the run may exit, or `'continue'` when
    * the caller must keep the session alive so a background-task completion can
-   * steer the main agent into a new turn. Policy is selected by
+   * steer the main agent into a new turn. Returns `'timeout'` when work was
+   * still pending at the wait ceiling. Policy is selected by
    * `background.print_background_mode` (`'exit' | 'drain' | 'steer'`); when unset
    * it falls back to the legacy `keep_alive_on_exit` mapping (`true ⇒ 'drain'`).
    */
-  async handlePrintMainTurnCompleted(): Promise<'finish' | 'continue'> {
+  async handlePrintMainTurnCompleted(options: { signal?: AbortSignal; taskIds?: readonly string[]; forceDrain?: boolean } = {}): Promise<'finish' | 'continue' | 'timeout'> {
     this.ensureOpen();
-    return this.rpc.handlePrintMainTurnCompleted({ sessionId: this.id });
+    return this.rpc.handlePrintMainTurnCompleted({ sessionId: this.id, ...options });
   }
 
   // --- Goal lifecycle ---------------------------------------------------
@@ -775,6 +794,7 @@ export class Session {
     pluginId: string,
     commandName: string,
     args?: string | undefined,
+    options?: PromptSubmissionOptions,
   ): Promise<void> {
     this.ensureOpen();
     const normalizedPluginId = pluginId.trim();
@@ -786,11 +806,14 @@ export class Session {
       );
     }
     const commandArgs = normalizeOptionalString(args);
+    if (options?.promptId === '') throw new TypeError('promptId must not be empty');
     await this.rpc.activatePluginCommand({
       sessionId: this.id,
       pluginId: normalizedPluginId,
       commandName: normalizedCommandName,
       ...(commandArgs !== undefined ? { args: commandArgs } : {}),
+      promptId: options?.promptId,
+      signal: options?.signal,
     });
   }
 
@@ -812,15 +835,15 @@ export class Session {
     });
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    try {
-      await this.rpc.closeSession({ sessionId: this.id });
-    } finally {
-      this.rpc.clearSessionHandlers(this.id);
-      await this.onClose?.();
-    }
+  close(): Promise<void> {
+    return this.closing ??= Promise.resolve().then(async () => {
+      try {
+        await this.rpc.closeSession({ sessionId: this.id });
+      } finally {
+        try { this.rpc.clearSessionHandlers(this.id); }
+        finally { await this.onClose?.(); }
+      }
+    });
   }
 
   /** @internal */
@@ -839,7 +862,7 @@ export class Session {
   }
 
   private ensureOpen(): void {
-    if (this.closed) {
+    if (this.isClosed) {
       throw new KimiError(ErrorCodes.SESSION_CLOSED, 'Session is closed');
     }
   }

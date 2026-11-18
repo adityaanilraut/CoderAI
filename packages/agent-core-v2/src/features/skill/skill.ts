@@ -16,6 +16,8 @@ export interface PromptSkillActivation {
 
 export interface PromptWithSkillsInput {
   readonly input: readonly ContentPart[];
+  readonly promptId?: string;
+  readonly signal?: AbortSignal;
   readonly clientMetadata?: readonly Readonly<Record<string, unknown>>[];
   readonly skills: readonly PromptSkillActivation[];
   readonly attachments?: readonly PromptFileAttachment[];

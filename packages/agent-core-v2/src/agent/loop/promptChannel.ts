@@ -43,7 +43,7 @@ export class AgentPromptChannel implements IAgentPromptChannel {
     const { id } = this.loop.submit({
       message: { role: 'user', content: [...payload.input] },
       meta: { promptId: payload.promptId, origin: { kind: 'user' }, tracked: true },
-    });
+    }, { signal: payload.signal });
     if (status.state === 'running' || status.paused || status.queue.length > 0) return undefined;
     return launchResult(this.loop, id);
   }

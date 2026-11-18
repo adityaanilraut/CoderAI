@@ -2,7 +2,18 @@ import { isAbsolute, join, parse } from 'pathe';
 
 import picomatch from 'picomatch';
 
-import { canonicalizePath, type PathClass } from './path-access';
+import { canonicalizePath, type PathClass, type ResolvedToolPath } from './path-access';
+
+export function matchesToolPathRule(
+  ruleArgs: string,
+  target: ResolvedToolPath,
+  includeRequestedPath: boolean | undefined,
+  options: PermissionPathMatchOptions,
+): boolean {
+  return matchesPathRuleSubject(ruleArgs, target.path, options) ||
+    (includeRequestedPath === true && target.requestedPath !== target.path &&
+      matchesPathRuleSubject(ruleArgs, target.requestedPath, options));
+}
 
 export interface PermissionPathMatchOptions {
   readonly cwd?: string;

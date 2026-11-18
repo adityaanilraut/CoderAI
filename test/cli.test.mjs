@@ -4,6 +4,7 @@ import { readFile, writeFile, access, readdir, utimes } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fixture, cli, testRuntime } from './fixture.mjs';
+import { guardedRuntimeEnv } from './guarded-runtime.mjs';
 
 const events = result => result.stdout.trim().split('\n').map(line => JSON.parse(line));
 test('built CLI: help, plain output, JSON, pipes, tools, approvals, validation, persistence and cancellation', { timeout: 120000 }, async t => {
@@ -70,9 +71,8 @@ test('built CLI: help, plain output, JSON, pipes, tools, approvals, validation, 
     assert.ok(f.requests.some(r => JSON.stringify(r).includes('CoderAI')));
   });
   await t.test('no product server, original checkout, or Kimi home is accessed', async () => {
-    const previous = f.env.NODE_OPTIONS; f.env.NODE_OPTIONS = `--require=${resolve('test/runtime-guard.cjs')}`;
-    const result = await f.run(['--trust', '-p', 'hello']);
-    if (previous) f.env.NODE_OPTIONS = previous; else delete f.env.NODE_OPTIONS;
+    const env = await guardedRuntimeEnv(f);
+    const result = await f.run(['--trust', '-p', 'hello'], '', { env });
     assert.equal(result.code, 0, result.stderr);
   });
   await t.test('Kimi provider retains its real request and tool path', async () => {

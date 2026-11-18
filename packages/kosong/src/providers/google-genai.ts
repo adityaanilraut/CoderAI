@@ -224,26 +224,6 @@ function createAbortError(): DOMException {
   return new DOMException('The operation was aborted.', 'AbortError');
 }
 
-async function abortPromise(signal: AbortSignal | undefined): Promise<never> {
-  if (signal === undefined) {
-    return new Promise(() => {
-      // Intentionally never settles when no signal is provided.
-    });
-  }
-  if (signal.aborted) {
-    throw createAbortError();
-  }
-  return new Promise((_, reject) => {
-    signal.addEventListener(
-      'abort',
-      () => {
-        reject(createAbortError());
-      },
-      { once: true },
-    );
-  });
-}
-
 function messageToGoogleGenAI(message: Message): GoogleContent {
   if (message.role === 'tool') {
     throw new ChatProviderError(
@@ -522,6 +502,7 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
     response: AsyncIterable<Record<string, unknown>> | Record<string, unknown>,
     isStream: boolean,
     signal?: AbortSignal,
+    private readonly onStreamClose?: () => void,
   ) {
     if (isStream) {
       this._iter = this._convertStreamResponse(
@@ -550,7 +531,11 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
   }
 
   async *[Symbol.asyncIterator](): AsyncIterator<StreamedMessagePart> {
-    yield* this._iter;
+    try {
+      yield* this._iter;
+    } finally {
+      this.onStreamClose?.();
+    }
   }
 
   private _captureFinishReason(response: Record<string, unknown>): void {
@@ -685,9 +670,6 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
   ): AsyncGenerator<StreamedMessagePart> {
     try {
       for await (const chunk of response) {
-        // Check abort at each chunk boundary so users who pass an
-        // AbortSignal see cancellation honored promptly even though the
-        // Google GenAI SDK does not forward it to the underlying fetch.
         this._throwIfAborted(signal);
         this._extractUsage(chunk);
         this._extractId(chunk);
@@ -697,6 +679,7 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
           yield part;
         }
       }
+      this._throwIfAborted(signal);
     } catch (error: unknown) {
       // Preserve AbortError identity so the retry/generate loop can
       // distinguish it from transient provider errors.
@@ -852,17 +835,20 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     history: Message[],
     options?: GenerateOptions,
   ): Promise<StreamedMessage> {
-    // Short-circuit if the caller has already aborted — the Google GenAI
-    // SDK will not honor the signal natively, so we must check manually.
     if (options?.signal?.aborted === true) {
       throw createAbortError();
     }
 
     const contents = messagesToGoogleGenAIContents(history);
+    const controller = new AbortController();
+    const signal = options?.signal === undefined
+      ? controller.signal
+      : AbortSignal.any([options.signal, controller.signal]);
 
     const config: Record<string, unknown> = {
       ...this._generationKwargs,
       systemInstruction: systemPrompt,
+      abortSignal: signal,
       ...(tools.length > 0 ? { tools: tools.map((t) => toolToGoogleGenAI(t)) } : {}),
     };
     applyResponseFormat(config, options?.responseFormat);
@@ -876,33 +862,27 @@ export class GoogleGenAIChatProvider implements ChatProvider {
 
       const params = { model: this._model, contents, config };
 
-      // The Google GenAI SDK does not accept an AbortSignal, so we must race
-      // the initial SDK request against the caller's abort signal ourselves.
-      // Once we have a response/stream object, the wrapper below continues to
-      // check the signal at each chunk boundary.
       options?.onRequestSent?.();
+      if (signal.aborted) throw createAbortError();
       if (this._stream) {
-        const stream = await Promise.race([
-          models.generateContentStream(params),
-          abortPromise(options?.signal),
-        ]);
+        const stream = await models.generateContentStream(params);
         return new GoogleGenAIStreamedMessage(
           stream as AsyncIterable<Record<string, unknown>>,
           true,
-          options?.signal,
+          signal,
+          () => controller.abort(),
         );
       }
 
-      const response = await Promise.race([
-        models.generateContent(params),
-        abortPromise(options?.signal),
-      ]);
+      const response = await models.generateContent(params);
       return new GoogleGenAIStreamedMessage(
         response as Record<string, unknown>,
         false,
-        options?.signal,
+        signal,
       );
     } catch (error: unknown) {
+      if (signal.aborted) throw createAbortError();
+      controller.abort();
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw error;
       }

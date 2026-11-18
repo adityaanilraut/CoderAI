@@ -83,7 +83,7 @@ export interface RunnableToolExecution {
   readonly description?: string;
   readonly stopBatchAfterThis?: boolean | undefined;
   readonly approvalRule: string;
-  readonly matchesRule?: ((ruleArgs: string) => boolean) | undefined;
+  readonly matchesRule?: ((ruleArgs: string, includeRequestedPath?: boolean) => boolean) | undefined;
   readonly execute: (ctx: ExecutableToolContext) => Promise<ExecutableToolResult>;
 }
 
@@ -126,6 +126,7 @@ export interface ToolFileAccess {
   readonly kind: 'file';
   readonly operation: ToolFileAccessOperation;
   readonly path: string;
+  readonly requestedPath?: string;
   readonly recursive?: boolean;
 }
 
@@ -148,9 +149,9 @@ export const ToolAccesses = {
   file(
     operation: ToolFileAccessOperation,
     path: string,
-    options: { readonly recursive?: boolean } = {},
+    options: { readonly recursive?: boolean; readonly requestedPath?: string } = {},
   ): ToolAccesses {
-    return [{ kind: 'file', operation, path, recursive: options.recursive }];
+    return [{ kind: 'file', operation, path, ...options }];
   },
 
   readFile(path: string): ToolAccesses {

@@ -10,10 +10,10 @@ import { basename } from 'node:path';
 import { join } from 'node:path';
 import { copyFile, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { appendGoalQueueItem, readGoalQueue, removeGoalQueueItem, moveGoalQueueItem, updateGoalQueueItem } from './goal-queue-store.js';
+import { appendGoalQueueItem, readGoalQueue, removeGoalQueueItem, moveGoalQueueItem, updateGoalQueueItem, promoteNextGoalQueueItem, reconcilePromotedGoal } from './goal-queue-store.js';
 import { attachmentPrompt } from '../attachments.js';
 import { readClipboardMedia } from '../clipboard-media.js';
-import { mediaKindForPath } from '@coderai/sdk/media';
+import { MAX_MEDIA_BYTES, MAX_MEDIA_MEGABYTES, mediaKindForPath } from '@coderai/sdk/media';
 import { TurnActivity } from './activity.js';
 import { todoListFromResult } from './todos.js';
 import { renderEventNotice, McpAuthorizationOpener } from '../event-format.js';
@@ -23,6 +23,7 @@ import { loadTuiConfig, DEFAULT_TUI_CONFIG, saveAutoSessionTitle } from './confi
 import { AutoSessionTitle } from './session-title.js';
 
 const commandAliases: Record<string, string> = { '/h': '/help', '/?': '/help', '/yes': '/yolo', '/thinking': '/effort', '/task': '/tasks', '/export': '/export-md', '/q': '/quit', '/auto': '/permissions auto' };
+type QueuedInput = { text: string; attachments: readonly string[] };
 
 export async function interactive(runtime: Runtime): Promise<void> {
   const commands = [...Object.entries(commandAliases).map(([name, target]) => ({ name: name.slice(1), description: `Alias for ${target}` })), ...help.split('\n').map(line => {
@@ -44,6 +45,7 @@ export async function interactive(runtime: Runtime): Promise<void> {
   let observingTurn = false;
   let pendingPrompt: string | undefined;
   let runningGoal = false;
+  let submissionAbort: AbortController | undefined;
   let autoTitleEnabled = true;
   view.onPreferencesChanged = config => { autoTitleEnabled = config.autoSessionTitle; };
   try { await view.applyPreferences(initialPreferences); }
@@ -64,11 +66,12 @@ export async function interactive(runtime: Runtime): Promise<void> {
   };
   let observedSession: Session | undefined;
   let unsubscribe: (() => void) | undefined;
-  const observeBackground = () => {
+  const observeBackground = async () => {
     const session = runtime.session;
     if (!session || session === observedSession) return;
     unsubscribe?.();
     if (observedSession && !observedSession.isClosed) observedSession.setStaleReloadHandler(undefined);
+    if (!observedSession && startupQueue.length) queueFor(session.id).push(...startupQueue.splice(0));
     btw.reset(); view.updates.clear(); view.agents.clear(); oauth.clear(); observedSession = session;
     view.setSessionTitle(session.summary?.title ?? '');
     const warnings = async () => {
@@ -132,13 +135,22 @@ export async function interactive(runtime: Runtime): Promise<void> {
       }
       if (event.type === 'shell.output' && event.commandId === shellId && event.update.text) view.shellDelta(event.update.text);
     });
+    try {
+      const { goal } = await session.getGoal();
+      if (goal && runtime.session === session) await reconcilePromotedGoal(session, goal.goalId);
+    } catch (error) {
+      if (!stopping && runtime.session === session) view.error(error);
+    }
   };
   const skillCommands = new Map<string, string>();
   const pluginCommands = new Map<string, { pluginId: string; name: string }>();
+  let commandVersion = 0;
   const refreshCommands = async () => {
     const session = runtime.session;
     if (!session) return;
+    const version = ++commandVersion;
     const [skills, plugins] = await Promise.all([session.listSkills(), session.listPluginCommands()]);
+    if (stopping || runtime.session !== session || version !== commandVersion) return;
     skillCommands.clear(); pluginCommands.clear();
     const dynamic: { name: string; description?: string; skillName?: string }[] = [];
     for (const skill of skills) {
@@ -156,33 +168,42 @@ export async function interactive(runtime: Runtime): Promise<void> {
     }
     view.setCommands([...commands, ...dynamic], session.workDir, session.summary?.additionalDirs ?? []);
   };
-  const queue: { text: string; attachments?: string[] }[] = [];
+  const startupQueue: QueuedInput[] = [];
+  const queues = new Map<string, QueuedInput[]>();
+  const queueFor = (sessionId = runtime.session?.id): QueuedInput[] => {
+    if (!sessionId) return startupQueue;
+    let queue = queues.get(sessionId);
+    if (!queue) { queue = []; queues.set(sessionId, queue); }
+    return queue;
+  };
   const attachments: string[] = [...runtime.options.attachments ?? []];
   let clipboardDir: string | undefined;
   let pasteTask: Promise<boolean> | undefined;
   view.onPasteMedia = () => {
     pasteTask = (async () => {
-      if (!runtime.session || stopping) return false;
+      const session = runtime.session;
+      if (!session || stopping) return false;
       const media = await readClipboardMedia();
-      if (!media || stopping) return false;
+      if (stopping || runtime.session !== session) return true;
+      if (!media) return false;
       if (media.kind === 'file') {
         const kind = mediaKindForPath(media.path);
         if (kind !== 'image' && kind !== 'video') return false;
         const source = await stat(media.path);
         if (!source.isFile() || !source.size) throw new Error('Clipboard media must be a nonempty regular file.');
-        if (kind === 'video' && source.size > 100 * 1024 * 1024) throw new Error('Clipboard video exceeds the 100 MiB limit.');
+        if (source.size > MAX_MEDIA_BYTES) throw new Error(`Clipboard ${kind} exceeds the ${MAX_MEDIA_MEGABYTES} MiB limit.`);
         clipboardDir ??= await mkdtemp(join(tmpdir(), 'coderai-clipboard-'));
         const path = join(clipboardDir, `${randomUUID()}-${basename(media.path)}`);
         await copyFile(media.path, path);
-        if (stopping) return true;
         const saved = await stat(path);
-        if (saved.size !== source.size || (kind === 'video' && saved.size > 100 * 1024 * 1024)) { await rm(path, { force: true }); throw new Error('Clipboard media changed while being copied.'); }
+        if (saved.size !== source.size) { await rm(path, { force: true }); throw new Error('Clipboard media changed while being copied.'); }
+        if (stopping || runtime.session !== session) { await rm(path, { force: true }); return true; }
         attachments.push(path);
       } else {
         clipboardDir ??= await mkdtemp(join(tmpdir(), 'coderai-clipboard-'));
         const path = join(clipboardDir, randomUUID());
         await writeFile(path, media.bytes, { mode: 0o600 });
-        if (stopping) return true;
+        if (stopping || runtime.session !== session) { await rm(path, { force: true }); return true; }
         attachments.push(path);
       }
       view.message(`Clipboard media staged for the next prompt (${attachments.length} total).`);
@@ -193,7 +214,7 @@ export async function interactive(runtime: Runtime): Promise<void> {
   };
   let statusVersion = 0;
   const refreshStatus = async () => {
-    view.setQueue(queue);
+    view.setQueue(queueFor());
     const session = runtime.session;
     const version = ++statusVersion;
     if (stopping) return;
@@ -221,7 +242,8 @@ export async function interactive(runtime: Runtime): Promise<void> {
     if (stopping) return; stopping = true;
     view.dismissDialog();
     btw.close();
-    void runtime.session?.cancel().catch(() => {}); finish();
+    submissionAbort?.abort();
+    void runtime.cancelPending().catch(() => {}); finish();
   };
   let lastExitRequest = 0;
   view.onExit = () => {
@@ -240,7 +262,7 @@ export async function interactive(runtime: Runtime): Promise<void> {
     editing = true;
     void view.editExternally().catch(error => view.message(`External editor failed: ${String(error)}`)).finally(() => { editing = false; });
   };
-  view.onInterrupt = () => { if (btw.cancel()) { view.setStatus('Cancelling side question…'); } else if (busy && runtime.session && !runtime.session.isClosed) { activity.cancel(); const cancellation = shellId ? runtime.session.cancelShellCommand(shellId) : runtime.session.cancel(); void cancellation.catch(error => view.message(`Cancellation failed: ${String(error)}`)); view.setStatus('Cancelling…'); } else if (btw.close()) { /* Return to main conversation. */ } else if (view.editor.getText()) { view.editor.setText(''); view.message('Draft cleared. Press Ctrl+C again to exit.'); } else exit(); };
+  view.onInterrupt = () => { if (btw.cancel()) { view.setStatus('Cancelling side question…'); } else if (busy && runtime.session && !runtime.session.isClosed) { activity.cancel(); submissionAbort?.abort(); const cancellation = shellId ? runtime.session.cancelShellCommand(shellId) : runtime.cancelPending(); void cancellation.catch(error => view.message(`Cancellation failed: ${String(error)}`)); view.setStatus('Cancelling…'); } else if (btw.close()) { /* Return to main conversation. */ } else if (view.editor.getText()) { view.editor.setText(''); view.message('Draft cleared. Press Ctrl+C again to exit.'); } else exit(); };
   let lastIdleEscape = 0;
   view.onEscape = () => {
     if (btw.close()) return true;
@@ -264,6 +286,7 @@ export async function interactive(runtime: Runtime): Promise<void> {
     }).catch(error => view.message(`Steering failed: ${String(error)}`));
   };
   view.onRecallQueue = () => {
+    const queue = queueFor();
     if (!busy || !queue.length) return false;
     const item = queue.pop()!;
     if (item.attachments?.length) attachments.unshift(...item.attachments);
@@ -287,7 +310,8 @@ export async function interactive(runtime: Runtime): Promise<void> {
       restoreActivity();
     }).catch(error => view.error(error));
   };
-  const submit = async (text: string, queuedObjective?: string, queuedAttachments?: string[]) => {
+  const submit = async (text: string, queued?: QueuedInput, queuedObjective?: string) => {
+    if (stopping) return;
     const match = text.match(/^(\/\S+)(?=\s|$)/);
     if (match && commandAliases[match[1]!]) text = commandAliases[match[1]!]! + text.slice(match[1]!.length);
     if (text === '/quit' || text === '/exit') { exit(); return; }
@@ -298,11 +322,11 @@ export async function interactive(runtime: Runtime): Promise<void> {
       try {
         await command(runtime, view, text);
         if (stopping) return;
-        await runtime.open(); observeBackground(); await refreshCommands();
+        await runtime.open(); await observeBackground(); await refreshCommands();
         view.message(`Session ${runtime.session!.id}`);
         if (runtime.options.resume) await replay(runtime, view, true);
       } catch (error) { view.error(error); }
-      finally { busy = false; if (!stopping) await refreshStatus(); }
+      finally { await finishSubmission(); }
       return;
     }
     if (runtime.session && /^\/(tasks|output|stop)(?:\s|$)/.test(text)) {
@@ -380,6 +404,7 @@ export async function interactive(runtime: Runtime): Promise<void> {
       return;
     }
     if (text === '/queue' || text.startsWith('/queue ')) {
+      const queue = queueFor();
       const arg = text.slice('/queue'.length).trim();
       if (arg === 'clear') { queue.length = 0; view.message('Queue cleared.'); }
       else if (arg.startsWith('remove ')) {
@@ -406,7 +431,7 @@ export async function interactive(runtime: Runtime): Promise<void> {
       if (question && !stopping) await btw.open(runtime.session, question, inlineSkillActivations(question, skillCommands));
       return;
     }
-    if (btw.isActive && !text.startsWith('/') && !text.startsWith('!')) {
+    if (!queued && btw.isActive && !text.startsWith('/') && !text.startsWith('!')) {
       if (!btw.send(text, inlineSkillActivations(text, skillCommands))) { view.editor.setText(text); view.message('Wait for /btw to finish before sending another question.'); }
       return;
     }
@@ -416,19 +441,23 @@ export async function interactive(runtime: Runtime): Promise<void> {
       else if (runtime.session && /^\/yolo(?:\s|$)/.test(text)) { await command(runtime, view, text); await refreshStatus(); }
       else if (runtime.session && ['/help', '/status', '/context', '/usage', '/mcp', '/skills', '/todos', '/version'].includes(text)) await command(runtime, view, text);
       else {
+        const queue = queueFor();
         const name = text.split(/\s+/)[0]!.slice(1);
         const takesMedia = swarmTask(text) !== undefined || !text.startsWith('/') && !text.startsWith('!') || text.startsWith('/goal ') || skillCommands.has(name) || pluginCommands.has(name);
-        const staged = takesMedia ? attachments.splice(0) : undefined;
+        const staged = takesMedia ? attachments.splice(0) : [];
         queue.push({ text, attachments: staged }); view.message(`Queued (${queue.length}): ${text}`); await refreshStatus();
       }
       return;
     }
     busy = true;
+    const session = runtime.session!;
+    let staged = queued?.attachments ?? [];
+    let turnStarted = false;
     let followGoal = false;
     let turnReason: string | undefined;
     let reportedError = false;
     try {
-      let dispatch: ((session: Session) => Promise<void>) | undefined;
+      let dispatch: Parameters<Runtime['run']>[4];
       let prompt = text;
       let skill: string | undefined;
       let plugin: { pluginId: string; name: string } | undefined;
@@ -437,32 +466,30 @@ export async function interactive(runtime: Runtime): Promise<void> {
       if (text.startsWith('/goal ')) {
         const argument = text.slice(6).trim();
         if (!argument) { view.message('Usage: /goal <objective>|status|pause|resume|cancel|replace <objective>'); return; }
-        if (argument === 'resume') { if (!queuedObjective) goalAction = () => runtime.session!.resumeGoal(); prompt = queuedObjective ?? 'Resume the active goal.'; }
+        if (argument === 'resume') { if (!queuedObjective) goalAction = () => session.resumeGoal(); prompt = queuedObjective ?? 'Resume the active goal.'; }
         else {
           const replace = argument.startsWith('replace ');
           prompt = replace ? argument.slice(8).trim() : argument;
           if (!prompt) { view.message('Provide a goal objective.'); return; }
-          goalAction = () => runtime.session!.createGoal({ objective: prompt, replace });
+          goalAction = () => session.createGoal({ objective: prompt, replace });
         }
         followGoal = true;
       } else if (text === '/tower teardown') {
         prompt = TOWER_TEARDOWN_PROMPT;
       } else if (swarmTask(text) !== undefined) {
         try {
-          if (!await startSwarm(runtime, view, text, 'task')) {
-            if (queuedAttachments?.length) attachments.unshift(...queuedAttachments);
-            return;
-          }
+          if (!await startSwarm(runtime, view, text, 'task')) return;
         } catch (error) {
-          if (queuedAttachments?.length) attachments.unshift(...queuedAttachments);
           view.editor.setText(text); throw error;
         }
         prompt = swarmTask(text)!;
       } else if (text.startsWith('/')) {
-        const previousSession = runtime.session?.id;
         if (await command(runtime, view, text)) {
-          if (runtime.session?.id !== previousSession) attachments.length = 0;
-          observeBackground(); await refreshCommands(); return;
+          if (runtime.session?.id !== session.id) {
+            attachments.length = 0;
+            if (queueFor(session.id).length) view.message('Queued input is held for the previous session.');
+          }
+          await observeBackground(); await refreshCommands(); return;
         }
         const [rawName, ...args] = text.trim().split(/\s+/);
         const name = rawName!.slice(1);
@@ -478,60 +505,46 @@ export async function interactive(runtime: Runtime): Promise<void> {
         view.message(`Shell: ${shellCommand}`); view.setActivity('Running shell command', `$ ${shellCommand}`);
         view.beginShell();
         try {
-          const result = await runtime.session!.runShellCommand(shellCommand, { commandId: shellId });
+          const result = await session.runShellCommand(shellCommand, { commandId: shellId });
           if (result.stdout) view.message(result.stdout);
           if (result.stderr) view.message(result.stderr);
           view.message(result.backgrounded ? 'Shell command backgrounded.' : result.isError ? 'Shell command failed.' : 'Shell command completed.');
         } finally { view.endShell(); shellId = undefined; }
       } else {
-        const staged = queuedAttachments ?? [...attachments];
+        const controller = new AbortController();
+        submissionAbort = controller;
+        if (!queued && !queuedObjective) staged = attachments.splice(0);
         let input: PromptInput | undefined;
         if (staged.length) {
-          try { input = await attachmentPrompt(runtime.harness, runtime.session!, plugin ? commandArgs : prompt, staged, runtime.session!.workDir, plugin ? 'references' : 'parts'); }
-          catch (error) {
-            if (queuedAttachments) {
-              attachments.unshift(...queuedAttachments);
-              if (!view.editor.getText()) view.editor.setText(text);
-              else view.message(`Failed queued prompt (copy to retry): ${text}`);
-              view.message('Queued attachments restored. Correct them and submit the prompt again.');
-            }
-            throw error;
-          }
+          view.setWorkspaceStatus(session.workDir, attachments);
+          input = await attachmentPrompt(runtime.harness, session, plugin ? commandArgs : prompt, staged, session.workDir, plugin ? 'references' : 'parts', controller.signal);
         }
-        if (goalAction) {
-          try { await goalAction(); }
-          catch (error) {
-            if (queuedAttachments?.length) attachments.unshift(...queuedAttachments);
-            throw error;
-          }
-        }
+        controller.signal.throwIfAborted();
+        if (goalAction) await goalAction();
         if (followGoal) view.message(`Goal started: ${prompt}`);
         const inline = inlineSkillActivations(text, skillCommands);
         if (skill) {
           const activation = { name: skill, args: commandArgs || undefined };
-          dispatch = session => session.promptWithSkills(input ?? prompt, [activation, ...inline.filter(item => item.name !== skill)]);
+          dispatch = (current, promptId, signal) => current.promptWithSkills(input ?? prompt, [activation, ...inline.filter(item => item.name !== skill)], { promptId, signal });
         } else if (plugin) {
           const { pluginId, name } = plugin;
           const args = input ? input.filter(part => part.type === 'text').map(part => part.text).join('\n\n') : commandArgs;
-          dispatch = session => session.activatePluginCommand(pluginId, name, args || undefined);
+          dispatch = (current, promptId, signal) => current.activatePluginCommand(pluginId, name, args || undefined, { promptId, signal });
         } else if (inline.length) {
-          dispatch = session => session.promptWithSkills(input ?? prompt, inline);
+          dispatch = (current, promptId, signal) => current.promptWithSkills(input ?? prompt, inline, { promptId, signal });
         } else if (input) {
           const mediaInput = input;
-          dispatch = session => session.prompt(mediaInput);
+          dispatch = (current, promptId, signal) => current.prompt(mediaInput, { promptId, signal });
         }
-        if (staged.length) {
-          if (!queuedAttachments) attachments.splice(0, staged.length);
-          view.setWorkspaceStatus(runtime.session!.workDir, attachments);
-          view.message(`Attached: ${staged.join(', ')}`);
-        }
+        if (staged.length) view.message(`Attached: ${staged.join(', ')}`);
         pendingPrompt = text; view.userMessage(text); activity.waiting();
         observingTurn = true;
         runningGoal = followGoal;
         let goalTurns = 0;
         const todoCalls = new Set<string>();
-        try { turnReason = await runtime.run(prompt, event => {
+        try { turnReason = await runtime.run(prompt, (event, owned) => {
           if (event.agentId !== 'main' || event.type.startsWith('subagent.')) return;
+          if (owned && event.type === 'turn.started') turnStarted = true;
           activity.handle(event);
           switch (event.type) {
             case 'turn.started': if (event.agentId === 'main' && goalTurns++ > 0 && followGoal) { view.beginAssistant(); view.message('Continuing goal…'); } break;
@@ -613,8 +626,8 @@ export async function interactive(runtime: Runtime): Promise<void> {
           try {
             return await view.answerQuestions(request);
           } finally { activity.waiting(); }
-        }, dispatch, followGoal, true); } catch (error) {
-          if (followGoal) await runtime.session?.pauseGoal().catch(() => {});
+        }, dispatch, followGoal, true, false, controller.signal); } catch (error) {
+          if (followGoal) await session.pauseGoal().catch(() => {});
           throw error;
         } finally { observingTurn = false; runningGoal = false; pendingPrompt = undefined; }
         if (turnReason !== 'completed') {
@@ -623,34 +636,55 @@ export async function interactive(runtime: Runtime): Promise<void> {
           if (turnReason === 'blocked') view.notice('The turn is blocked.', 'Review the messages above and give the assistant the missing information or a new direction.');
         }
       }
-    } catch (error) { if (!reportedError) view.error(error); }
+    } catch (error) { if (!stopping && !reportedError) view.error(error); }
     finally {
-      view.finishTurn();
-      busy = false;
-      if (!stopping) {
-        view.setStatus('Idle');
-        await refreshStatus();
-        if (turnReason === 'completed' && runtime.session) {
-          try {
-            const session = runtime.session; const { goal } = await session.getGoal();
-            if (!goal || goal.status === 'complete') {
-              const nextGoal = (await readGoalQueue(session)).goals[0];
-              if (nextGoal) {
-                await session.createGoal({ objective: nextGoal.objective });
-                await removeGoalQueueItem(session, { goalId: nextGoal.id });
-                view.message(`Starting upcoming goal: ${nextGoal.objective}`);
-                void submit('/goal resume', nextGoal.objective); return;
-              }
-            }
-          } catch (error) { view.message(`Upcoming goal error: ${error instanceof Error ? error.message : String(error)}`); }
+      submissionAbort = undefined;
+      if (!stopping && staged.length && !turnStarted && runtime.session === session) {
+        attachments.unshift(...staged);
+        if (queued) {
+          if (!view.editor.getText()) view.editor.setText(text);
+          else view.message(`Failed queued prompt (copy to retry): ${text}`);
         }
-        const next = queue.shift();
-        view.setQueue(queue);
-        if (next !== undefined) void submit(next.text, undefined, next.attachments);
+        view.message(queued ? 'Queued attachments restored. Correct them and submit the prompt again.' : 'Attachments restored for retry.');
       }
+      view.finishTurn();
+      await finishSubmission(turnReason);
     }
   };
-  view.onSubmit = text => { void submit(text).catch(error => view.message(String(error))); };
+  const submitInput = (text: string, queued?: QueuedInput, queuedObjective?: string) => {
+    void submit(text, queued, queuedObjective).catch(error => { if (!stopping) view.error(error); });
+  };
+  async function finishSubmission(turnReason?: string): Promise<void> {
+    let objective: string | undefined;
+    if (!stopping) {
+      await refreshStatus();
+      const session = runtime.session;
+      if (!stopping && turnReason === 'completed' && session) {
+        try {
+          const next = await promoteNextGoalQueueItem(session, async entry => {
+            const { goal } = await session.getGoal();
+            if (stopping || (goal && goal.status !== 'complete')) return false;
+            await session.createGoal({ objective: entry.objective, goalId: entry.id, replace: goal?.status === 'complete' });
+            return true;
+          });
+          objective = next?.objective;
+        } catch (error) { if (!stopping) view.message(`Upcoming goal error: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+    }
+    busy = false;
+    if (stopping) return;
+    if (objective) {
+      view.message(`Starting upcoming goal: ${objective}`);
+      submitInput('/goal resume', undefined, objective);
+      return;
+    }
+    const queue = queueFor();
+    const next = runtime.session ? queue.shift() : undefined;
+    view.setQueue(queue);
+    if (next) submitInput(next.text, next);
+    else if (!view.dialogOpen) view.setStatus(runtime.session ? 'Idle' : 'Use /setup to connect a model · /help for commands');
+  }
+  view.onSubmit = submitInput;
   process.on('SIGTERM', exit); process.on('SIGINT', exit);
   view.start();
   try {
@@ -667,17 +701,22 @@ export async function interactive(runtime: Runtime): Promise<void> {
       view.notice(error.message, 'Use /setup to connect a provider and model.');
     }
     if (runtime.session) {
-      observeBackground(); await refreshCommands();
+      await observeBackground(); await refreshCommands();
       if (stopping) return;
       view.message(`Session ${runtime.session.id}`);
       if (runtime.options.resume) await replay(runtime, view, true);
     }
     if (stopping) return;
-    busy = false;
-    await refreshStatus();
-    const next = queue.shift();
-    view.setQueue(queue);
-    if (next !== undefined) void submit(next.text, undefined, next.attachments);
+    await finishSubmission();
     await done;
-  } finally { await btw.dispose(); if (agentRender) clearTimeout(agentRender); unsubscribe?.(); if (observedSession && !observedSession.isClosed) observedSession.setStaleReloadHandler(undefined); view.stop(); await view.flushHistory(); if (pasteTask) await pasteTask.catch(() => {}); if (clipboardDir) await rm(clipboardDir, { recursive: true, force: true }); process.off('SIGTERM', exit); process.off('SIGINT', exit); }
+  } finally {
+    stopping = true;
+    if (agentRender) clearTimeout(agentRender);
+    unsubscribe?.();
+    if (observedSession && !observedSession.isClosed) observedSession.setStaleReloadHandler(undefined);
+    view.stop();
+    await Promise.all([btw.dispose(), view.flushHistory(), pasteTask?.catch(() => {})]);
+    if (clipboardDir) await rm(clipboardDir, { recursive: true, force: true });
+    process.off('SIGTERM', exit); process.off('SIGINT', exit);
+  }
 }

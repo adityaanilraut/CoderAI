@@ -221,6 +221,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
       workspaceId,
       runtimeId: workspaceId === undefined ? undefined : 'local',
       oauthService: this.oauth,
+      resolveCredentialGrants: () => section?.credentialGrants,
       resolveClientName: () => this.identity.current().slug,
       resolveDefaults: () => ({
         startupTimeoutMs: section?.startupTimeoutMs,
@@ -451,6 +452,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
         manager = new McpConnectionManager({
           log: this.log,
           oauthService: this.oauth,
+          resolveCredentialGrants: () => section?.credentialGrants,
           resolveClientName: () => this.identity.current().slug,
           resolveDefaults: () => ({
             startupTimeoutMs: section?.startupTimeoutMs,

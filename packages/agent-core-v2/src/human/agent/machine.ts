@@ -59,6 +59,7 @@ export type PromptGateVerdict = boolean | { block: boolean; message?: UserMessag
 export type PromptGate = (
   queueItemId: string | undefined,
   message: UserMessage,
+  signal: AbortSignal,
 ) => Promise<PromptGateVerdict>;
 
 export interface ScopeFactoryOutput {
@@ -324,11 +325,11 @@ export function createAgentMachine({
       promptGateActor: fromPromise<
         { id?: string; block: boolean; message?: UserMessage; error?: unknown },
         { gate?: PromptGate; head?: UserEntry }
-      >(async ({ input }) => {
+      >(async ({ input, signal }) => {
         const { gate, head } = input;
         if (gate === undefined || head === undefined) return { id: head?.meta?.promptId, block: false };
         try {
-          const verdict = await gate(head.meta?.promptId, head.message);
+          const verdict = await gate(head.meta?.promptId, head.message, signal);
           if (typeof verdict === 'boolean') return { id: head.meta?.promptId, block: verdict };
           return { id: head.meta?.promptId, block: verdict.block, message: verdict.message };
         } catch (error) {
@@ -340,6 +341,10 @@ export function createAgentMachine({
       }),
     },
     actions: {
+      removeQueuedPrompt: assign(({ context, event }) => {
+        if (event.type !== 'input.cancel') return {};
+        return { queue: context.queue.filter((item) => item.meta?.promptId !== event.id) };
+      }),
       forwardToParent: ({ self, event }) => {
         self._parent?.send(event);
       },
@@ -522,10 +527,7 @@ export function createAgentMachine({
         }),
       },
       'input.cancel': {
-        actions: assign(({ context, event }) => {
-          if (event.type !== 'input.cancel') return {};
-          return { queue: context.queue.filter((item) => item.meta?.promptId !== event.id) };
-        }),
+        actions: 'removeQueuedPrompt',
       },
       'store.reset': {
         target: '.idle',
@@ -661,6 +663,13 @@ export function createAgentMachine({
             ],
           },
           gating: {
+            on: {
+              'input.cancel': {
+                guard: ({ context, event }) => context.queue[0]?.meta?.promptId === event.id,
+                target: 'ready',
+                actions: 'removeQueuedPrompt',
+              },
+            },
             invoke: {
               src: 'promptGateActor',
               input: ({ context }) => ({ gate: context.promptGate, head: context.queue[0] }),

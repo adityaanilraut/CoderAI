@@ -99,10 +99,10 @@ const GOAL_FORK_CLEARED_REMINDER = [
 
 const GOAL_FORK_CLEARED_REMINDER_NAME = 'goal_fork_cleared';
 
-const GOAL_CONTINUATION_ORIGIN: PromptOrigin = {
+const GOAL_CONTINUATION_ORIGIN = {
   kind: 'system_trigger',
   name: 'goal_continuation',
-};
+} as const satisfies PromptOrigin;
 const GOAL_RATE_LIMIT_PAUSE_REASON = 'Paused after provider rate limit';
 const GOAL_PROVIDER_CONNECTION_PAUSE_PREFIX = 'Paused after provider connection error';
 const GOAL_PROVIDER_AUTH_PAUSE_PREFIX = 'Paused after provider authentication error';
@@ -273,12 +273,17 @@ function isGoalToolTarget(context: GoalOperationContext, turnId: number, goalId:
 async function createGoal(context: GoalOperationContext, input: CreateGoalInput, actor: GoalActor = 'user'): Promise<GoalSnapshot> {
   assertSupportedAgent(context);
   const objective = validateObjective(context, input.objective);
+  const active = context.runtime.getState().goal;
+  if (active !== null && input.goalId !== undefined && active.goalId === input.goalId) {
+    if (active.objective !== objective) throw new Error2(ErrorCodes.REQUEST_INVALID, 'A goal with this ID already has a different objective');
+    return toSnapshot(context, active);
+  }
   prepareForGoalCreation(context, input.replace === true);
   const wallClockResumedAt = Date.now();
-  void context.runtime.dispatch(
+  const created = context.runtime.dispatch(
     new GoalCreate({
       agentId: context.runtime.agent.agentId,
-      goalId: randomUUID(),
+      goalId: input.goalId ?? randomUUID(),
       objective,
       completionCriterion: normalizeCompletionCriterion(input.completionCriterion),
       wallClockResumedAt,
@@ -290,6 +295,7 @@ async function createGoal(context: GoalOperationContext, input: CreateGoalInput,
   refreshWallClockDeadline(context, state);
   emitGoalUpdated(context, toSnapshot(context, state));
   context.runtime.get(ITelemetryService).track2('goal_created', { actor, replace: input.replace === true });
+  await created;
   return toSnapshot(context, state);
 }
 
@@ -727,7 +733,7 @@ function launchContinuationTurn(context: GoalOperationContext, goalId: string, s
       },
     ],
     toolCalls: [],
-    origin: GOAL_CONTINUATION_ORIGIN,
+    origin: { ...GOAL_CONTINUATION_ORIGIN, goalId },
   };
   const loop = context.runtime.get(IAgentLoopService);
   const { id } = loop.submit({
@@ -823,13 +829,14 @@ function clearInternal(context: GoalOperationContext,
   actor: GoalActor,
   opts: { readonly emit?: boolean; readonly track?: boolean; readonly preserveLiveContinuation?: boolean; } = {},
 ): void {
-  if (context.runtime.getState().goal === null) return;
+  const goal = context.runtime.getState().goal;
+  if (goal === null) return;
   context.effects.resumeContinuation = undefined;
   cancelPendingContinuation(context, opts.preserveLiveContinuation === true);
   context.runtime.send({ type: 'goal.deadline.clear' });
   context.effects.liveWallClockStartedAt = undefined;
   void context.runtime.dispatch(new GoalClear({ agentId: context.runtime.agent.agentId }));
-  if (opts.emit !== false) emitGoalUpdated(context, null);
+  if (opts.emit !== false) emitGoalUpdated(context, null, undefined, goal.goalId);
   if (opts.track !== false) context.runtime.get(ITelemetryService).track2('goal_cleared', { actor });
 }
 
@@ -886,9 +893,9 @@ function requireState(context: GoalOperationContext): GoalState {
   return state;
 }
 
-function emitGoalUpdated(context: GoalOperationContext, snapshot: GoalSnapshot | null, change?: GoalChange): void {
+function emitGoalUpdated(context: GoalOperationContext, snapshot: GoalSnapshot | null, change?: GoalChange, goalId = snapshot?.goalId): void {
   void context.runtime.dispatch(
-    new GoalUpdated({ agentId: context.runtime.agent.agentId, snapshot, change }),
+    new GoalUpdated({ agentId: context.runtime.agent.agentId, goalId, snapshot, change }),
   );
 }
 

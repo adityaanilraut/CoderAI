@@ -1,5 +1,6 @@
 import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -7,10 +8,11 @@ import { parse } from 'smol-toml';
 import { identity } from './identity.js';
 import {
   createCoderaiHarness,
-  type CoderaiHarness, type Session, type Event, type ApprovalHandler, type QuestionHandler,
+  type CoderaiHarness, type Session, type Event, type ApprovalHandler, type QuestionHandler, type GoalSnapshot,
 } from '@coderai/sdk';
 
 export class ModelSetupRequired extends Error {}
+type PromptDispatch = (session: Session, promptId: string, signal: AbortSignal) => Promise<void>;
 export interface RuntimeOptions {
   cwd: string;
   interactive?: boolean;
@@ -69,6 +71,7 @@ export class Runtime {
   session?: Session;
   private unlock?: () => Promise<void>;
   private closing?: Promise<void>;
+  private pendingRun?: { cancel: () => Promise<void> };
   private readonly checkedTrust = new Set<string>();
   private askTrust: (text: string, workDir: string) => Promise<boolean> = async () => false;
   constructor(readonly options: RuntimeOptions) {
@@ -99,26 +102,20 @@ export class Runtime {
     const config = await this.harness.getConfig();
     const selected = alias ?? this.options.model ?? config.defaultModel;
     if (!selected) throw new ModelSetupRequired(`No model configured. Set CODERAI_MODEL_NAME and OPENAI_API_KEY (OpenAI-compatible API), or configure a provider and model in ${this.harness.configPath}. Set CODERAI_MODEL_BASE_URL for a custom endpoint. No account login is required.`);
-    const model = config.models?.[selected];
-    if (!model) throw new ModelSetupRequired(`Unknown model alias: ${selected}. Run coderai models list to see configured aliases.`);
-    const provider = config.providers[model.provider];
-    if (!provider) throw new ModelSetupRequired(`Unknown provider: ${model.provider}`);
-    const types = ['kimi', 'openai', 'anthropic', 'openai_responses', 'google-genai', 'vertexai'];
-    if (!types.includes(provider.type)) throw new Error(`Unsupported provider: ${provider.type}`);
-    const standardEnv: Record<string, string> = { kimi: 'KIMI_API_KEY', openai: 'OPENAI_API_KEY', openai_responses: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY', 'google-genai': 'GOOGLE_API_KEY', vertexai: 'VERTEXAI_API_KEY' };
-    const standardName = standardEnv[provider.type] ?? '';
-    const key = provider.apiKey?.trim() || (provider.apiKeyEnv
-      ? process.env[provider.apiKeyEnv]?.trim()
-      : provider.env?.[standardName]?.trim() || process.env[standardName]?.trim());
-    if (!key && !provider.oauth && provider.type !== 'vertexai') {
-      throw new ModelSetupRequired(`Missing API key for provider ${model.provider}. Set ${provider.apiKeyEnv ?? standardEnv[provider.type] ?? 'CODERAI_MODEL_API_KEY'} or configure an API key in ${this.harness.configPath}.`);
+    if (!config.models || !Object.hasOwn(config.models, selected)) {
+      throw new ModelSetupRequired(`Unknown model alias: ${selected}. Run coderai models list to see configured aliases.`);
+    }
+    try {
+      await this.harness.ensureModelReady(selected);
+    } catch (error) {
+      throw new ModelSetupRequired(error instanceof Error ? error.message : String(error));
     }
   }
   async trust(ask: (text: string, workDir: string) => Promise<boolean>): Promise<void> {
     this.askTrust = ask;
     let cwd = this.options.cwd;
     if (this.options.resume) {
-      const saved = (await this.harness.listSessions()).find(s => s.id === this.options.resume);
+      const [saved] = await this.harness.listSessions({ sessionId: this.options.resume, includeArchived: true });
       if (!saved) throw new Error(`Session not found: ${this.options.resume}`);
       cwd = saved.workDir;
     }
@@ -141,7 +138,11 @@ export class Runtime {
     if (info.trusted) { this.checkedTrust.add(workDir); return; }
     const lines = [`Trust ${workDir}?`, 'Project instructions, hooks, plugins and configured MCP programs may run in a trusted workspace.'];
     const add = (label: string, values: readonly string[]) => { if (values.length) lines.push(`${label}:\n${values.map(value => `  ${value}`).join('\n')}`); };
-    add('MCP servers', info.gatedMcpServers.map(server => `${server.name} (${server.transport}) ${server.command ?? server.url ?? ''} ${server.args?.join(' ') ?? ''} — ${server.origin}`));
+    add('MCP servers', info.gatedMcpServers.map(server => {
+      const args = server.argumentCount ? ` (${server.argumentCount} hidden arguments)` : '';
+      const environment = server.environmentNames?.length ? ` · environment: ${server.environmentNames.join(', ')}` : '';
+      return `${server.name} (${server.transport}) ${server.command ?? server.url ?? ''}${args}${environment} — ${server.origin}`;
+    }));
     add('Additional directories', info.gatedAdditionalDirs);
     add('Additional directory sources', info.additionalDirSources);
     add('Instructions', info.instructionSources.agentsMdPaths);
@@ -161,7 +162,7 @@ export class Runtime {
     if (id && this.session?.id === id && !this.session.isClosed) return this.session;
     let unlock: (() => Promise<void>) | undefined;
     if (id) {
-      const saved = (await this.harness.listSessions()).find(s => s.id === id);
+      const [saved] = await this.harness.listSessions({ sessionId: id, includeArchived: true });
       if (!saved) throw new Error(`Session not found: ${id}`);
       await this.trustDirectory(saved.workDir);
       unlock = await sessionLock(this.harness.homeDir, id);
@@ -198,24 +199,68 @@ export class Runtime {
       throw error;
     }
   }
-  async run(prompt: string, onEvent: (event: Event) => void, approve: ApprovalHandler, question?: QuestionHandler, dispatch?: (session: Session) => Promise<void>, followGoal = false, followCreatedGoals = false, printCompletion = false, signal?: AbortSignal): Promise<string> {
+  async cancelPending(): Promise<void> {
+    if (this.pendingRun) await this.pendingRun.cancel();
+    else await this.session?.cancel();
+  }
+
+  async run(prompt: string, onEvent: (event: Event, owned: boolean) => void, approve: ApprovalHandler, question?: QuestionHandler, dispatch?: PromptDispatch, followGoal = false, followCreatedGoals = false, printCompletion: boolean | 'drain' = false, signal?: AbortSignal): Promise<string> {
     const session = this.session;
     if (!session) throw new Error('No active conversation');
+    if (this.pendingRun) throw new Error('Another prompt is being submitted in this conversation');
+    const promptId = randomUUID();
+    const controller = new AbortController();
+    const pending = { cancel: async () => { controller.abort(); } };
+    const abort = () => { void pending.cancel().catch(() => undefined); };
+    this.pendingRun = pending;
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+    try {
+      return await this.runPrompt(session, prompt, promptId, onEvent, approve, question, dispatch, followGoal, followCreatedGoals, printCompletion, controller, pending);
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      this.pendingRun = undefined;
+    }
+  }
+
+  private async runPrompt(
+    session: Session, prompt: string, promptId: string, onEvent: (event: Event, owned: boolean) => void,
+    approve: ApprovalHandler, question: QuestionHandler | undefined, dispatch: PromptDispatch | undefined,
+    followGoal: boolean, followCreatedGoals: boolean, printCompletion: boolean | 'drain',
+    controller: AbortController, pending: { cancel: () => Promise<void> },
+  ): Promise<string> {
     session.setApprovalHandler(approve);
     session.setQuestionHandler(question ?? (() => null));
-    const config = printCompletion ? await this.harness.getConfig() : undefined;
+    const [config, initialGoal] = await Promise.all([
+      printCompletion ? this.harness.getConfig() : undefined,
+      followGoal ? session.getGoal().then(({ goal }) => goal) : undefined,
+    ]);
+    if (controller.signal.aborted) return 'cancelled';
+    const printMode = config?.task?.['printBackgroundMode'] ?? config?.background?.printBackgroundMode ?? 'steer';
     const configuredCeiling = config?.task?.['printWaitCeilingS'] ?? config?.background?.printWaitCeilingS;
     const ceiling = typeof configuredCeiling === 'number' && Number.isFinite(configuredCeiling) && configuredCeiling > 0 ? configuredCeiling : 300;
     return new Promise<string>((resolveTurn, reject) => {
-      let activeTurn = false;
-      let trackGoal = followGoal;
-      let endedReason = 'completed';
+      let activeTurn: number | undefined;
+      let primaryTurn: number | undefined;
+      let goal: GoalSnapshot | null | undefined = initialGoal;
+      let lastReason: string | undefined;
+      const taskIds = new Set<string>();
       let settled = false;
       let completionTimer: ReturnType<typeof setTimeout> | undefined;
+      let checkingBackground = false;
       let sequence = 0;
       let completionSequence = -1;
       const abort = () => finish('cancelled');
-      const cleanup = () => { off(); if (completionTimer) clearTimeout(completionTimer); signal?.removeEventListener('abort', abort); };
+      pending.cancel = async () => {
+        const turnId = activeTurn;
+        controller.abort();
+        if (turnId !== undefined && turnId !== primaryTurn) await session.cancel({ turnId });
+      };
+      const cleanup = () => {
+        off();
+        if (completionTimer) clearTimeout(completionTimer);
+        controller.signal.removeEventListener('abort', abort);
+      };
       const finish = (reason: string) => { if (!settled) { settled = true; cleanup(); resolveTurn(reason); } };
       const fail = (error: unknown) => { if (!settled) { settled = true; cleanup(); reject(error); } };
       const complete = (reason: string) => {
@@ -223,27 +268,69 @@ export class Runtime {
         const current = sequence;
         if (completionSequence === current) return;
         completionSequence = current;
-        void session.handlePrintMainTurnCompleted().then(policy => {
+        checkingBackground = printCompletion !== 'drain' && printMode === 'steer';
+        void session.handlePrintMainTurnCompleted({ signal: controller.signal, taskIds: [...taskIds], forceDrain: printCompletion === 'drain' }).then(policy => {
           if (settled || current !== sequence) return;
           if (policy === 'finish') finish(reason);
+          else if (policy === 'timeout') finish('background_timeout');
           else if (!completionTimer) completionTimer = setTimeout(() => finish('background_timeout'), Math.min(ceiling * 1000, 2_147_483_647));
-        }).catch(fail);
+        }).catch(error => { if (current === sequence) fail(error); });
+      };
+      const handleEvent = (event: Event) => {
+        if (event.type === 'background.task.started' && activeTurn !== undefined) taskIds.add(event.info.taskId);
+        if (event.type === 'background.task.terminated') { onEvent(event, taskIds.has(event.info.taskId)); return; }
+        if (event.agentId !== 'main') { onEvent(event, false); return; }
+        if (event.type === 'turn.started') {
+          const origin = event.origin;
+          const isPrimary = event.promptId === promptId;
+          const isGoalContinuation = goal?.status === 'active' && primaryTurn !== undefined &&
+            origin?.kind === 'system_trigger' && origin.name === 'goal_continuation' && origin.goalId === goal.goalId;
+          const isBackgroundContinuation = checkingBackground && origin?.kind === 'task' && taskIds.has(origin.taskId);
+          if (isPrimary || isGoalContinuation || isBackgroundContinuation) {
+            if (isPrimary) primaryTurn = event.turnId;
+            activeTurn = event.turnId;
+            if (completionTimer !== undefined) clearTimeout(completionTimer);
+            completionTimer = undefined;
+            checkingBackground = false;
+            sequence++;
+          }
+        }
+        if (event.type === 'goal.updated') {
+          if (!goal && followCreatedGoals && activeTurn !== undefined && event.snapshot?.status === 'active') goal = event.snapshot;
+          const owned = goal != null && (event.snapshot?.goalId ?? event.goalId) === goal.goalId;
+          onEvent(event, owned);
+          if (!owned) return;
+          if (event.snapshot !== null) goal = event.snapshot;
+          else if (goal?.status === 'active') goal = null;
+          if (activeTurn === undefined && lastReason !== undefined && goal?.status !== 'active') complete(lastReason);
+          return;
+        }
+        const isPromptOutcome = (event.type === 'prompt.completed' || event.type === 'prompt.aborted') && event.promptId === promptId;
+        const owned = isPromptOutcome || (activeTurn !== undefined && (!('turnId' in event) || event.turnId === activeTurn));
+        onEvent(event, owned);
+        if (isPromptOutcome && primaryTurn === undefined) {
+          const reason = event.type === 'prompt.aborted' ? 'cancelled' : event.reason ?? 'failed';
+          if (goal?.status === 'active') {
+            void session.pauseGoal().catch(() => undefined).finally(() => finish(reason));
+          } else finish(reason);
+          return;
+        }
+        if (event.type !== 'turn.ended' || !owned) return;
+        activeTurn = undefined;
+        const cappedGoal = goal?.status === 'active' && event.reason === 'failed' &&
+          (event.interruptReason === 'max_steps' || event.error?.code === 'loop.max_steps_exceeded');
+        lastReason = cappedGoal ? 'completed' : event.reason;
+        if (goal?.status !== 'active' || (!cappedGoal && event.reason !== 'completed')) complete(lastReason);
       };
       const off = session.onEvent(event => {
-        onEvent(event);
-        if (event.agentId !== 'main') return;
-        if (event.type === 'turn.started') { activeTurn = true; sequence++; }
-        if (event.type === 'goal.updated' && followCreatedGoals && event.snapshot?.status === 'active') trackGoal = true;
-        if (event.type === 'goal.updated' && trackGoal && !activeTurn && event.snapshot?.status !== 'active') complete(endedReason);
-        if (event.type === 'turn.ended') {
-          activeTurn = false; endedReason = event.reason;
-          if (!trackGoal || event.reason !== 'completed') { complete(event.reason); return; }
-          void session.getGoal().then(({ goal }) => { if (!activeTurn && goal?.status !== 'active') complete(event.reason); }).catch(fail);
-        }
+        try { handleEvent(event); } catch (error) { fail(error); }
       });
-      signal?.addEventListener('abort', abort, { once: true });
-      if (signal?.aborted) { abort(); return; }
-      (dispatch ? dispatch(session) : session.prompt(prompt)).catch(fail);
+      controller.signal.addEventListener('abort', abort, { once: true });
+      if (controller.signal.aborted) { abort(); return; }
+      void Promise.resolve().then(() => {
+        controller.signal.throwIfAborted();
+        return dispatch ? dispatch(session, promptId, controller.signal) : session.prompt(prompt, { promptId, signal: controller.signal });
+      }).catch(fail);
     });
   }
   close(): Promise<void> {
@@ -259,7 +346,7 @@ export class Runtime {
   }
 }
 
-async function sessionLock(home: string, id: string): Promise<() => Promise<void>> {
+export async function sessionLock(home: string, id: string): Promise<() => Promise<void>> {
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Invalid session ID');
   const dir = join(home, 'locks'); await mkdir(dir, { recursive: true, mode: 0o700 });
   const path = join(dir, `${id}.lock`);

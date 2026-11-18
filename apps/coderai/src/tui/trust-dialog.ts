@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import { Input, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from '@coderai/pi-tui';
 import { colors } from './theme.js';
 import { sanitizeTerminalText } from './sanitize.js';
+import { dialogBodyHeight, dialogFrame } from './dialogs.js';
 
 export class TrustDialog implements Component {
   private selected = 1;
@@ -34,10 +35,18 @@ export class TrustDialog implements Component {
     const muted = (text: string) => chalk.hex(colors.textMuted)(text);
     const border = (text: string) => chalk.hex(colors.primary)(text);
     const details = wrapTextWithAnsi(this.details, inner);
+    const cancel = this.exitOnCancel ? 'Exit' : 'Cancel';
+    if (this.rows() < 14) {
+      const input = this.input.getValue() ? this.input.render(inner) : [`› ${this.selected + 1}  ${this.selected === 0 ? 'Trust and continue' : `${cancel} without trusting`}`];
+      const previewHeight = Math.max(0, dialogBodyHeight(this.rows()) - input.length);
+      this.maxScroll = Math.max(0, details.length - previewHeight);
+      this.scroll = Math.min(this.scroll, this.maxScroll);
+      return dialogFrame('WORKSPACE TRUST', [...details.slice(this.scroll, this.scroll + previewHeight), ...input],
+        [`↑/↓ choose · Enter confirm · Esc ${cancel.toLowerCase()}`, 'PgUp/PgDn details · Or type yes to trust'], width, this.rows());
+    }
     const bodyHeight = Math.max(1, Math.min(10, this.rows() - 13));
     this.maxScroll = Math.max(0, details.length - bodyHeight);
     this.scroll = Math.min(this.scroll, this.maxScroll);
-    const cancel = this.exitOnCancel ? 'Exit' : 'Cancel';
     const content = [
       chalk.hex(colors.primary).bold('WORKSPACE TRUST'), '',
       ...details.slice(this.scroll, this.scroll + bodyHeight),

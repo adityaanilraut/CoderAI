@@ -39,9 +39,9 @@ interface ListedTask {
   readonly task: PersistedTask;
 }
 
-interface TaskOutputData {
+interface TaskOutputLocation {
   readonly root: AgentTaskPersistenceRoot;
-  readonly data: Uint8Array;
+  readonly size: number;
 }
 
 function validateTaskId(taskId: string): void {
@@ -109,39 +109,42 @@ export class AgentTaskPersistence {
   }
 
   async taskOutputSizeBytes(taskId: string): Promise<number> {
-    const output = await this.readTaskOutputData(taskId);
-    return output?.data.byteLength ?? 0;
+    return (await this.findTaskOutput(taskId))?.size ?? 0;
   }
 
   async taskOutputExists(taskId: string): Promise<boolean> {
-    return (await this.readTaskOutputData(taskId)) !== undefined;
+    return (await this.findTaskOutput(taskId)) !== undefined;
   }
 
   async readTaskOutputBytes(taskId: string, offset: number, maxBytes: number): Promise<string> {
     const start = Math.max(0, Math.trunc(offset));
     const limit = Math.max(0, Math.trunc(maxBytes));
     if (limit === 0) return '';
-    const output = await this.readTaskOutputData(taskId);
-    if (output === undefined || start >= output.data.byteLength) return '';
-    const end = Math.min(output.data.byteLength, start + limit);
-    return textDecoder.decode(output.data.subarray(start, end));
+    const output = await this.findTaskOutput(taskId);
+    if (output === undefined || start >= output.size) return '';
+    return textDecoder.decode(await this.readOutputRange(taskId, output, start, Math.min(output.size, start + limit)));
   }
 
   async readTaskOutputSnapshot(
     taskId: string,
     maxPreviewBytes: number,
   ): Promise<AgentTaskStoredOutputSnapshot | undefined> {
-    const output = await this.readTaskOutputData(taskId);
+    const output = await this.findTaskOutput(taskId);
     if (output === undefined) return undefined;
     const previewLimit = Math.max(0, Math.trunc(maxPreviewBytes));
-    const previewBytes = Math.min(previewLimit, output.data.byteLength);
-    const previewOffset = output.data.byteLength - previewBytes;
+    const previewOffset = Math.max(0, output.size - previewLimit);
+    const data = await this.readOutputRange(taskId, output, previewOffset, output.size);
+    let offset = 0;
+    if (previewOffset > 0) {
+      // A byte limit can start inside a UTF-8 code point.
+      while (offset < data.length && (data[offset]! & 0xc0) === 0x80) offset++;
+    }
     return {
       outputPath: this.taskOutputFileAt(taskId, output.root),
-      outputSizeBytes: output.data.byteLength,
-      previewBytes,
+      outputSizeBytes: output.size,
+      previewBytes: data.byteLength - offset,
       truncated: previewOffset > 0,
-      preview: textDecoder.decode(output.data.subarray(previewOffset)),
+      preview: textDecoder.decode(data.subarray(offset)),
     };
   }
 
@@ -201,17 +204,27 @@ export class AgentTaskPersistence {
     return { reservedIds, tasks };
   }
 
-  private async readTaskOutputData(taskId: string): Promise<TaskOutputData | undefined> {
+  private async findTaskOutput(taskId: string): Promise<TaskOutputLocation | undefined> {
     const primaryRoot = this.primaryRoot();
-    const primary = await this.bytes.read(this.taskOutputScope(taskId, primaryRoot), OUTPUT_LOG_KEY);
-    if (primary !== undefined) return { root: primaryRoot, data: primary };
+    const primary = await this.bytes.size(this.taskOutputScope(taskId, primaryRoot), OUTPUT_LOG_KEY);
+    if (primary !== undefined) return { root: primaryRoot, size: primary };
     const fallbackRoot = this.fallbackRoot;
     if (fallbackRoot === undefined) return undefined;
-    const fallback = await this.bytes.read(
+    const fallback = await this.bytes.size(
       this.taskOutputScope(taskId, fallbackRoot),
       OUTPUT_LOG_KEY,
     );
-    return fallback === undefined ? undefined : { root: fallbackRoot, data: fallback };
+    return fallback === undefined ? undefined : { root: fallbackRoot, size: fallback };
+  }
+
+  private async readOutputRange(taskId: string, output: TaskOutputLocation, start: number, end: number): Promise<Uint8Array> {
+    if (end <= start) return new Uint8Array(0);
+    const chunks: Uint8Array[] = [];
+    const scope = this.taskOutputScope(taskId, output.root);
+    for await (const chunk of this.bytes.readStream(scope, OUTPUT_LOG_KEY, { start, end: end - 1 })) {
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
   }
 }
 

@@ -22,7 +22,7 @@ import { IEventBus } from '#/app/event/eventBus';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IBlobStore } from '#/persistence/interface/blobStore';
-import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
+import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
@@ -55,6 +55,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     @IEventBus eventBus: IEventBus,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @ISessionContext private readonly sessionCtx: ISessionContext,
+    @IAgentLifecycleService private readonly agentLifecycle: IAgentLifecycleService,
     @IAgentScopeContext private readonly agentCtx: IAgentScopeContext,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentToolApprovalService private readonly toolApproval: IAgentToolApprovalService,
@@ -91,7 +92,8 @@ export class AgentPlanService extends Service implements IAgentPlanService {
 
   private async guardToolExecution(event: BeforeToolExecuteEvent): Promise<void> {
     const toolName = event.toolCall.name;
-    const plan = await this.status();
+    if (!this.hasEffectivePlan) return;
+    const plan = this.isActive ? await this.status() : null;
 
     if (toolName === 'ExitPlanMode') {
       if (plan !== null) {
@@ -100,17 +102,13 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       return;
     }
 
-    if (plan === null) {
-      return;
-    }
-
     if (toolName === 'Write' || toolName === 'Edit') {
-      if (writesOnlyPlanFile(event, plan.path)) {
+      if (this.agentCtx.agentId === MAIN_AGENT_ID && plan !== null && writesOnlyPlanFile(event, plan.path)) {
         event.allow();
         return;
       }
       event.veto(
-        denyToolExecution(this.toolApproval.formatDenyMessage(planModeWriteDeniedMessage(plan.path))),
+        denyToolExecution(this.toolApproval.formatDenyMessage(planModeWriteDeniedMessage(plan?.path ?? null))),
       );
       return;
     }
@@ -138,8 +136,13 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     }
   }
 
-  private get isActive(): boolean {
+  get isActive(): boolean {
     return this.agentState.get(planKey).active;
+  }
+
+  get hasEffectivePlan(): boolean {
+    if (this.isActive || this.agentCtx.agentId === MAIN_AGENT_ID) return this.isActive;
+    return this.agentLifecycle.handleOf(MAIN_AGENT_ID)?.accessor.get(IAgentPlanService).isActive ?? false;
   }
 
   private currentPlanFilePath(): PlanFilePath {

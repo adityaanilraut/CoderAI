@@ -1,3 +1,4 @@
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
@@ -19,12 +20,12 @@ import {
 } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import {
-  resolvePathAccessPath,
+  resolveToolPath,
   type WorkspaceConfig,
 } from '#/tool/path-access';
 import { MEDIA_SNIFF_BYTES, detectFileType } from '#/agent/media/file-type';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { literalRulePattern, matchesGlobRuleSubject, matchesPathRuleSubject } from '#/tool/rule-match';
+import { literalRulePattern, matchesGlobRuleSubject, matchesToolPathRule } from '#/tool/rule-match';
 import { makeCarriageReturnsVisible, splitLinesKeepingTerminator, type LineEndingStyle } from '#/_base/text/line-endings';
 import { detectTextEncoding, type UtfTextEncoding } from '#/_base/text/encoding';
 import { renderPrompt } from '#/_base/utils/render-prompt';
@@ -180,6 +181,7 @@ export class ReadTool implements IReadTool {
   }
   readonly parameters: Record<string, unknown> = toInputJsonSchema(ReadInputSchema);
   constructor(
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
     @ISessionSkillCatalog private readonly skillCatalog: ISessionSkillCatalog,
@@ -204,7 +206,7 @@ export class ReadTool implements IReadTool {
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
   }
 
-  resolveExecution(args: ReadInput): ToolExecution | Promise<ToolExecution> {
+  async resolveExecution(args: ReadInput): Promise<ToolExecution> {
     if (args.column_offset !== undefined && (args.line_offset ?? 1) < 0) {
       return { isError: true, output: 'column_offset is only supported for forward reads. Use a positive line_offset or the forward Next Read arguments.' };
     }
@@ -216,18 +218,19 @@ export class ReadTool implements IReadTool {
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const workspace = this.workspaceConfig(view);
-    const path = resolvePathAccessPath(args.path, {
+    const target = await resolveToolPath(inspected.fs!, args.path, {
       env,
       workspace,
       operation: 'read',
-    });
+    }, this.bootstrap);
+    const { path, requestedPath } = target;
     return {
-      accesses: ToolAccesses.readFile(path),
+      accesses: ToolAccesses.file('read', path, { requestedPath }),
       description: `Reading ${args.path}`,
       display: { kind: 'file_io', operation: 'read', path },
       approvalRule: literalRulePattern(this.name, path),
-      matchesRule: (ruleArgs) =>
-        matchesPathRuleSubject(ruleArgs, path, {
+      matchesRule: (ruleArgs, includeRequestedPath) =>
+        matchesToolPathRule(ruleArgs, target, includeRequestedPath, {
           cwd: workspace.workspaceDir,
           pathClass: env.pathClass,
           homeDir: env.homeDir,
@@ -238,6 +241,7 @@ export class ReadTool implements IReadTool {
           if (lease.runtime.identity.generation !== inspected.identity.generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
+          await target.assertUnchanged(lease.runtime.fs!);
           const eventLog = this.resultTruncation.isWireJournalPath(path);
           const result = await this.execution(runtimeFileSource(lease.runtime.fs!, path), args, eventLog);
           return { ...result, spillExempt: true };

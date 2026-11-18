@@ -10,7 +10,6 @@ export async function headless(runtime: Runtime, prompt: string, json: boolean, 
   let denied = false;
   let failed = false;
   let cancelled = false;
-  let cancelWait: (() => void) | undefined;
   let goalStatus: 'active' | 'paused' | 'blocked' | 'complete' | undefined;
   const terminalOutput = process.stdout.isTTY ? new TerminalSanitizer() : undefined;
   const diagnostic = (text: string) => process.stderr.write((process.stderr.isTTY ? sanitizeTerminalText(text) : text) + '\n');
@@ -30,7 +29,7 @@ export async function headless(runtime: Runtime, prompt: string, json: boolean, 
       case 'error': diagnostic(`Error: ${event.message}`); break;
     }
   };
-  const stop = () => { cancelled = true; abort.abort(); cancelWait?.(); void runtime.session?.cancel().catch(() => {}); };
+  const stop = () => { cancelled = true; abort.abort(); };
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
   try {
     const session = await runtime.open();
@@ -66,6 +65,10 @@ export async function headless(runtime: Runtime, prompt: string, json: boolean, 
           return 0;
         }
         const goal = await session.resumeGoal();
+        if (session.summary?.sessionDir) {
+          const { reconcilePromotedGoal } = await import('./tui/goal-queue-store.js');
+          await reconcilePromotedGoal(session, goal.goalId);
+        }
         goalStatus = goal.status; actualPrompt = 'Resume the active goal.';
         objective = '';
       }
@@ -78,7 +81,7 @@ export async function headless(runtime: Runtime, prompt: string, json: boolean, 
         goalRequest = { objective, replace }; actualPrompt = objective;
       }
     }
-    let dispatch: ((current: typeof session) => Promise<void>) | undefined;
+    let dispatch: ((current: typeof session, promptId: string, signal: AbortSignal) => Promise<void>) | undefined;
     const invocation = !goalMatch ? prompt.trim().match(/^\/(\S+)(?:\s+([\s\S]*))?$/) : null;
     let skill: string | undefined;
     let plugin: { pluginId: string; name: string } | undefined;
@@ -96,23 +99,22 @@ export async function headless(runtime: Runtime, prompt: string, json: boolean, 
         actualPrompt = args;
       }
     }
-    const input = attachments.length ? await (await import('./attachments.js')).attachmentPrompt(runtime.harness, session, actualPrompt, attachments, runtime.options.cwd, plugin ? 'references' : 'parts') : undefined;
+    const input = attachments.length ? await (await import('./attachments.js')).attachmentPrompt(runtime.harness, session, actualPrompt, attachments, runtime.options.cwd, plugin ? 'references' : 'parts', abort.signal) : undefined;
     const availableSkills = /\s\/[^\s/]+/.test(prompt) ? await session.listSkills() : [];
     const inline = inlineSkillActivations(prompt, new Map(availableSkills.filter(item => !item.scopes || item.scopes.includes('tui')).map(item => [`skill:${item.name}`, item.name])));
-    if (skill) { const name = skill; dispatch = current => current.promptWithSkills(input ?? actualPrompt, [{ name, args: invocation?.[2] || undefined }, ...inline.filter(item => item.name !== name)]); }
-    else if (plugin) { const { pluginId, name } = plugin; const args = input ? input.filter(part => part.type === 'text').map(part => part.text).join('\n\n') : actualPrompt; dispatch = current => current.activatePluginCommand(pluginId, name, args || undefined); }
-    else if (inline.length) dispatch = current => current.promptWithSkills(input ?? actualPrompt, inline);
-    else if (input) dispatch = current => current.prompt(input);
+    if (skill) { const name = skill; dispatch = (current, promptId, signal) => current.promptWithSkills(input ?? actualPrompt, [{ name, args: invocation?.[2] || undefined }, ...inline.filter(item => item.name !== name)], { promptId, signal }); }
+    else if (plugin) { const { pluginId, name } = plugin; const args = input ? input.filter(part => part.type === 'text').map(part => part.text).join('\n\n') : actualPrompt; dispatch = (current, promptId, signal) => current.activatePluginCommand(pluginId, name, args || undefined, { promptId, signal }); }
+    else if (inline.length) dispatch = (current, promptId, signal) => current.promptWithSkills(input ?? actualPrompt, inline, { promptId, signal });
+    else if (input) dispatch = (current, promptId, signal) => current.prompt(input, { promptId, signal });
     if (goalRequest) { await session.createGoal(goalRequest); goalStatus = 'active'; }
     if (json) emit({ type: 'coderai.session', sessionId: session.id, workDir: session.workDir });
     else process.stderr.write(`Session: ${session.id}\n`);
     await showWarnings();
-    const reason = await runtime.run(actualPrompt, event => {
-      if (event.type === 'background.task.terminated' && ['failed', 'timed_out'].includes(event.info.status)) failed = true;
-      if (event.type === 'error' && event.agentId === 'main') failed = true;
-      if (event.type === 'goal.updated' && event.snapshot) goalStatus = event.snapshot.status;
+    let reason = await runtime.run(actualPrompt, (event, owned) => {
+      if (event.type === 'background.task.terminated' && owned && ['failed', 'timed_out'].includes(event.info.status)) failed = true;
+      if (event.type === 'goal.updated' && owned) goalStatus = event.snapshot?.status ?? (goalStatus === 'complete' ? 'complete' : undefined);
       if (json) emit(event);
-      else if (event.type === 'assistant.delta' && event.agentId === 'main') process.stdout.write(terminalOutput ? terminalOutput.write(event.delta) : event.delta);
+      else if (event.type === 'assistant.delta' && owned && event.agentId === 'main') process.stdout.write(terminalOutput ? terminalOutput.write(event.delta) : event.delta);
       else diagnostics(event);
     }, request => {
       denied = true;
@@ -121,20 +123,13 @@ export async function headless(runtime: Runtime, prompt: string, json: boolean, 
       const name = process.stderr.isTTY ? sanitizeTerminalText(request.toolName) : request.toolName;
       process.stderr.write(`Denied ${name}: approval requires an interactive terminal (or explicit --yolo).\n`);
       return result;
-    }, undefined, dispatch, !!goalMatch, true, !waitBackground, abort.signal);
-    if (waitBackground && !cancelled && reason === 'completed') {
-      const off = session.onEvent(event => {
-        if (json) emit(event); else diagnostics(event);
-        if (event.type === 'background.task.terminated' && ['failed', 'timed_out'].includes(event.info.status)) failed = true;
-      });
-      try {
-        const interrupted = new Promise<undefined>(resolve => { cancelWait = () => resolve(undefined); });
-        // Bound the optional wait so unattended runs cannot hang indefinitely.
-        const pending = await Promise.race([session.waitForBackgroundTasksOnPrint({ force: true, timeoutSeconds: 300 }), interrupted]);
-        if (pending !== undefined && pending > 0) { failed = true; process.stderr.write(`Background wait timed out with ${pending} task(s) still running.\n`); }
-      } finally { cancelWait = undefined; off(); }
-    }
-    if (reason === 'background_timeout') diagnostic('Background continuation timed out before the next main turn completed.');
+    }, undefined, dispatch, !!goalMatch, true, waitBackground ? 'drain' : true, abort.signal).catch(error => {
+      if (cancelled || (error instanceof Error && error.name === 'AbortError')) return 'cancelled';
+      diagnostic(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      return 'failed';
+    });
+    if (cancelled) reason = 'cancelled';
+    if (reason === 'background_timeout') diagnostic('Background work timed out before it completed.');
     const code = cancelled || reason === 'cancelled' ? 130 : failed || denied || reason !== 'completed' ? 1 : goalStatus === 'blocked' ? 3 : goalStatus === 'paused' ? 6 : goalStatus === 'active' ? 1 : 0;
     if (json) emit({ type: 'coderai.result', sessionId: session.id, reason, exitCode: code, ...(goalStatus ? { goalStatus } : {}) });
     else process.stdout.write('\n');

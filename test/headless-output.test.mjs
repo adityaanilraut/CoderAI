@@ -9,9 +9,10 @@ test('plain headless output contains only main agent text, while JSON retains at
     options: {}, session,
     open: async () => session,
     run: async (_prompt, emit) => {
-      emit({ type: 'assistant.delta', agentId: 'main', delta: 'main ' });
-      emit({ type: 'assistant.delta', agentId: 'child', delta: 'child' });
-      emit({ type: 'assistant.delta', agentId: 'main', delta: 'answer' });
+      emit({ type: 'assistant.delta', agentId: 'main', delta: 'main ' }, true);
+      emit({ type: 'assistant.delta', agentId: 'child', delta: 'child' }, false);
+      emit({ type: 'assistant.delta', agentId: 'main', delta: 'unrelated' }, false);
+      emit({ type: 'assistant.delta', agentId: 'main', delta: 'answer' }, true);
       return 'completed';
     },
   };

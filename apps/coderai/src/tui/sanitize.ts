@@ -44,3 +44,7 @@ export class TerminalSanitizer {
 export function sanitizeTerminalText(input: string): string {
   return new TerminalSanitizer().write(input);
 }
+
+export function writeTerminalOutput(input: string, stream: NodeJS.WritableStream = process.stdout): void {
+  stream.write(sanitizeTerminalText(input));
+}

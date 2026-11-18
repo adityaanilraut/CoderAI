@@ -4,6 +4,7 @@ import {
   customRegistryReplacementKeys,
   CustomRegistryApiError,
   fetchCustomRegistry,
+  readCustomRegistrySource,
   reconcileProviderCredentialUpdate,
   type CustomRegistryProviderEntry,
   type CustomRegistrySource,
@@ -43,7 +44,6 @@ import {
   modelsDevModelToRecord,
   toModelsDevProviderItem,
   upstreamFetch,
-  UPSTREAM_FETCH_TIMEOUT_MS,
 } from './modelsDevUpstream';
 
 const codes = ModelsDevImportErrors.codes;
@@ -201,10 +201,20 @@ export class ModelsDevImportService implements IModelsDevImportService {
     const { url } = options;
     const config = await this.readyConfig();
     const initialProviders = config.inspect<ProvidersSection>(PROVIDERS_SECTION).userValue ?? {};
+    if (options.apiKeyEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(options.apiKeyEnv)) {
+      throw new Error2(codes.REGISTRY_IMPORT_INVALID, 'Invalid registry API key environment variable name.');
+    }
+    if (options.apiKeyEnv !== undefined && options.apiKey !== undefined) {
+      throw new Error2(codes.REGISTRY_IMPORT_INVALID, 'Choose one registry authentication method.');
+    }
+    const priorSource = Object.values(initialProviders)
+      .map(readCustomRegistrySource)
+      .find((candidate) => candidate?.url === url);
     const source: CustomRegistrySource = {
       kind: 'apiJson',
       url,
-      apiKey: options.apiKey ?? registryKeyFromExisting(initialProviders, url) ?? '',
+      apiKeyEnv: options.apiKeyEnv ?? priorSource?.apiKeyEnv,
+      apiKey: priorSource?.apiKey,
     };
 
     let entries: Record<string, CustomRegistryProviderEntry>;
@@ -212,12 +222,12 @@ export class ModelsDevImportService implements IModelsDevImportService {
       entries = await fetchCustomRegistry(source, {
         fetchImpl: upstreamFetch(),
         userAgent: await this.outboundUserAgent(),
-        signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
+        apiKey: options.apiKey,
       });
     } catch (error) {
       throw new Error2(
         codes.REGISTRY_IMPORT_INVALID,
-        `custom registry at ${url} cannot be imported: ${truncateUpstreamMessage(error)}`,
+        `Custom registry cannot be imported: ${truncateUpstreamMessage(error)}`,
         {
           details: {
             phase: 'fetch',
@@ -229,7 +239,7 @@ export class ModelsDevImportService implements IModelsDevImportService {
     if (Object.keys(entries).length === 0) {
       throw new Error2(
         codes.REGISTRY_IMPORT_INVALID,
-        `custom registry at ${url} has no importable providers`,
+        'The registry has no importable providers.',
         { details: { phase: 'empty' } },
       );
     }
@@ -262,7 +272,7 @@ export class ModelsDevImportService implements IModelsDevImportService {
     } catch (error) {
       throw new Error2(
         codes.REGISTRY_IMPORT_INVALID,
-        `custom registry at ${url} cannot be imported: ${truncateUpstreamMessage(error)}`,
+        `Custom registry cannot be imported: ${truncateUpstreamMessage(error)}`,
       );
     }
 
@@ -279,7 +289,10 @@ export class ModelsDevImportService implements IModelsDevImportService {
       [PROVIDERS_SECTION]: next.providers,
       [MODELS_SECTION]: next.models,
     };
-    const expectedValues: Record<string, unknown> = {};
+    const expectedValues: Record<string, unknown> = {
+      [PROVIDERS_SECTION]: providers,
+      [MODELS_SECTION]: config.inspect<ModelsSection>(MODELS_SECTION).userValue,
+    };
     if (next.defaultModel !== previousDefault) {
       sections[DEFAULT_MODEL_SECTION] = next.defaultModel;
       expectedValues[DEFAULT_MODEL_SECTION] = previousDefault;
@@ -301,7 +314,7 @@ export class ModelsDevImportService implements IModelsDevImportService {
     } catch (error) {
       throw new Error2(
         codes.REGISTRY_IMPORT_INVALID,
-        `custom registry at ${url} cannot be imported: ${truncateUpstreamMessage(error)}`,
+        `Custom registry cannot be imported: ${truncateUpstreamMessage(error)}`,
       );
     }
 
@@ -325,25 +338,6 @@ async function seedDefaultModelWhenUnset(config: IConfigService, alias: string):
   const current = config.inspect<string>(DEFAULT_MODEL_SECTION).userValue;
   if (current !== undefined && current.trim() !== '') return;
   await config.replace(DEFAULT_MODEL_SECTION, alias);
-}
-
-function registryKeyFromExisting(
-  providers: ProvidersSection,
-  url: string,
-): string | undefined {
-  for (const provider of Object.values(providers)) {
-    if (!isRecord(provider)) continue;
-    const source = provider['source'];
-    if (isRecord(source) && source['kind'] === 'apiJson' && source['url'] === url) {
-      const key = source['apiKey'];
-      if (typeof key === 'string' && key.length > 0) return key;
-    }
-  }
-  return undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function truncateUpstreamMessage(err: unknown, limit = 300): string {

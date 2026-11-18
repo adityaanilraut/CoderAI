@@ -22,6 +22,7 @@ import {
 import type { PermissionPolicy } from "./types";
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { IAgentPlanService } from '#/features/plan/plan';
 
 export class AgentPermissionPolicyService
   extends Service
@@ -42,6 +43,13 @@ export class AgentPermissionPolicyService
       ...(bootstrap.args.nonInteractive
         ? []
         : [this.instantiation.createInstance(DangerousCommandAskPermissionPolicyService)]),
+      {
+        name: 'plan-shell-ask',
+        evaluate: context => context.toolCall.name === 'Bash' &&
+          this.instantiation.invokeFunction(accessor => accessor.get(IAgentPlanService).hasEffectivePlan)
+          ? { kind: 'ask', reason: { plan_mode: true } }
+          : undefined,
+      },
       this.instantiation.createInstance(AutoModeApprovePermissionPolicyService),
       this.instantiation.createInstance(SessionApprovalHistoryPermissionPolicyService),
       this.instantiation.createInstance(UserConfiguredAskPermissionPolicyService),

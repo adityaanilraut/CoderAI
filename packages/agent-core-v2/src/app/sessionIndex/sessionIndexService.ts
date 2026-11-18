@@ -44,6 +44,7 @@ import {
   recencyColumn,
   sessionCollection,
   sessionCountersCollection,
+  serializeSessionIndexWrite,
   stripRecencyField,
   type SessionWorkspaceCounts,
 } from './sessionIndexModel';
@@ -361,12 +362,21 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   async remove(id: string): Promise<void> {
     await this.mirror.evict(id);
-    await this.withReadModel(
+    await serializeSessionIndexWrite(this.queryStore, () => this.withReadModel(
       async (generation) => {
-        await this.queryStore.delete(sessionCollection(generation), id);
+        const collection = sessionCollection(generation);
+        const old = await this.queryStore.get<SessionSummary>(collection, id);
+        if (old === undefined) return;
+        const counters = sessionCountersCollection(generation);
+        const count = await this.queryStore.get<SessionWorkspaceCounts>(counters, old.workspaceId) ?? { active: 0, archived: 0 };
+        const field = old.archived ? 'archived' : 'active';
+        await this.queryStore.batch([
+          { kind: 'delete', collection, key: id },
+          { kind: 'put', collection: counters, key: old.workspaceId, value: { ...count, [field]: Math.max(0, count[field] - 1) } },
+        ]);
       },
       () => Promise.resolve(),
-    );
+    ));
     try {
       await markSessionDirty(this.storage, this.sessionsScope, id);
     } catch (error) {

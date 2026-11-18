@@ -11,13 +11,14 @@ function cleanInput(input: Input): void {
   const safe = sanitizeTerminalText(value).replace(/[\n\t]/g, ' ');
   if (safe !== value) input.setValue(safe);
 }
-export const dialogBodyHeight = (rows: number) => Math.max(1, rows - 7);
+const dialogHintHeight = (rows: number) => rows >= 10 ? 2 : rows >= 8 ? 1 : 0;
+export const dialogBodyHeight = (rows: number) => Math.max(1, rows - 5 - dialogHintHeight(rows));
 
-export function dialogFrame(title: string, body: string[], hints: string[], width: number, rows: number): string[] {
+export function dialogFrame(title: string, body: string[], hints: string[], width: number, rows: number, borderColor = colors.primary): string[] {
   if (width < 3) return [];
   const inner = Math.max(1, width - 4);
-  const border = (text: string) => chalk.hex(colors.primary)(text);
-  const content = [chalk.hex(colors.primary).bold(single(title)), ...body.slice(0, dialogBodyHeight(rows)), ...hints.slice(0, 2).map(hint => chalk.hex(colors.textMuted)(hint))];
+  const border = (text: string) => chalk.hex(borderColor)(text);
+  const content = [chalk.hex(colors.primary).bold(single(title)), ...body.slice(0, dialogBodyHeight(rows)), ...hints.slice(0, dialogHintHeight(rows)).map(hint => chalk.hex(colors.textMuted)(hint))];
   return [border('╭' + '─'.repeat(width - 2) + '╮'), ...content.map(line => {
     const clipped = truncateToWidth(line, inner, '…');
     return border('│') + ' ' + clipped + ' '.repeat(Math.max(0, inner - visibleWidth(clipped))) + ' ' + border('│');
@@ -70,7 +71,7 @@ export class ChoiceDialog implements Component {
       this.selected = (this.selected + (matchesKey(data, Key.up) ? -1 : 1) + Math.max(1, items.length)) % Math.max(1, items.length);
     } else if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown)) {
       const direction = matchesKey(data, Key.pageUp) ? -1 : 1;
-      if (this.noticeMax) this.scroll = Math.max(0, Math.min(this.noticeMax, this.scroll + direction * this.noticePage));
+      if (this.noticePage && this.noticeMax) this.scroll = Math.max(0, Math.min(this.noticeMax, this.scroll + direction * this.noticePage));
       else this.selected = Math.max(0, Math.min(items.length - 1, this.selected + direction * this.pageSize));
     } else if (matchesKey(data, Key.home)) this.selected = 0;
     else if (matchesKey(data, Key.end)) this.selected = Math.max(0, items.length - 1);
@@ -83,14 +84,19 @@ export class ChoiceDialog implements Component {
   render(width: number): string[] {
     const inner = Math.max(1, width - 4), budget = dialogBodyHeight(this.rows());
     const items = this.filtered(); this.selected = Math.max(0, Math.min(this.selected, items.length - 1));
-    const description = this.selection?.description ? wrapTextWithAnsi(clean(this.selection.description), inner).slice(0, budget > 8 ? 2 : 1) : [];
+    const search = this.options.searchable && budget >= 2 ? this.search.render(inner) : [];
+    const description = this.selection?.description && budget >= 5 ? wrapTextWithAnsi(clean(this.selection.description), inner).slice(0, budget > 8 ? 2 : 1) : [];
     const notice = this.notice ? wrapTextWithAnsi(this.notice, inner) : [];
-    this.noticePage = Math.max(1, Math.min(6, budget - (this.options.searchable ? 1 : 0) - description.length - Math.min(3, items.length) - 2));
+    const showCount = budget >= 5;
+    const choiceRows = Math.min(budget >= 5 ? 3 : 1, Math.max(1, items.length));
+    const noticeRoom = Math.max(0, budget - search.length - description.length - choiceRows - Number(showCount));
+    const showNoticePosition = noticeRoom >= 2 && notice.length > Math.min(6, noticeRoom);
+    this.noticePage = Math.min(6, noticeRoom - Number(showNoticePosition));
     this.noticeMax = Math.max(0, notice.length - this.noticePage); this.scroll = Math.min(this.scroll, this.noticeMax);
     const preview = notice.slice(this.scroll, this.scroll + this.noticePage);
-    const preface = [...(this.options.searchable ? this.search.render(inner) : []), ...preview,
-      ...(notice.length > this.noticePage ? [chalk.hex(colors.textMuted)(`Preview ${this.scroll + 1}–${this.scroll + preview.length}/${notice.length} · PgUp/PgDn`)] : [])];
-    this.pageSize = Math.max(1, Math.min(10, budget - preface.length - description.length - 1));
+    const preface = [...search, ...preview,
+      ...(showNoticePosition ? [chalk.hex(colors.textMuted)(`Preview ${this.scroll + 1}–${this.scroll + preview.length}/${notice.length} · PgUp/PgDn`)] : [])];
+    this.pageSize = Math.max(1, Math.min(10, budget - preface.length - description.length - Number(showCount)));
     const start = Math.max(0, Math.min(this.selected - Math.floor(this.pageSize / 2), items.length - this.pageSize));
     const list = items.slice(start, start + this.pageSize).map((item, index) => {
       const mark = this.options.multiple && item.value !== '\0done' ? `${this.checked.has(item.value) ? '[x]' : '[ ]'} ` : '';
@@ -99,9 +105,9 @@ export class ChoiceDialog implements Component {
     });
     const noMatches = this.search.getValue().trim() && !items.some(item => !item.pinned);
     const count = this.warning || (noMatches ? 'No matches · edit your search' : items.length ? `${this.selected + 1}/${items.length}${this.options.multiple ? ` · ${this.checked.size} selected` : ''}` : 'No matches · edit your search');
-    return dialogFrame(this.title, [...preface, ...(list.length ? list : ['No matching options.']), ...description.map(line => chalk.hex(colors.textMuted)(line)), chalk.hex(this.warning ? colors.warning : colors.textMuted)(count)],
+    return dialogFrame(this.title, [...preface, ...(list.length ? list : ['No matching options.']), ...description.map(line => chalk.hex(colors.textMuted)(line)), ...(showCount ? [chalk.hex(this.warning ? colors.warning : colors.textMuted)(count)] : [])],
       [this.options.selectHint ?? (this.options.multiple ? '↑/↓ choose · Space/Enter toggle · Done submits' : '↑/↓ choose · Enter select · Esc cancel'),
-        this.noticeMax ? 'PgUp/PgDn preview · Esc cancel' : this.options.searchable ? 'Type to search · PgUp/PgDn page · Esc cancel' : 'PgUp/PgDn page · Home/End jump · Esc cancel'], width, this.rows());
+        this.noticePage && this.noticeMax ? 'PgUp/PgDn preview · Esc cancel' : this.options.searchable ? 'Type to search · PgUp/PgDn page · Esc cancel' : 'PgUp/PgDn page · Home/End jump · Esc cancel'], width, this.rows());
   }
 }
 
@@ -125,10 +131,14 @@ export class PromptDialog implements Component {
   }
   render(width: number): string[] {
     const [title, ...rest] = clean(this.title).split('\n');
-    const lines = wrapTextWithAnsi(rest.join('\n'), Math.max(1, width - 4));
-    this.page = Math.max(1, dialogBodyHeight(this.rows()) - 2); this.maxScroll = Math.max(0, lines.length - this.page);
+    const inner = Math.max(1, width - 4);
+    const lines = rest.length ? wrapTextWithAnsi(rest.join('\n'), inner) : [];
+    const input = this.input.render(inner);
+    const previewRoom = Math.max(0, dialogBodyHeight(this.rows()) - input.length);
+    const showPosition = previewRoom >= 2 && lines.length > previewRoom;
+    this.page = previewRoom - Number(showPosition); this.maxScroll = this.page ? Math.max(0, lines.length - this.page) : 0;
     this.scroll = Math.min(this.scroll, this.maxScroll);
-    return dialogFrame(title ?? '', [...lines.slice(this.scroll, this.scroll + this.page), ...(this.maxScroll ? [`Question ${this.scroll + 1}–${Math.min(lines.length, this.scroll + this.page)}/${lines.length}`] : []), ...this.input.render(Math.max(1, width - 4))],
+    return dialogFrame(title ?? '', [...lines.slice(this.scroll, this.scroll + this.page), ...(showPosition ? [`Question ${this.scroll + 1}–${Math.min(lines.length, this.scroll + this.page)}/${lines.length}`] : []), ...input],
       ['Enter submit · Esc cancel', this.maxScroll ? 'PgUp/PgDn scroll question' : 'Type your answer'], width, this.rows());
   }
 }

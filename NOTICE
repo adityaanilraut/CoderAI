@@ -21,5 +21,6 @@ CoderAI adapts the terminal host, application identity and storage defaults,
 startup probing, default approval policy, built-in product skills, prompt
 wording and packaging. Provider names, OAuth identifiers and persisted Kimi
 engine formats are retained for compatibility. The original checkout is not
-needed at build time or runtime. External npm dependencies retain their own
-licenses in their installed packages.
+needed at build time or runtime. Source installs retain dependency license
+files in their npm packages. Standalone ZIPs include THIRD_PARTY_LICENSES.txt
+with the bundled dependency and embedded runtime notices.

@@ -1,3 +1,4 @@
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { normalize, resolve } from 'pathe';
 
 import { ensureRgPath, rgUnavailableMessage, type RgProbe } from '#/os/backends/node-local/tools/rgLocator';
@@ -26,7 +27,7 @@ import {
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import {
   isWithinDirectory,
-  resolvePathAccessPath,
+  resolveToolPath,
   type PathClass,
   isSensitiveFile,
   SENSITIVE_DOT_VARIANT_SUFFIXES,
@@ -64,6 +65,7 @@ export class GlobTool implements IGlobTool {
   readonly name = 'Glob' as const;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(GlobInputSchema);
   constructor(
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
     @ITelemetryService private readonly telemetry: ITelemetryService,
@@ -81,7 +83,7 @@ export class GlobTool implements IGlobTool {
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
   }
 
-  resolveExecution(args: GlobInput): ToolExecution {
+  async resolveExecution(args: GlobInput): Promise<ToolExecution> {
     const inspected = inspectAgentRuntime(this.runtime);
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
@@ -92,16 +94,13 @@ export class GlobTool implements IGlobTool {
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const workspace = this.workspaceConfig(view);
-    let path: string | undefined;
-    if (args.path !== undefined) {
-      path = resolvePathAccessPath(args.path, {
-        env,
-        workspace,
-        operation: 'search',
-        policy: { guardMode: 'absolute-outside-allowed', checkSensitive: false },
-      });
-    }
-    const searchRoots = [path ?? workspace.workspaceDir];
+    const target = await resolveToolPath(inspected.fs!, args.path ?? workspace.workspaceDir, {
+      env,
+      workspace,
+      operation: 'search',
+      policy: { guardMode: 'absolute-outside-allowed', checkSensitive: false },
+    }, this.bootstrap);
+    const searchRoots = [target.path];
 
     const detailParts: string[] = [`pattern: ${args.pattern}`];
     if (args.path !== undefined) {
@@ -112,7 +111,7 @@ export class GlobTool implements IGlobTool {
     }
 
     return {
-      accesses: ToolAccesses.searchTree(searchRoots[0]!),
+      accesses: ToolAccesses.file('search', target.path, { recursive: true, requestedPath: target.requestedPath }),
       description: `Searching ${args.pattern}`,
       display: {
         kind: 'file_io',
@@ -128,6 +127,7 @@ export class GlobTool implements IGlobTool {
           if (lease.runtime.identity.generation !== inspected.identity.generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
+          await target.assertUnchanged(lease.runtime.fs!);
           return await this.execution(
             lease.runtime.fs!,
             lease.runtime.process!,
@@ -136,6 +136,7 @@ export class GlobTool implements IGlobTool {
             args,
             signal,
             searchRoots,
+            target.isCredentialPath,
           );
         } finally {
           lease.dispose();
@@ -152,6 +153,7 @@ export class GlobTool implements IGlobTool {
     args: GlobInput,
     signal: AbortSignal,
     searchRoots: readonly string[],
+    isCredentialPath: (path: string) => boolean,
   ): Promise<ExecutableToolResult> {
     const searchRoot = searchRoots[0] ?? workspace.workspaceDir;
 
@@ -235,7 +237,7 @@ export class GlobTool implements IGlobTool {
     const kept: string[] = [];
     let filteredSensitive = 0;
     for (const p of rawPaths) {
-      if (isSensitiveFile(p)) {
+      if (isSensitiveFile(p) || isCredentialPath(p)) {
         filteredSensitive++;
       } else {
         kept.push(p);
@@ -358,7 +360,7 @@ function createRgProbe(processService: IHostProcessService): RgProbe {
 }
 
 function buildRgArgs(rgPath: string, args: GlobInput, singleThreaded = false): string[] {
-  const cmd: string[] = [rgPath];
+  const cmd: string[] = [rgPath, '--no-config'];
   if (singleThreaded) cmd.push('-j', '1');
   cmd.push('--files', '--hidden', '--sortr=modified');
   for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) {

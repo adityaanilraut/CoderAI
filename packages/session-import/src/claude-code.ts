@@ -547,7 +547,7 @@ export async function readClaudeSession(path: string, options: ReadOptions): Pro
     if (index < 0) timeline.push(entry); else timeline.splice(index, 0, entry);
   }
   let sourceCwd = timeline.find(({ row }) => row.cwd)?.row.cwd;
-  const images = await createImageStore({ directory: options.imageDirectory, cwd: sourceCwd });
+  const images = await createImageStore({ directory: options.imageDirectory, publishedDirectory: options.publishedImageDirectory, cwd: sourceCwd });
   for (const entry of timeline) {
     entry.sourceUserText = typeof entry.row.message?.content === 'string' ? entry.row.message.content : blocksOf(entry.row).filter((block) => block?.type === 'text').map((block) => block.text ?? '').join('\n');
     sourceCwd = entry.row.cwd ?? sourceCwd;

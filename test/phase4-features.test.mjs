@@ -1,10 +1,10 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { build } from 'esbuild';
+import { engineBundlePlugins } from '../scripts/bundle-options.mjs';
 import { fixture } from './fixture.mjs';
 import { loadTuiConfig, saveTuiConfig, saveAutoSessionTitle } from '../apps/coderai/src/tui/config.ts';
 import { ExperimentsDialog, showExperiments } from '../apps/coderai/src/tui/experiments.ts';
@@ -22,23 +22,11 @@ await build({
     export * from './packages/node-sdk/src/index.ts';
     export * from './apps/coderai/src/runtime.ts';
     export * from './apps/coderai/src/tui/commands.ts';
+    export * from './apps/coderai/src/tui/goal-queue-store.ts';
   ` },
   outfile: entry, bundle: true, platform: 'node', format: 'esm', target: 'node24',
   tsconfigRaw: { compilerOptions: { experimentalDecorators: true } },
-  plugins: [{ name: 'engine-assets', setup(b) {
-    b.onResolve({ filter: /^#/ }, async args => {
-      let root = args.resolveDir;
-      while (!existsSync(join(root, 'package.json'))) root = dirname(root);
-      const path = args.path.startsWith('#human/') ? resolve('packages/agent-core-v2/src/human', args.path.slice(7)) : join(root, basename(root) === 'human' ? '' : 'src', args.path.slice(2));
-      return b.resolve(path, { resolveDir: args.resolveDir, kind: args.kind });
-    });
-    b.onResolve({ filter: /\?raw$/ }, args => ({ path: resolve(args.resolveDir, args.path.slice(0, -4)), namespace: 'raw' }));
-    b.onLoad({ filter: /.*/, namespace: 'raw' }, async args => ({ contents: await readFile(args.path, 'utf8'), loader: 'text' }));
-    b.onResolve({ filter: /^[\w@][^:]*$/ }, args => {
-      if (args.path.startsWith('@coderai/') || args.path.startsWith('#')) return;
-      return { path: /^ajv\/dist\/(2019|2020)$/.test(args.path) ? args.path + '.js' : args.path, external: true };
-    });
-  } }],
+  plugins: engineBundlePlugins(),
 });
 const api = await import(entry);
 api.configureTextBuildWorkerRuntime(resolve('dist/text-build-worker.mjs'));
@@ -151,32 +139,54 @@ test('LaTeX preferences update already-rendered transcript Markdown and custom s
 function runHost(policy = ['finish']) {
   const listeners = new Set(), calls = [];
   const emit = e => { for (const listener of [...listeners]) listener(e); };
-  const session = { onEvent(fn) { listeners.add(fn); return () => listeners.delete(fn); }, setApprovalHandler() {}, setQuestionHandler() {}, async prompt() { emit(event('turn.started')); emit(event('turn.ended', { reason: 'completed' })); }, async handlePrintMainTurnCompleted() { calls.push('policy'); return policy.shift() ?? 'finish'; } };
-  const runtime = { session, harness: { getConfig: async () => ({ background: { printWaitCeilingS: 1 } }) } };
+  const session = {
+    onEvent(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+    setApprovalHandler() {},
+    setQuestionHandler() {},
+    async prompt(_prompt, { promptId }) {
+      emit(event('turn.started', { turnId: 0, promptId: 'scheduled' }));
+      emit(event('turn.ended', { turnId: 0, reason: 'completed' }));
+      emit(event('turn.started', { turnId: 1, promptId }));
+      emit(event('background.task.started', { info: { taskId: 'owned-task' } }));
+      emit(event('turn.ended', { turnId: 1, reason: 'completed' }));
+    },
+    async handlePrintMainTurnCompleted() { calls.push('policy'); return policy.shift() ?? 'finish'; },
+  };
+  const runtime = Object.assign(Object.create(api.Runtime.prototype), {
+    session, harness: { getConfig: async () => ({ background: { printWaitCeilingS: 0.06 } }) },
+  });
   return { runtime, emit, calls, listeners };
 }
 
 test('main-turn completion follows print policy, streams steered turns and releases listeners on cancellation', async () => {
   const h = runHost(['continue', 'finish']);
-  const result = api.Runtime.prototype.run.call(h.runtime, 'task', () => {}, () => {}, undefined, undefined, false, false, true);
+  const received = [];
+  const result = h.runtime.run('task', (value, owned) => received.push([value.type, value.turnId, owned]), () => {}, undefined, undefined, false, false, true);
   await new Promise(resolve => setTimeout(resolve, 10)); assert.equal(h.calls.length, 1);
-  h.emit(event('turn.started')); h.emit(event('turn.ended', { reason: 'completed' }));
+  assert.ok(received.some(([type, turnId, owned]) => type === 'turn.ended' && turnId === 0 && !owned));
+  h.emit(event('turn.started', { turnId: 2, origin: { kind: 'task', taskId: 'other-task' } }));
+  h.emit(event('turn.ended', { turnId: 2, reason: 'completed' }));
+  assert.equal(h.calls.length, 1);
+  h.emit(event('turn.started', { turnId: 3, origin: { kind: 'task', taskId: 'owned-task' } }));
+  await new Promise(resolve => setTimeout(resolve, 75));
+  h.emit(event('turn.ended', { turnId: 3, reason: 'completed' }));
   assert.equal(await result, 'completed'); assert.equal(h.calls.length, 2); assert.equal(h.listeners.size, 0);
   const cancelled = runHost(['continue']); const abort = new AbortController();
-  const waiting = api.Runtime.prototype.run.call(cancelled.runtime, 'task', () => {}, () => {}, undefined, undefined, false, false, true, abort.signal);
+  const waiting = cancelled.runtime.run('task', () => {}, () => {}, undefined, undefined, false, false, true, abort.signal);
   await new Promise(resolve => setTimeout(resolve, 10)); abort.abort(); assert.equal(await waiting, 'cancelled'); assert.equal(cancelled.listeners.size, 0);
 });
 
 test('headless skills, plugins and lifecycle controls use engine dispatch without sending slash commands as model text', async () => {
   const calls = [];
   const session = { id: 's', workDir: '/test', setStaleReloadHandler() {}, getSessionWarnings: async () => [], listSkills: async () => [{ name: 'review', scopes: ['tui'] }], listPluginCommands: async () => [{ pluginId: 'local', name: 'check' }], promptWithSkills: async (...args) => calls.push(['skill', ...args]), activatePluginCommand: async (...args) => calls.push(['plugin', ...args]), getGoal: async () => ({ goal: { objective: 'Work', status: 'paused', turnsUsed: 1, tokensUsed: 2 } }), pauseGoal: async () => calls.push('pause'), cancelGoal: async () => calls.push('cancel') };
-  const runtime = { session, options: {}, open: async () => session, async run(prompt, emit, approve, question, dispatch, follow, created, policy) { calls.push(['run', prompt, policy]); if (dispatch) await dispatch(session); return 'completed'; } };
+  const signal = new AbortController().signal;
+  const runtime = { session, options: {}, open: async () => session, async run(prompt, emit, approve, question, dispatch, follow, created, policy) { calls.push(['run', prompt, policy]); if (dispatch) await dispatch(session, 'submission', signal); return 'completed'; } };
   const oldOut = process.stdout.write, oldErr = process.stderr.write;
   try {
     process.stdout.write = process.stderr.write = () => true;
     assert.equal(await headless(runtime, '/skill:review file.ts', true), 0);
-    assert.deepEqual(calls.at(-1), ['skill', 'file.ts', [{ name: 'review', args: 'file.ts' }]]);
-    assert.equal(await headless(runtime, '/local:check file.ts', true), 0); assert.deepEqual(calls.at(-1), ['plugin', 'local', 'check', 'file.ts']);
+    assert.deepEqual(calls.at(-1), ['skill', 'file.ts', [{ name: 'review', args: 'file.ts' }], { promptId: 'submission', signal }]);
+    assert.equal(await headless(runtime, '/local:check file.ts', true), 0); assert.deepEqual(calls.at(-1), ['plugin', 'local', 'check', 'file.ts', { promptId: 'submission', signal }]);
     const count = calls.filter(call => Array.isArray(call) && call[0] === 'run').length;
     for (const control of ['status', 'pause', 'cancel']) assert.equal(await headless(runtime, `/goal ${control}`, true), 0);
     assert.equal(calls.filter(call => Array.isArray(call) && call[0] === 'run').length, count);
@@ -197,7 +207,7 @@ test('real engine profile inspection and cron deletion persist through reload wi
   await session.reloadSession(); assert.deepEqual((await session.getCronTasks()).tasks, []);
 });
 
-test('real CLI: skill activation and default print steer dispatch through the engine', async t => {
+test('real CLI: skill activation and default print steer dispatch through the engine', { timeout: 30000 }, async t => {
   const f = await fixture(); t.after(f.cleanup);
   const { mkdir } = await import('node:fs/promises');
   const path = join(f.cwd, '.coderai', 'skills', 'phase4-review'); await mkdir(path, { recursive: true });
@@ -228,7 +238,7 @@ test('real engine: all requested experiments are inspectable and compaction flag
   await assert.rejects(session.compact(), /No messages/);
 });
 
-test('real CLI: deterministic goal lifecycle controls persist and resume follows completion', async t => {
+test('real CLI: deterministic goal lifecycle controls persist and resume follows completion', { timeout: 30000 }, async t => {
   const f = await fixture(); t.after(f.cleanup);
   const runtime = new api.Runtime({ home: f.home, cwd: f.cwd, trust: true });
   await runtime.harness.setConfig({ providers: { local: { type: 'openai', baseUrl: f.env.CODERAI_MODEL_BASE_URL, apiKey: 'test' } }, models: { local: { provider: 'local', model: 'fixture-model', maxContextSize: 131072 } }, defaultModel: 'local', watch: { enabled: false }, database: { search: false } });
@@ -252,6 +262,35 @@ test('real CLI: deterministic goal lifecycle controls persist and resume follows
   assert.equal(events.at(-1).goalStatus, 'complete');
   const cancel = await f.run(['--trust', '--resume', cancelId, '-p', '/goal cancel', '--json']);
   assert.equal(cancel.code, 0, cancel.stderr); assert.equal(JSON.parse(cancel.stdout).goal, null);
+});
+
+test('an already persisted goal is reconciled after queue promotion is interrupted', { timeout: 20000 }, async t => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  const runtimeOptions = { home: f.home, cwd: f.cwd, trust: true, interactive: true };
+  const runtime = new api.Runtime(runtimeOptions);
+  t.after(() => runtime.close());
+  await runtime.harness.setConfig({
+    providers: { local: { type: 'openai', baseUrl: f.env.CODERAI_MODEL_BASE_URL, apiKey: 'test' } },
+    models: { local: { provider: 'local', model: 'fixture-model', maxContextSize: 131072 } },
+    defaultModel: 'local',
+  });
+  const session = await runtime.open();
+  const { goals: [first] } = await api.appendGoalQueueItem(session, { objective: 'Promoted goal' });
+  await api.appendGoalQueueItem(session, { objective: 'Unstarted goal' });
+  await session.createGoal({ goalId: first.id, objective: first.objective });
+  // Simulate interruption after goal persistence and before the queue commit.
+  await runtime.close();
+
+  const reopened = new api.Runtime(runtimeOptions);
+  t.after(() => reopened.close());
+  const resumed = await reopened.open(session.id);
+  const { goal } = await resumed.getGoal();
+  assert.equal(goal.goalId, first.id);
+  assert.equal((await resumed.createGoal({ goalId: first.id, objective: first.objective })).goalId, first.id);
+  await api.reconcilePromotedGoal(resumed, goal.goalId);
+  await api.reconcilePromotedGoal(resumed, goal.goalId);
+  assert.deepEqual((await api.readGoalQueue(resumed)).goals.map(item => item.objective), ['Unstarted goal']);
 });
 
 test('real CLI: headless runs do not advertise NotifyUser even when its flag is enabled', async t => {

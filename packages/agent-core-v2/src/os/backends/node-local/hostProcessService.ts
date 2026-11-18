@@ -20,7 +20,7 @@ function buildSpawnOptions(options: HostProcessOptions): SpawnOptions {
   const detached = options.detached ?? !isWindows;
   const spawnOptions: SpawnOptions = {
     cwd: options.cwd,
-    env: buildEnv(options.env),
+    env: options.inheritEnv === false ? (options.env ?? {}) : buildEnv(options.env),
     stdio: options.mergeStderr ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
     detached,
     windowsHide: options.windowsHide ?? true,

@@ -4,21 +4,24 @@ import { basename, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { PromptInput, Session, CoderaiHarness } from '@coderai/sdk';
 import { buildImageCompressionCaption, buildMediaPathTag, compressImageForModel, sessionMediaOriginalsDir } from '@coderai/sdk';
-import { detectFileType, MEDIA_SNIFF_BYTES } from '@coderai/sdk/media';
+import { detectFileType, MAX_MEDIA_BYTES, MAX_MEDIA_MEGABYTES, MEDIA_SNIFF_BYTES } from '@coderai/sdk/media';
 import { buildDaemonFileUrl } from '@coderai/sdk/media';
 import { persistOriginalImage } from '@coderai/sdk/media';
 
-const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 const STAGING_TTL_SECONDS = 60 * 60;
+const MAX_SUBMISSION_BYTES = 2 * MAX_MEDIA_BYTES;
 
 /** Stage media in the engine file store for session persistence and provider upload. */
-export async function attachmentPrompt(harness: CoderaiHarness, session: Session, prompt: string, paths: readonly string[], cwd: string, format: 'parts' | 'references' = 'parts'): Promise<PromptInput> {
+export async function attachmentPrompt(harness: CoderaiHarness, session: Session, prompt: string, paths: readonly string[], cwd: string, format: 'parts' | 'references' = 'parts', signal?: AbortSignal): Promise<PromptInput> {
+  signal?.throwIfAborted();
   const capabilities = (await session.getStatus()).mediaCapabilities;
   const parts: PromptInput[number][] = [{ type: 'text', text: prompt }];
   const staged: string[] = [];
   const references: string[] = [];
+  let totalBytes = 0;
   try {
     for (const path of paths) {
+      signal?.throwIfAborted();
       const file = await open(resolve(cwd, path), constants.O_RDONLY | constants.O_NONBLOCK);
       try {
         const stat = await file.stat();
@@ -29,15 +32,19 @@ export async function attachmentPrompt(harness: CoderaiHarness, session: Session
         const type = detectFileType(path, header.subarray(0, bytesRead), 'media');
         if (type.kind !== 'image' && type.kind !== 'video' && type.kind !== 'audio') throw new Error(`Unsupported attachment format: ${path}.`);
         if (!capabilities?.[type.kind]) throw new Error(`The selected model does not support ${type.kind} input: ${path}`);
-        if (type.kind !== 'image' && stat.size > MAX_VIDEO_BYTES) throw new Error(`${type.kind === 'audio' ? 'Audio' : 'Video'} exceeds the ${MAX_VIDEO_BYTES / 1024 / 1024} MiB limit: ${path}`);
+        if (stat.size > MAX_MEDIA_BYTES) throw new Error(`${type.kind[0]!.toUpperCase() + type.kind.slice(1)} exceeds the ${MAX_MEDIA_MEGABYTES} MiB limit: ${path}`);
+        totalBytes += stat.size;
+        if (totalBytes > MAX_SUBMISSION_BYTES) throw new Error(`Attachments exceed the combined ${2 * MAX_MEDIA_MEGABYTES} MiB limit: ${path}`);
         const buffer = Buffer.alloc(stat.size + 1);
         let size = 0;
         while (size < buffer.length) {
+          signal?.throwIfAborted();
           const result = await file.read(buffer, size, buffer.length - size, size);
           if (!result.bytesRead) break;
           size += result.bytesRead;
         }
         if (size !== stat.size) throw new Error(`Attachment changed while reading: ${path}`);
+        signal?.throwIfAborted();
         let bytes: Uint8Array = buffer.subarray(0, size);
         let mimeType = type.mimeType;
         if (format === 'references') {
@@ -53,6 +60,7 @@ export async function attachmentPrompt(harness: CoderaiHarness, session: Session
         }
         if (type.kind === 'image') {
           const compressed = await compressImageForModel(bytes, mimeType, { maxEdge: harness.imageLimits?.maxEdgePx() });
+          signal?.throwIfAborted();
           if (compressed.changed) {
             const dir = session.summary?.sessionDir;
             const originalPath = await persistOriginalImage(bytes, mimeType, { dir: dir ? sessionMediaOriginalsDir(dir) : undefined });
@@ -66,6 +74,7 @@ export async function attachmentPrompt(harness: CoderaiHarness, session: Session
             }
           }
         }
+        signal?.throwIfAborted();
         const meta = await harness.uploadFile(bytes, { name: basename(path), mimeType, expiresInSec: STAGING_TTL_SECONDS });
         staged.push(meta.id);
         const url = buildDaemonFileUrl(meta.id);
@@ -74,6 +83,7 @@ export async function attachmentPrompt(harness: CoderaiHarness, session: Session
         else parts.push({ type: 'video_url', videoUrl: { url } });
       } finally { await file.close(); }
     }
+    signal?.throwIfAborted();
     return parts;
   } catch (error) {
     await Promise.all(staged.map(id => harness.deleteFile(id).catch(() => {})));

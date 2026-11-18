@@ -46,7 +46,7 @@ export async function foldAgentWireReplay(
   };
 }
 
-async function foldAgentWireReplayFull(wirePath: string): Promise<FoldedAgentReplay> {
+export async function foldAgentWireReplayFull(wirePath: string, strict = false): Promise<FoldedAgentReplay> {
   try {
     const userTurns = new SurveyTurnCounter();
     const records = parseWireRecords(await readFile(wirePath, 'utf-8'), userTurns);
@@ -57,7 +57,8 @@ async function foldAgentWireReplayFull(wirePath: string): Promise<FoldedAgentRep
       toolStore: folded.toolStore,
       userTurnCount: userTurns.count,
     };
-  } catch {
+  } catch (error) {
+    if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     return EMPTY_FOLD;
   }
 }

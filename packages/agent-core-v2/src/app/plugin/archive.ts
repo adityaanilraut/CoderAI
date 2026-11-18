@@ -1,29 +1,55 @@
 import { createWriteStream } from 'node:fs';
 import { chmod, mkdir, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 import { type Entry, fromBuffer as yauzlFromBuffer } from 'yauzl';
 
 import { Error2, ErrorCodes } from '#/errors';
 
+const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024;
+const MAX_EXTRACTED_BYTES = 512 * 1024 * 1024;
+const MAX_ENTRIES = 10_000;
+
+function archiveLimitError(message: string): Error2 {
+  return new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, message);
+}
+
+function extractedSizeError(): Error2 {
+  return archiveLimitError('Extracted plugin exceeds 512 MiB.');
+}
+
 export async function downloadZip(url: string, signal?: AbortSignal): Promise<Buffer> {
-  const controller = new AbortController();
-  const timeoutHandle = setTimeout(() => {
-    controller.abort();
-  }, 5 * 60 * 1000);
+  const timeout = AbortSignal.timeout(5 * 60 * 1000);
+  const resp = await fetch(url, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+  if (!resp.ok || resp.body === null) {
+    await resp.body?.cancel().catch(() => {});
+    throw new Error2(
+      ErrorCodes.PLUGIN_LOAD_FAILED,
+      `Failed to download zip: HTTP ${resp.status} ${resp.statusText}`,
+      { details: { status: resp.status } },
+    );
+  }
+  const reader = resp.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let downloaded = 0;
   try {
-    const resp = await fetch(url, { signal: signal ?? controller.signal });
-    if (!resp.ok) {
-      throw new Error2(
-        ErrorCodes.PLUGIN_LOAD_FAILED,
-        `Failed to download zip: HTTP ${resp.status} ${resp.statusText}`,
-        { details: { url, status: resp.status } },
-      );
+    if (Number(resp.headers.get('content-length')) > MAX_DOWNLOAD_BYTES) {
+      throw archiveLimitError('Plugin download exceeds 64 MiB.');
     }
-    return Buffer.from(await resp.arrayBuffer());
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks, downloaded);
+      downloaded += value.byteLength;
+      if (downloaded > MAX_DOWNLOAD_BYTES) throw archiveLimitError('Plugin download exceeds 64 MiB.');
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
   } finally {
-    clearTimeout(timeoutHandle);
+    reader.releaseLock();
   }
 }
 
@@ -31,6 +57,8 @@ export async function extractZip(buffer: Buffer, destDir: string): Promise<strin
   await mkdir(destDir, { recursive: true });
   const destDirResolved = path.resolve(destDir);
   let settled = false;
+  let extracted = 0;
+  let declaredBytes = 0;
 
   await new Promise<void>((resolve, reject) => {
     yauzlFromBuffer(buffer, { lazyEntries: true }, (openErr, zipfile) => {
@@ -45,69 +73,66 @@ export async function extractZip(buffer: Buffer, destDir: string): Promise<strin
         return;
       }
 
+      const rejectArchive = (error: Error): void => {
+        if (settled) return;
+        settled = true;
+        zipfile.close();
+        reject(error);
+      };
+      zipfile.on('error', rejectArchive);
+      if (zipfile.entryCount > MAX_ENTRIES) {
+        rejectArchive(archiveLimitError('Plugin archive exceeds 10,000 entries.'));
+        return;
+      }
+
       const onEntry = (entry: Entry): void => {
+        declaredBytes += entry.uncompressedSize;
+        if (declaredBytes > MAX_EXTRACTED_BYTES) {
+          rejectArchive(extractedSizeError());
+          return;
+        }
         const fileName = entry.fileName;
         const destPath = path.resolve(destDir, fileName);
 
         if (destPath !== destDirResolved && !destPath.startsWith(destDirResolved + path.sep)) {
-          if (!settled) {
-            settled = true;
-            reject(
-              new Error2(
-                ErrorCodes.PLUGIN_LOAD_FAILED,
-                `Path traversal detected in zip entry: ${fileName}`,
-                { details: { entry: fileName } },
-              ),
-            );
-          }
-          zipfile.close();
+          rejectArchive(new Error2(
+            ErrorCodes.PLUGIN_LOAD_FAILED,
+            `Path traversal detected in zip entry: ${fileName}`,
+            { details: { entry: fileName } },
+          ));
           return;
         }
 
         if (fileName.endsWith('/')) {
           mkdir(destPath, { recursive: true })
-            .then(() => {
-              zipfile.readEntry();
-            })
-            .catch((error) => {
-              if (!settled) {
-                settled = true;
-                reject(error);
-              }
-              zipfile.close();
-            });
+            .then(() => zipfile.readEntry())
+            .catch(rejectArchive);
           return;
         }
 
         zipfile.openReadStream(entry, (streamErr, stream) => {
           if (streamErr !== null || stream === undefined) {
-            if (!settled) {
-              settled = true;
-              reject(
-                new Error2(
-                  ErrorCodes.PLUGIN_LOAD_FAILED,
-                  `Failed to read ${fileName} from archive: ${streamErr?.message ?? 'unknown error'}`,
-                  { cause: streamErr ?? undefined, details: { entry: fileName } },
-                ),
-              );
-            }
-            zipfile.close();
+            rejectArchive(new Error2(
+              ErrorCodes.PLUGIN_LOAD_FAILED,
+              `Failed to read ${fileName} from archive: ${streamErr?.message ?? 'unknown error'}`,
+              { cause: streamErr ?? undefined, details: { entry: fileName } },
+            ));
             return;
           }
 
+          const limit = new Transform({
+            transform(chunk: Buffer, _encoding, callback) {
+              extracted += chunk.length;
+              if (extracted > MAX_EXTRACTED_BYTES) {
+                callback(extractedSizeError());
+              } else callback(null, chunk);
+            },
+          });
           mkdir(path.dirname(destPath), { recursive: true })
-            .then(() => pipeline(stream, createWriteStream(destPath)))
+            .then(() => pipeline(stream, limit, createWriteStream(destPath, { flags: 'wx' })))
             .then(() => restoreFilePermissions(destPath, entry))
-            .then(() => {
-              zipfile.readEntry();
-            })
-            .catch((error) => {
-              if (!settled) {
-                settled = true;
-                reject(error);
-              }
-              zipfile.close();
-            });
+            .then(() => zipfile.readEntry())
+            .catch(rejectArchive);
         });
       };
 
@@ -116,12 +141,6 @@ export async function extractZip(buffer: Buffer, destDir: string): Promise<strin
         if (!settled) {
           settled = true;
           resolve();
-        }
-      });
-      zipfile.on('error', (err: Error) => {
-        if (!settled) {
-          settled = true;
-          reject(err);
         }
       });
       zipfile.readEntry();

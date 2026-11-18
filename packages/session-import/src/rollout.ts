@@ -497,7 +497,7 @@ export async function readRolloutSession(sourcePath: string, options: ReadOption
     accepted.push(candidate);
   }
   const imageDirectory = options.imageDirectory;
-  const imageStore = await createImageStore({ directory: imageDirectory, cwd: canonicalMeta.cwd });
+  const imageStore = await createImageStore({ directory: imageDirectory, publishedDirectory: options.publishedImageDirectory, cwd: canonicalMeta.cwd });
   for (const candidate of accepted) {
     const raw = candidate.item;
     const projected = raw.type === 'item_completed' ? raw.item : undefined;

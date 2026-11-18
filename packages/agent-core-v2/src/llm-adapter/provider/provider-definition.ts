@@ -13,7 +13,7 @@ import {
 import { classifyKimiQuotaError } from '#human/llm-kimi/errors';
 
 import type { ProtocolProviderOptions, Protocol } from '../protocol/protocol';
-import type { ModelSource } from './provider';
+import type { ModelSource, ProviderConfig } from './provider';
 
 export const openAIConnection: ProviderConnection = {
   endpoint: () => ({ apiKeyEnv: 'OPENAI_API_KEY', baseUrlEnv: 'OPENAI_BASE_URL' }),
@@ -40,6 +40,26 @@ export const geminiConnection: ProviderConnection = {
 export const vertexConnection: ProviderConnection = {
   endpoint: () => vertexEndpoint,
 };
+
+export function vertexLocationFromBaseUrl(baseUrl?: string): string | undefined {
+  if (!baseUrl) return undefined;
+  try {
+    const host = new URL(baseUrl).hostname;
+    const suffix = '-aiplatform.googleapis.com';
+    return host.endsWith(suffix) ? host.slice(0, -suffix.length) || undefined : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function usesVertexAI(provider: ProviderConfig | undefined, baseUrl?: string): boolean {
+  if (provider?.type === 'vertexai') return true;
+  const project = provider?.project?.trim() || provider?.env?.['GOOGLE_CLOUD_PROJECT']?.trim();
+  const location = provider?.location?.trim()
+    || provider?.env?.['GOOGLE_CLOUD_LOCATION']?.trim()
+    || vertexLocationFromBaseUrl(baseUrl ?? provider?.baseUrl);
+  return Boolean(project && location);
+}
 
 export const kimiEndpoint: ProtocolEndpoint = {
   apiKeyEnv: 'KIMI_API_KEY',
@@ -220,7 +240,7 @@ registerProviderDefinition({
 registerProviderDefinition({
   id: 'google-genai',
   baseProtocol: 'google-genai',
-  endpoints: [vertexEndpoint, geminiEndpoint],
+  endpoint: geminiEndpoint,
 });
 
 registerProviderDefinition({

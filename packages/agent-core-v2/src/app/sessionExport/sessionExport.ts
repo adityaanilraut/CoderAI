@@ -11,6 +11,7 @@ export interface ShellEnvironment {
 export interface ExportSessionPayload {
   readonly sessionId: string;
   readonly outputPath?: string | undefined;
+  readonly outputDirectory?: string | undefined;
   readonly includeGlobalLog?: boolean | undefined;
   readonly includeDesktopLog?: boolean;
   readonly version: string;

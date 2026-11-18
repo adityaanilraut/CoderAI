@@ -7,6 +7,7 @@ import { build } from 'esbuild';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fixture, testRuntime } from './fixture.mjs';
+import { guardedRuntimeEnv } from './guarded-runtime.mjs';
 const exec = promisify(execFile);
 
 test('Bun archive installs and runs the real engine without either source checkout', { timeout: 120000 }, async t => {
@@ -23,7 +24,7 @@ test('Bun archive installs and runs the real engine without either source checko
   const executable = join(dir, 'node_modules', '.bin', 'coderai');
   assert.equal(await realpath(executable), await realpath(join(dir, 'node_modules', 'coderai', 'dist', 'coderai.mjs')));
   const f = await fixture(); t.after(f.cleanup);
-  const env = { ...f.env, NODE_OPTIONS: `--require=${resolve('test/runtime-guard.cjs')}`, CODERAI_FORBIDDEN_CHECKOUT: process.cwd() };
+  const env = await guardedRuntimeEnv(f, process.cwd());
   const result = await new Promise((resolveRun, reject) => {
     const child = spawn(executable, ['--trust', '--yolo', '--json', '-p', 'SCENARIO tools'], { cwd: f.cwd, env });
     let stdout = ''; let stderr = '';

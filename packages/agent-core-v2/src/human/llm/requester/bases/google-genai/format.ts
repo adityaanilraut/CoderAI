@@ -238,6 +238,7 @@ export function encodeGoogleGenAIRequest(
 export function createGoogleGenAIFormat(): ProtocolFormat {
   return {
     createStreamParser() {
+      let usageMetadata: Record<string, unknown> = {};
       return (chunk, sink) => {
         const response = chunk as Record<string, unknown>;
         if (response === null || typeof response !== 'object') {
@@ -248,12 +249,17 @@ export function createGoogleGenAIFormat(): ProtocolFormat {
         if (typeof responseId === 'string' && responseId.length > 0) {
           sink.onMessageId?.(responseId);
         }
-        const usage = parseUsageMetadata(response);
-        if (usage !== undefined && rawFinish !== undefined && rawFinish !== null) {
-          sink.onUsage?.(usage);
+        const usage = response['usageMetadata'];
+        if (typeof usage === 'object' && usage !== null && !Array.isArray(usage)) {
+          usageMetadata = { ...usageMetadata, ...usage };
+          sink.onUsage?.(parseUsageMetadata(usageMetadata));
         }
-        if (rawFinish !== undefined && rawFinish !== null) {
-          sink.onFinish(normalizeFinishReason(rawFinish));
+        const finish = normalizeFinishReason(rawFinish);
+        const blockReason = (response['promptFeedback'] as { blockReason?: unknown } | undefined)?.blockReason;
+        if (finish !== NO_FINISH) {
+          sink.onFinish(finish);
+        } else if (typeof blockReason === 'string' && blockReason && blockReason !== 'BLOCKED_REASON_UNSPECIFIED') {
+          sink.onFinish({ finishReason: 'filtered', rawFinishReason: blockReason });
         }
         for (const part of extractChunkParts(response)) {
           sink.onDelta(part);
@@ -263,11 +269,7 @@ export function createGoogleGenAIFormat(): ProtocolFormat {
   };
 }
 
-function parseUsageMetadata(response: Record<string, unknown>): TokenUsage | undefined {
-  const usageMetadata = response['usageMetadata'] as Record<string, unknown> | undefined;
-  if (usageMetadata === undefined || usageMetadata === null) {
-    return undefined;
-  }
+function parseUsageMetadata(usageMetadata: Record<string, unknown>): TokenUsage {
   const promptTokenCount =
     typeof usageMetadata['promptTokenCount'] === 'number'
       ? usageMetadata['promptTokenCount']
@@ -280,9 +282,13 @@ function parseUsageMetadata(response: Record<string, unknown>): TokenUsage | und
     typeof usageMetadata['candidatesTokenCount'] === 'number'
       ? usageMetadata['candidatesTokenCount']
       : 0;
+  const thoughtsTokenCount =
+    typeof usageMetadata['thoughtsTokenCount'] === 'number'
+      ? usageMetadata['thoughtsTokenCount']
+      : 0;
   return {
     inputOther: Math.max(promptTokenCount - cachedContentTokenCount, 0),
-    output: candidatesTokenCount,
+    output: candidatesTokenCount + thoughtsTokenCount,
     inputCacheRead: cachedContentTokenCount,
     inputCacheCreation: 0,
     raw: usageMetadata,

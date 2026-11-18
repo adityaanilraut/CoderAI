@@ -1,3 +1,4 @@
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
@@ -33,6 +34,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
   private registration: IDisposable | undefined;
 
   constructor(
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
@@ -150,6 +152,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
         },
       },
       capabilities,
+      credentials: this.bootstrap,
       videoUploader:
         uploader === undefined || requester === undefined
           ? undefined

@@ -1,4 +1,7 @@
 import { isAbsolute } from 'pathe';
+import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import lockfile from 'proper-lockfile';
 
 import { encodeWorkDirKey, workspaceRootKey } from '#/_base/utils/workdir-slug';
 import type { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -8,6 +11,14 @@ import type { Workspace } from './workspace';
 
 export const SESSION_INDEX_SCOPE = '';
 export const SESSION_INDEX_KEY = 'session_index.jsonl';
+
+export async function withSessionIndexFileLock<T>(path: string | undefined, operation: () => Promise<T>): Promise<T> {
+  if (path === undefined) return operation();
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const release = await lockfile.lock(path, { realpath: false, retries: { retries: 8, minTimeout: 25, maxTimeout: 100 } });
+  try { return await operation(); }
+  finally { await release(); }
+}
 
 export const SESSION_INDEX_COMPACTION_MIN_STALE = 16;
 export const SESSION_INDEX_COMPACTION_MIN_STALE_RATIO = 0.2;

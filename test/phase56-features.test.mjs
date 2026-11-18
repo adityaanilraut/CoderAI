@@ -2,9 +2,10 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, symlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { build } from 'esbuild';
+import { engineBundlePlugins } from '../scripts/bundle-options.mjs';
 import { spawn } from 'node:child_process';
 import { fixture, cli, testRuntime } from './fixture.mjs';
 import { CompletionProvider } from '../apps/coderai/src/tui/completion.ts';
@@ -27,20 +28,7 @@ await build({
   ` },
   outfile: entry, bundle: true, platform: 'node', format: 'esm', target: 'node24',
   tsconfigRaw: { compilerOptions: { experimentalDecorators: true } },
-  plugins: [{ name: 'engine-assets', setup(b) {
-    b.onResolve({ filter: /^#/ }, async args => {
-      let root = args.resolveDir;
-      while (!existsSync(join(root, 'package.json'))) root = dirname(root);
-      const path = args.path.startsWith('#human/') ? resolve('packages/agent-core-v2/src/human', args.path.slice(7)) : join(root, basename(root) === 'human' ? '' : 'src', args.path.slice(2));
-      return b.resolve(path, { resolveDir: args.resolveDir, kind: args.kind });
-    });
-    b.onResolve({ filter: /\?raw$/ }, args => ({ path: resolve(args.resolveDir, args.path.slice(0, -4)), namespace: 'raw' }));
-    b.onLoad({ filter: /.*/, namespace: 'raw' }, async args => ({ contents: await readFile(args.path, 'utf8'), loader: 'text' }));
-    b.onResolve({ filter: /^[\w@][^:]*$/ }, args => {
-      if (args.path.startsWith('@coderai/') || args.path.startsWith('#')) return;
-      return { path: /^ajv\/dist\/(2019|2020)$/.test(args.path) ? args.path + '.js' : args.path, external: true };
-    });
-  } }],
+  plugins: engineBundlePlugins(),
 });
 const api = await import(entry);
 after(() => rm(dir, { recursive: true, force: true }));

@@ -7,6 +7,7 @@ import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { IConfigService } from '#/app/config/config';
 import { findGitWorkTree } from '#/app/git/workTree';
 import { loadMcpServersDetailed, resolveMcpJsonPaths } from '#/app/mcpConfig/configLoader';
+import { MCP_SECTION, type McpSection } from '#/app/mcpConfig/configSection';
 import type { IProjectLocalConfigService } from '#/app/projectLocalConfig/projectLocalConfig';
 import {
   MERGE_ALL_AVAILABLE_SKILLS_SECTION,
@@ -15,6 +16,7 @@ import {
 import { projectRoots } from '#/features/skill/catalog/skillRoots';
 import type { IWorkspaceSkillCatalog } from '#/features/skill/workspace/workspaceSkillCatalog';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
+import { mcpGrantedVariables } from '#/mcpCore/credential-policy';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IWorkspaceAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/workspaceAgentProfileLoader';
 import type { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
@@ -103,17 +105,14 @@ export class WorkspaceTrustDisclosureService implements IWorkspaceTrustDisclosur
       loadMcpServersDetailed({ fs: this.fs, cwd, homeDir, includeProject: true }),
     ]);
     const projectPaths = new Set([paths.projectRoot, paths.project]);
+    const grants = this.config.get<McpSection | undefined>(MCP_SECTION)?.credentialGrants;
     const servers = Object.entries(loaded.servers)
       .filter(([name]) => projectPaths.has(loaded.origins[name] ?? ''))
       .filter(([, config]) => config.enabled !== false)
-      .map(([name, config]) => describeMcpServer(name, config, loaded.origins[name] ?? ''))
+      .map(([name, config]) => describeMcpServer(name, config, loaded.origins[name] ?? '',
+        mcpGrantedVariables(config, name, grants)))
       .toSorted((a, b) => a.name.localeCompare(b.name));
-    return Promise.all(
-      servers.map(async (server) => ({
-        ...server,
-        origin: await realpathOrSelf(this.fs, server.origin),
-      })),
-    );
+    return servers;
   }
 
   private async readGatedAdditionalDirs(): Promise<{
@@ -260,13 +259,15 @@ function describeMcpServer(
   name: string,
   config: McpServerConfig,
   origin: string,
+  grantedVariables?: ReadonlySet<string>,
 ): TrustGatedMcpServer {
   if (config.transport === 'stdio') {
     return {
       name,
       transport: config.transport,
       command: config.command,
-      args: config.args,
+      argumentCount: config.args?.length,
+      environmentNames: [...new Set([...Object.keys(config.env ?? {}), ...(grantedVariables ?? [])])].sort(),
       cwd: config.cwd,
       origin,
     };
@@ -274,7 +275,8 @@ function describeMcpServer(
   return {
     name,
     transport: config.transport,
-    url: config.url,
+    url: new URL(config.url).origin,
+    environmentNames: config.bearerTokenEnvVar ? [config.bearerTokenEnvVar] : undefined,
     origin,
   };
 }

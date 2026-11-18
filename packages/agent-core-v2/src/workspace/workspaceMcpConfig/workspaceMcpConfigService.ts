@@ -12,6 +12,7 @@ import { MCP_SECTION, type McpSection } from '#/app/mcpConfig/configSection';
 import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
 import { IPluginService } from '#/app/plugin/plugin';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
+import { mcpServerConfigsEqual } from '#/mcpCore/connection-manager';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 import { IWorkspaceTrust } from '#/workspace/workspaceTrust/workspaceTrust';
@@ -90,6 +91,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
       startupTimeoutMs: section?.startupTimeoutMs,
       toolTimeoutMs: section?.toolTimeoutMs,
       defaultDeferred: section?.defaultDeferred,
+      credentialGrants: section?.credentialGrants,
     };
   }
 
@@ -211,7 +213,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
     const remove: string[] = [];
     for (const [name, config] of Object.entries(next)) {
       const previous = this.current[name];
-      if (previous === undefined || fingerprintConfig(previous) !== fingerprintConfig(config)) {
+      if (previous === undefined || !mcpServerConfigsEqual(previous, config)) {
         upsert[name] = config;
       }
     }
@@ -225,19 +227,3 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
 }
 
 const NO_ABORT = new AbortController().signal;
-
-function fingerprintConfig(config: McpServerConfig): string {
-  return JSON.stringify(sortKeysDeep(config));
-}
-
-function sortKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value)
-        .toSorted(([a], [b]) => a.localeCompare(b))
-        .map(([key, nested]) => [key, sortKeysDeep(nested)]),
-    );
-  }
-  return value;
-}

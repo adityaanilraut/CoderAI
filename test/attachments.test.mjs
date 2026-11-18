@@ -41,6 +41,21 @@ test('large image is compressed while its original remains available in the sess
   assert.match(request, /data:image\//);
 });
 
+test('image attachments over the shared media limit are rejected before provider dispatch', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  f.env.CODERAI_MODEL_CAPABILITIES = 'image_in';
+  const path = join(f.cwd, 'oversized.png');
+  const image = await open(path, 'w');
+  try {
+    await image.write(Buffer.from('89504e470d0a1a0a', 'hex'));
+    await image.truncate(100 * 1024 * 1024 + 1);
+  } finally { await image.close(); }
+  const result = await f.run(['--trust', '-p', 'Check this image', '--attach', path]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Image exceeds the 100 MiB limit/);
+  assert.equal(f.requests.length, 0);
+});
+
 test('headless goals accept images and continue to completion', async t => {
   const f = await fixture(); t.after(f.cleanup);
   f.env.CODERAI_MODEL_CAPABILITIES = 'image_in';

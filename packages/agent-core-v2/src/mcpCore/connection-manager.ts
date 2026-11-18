@@ -11,6 +11,7 @@ import { isRemoteMcpConfig } from './client-remote';
 import { SseMcpClient } from './client-sse';
 import type { UnexpectedCloseReason } from './client-shared';
 import { StdioMcpClient } from './client-stdio';
+import { getMcpCredentialOrigin, mcpGrantedVariables, type McpCredentialGrant } from './credential-policy';
 import type { McpOAuthService } from '#/mcpCore/oauth/service';
 import { assertMcpInputSchema, type MCPClient, type MCPToolDefinition } from './types';
 
@@ -86,6 +87,7 @@ export interface McpDefaults {
 
 export interface McpConnectionManagerOptions {
   readonly envLookup?: (name: string) => string | undefined;
+  readonly resolveCredentialGrants?: () => readonly McpCredentialGrant[] | undefined;
   readonly stdioCwd?: string;
   readonly runtimeResolver?: import('#/workspace/workspaceInstance/workspaceInstanceManager').IRuntimeResolver;
   readonly workspaceId?: string;
@@ -446,6 +448,7 @@ export class McpConnectionManager implements McpConnectionView {
     const toolCallTimeoutMs =
       config.toolTimeoutMs ?? this.options.resolveDefaults?.().toolTimeoutMs;
     const clientName = this.options.resolveClientName?.();
+    const variables = mcpGrantedVariables(config, name, this.options.resolveCredentialGrants?.());
     if (config.transport === 'stdio') {
       const runtimeResolver = this.options.runtimeResolver;
       const workspaceId = this.options.workspaceId;
@@ -461,13 +464,16 @@ export class McpConnectionManager implements McpConnectionView {
         runtimeResolver,
         workspaceId,
         runtimeId,
+        inheritedVariables: variables,
       });
     }
+    const lookup = this.options.envLookup ?? ((key: string) => process.env[key]);
+    const envLookup = variables === undefined ? lookup : (key: string) => variables.has(key) ? lookup(key) : undefined;
     if (config.transport === 'sse') {
       return new SseMcpClient(config, {
         startupTimeoutMs,
         toolCallTimeoutMs,
-        envLookup: this.options.envLookup,
+        envLookup,
         oauthProvider: await this.resolveOAuthProvider(config, name),
         clientName,
       });
@@ -475,7 +481,7 @@ export class McpConnectionManager implements McpConnectionView {
     return new HttpMcpClient(config, {
       startupTimeoutMs,
       toolCallTimeoutMs,
-      envLookup: this.options.envLookup,
+      envLookup,
       oauthProvider: await this.resolveOAuthProvider(config, name),
       clientName,
     });
@@ -623,7 +629,7 @@ function stderrTail(client: RuntimeMcpClient | undefined): string | undefined {
 }
 
 export function mcpServerConfigsEqual(a: McpServerConfig, b: McpServerConfig): boolean {
-  return stableConfigJson(a) === stableConfigJson(b);
+  return getMcpCredentialOrigin(a) === getMcpCredentialOrigin(b) && stableConfigJson(a) === stableConfigJson(b);
 }
 
 function stableConfigJson(value: unknown): string {

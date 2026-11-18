@@ -40,6 +40,7 @@ import type {
   RefreshProviderModelsOptions,
   RefreshProviderModelsResponse,
   SessionSummary,
+  SavedSessionReplay,
   SessionSummaryPage,
   SkillSummary,
   SuggestFilesInput,
@@ -84,6 +85,9 @@ export class CoderaiHarness {
   private readonly telemetry: TelemetryClient;
   private readonly activeSessions = new Map<string, Session>();
   private readonly resumeInflight = new Map<string, Promise<Session>>();
+  private readonly sessionLifecycle = new Map<string, Promise<void>>();
+  private readonly pendingSessionOperations = new Set<Promise<unknown>>();
+  private closing?: Promise<void>;
   private readonly ensureConfigFileImpl: () => Promise<void>;
   private readonly closeImpl: () => void | Promise<void>;
   private readonly sessionStartedProperties: TelemetryProperties;
@@ -141,6 +145,13 @@ export class CoderaiHarness {
   }
 
   async createSession(options: CreateSessionOptions): Promise<Session> {
+    this.ensureOpen();
+    return options.id === undefined
+      ? this.trackSessionOperation(this.doCreateSession(options))
+      : this.withSessionLifecycle(options.id, () => this.doCreateSession(options));
+  }
+
+  private async doCreateSession(options: CreateSessionOptions): Promise<Session> {
     const { planMode, sessionStartedProperties, ...coreOptions } = stripLegacyKaosOptions(options);
     const summary = await this.rpc.createSession(coreOptions);
     const session = new Session({
@@ -155,41 +166,20 @@ export class CoderaiHarness {
       },
     });
     this.activeSessions.set(session.id, session);
-    if (planMode === true) {
-      await session.setPlanMode(true);
-    }
+    try { if (planMode === true) await session.setPlanMode(true); }
+    catch (error) { await session.close().catch(() => undefined); throw error; }
     this.trackSessionStarted(summary.id, false, sessionStartedProperties);
     this.trackSessionEvent(session.id, 'session_new');
     return session;
   }
 
   async resumeSession(input: ResumeSessionInput): Promise<Session> {
+    this.ensureOpen();
     const id = normalizeSessionId(input.id);
-    const active = this.activeSessions.get(id);
-    const {
-      sessionStartedProperties: _sessionStartedProperties,
-      ...resumeInput
-    } = stripLegacyKaosOptions(input);
-    // A session whose close is in flight (`isClosed` but not yet unmapped)
-    // is not a valid resume target — fall through and re-resume fresh, which
-    // the engine serializes behind that close.
-    if (active !== undefined && !active.isClosed) {
-      if (input.agentProfile !== undefined) {
-        await this.rpc.resumeSession({ ...resumeInput, id });
-      }
-      return active;
-    }
-
-    // Coalesce concurrent resumes of the same id onto one facade, keyed by
-    // the full input so a caller with different options (dirs, replay,
-    // profile) never has them silently dropped; without this,
-    // parallel identical callers each build their own Session over the
-    // shared engine handle, and one facade's close kills the engine handle
-    // under the other.
     const key = resumeCoalesceKey(id, input);
     const inflight = this.resumeInflight.get(key);
     if (inflight !== undefined) return inflight;
-    const run = this.doResumeSession(input, id);
+    const run = this.withSessionLifecycle(id, () => this.doResumeSession(input, id));
     this.resumeInflight.set(key, run);
     try {
       return await run;
@@ -200,6 +190,18 @@ export class CoderaiHarness {
 
   private async doResumeSession(input: ResumeSessionInput, id: string): Promise<Session> {
     const { sessionStartedProperties, ...resumeInput } = stripLegacyKaosOptions(input);
+    const active = this.activeSessions.get(id);
+    if (active !== undefined) {
+      if (!active.isClosed) {
+        if (resumeInput.agentProfile !== undefined || resumeInput.additionalDirs !== undefined ||
+          resumeInput.mcpServers !== undefined || resumeInput.includeSubagents !== undefined || resumeInput.replayTurnLimit !== undefined) {
+          const summary = await this.rpc.resumeSession({ ...resumeInput, id });
+          if (!active.isClosed) active.applyResumedSummary(summary);
+        }
+        if (!active.isClosed) return active;
+      }
+      await active.close();
+    }
     const summary = await this.rpc.resumeSession({ ...resumeInput, id });
     const session = new Session({
       id: summary.id,
@@ -219,15 +221,21 @@ export class CoderaiHarness {
   }
 
   async reloadSession(input: ReloadSessionInput): Promise<Session> {
+    this.ensureOpen();
     const id = normalizeSessionId(input.id);
+    return this.withSessionLifecycle(id, () => this.doReloadSession(input, id));
+  }
+
+  private async doReloadSession(input: ReloadSessionInput, id: string): Promise<Session> {
     const active = this.activeSessions.get(id);
-    if (active !== undefined) {
+    if (active !== undefined && !active.isClosed) {
       await active.reloadSession({
         forcePluginSessionStartReminder: input.forcePluginSessionStartReminder,
       });
       this.trackSessionEvent(active.id, 'session_reload');
       return active;
     }
+    await active?.close();
 
     const summary = await this.rpc.reloadSession({
       sessionId: id,
@@ -280,13 +288,16 @@ export class CoderaiHarness {
   }
 
   async closeSession(id: string): Promise<void> {
-    await this.activeSessions.get(id)?.close();
+    await this.withSessionLifecycle(id, async () => { await this.activeSessions.get(id)?.close(); });
   }
 
   async deleteSession(id: string): Promise<void> {
+    this.ensureOpen();
     const sessionId = normalizeSessionId(id);
-    await this.activeSessions.get(sessionId)?.close();
-    await this.rpc.deleteSession({ sessionId });
+    await this.withSessionLifecycle(sessionId, async () => {
+      await this.activeSessions.get(sessionId)?.close();
+      await this.rpc.deleteSession({ sessionId });
+    });
   }
 
   async renameSession(input: RenameSessionInput): Promise<void> {
@@ -312,6 +323,16 @@ export class CoderaiHarness {
     });
     this.trackSessionEvent(input.id, 'export');
     return result;
+  }
+
+  /** Create a fork on disk without binding a model or opening the fork. */
+  async forkSavedSession(input: ForkSessionInput): Promise<SessionSummary> {
+    return this.trackSessionOperation(this.rpc.forkSession({ ...input, id: normalizeSessionId(input.id) }, false));
+  }
+
+  /** Read the persisted transcript without starting a workspace session. */
+  async readSavedSessionReplay(id: string): Promise<SavedSessionReplay> {
+    return this.trackSessionOperation(this.rpc.readSavedSessionReplay(normalizeSessionId(id)));
   }
 
   async listSessions(options: ListSessionsOptions = {}): Promise<readonly SessionSummary[]> {
@@ -431,6 +452,11 @@ export class CoderaiHarness {
   /** Warnings from the most recent config.toml load; empty when the config is fully valid. */
   async getConfigDiagnostics(): Promise<ConfigDiagnostics> {
     return this.rpc.getConfigDiagnostics();
+  }
+
+  /** Check the engine's model and credential configuration without making a model request. */
+  async ensureModelReady(model?: string): Promise<void> {
+    await this.rpc.ensureModelReady(model);
   }
 
   onConfigSectionChanged(listener: (change: ConfigSectionChange) => void): Unsubscribe {
@@ -624,9 +650,37 @@ export class CoderaiHarness {
     return this.rpc.testGlobalMcpServerConfig(server, options);
   }
 
-  async close(): Promise<void> {
-    await Promise.all(Array.from(this.activeSessions.values(), (session) => session.close()));
-    await this.closeImpl();
+  close(): Promise<void> {
+    return this.closing ??= Promise.resolve().then(async () => {
+      await Promise.allSettled(this.pendingSessionOperations);
+      const outcomes = await Promise.allSettled(Array.from(this.activeSessions.values(), session => session.close()));
+      const failures = outcomes.flatMap(outcome => outcome.status === 'rejected' ? [outcome.reason] : []);
+      try { await this.closeImpl(); }
+      catch (error) { failures.push(error); }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, 'Could not close all CoderAI resources');
+    });
+  }
+
+  private ensureOpen(): void {
+    if (this.closing !== undefined) throw new KimiError(ErrorCodes.SESSION_CLOSED, 'Harness is closing');
+  }
+
+  private trackSessionOperation<T>(operation: Promise<T>): Promise<T> {
+    this.pendingSessionOperations.add(operation);
+    const cleanup = () => this.pendingSessionOperations.delete(operation);
+    void operation.then(cleanup, cleanup);
+    return operation;
+  }
+
+  private withSessionLifecycle<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const result = (this.sessionLifecycle.get(id) ?? Promise.resolve()).then(operation);
+    const tail = result.then(() => undefined, () => undefined);
+    this.sessionLifecycle.set(id, tail);
+    void tail.then(() => {
+      if (this.sessionLifecycle.get(id) === tail) this.sessionLifecycle.delete(id);
+    });
+    return this.trackSessionOperation(result);
   }
 
   private trackSessionEvent(eventSessionId: string, event: string): void {

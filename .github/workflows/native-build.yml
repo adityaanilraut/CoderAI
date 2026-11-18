@@ -6,7 +6,27 @@ on:
 permissions:
   contents: read
 jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    outputs:
+      release-kind: ${{ steps.version.outputs.kind }}
+    steps:
+      - if: github.event_name == 'push'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - if: github.event_name == 'push'
+        uses: oven-sh/setup-bun@ecf28ddc73e819eb6fa29df6b34ef8921c743461 # v2.1.3
+        with:
+          bun-version: 1.4.4
+      - name: Verify release version
+        id: version
+        if: github.event_name == 'push'
+        run: |
+          kind=$(bun scripts/release-version.mjs "$GITHUB_REF_NAME")
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
   build:
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -25,8 +45,13 @@ jobs:
             target: win32-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@ecf28ddc73e819eb6fa29df6b34ef8921c743461 # v2.1.3
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
@@ -37,7 +62,7 @@ jobs:
       - if: runner.os == 'Windows'
         run: choco install ripgrep -y --no-progress
       - run: bun run test:native
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coderai-${{ matrix.target }}
           path: |
@@ -46,29 +71,34 @@ jobs:
           if-no-files-found: error
   draft-release:
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: build
+    needs: [preflight, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - name: Verify release version
-        run: test "$GITHUB_REF_NAME" = "v$(jq -r .version package.json)"
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: coderai-*
           path: release-assets
           merge-multiple: true
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@ecf28ddc73e819eb6fa29df6b34ef8921c743461 # v2.1.3
         with:
           bun-version: 1.4.4
       - name: Generate Homebrew formula from verified archives
-        if: ${{ !contains(github.ref_name, '-') && !contains(github.ref_name, '+') }}
+        if: needs.preflight.outputs.release-kind == 'stable'
         run: bun scripts/build-homebrew.mjs --assets-dir release-assets --output release-assets/coderai.rb
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_KIND: ${{ needs.preflight.outputs.release-kind }}
+        shell: bash
         run: |
-          gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft \
+          set -euo pipefail
+          release_args=(--verify-tag --draft)
+          if [[ "$RELEASE_KIND" == prerelease ]]; then release_args+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" release-assets/* "${release_args[@]}" \
             --title "CoderAI $GITHUB_REF_NAME" \
             --notes 'Download the ZIP for your platform and verify it against the matching SHA-256 checksum. Extract the executable, put it on your PATH, and run `coderai --setup`.'

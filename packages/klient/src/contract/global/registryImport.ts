@@ -5,6 +5,7 @@ import { providerCatalogItemSchema } from './catalog.js';
 
 export const importCustomRegistryOptionsSchema = z.object({
   url: z.string(),
+  apiKeyEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).optional(),
   apiKey: z.string().optional(),
   setDefaultWhenUnset: z.boolean().optional(),
 });

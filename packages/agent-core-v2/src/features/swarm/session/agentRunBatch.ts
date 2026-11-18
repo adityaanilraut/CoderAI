@@ -227,7 +227,7 @@ export class AgentRunBatch<T> {
 
   private scheduleRateLimitLaunch(): void {
     this.clearRateLimitTimer();
-    if (this.pending.length === 0) return;
+    if (this.pending.length === 0 || this.isAtConcurrencyLimit()) return;
 
     const now = Date.now();
     this.recoverRateLimitCapacity(now);
@@ -505,7 +505,7 @@ export class AgentRunBatch<T> {
   }
 
   private scheduleNextRateLimitWakeup(now: number): void {
-    if (this.pending.length === 0) return;
+    if (this.pending.length === 0 || this.isAtConcurrencyLimit()) return;
 
     const nextWakeupAt =
       this.active.size >= this.rateLimitCapacity

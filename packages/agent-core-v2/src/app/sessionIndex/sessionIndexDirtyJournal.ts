@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
 export const SESSION_INDEX_DIRTY_DIR = '.index-dirty';
@@ -13,7 +14,7 @@ export async function markSessionDirty(
   sessionsScope: string,
   sessionId: string,
 ): Promise<void> {
-  await storage.append(dirtyScope(sessionsScope), `${sessionId}.${Date.now()}`, EMPTY, {
+  await storage.append(dirtyScope(sessionsScope), `${sessionId}.${randomUUID()}`, EMPTY, {
     durable: false,
   });
 }

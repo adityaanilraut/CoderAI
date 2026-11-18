@@ -43,6 +43,7 @@ import { ILogService } from '#/_base/log/log';
 import {
   effectiveModelConfig,
   nonEmpty,
+  resolveModelProtocol,
   resolveModelAuthMaterial,
   resolveModelForReady,
   providerNameFromFlatModel,
@@ -62,7 +63,7 @@ import {
   type ProviderConfig,
   type ProvidersChangedEvent,
 } from '#/llm-adapter/provider/provider';
-import { isOAuthCatalogVendor } from '#/llm-adapter/provider/provider-definition';
+import { isOAuthCatalogVendor, usesVertexAI } from '#/llm-adapter/provider/provider-definition';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IRegionService } from '#/app/region/region';
 import { kimiRegionEnv } from '#/app/region/regionService';
@@ -734,6 +735,9 @@ export class AuthSummaryService implements IAuthSummaryService {
         const token = await this.oauth.getCachedAccessToken(providerKey, auth.oauth);
         if (nonEmpty(token) !== undefined) return;
         throw new AuthTokenMissingError(providerKey);
+      }
+      if (resolveModelProtocol(model, provider) === 'google-genai' && usesVertexAI(provider, model.baseUrl)) {
+        return;
       }
       throw new AuthTokenMissingError(providerName);
     } catch (error) {

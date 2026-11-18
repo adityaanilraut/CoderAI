@@ -199,9 +199,7 @@ function nextRunWithinMinutes(
   fromMs: number,
   capMinutes: number,
 ): number | null {
-  const start = new Date(fromMs);
-  start.setSeconds(0, 0);
-  const date = new Date(start.getTime() + MS_PER_MINUTE);
+  const date = new Date((Math.floor(fromMs / MS_PER_MINUTE) + 1) * MS_PER_MINUTE);
 
   const deadlineMs = fromMs + capMinutes * MS_PER_MINUTE;
 
@@ -248,24 +246,33 @@ function dayMatches(expr: ParsedCronExpression, date: Date): boolean {
 }
 
 function advanceMonth(date: Date): void {
-  date.setDate(1);
-  date.setHours(0, 0, 0, 0);
-  date.setMonth(date.getMonth() + 1);
+  const next = new Date(date);
+  next.setFullYear(date.getFullYear(), date.getMonth() + 1, 1);
+  next.setHours(0, 0, 0, 0);
+  if (!skipTo(date, next)) advanceDay(date);
 }
 
 function advanceDay(date: Date): void {
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() + 1);
+  const next = new Date(date);
+  next.setDate(date.getDate() + 1);
+  next.setHours(0, 0, 0, 0);
+  if (!skipTo(date, next)) advanceHour(date);
 }
 
 function advanceHour(date: Date): void {
-  date.setMinutes(0, 0, 0);
-  date.setHours(date.getHours() + 1);
+  const next = new Date(date.getTime() + (60 - date.getMinutes()) * MS_PER_MINUTE);
+  if (!skipTo(date, next)) advanceMinute(date);
 }
 
 function advanceMinute(date: Date): void {
-  date.setSeconds(0, 0);
-  date.setMinutes(date.getMinutes() + 1);
+  date.setTime(date.getTime() + MS_PER_MINUTE);
+}
+
+function skipTo(date: Date, next: Date): boolean {
+  // Inspect every minute near offset changes, including a repeated local hour.
+  if (next.getTime() <= date.getTime() || next.getTimezoneOffset() !== date.getTimezoneOffset()) return false;
+  date.setTime(next.getTime());
+  return true;
 }
 
 const MONTH_NAMES = [
