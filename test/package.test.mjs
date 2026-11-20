@@ -17,7 +17,12 @@ test('Bun archive installs and runs the real engine without either source checko
   const archive = join(dir, 'coderai.tgz');
   const listing = await exec('tar', ['-tzf', archive]);
   const files = listing.stdout.trim().split('\n').map(file => file.replace(/^package\//, ''));
-  for (const name of ['LICENSE', 'NOTICE', 'dist/LICENSE.pi-tui', 'dist/LICENSE.jsquash-webp', 'dist/LICENSE.libwebp', 'dist/text-build-worker.mjs']) assert.ok(files.includes(name), name);
+  for (const name of [
+    'LICENSE', 'NOTICE', 'dist/LICENSE', 'dist/NOTICE',
+    'dist/LICENSE.pi-tui', 'dist/LICENSE.jsquash-webp', 'dist/LICENSE.libwebp',
+    'dist/coderai.mjs', 'dist/coderai.mjs.map', 'dist/text-build-worker.mjs', 'dist/text-build-worker.mjs.map',
+  ]) assert.ok(files.includes(name), name);
+  assert.ok(!files.includes('dist/metafile.json'));
   assert.ok(!files.some(name => name.startsWith('apps/') || name.includes('/src/')));
   await writeFile(join(dir, 'package.json'), JSON.stringify({ private: true, dependencies: { coderai: `file:${archive}` } }));
   await exec('bun', ['install', '--production'], { cwd: dir, timeout: 90000 });

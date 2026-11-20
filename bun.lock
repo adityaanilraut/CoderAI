@@ -49,7 +49,6 @@
         "@types/proper-lockfile": "^4.1.4",
         "@types/retry": "0.12.0",
         "@types/semver": "^7.7.0",
-        "@types/tar": "^7.0.87",
         "@types/yauzl": "^2.10.3",
         "@types/yazl": "^2.4.6",
         "esbuild": "^0.25.0",
@@ -116,7 +115,6 @@
         "@types/picomatch": "^4.0.3",
         "@types/retry": "0.12.0",
         "@types/semver": "^7.7.0",
-        "@types/tar": "^7.0.87",
         "@types/yauzl": "^2.10.3",
         "@types/yazl": "^2.4.6",
       },
@@ -155,7 +153,6 @@
         "@coderai/kosong": "workspace:^",
         "@coderai/minidb": "workspace:*",
         "@coderai/oauth": "workspace:^",
-        "@coderai/product": "workspace:^",
       },
     },
     "packages/oauth": {
@@ -177,15 +174,6 @@
         "marked": "18.0.11",
       },
     },
-    "packages/product": {
-      "name": "@coderai/product",
-      "version": "0.0.2",
-      "dependencies": {
-        "@coderai/agent-core-v2": "workspace:^",
-        "@coderai/oauth": "workspace:^",
-        "zod": "4.3.6",
-      },
-    },
     "packages/session-import": {
       "name": "@coderai/session-import",
       "version": "0.0.1",
@@ -201,9 +189,6 @@
   "trustedDependencies": [
     "esbuild",
   ],
-  "catalog": {
-    "zod": "4.3.6",
-  },
   "packages": {
     "@antfu/utils": ["@antfu/utils@9.3.0", "", {}, "sha512-9hFT4RauhcUzqOE4f1+frMKLZrgNog5b06I7VmZQV1BkvwvqrbC8EBZf3L1eEL2AKb6rNKjER0sEvJiSP1FXEA=="],
 
@@ -226,8 +211,6 @@
     "@coderai/oauth": ["@coderai/oauth@workspace:packages/oauth"],
 
     "@coderai/pi-tui": ["@coderai/pi-tui@workspace:packages/pi-tui"],
-
-    "@coderai/product": ["@coderai/product@workspace:packages/product"],
 
     "@coderai/sdk": ["@coderai/sdk@workspace:packages/node-sdk"],
 
@@ -414,8 +397,6 @@
     "@types/retry": ["@types/retry@0.12.0", "", {}, "sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA=="],
 
     "@types/semver": ["@types/semver@7.7.1", "", {}, "sha512-FmgJfu+MOcQ370SD0ev7EI8TlCAfKYU+B4m5T3yXc1CiRN94g/SZPtsCkk506aUDtlMnFZvasDwHHUcZUEaYuA=="],
-
-    "@types/tar": ["@types/tar@7.0.87", "", { "dependencies": { "tar": "7.5.13" } }, "sha512-3IxNBV8LeY5oi2ZFpvAhOtW1+mHswkzM7BuisVrwJgPv67GBO2rkLPQlEKtzfHuLdhDDczhkCZeT+RuizMay4A=="],
 
     "@types/yauzl": ["@types/yauzl@2.10.3", "", { "dependencies": { "@types/node": "22.19.17" } }, "sha512-oJoftv0LSuaDZE3Le4DbKX+KS9G36NzOeSap90UIK0yMA/NhKJhqlSGtNDORNRaIbQfzjXDrQa0ytJ6mNRGz/Q=="],
 

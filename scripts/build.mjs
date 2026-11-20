@@ -8,9 +8,9 @@ const nativeDir = 'dist-bun';
 
 if (!native) await rm('dist', { recursive: true, force: true });
 await mkdir(native ? nativeDir : 'dist', { recursive: true });
-const options = { bundle: true, tsconfigRaw: { compilerOptions: { experimentalDecorators: true } }, platform: 'node', target: 'node24', format: 'esm', sourcemap: true, plugins: engineBundlePlugins({ bundleDependencies: native }), logLevel: 'warning', metafile: true, legalComments: native ? 'external' : 'eof' };
+const options = { bundle: true, tsconfigRaw: { compilerOptions: { experimentalDecorators: true } }, platform: 'node', target: 'node24', format: 'esm', sourcemap: !native, plugins: engineBundlePlugins({ bundleDependencies: native }), logLevel: 'warning', metafile: true, legalComments: native ? 'external' : 'eof' };
 if (native) {
-  const nativeOptions = { ...options, format: 'cjs', sourcemap: false, define: { 'import.meta.url': '__nativeModuleUrl' }, banner: { js: `var __nativeModuleUrl = require('node:url').pathToFileURL(process.execPath).href;` } };
+  const nativeOptions = { ...options, format: 'cjs', define: { 'import.meta.url': '__nativeModuleUrl' }, banner: { js: `var __nativeModuleUrl = require('node:url').pathToFileURL(process.execPath).href;` } };
   const main = await build({ ...nativeOptions, entryPoints: ['apps/coderai/src/main.ts'], outfile: join(nativeDir, 'main.cjs') });
   const worker = await build({ ...options, entryPoints: ['packages/minidb/src/worker/text-build-worker.ts'], outfile: join(nativeDir, 'text-build-worker.mjs') });
   await writeFile(join(nativeDir, 'metafiles.json'), JSON.stringify([main.metafile, worker.metafile]));
@@ -18,7 +18,7 @@ if (native) {
   process.exit(0);
 }
 const main = await build({ ...options, entryPoints: ['apps/coderai/src/main.ts'], outfile: 'dist/coderai.mjs', banner: { js: "#!/usr/bin/env bun\nimport { createRequire as __createRequire } from 'node:module';\nimport { fileURLToPath as __fileURLToPath } from 'node:url';\nimport { dirname as __dirnameOf } from 'node:path';\nconst require = __createRequire(import.meta.url);\nconst __filename = __fileURLToPath(import.meta.url);\nconst __dirname = __dirnameOf(__filename);" } });
-await build({ ...options, entryPoints: ['packages/minidb/src/worker/text-build-worker.ts'], outfile: 'dist/text-build-worker.mjs' });
+await build({ ...options, metafile: false, entryPoints: ['packages/minidb/src/worker/text-build-worker.ts'], outfile: 'dist/text-build-worker.mjs' });
 await writeFile('dist/metafile.json', JSON.stringify(main.metafile, null, 2));
 await chmod('dist/coderai.mjs', 0o755);
 await copyFile('LICENSE', 'dist/LICENSE');
