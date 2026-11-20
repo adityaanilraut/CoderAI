@@ -10,14 +10,14 @@ import {
   type WireRecord,
 } from '@coderai/agent-core-v2';
 
-import { SurveyTurnCounter } from '@coderai/product/session-rating/node';
-
 import type { ContextMessage } from '#/context';
 import {
   isAgentReplayUserTurnMessage,
   limitAgentReplayByTurns,
   type AgentReplayRecord,
 } from '#/replay';
+
+import { ReplayTurnCounter } from './replay-turn-counter';
 
 export interface FoldedAgentReplay {
   readonly replay: readonly AgentReplayRecord[];
@@ -48,7 +48,7 @@ export async function foldAgentWireReplay(
 
 export async function foldAgentWireReplayFull(wirePath: string, strict = false): Promise<FoldedAgentReplay> {
   try {
-    const userTurns = new SurveyTurnCounter();
+    const userTurns = new ReplayTurnCounter();
     const records = parseWireRecords(await readFile(wirePath, 'utf-8'), userTurns);
     if (records.length === 0) return { ...EMPTY_FOLD, userTurnCount: userTurns.count };
     const folded = foldWireRecords(records);
@@ -79,7 +79,7 @@ function mapReplayRecord(record: V2AgentReplayRecord): AgentReplayRecord {
   return record as unknown as AgentReplayRecord;
 }
 
-function parseWireRecords(content: string, userTurns: SurveyTurnCounter): WireRecord[] {
+function parseWireRecords(content: string, userTurns: ReplayTurnCounter): WireRecord[] {
   const lines = content.split('\n');
   const records: WireRecord[] = [];
   for (const [index, rawLine] of lines.entries()) {
@@ -119,7 +119,7 @@ const HEAD_TYPE_PREFIXES = [...CARRYOVER_TYPE_PREFIXES, 'turn.prompt', 'context.
 const HEAD_HEADER_BYTES =
   TYPE_PREFIX.length + Math.max(...HEAD_TYPE_PREFIXES.map((prefix) => prefix.length));
 
-function observeSurveyLine(counter: SurveyTurnCounter, bytes: Buffer, start: number): void {
+function observeTurnCountLine(counter: ReplayTurnCounter, bytes: Buffer, start: number): void {
   const line = decodeLine(bytes);
   if (line.length === 0) return;
   try {
@@ -199,7 +199,7 @@ class WireReplayScan {
   private readonly windowLines: ScannedRecord[] = [];
   private readonly seeds: ScannedRecord[] = [];
   private readonly legacyCompactionStarts: number[] = [];
-  private readonly userTurns = new SurveyTurnCounter();
+  private readonly userTurns = new ReplayTurnCounter();
 
   constructor(private readonly turnLimit: number) {
     this.mode = turnLimit > 0 ? 'boundary' : 'head';
@@ -295,11 +295,11 @@ class WireReplayScan {
       sniffed === 'turn.prompt' ||
       (sniffed === undefined && !hasRelevantMarkerBytes(joined))
     ) {
-      observeSurveyLine(this.userTurns, joined, start);
+      observeTurnCountLine(this.userTurns, joined, start);
       return;
     }
     if (sniffed !== undefined && !FOLD_RELEVANT_WIRE_TYPES.has(sniffed)) {
-      if (tolerate) observeSurveyLine(this.userTurns, joined, start);
+      if (tolerate) observeTurnCountLine(this.userTurns, joined, start);
       return;
     }
     const record = parseJsonLine(decodeLine(joined), tolerate);
@@ -428,7 +428,7 @@ class WireReplayScan {
             ? Buffer.concat([view.subarray(lineStart, lineEnd), tailFragment])
             : view.subarray(lineStart, lineEnd);
         if (!selected) {
-          observeSurveyLine(this.userTurns, bytes, dataFileStart + lineStart);
+          observeTurnCountLine(this.userTurns, bytes, dataFileStart + lineStart);
           if (lastLine) return;
           lineStart = lineEnd + 1;
           continue;
@@ -459,7 +459,7 @@ class WireReplayScan {
         tailFragment.length > 0 &&
         lineEnd - lineStart < HEAD_HEADER_BYTES
       ) {
-        observeSurveyLine(
+        observeTurnCountLine(
           this.userTurns,
           Buffer.concat([view.subarray(lineStart, lineEnd), tailFragment]),
           dataFileStart + lineStart,

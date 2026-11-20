@@ -14,6 +14,7 @@ const entry = join(dir, 'sessions.mjs');
 await build({
   stdin: { resolveDir: process.cwd(), contents: `
     export * from './packages/node-sdk/src/index.ts';
+    export * from './packages/node-sdk/src/v2/resume-replay.ts';
     export * from './packages/session-import/src/index.ts';
     export * from './packages/session-import/src/render.ts';
     export * from './apps/coderai/src/session-import/run-import.ts';
@@ -59,6 +60,37 @@ async function harness(f) {
   await h.setConfig({ providers: { local: { type: 'openai', baseUrl: f.env.CODERAI_MODEL_BASE_URL, apiKey: 'test' } }, models: { local: { provider: 'local', model: 'fixture-model', maxContextSize: 131072 } }, defaultModel: 'local', watch: { enabled: false }, database: { search: false } });
   return h;
 }
+
+test('replay counts user turns across full and limited scans of session history', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const wire = join(f.root, 'wire.jsonl');
+  const user = { kind: 'user' };
+  const prompt = origin => ({ type: 'turn.prompt', time: 10, origin });
+  const userMessage = {
+    type: 'context.append_message', time: 20,
+    message: { role: 'user', origin: user, content: [{ type: 'text', text: 'hello' }] },
+  };
+  const history = lines([
+    prompt(user), userMessage,
+    prompt({ kind: 'shell_command', phase: 'input' }),
+    prompt({ kind: 'shell_command', phase: 'result' }),
+    prompt({ kind: 'plugin_command', trigger: 'user-slash' }),
+    prompt({ kind: 'skill_activation', trigger: 'model' }),
+    prompt({ kind: 'retry' }),
+  ]);
+  for (const [contents, expected] of [
+    ['', 0],
+    [history, 3],
+    [lines([userMessage, prompt(user)]), undefined],
+    [lines([prompt({ kind: 'unknown' })]), undefined],
+    [history + '{"type":', undefined],
+  ]) {
+    await writeFile(wire, contents);
+    for (const limit of [undefined, 0, 1]) {
+      assert.equal((await api.foldAgentWireReplay(wire, limit)).userTurnCount, expected);
+    }
+  }
+});
 
 test('discovery uses recent windows, latest Codex database and descendant rollouts; imports are idempotent', async t => {
   const f = await fixture(); t.after(f.cleanup);
