@@ -71,8 +71,20 @@ test('prompt-only undo preserves files and deleted tracked files can be restored
   const diff = await session.turnFileDiff(changes.turnId, 'input.txt'); assert.equal(diff.before, 'hello fixture\n'); assert.equal(diff.after, undefined);
   await session.reloadSession(); await session.undoHistory(1, { revertFiles: true });
   assert.equal(await readFile(join(f.cwd, 'input.txt'), 'utf8'), 'hello fixture\n');
-  await run('SCENARIO phase5-write'); await session.undoHistory(1);
+  assert.equal(await run('SCENARIO phase5-write'), 'completed');
+  await session.undoHistory(1);
   assert.equal(await readFile(join(f.cwd, 'input.txt'), 'utf8'), 'changed first\n');
+
+  const sessions = join(f.home, 'sessions');
+  const journal = (await readdir(sessions, { recursive: true }))
+    .find(path => path.endsWith(join('agents', 'main', 'wire.jsonl')));
+  assert.ok(journal);
+  const records = (await readFile(join(sessions, journal), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  const turnId = records.findLast(record => record.type === 'turn.ended')?.turnId;
+  const checkpoint = records.findLastIndex(record =>
+    record.type === 'file_history.checkpoint' && record.phase === 'end' && record.turnId === turnId);
+  const undo = records.findLastIndex(record => record.type === 'agent.switched');
+  assert.ok(checkpoint >= 0 && checkpoint < undo, 'turn-ended checkpoint must precede the undo branch switch');
 });
 
 test('missing and oversize backups reject file rollback before withdrawing prompts or modifying other paths', async t => {

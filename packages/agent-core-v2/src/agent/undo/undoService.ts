@@ -125,6 +125,8 @@ export class AgentConversationUndoService
       }
       this.runGate.begin();
       this.assertUndoAvailable(turns);
+      // Turn-ended checkpoints belong to the branch that recorded the turn.
+      await this.fileHistory.settled();
       const fromTurnId = this.removedFromTurnId(turns);
       if (options.revertFiles && fromTurnId === undefined) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'Cannot determine the pre-turn file snapshots. Withdraw prompts only instead.');
