@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fixture } from './fixture.mjs';
 import { checkNodePlugin } from './plugin-mcp-fixture.mjs';
@@ -30,7 +30,8 @@ test('MCP CLI manages user configuration and preserves project configuration', {
   assert.doesNotMatch(untrusted.stdout, /^project\t/m);
   assert.match(untrusted.stdout, /Project servers are hidden/);
   const withProject = await f.run(['--trust', 'mcp', 'list']);
-  assert.match(withProject.stdout, /project/); assert.match(withProject.stdout, /read-only/);
+  assert.equal(withProject.code, 0, withProject.stderr);
+  assert.match(withProject.stdout, /^project\tstdio\t[^\t]+\tread-only\t/m);
   const removed = await f.run(['mcp', 'remove', 'example']);
   assert.equal(removed.code, 0, removed.stderr);
   assert.equal(await readFile(projectPath, 'utf8'), project);
@@ -39,6 +40,29 @@ test('MCP CLI manages user configuration and preserves project configuration', {
   await writeFile(configPath, '{broken');
   const invalid = await f.run(['mcp', 'add', 'invalid', configPath]);
   assert.equal(invalid.code, 1); assert.match(invalid.stderr, /JSON/);
+});
+
+test('MCP list uses the same workspace trust through a directory alias', { timeout: 30000 }, async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const alias = join(f.root, 'alias');
+  await symlink(f.cwd, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  await mkdir(join(f.cwd, '.coderai'));
+  await writeFile(join(f.cwd, '.coderai', 'mcp.json'), JSON.stringify({
+    mcpServers: { project: { command: 'node', args: ['project-server.js'] } },
+  }));
+
+  const untrusted = await f.run(['--cwd', alias, 'mcp', 'list']);
+  assert.equal(untrusted.code, 0, untrusted.stderr);
+  assert.match(untrusted.stdout, /Project servers are hidden/);
+  const trusted = await f.run(['--cwd', alias, '--trust', 'mcp', 'list']);
+  assert.equal(trusted.code, 0, trusted.stderr);
+  assert.match(trusted.stdout, /^project\t/m);
+
+  for (const cwd of [f.cwd, alias]) {
+    const listing = await f.run(['--cwd', cwd, 'mcp', 'list']);
+    assert.equal(listing.code, 0, listing.stderr);
+    assert.match(listing.stdout, /^project\t/m);
+  }
 });
 
 test('MCP authorization validates URLs, forwards cancellation, and reconnects the active session', async () => {

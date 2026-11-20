@@ -111,7 +111,7 @@ export class Runtime {
       throw new ModelSetupRequired(error instanceof Error ? error.message : String(error));
     }
   }
-  async trust(ask: (text: string, workDir: string) => Promise<boolean>): Promise<void> {
+  async trust(ask: (text: string, workDir: string) => Promise<boolean>): Promise<string> {
     this.askTrust = ask;
     let cwd = this.options.cwd;
     if (this.options.resume) {
@@ -119,9 +119,9 @@ export class Runtime {
       if (!saved) throw new Error(`Session not found: ${this.options.resume}`);
       cwd = saved.workDir;
     }
-    await this.trustDirectory(cwd);
+    return this.trustDirectory(cwd);
   }
-  private async trustDirectory(cwd: string): Promise<void> {
+  private async trustDirectory(cwd: string): Promise<string> {
     const path = resolve(cwd);
     let workDir: string;
     try {
@@ -133,9 +133,9 @@ export class Runtime {
       if (code === 'EACCES' || code === 'EPERM') throw new Error(`Cannot access workspace directory: ${path}`);
       throw error;
     }
-    if (this.checkedTrust.has(workDir)) return;
+    if (this.checkedTrust.has(workDir)) return workDir;
     const info = await this.harness.getWorkspaceTrustInfo(workDir);
-    if (info.trusted) { this.checkedTrust.add(workDir); return; }
+    if (info.trusted) { this.checkedTrust.add(workDir); return workDir; }
     const lines = [`Trust ${workDir}?`, 'Project instructions, hooks, plugins and configured MCP programs may run in a trusted workspace.'];
     const add = (label: string, values: readonly string[]) => { if (values.length) lines.push(`${label}:\n${values.map(value => `  ${value}`).join('\n')}`); };
     add('MCP servers', info.gatedMcpServers.map(server => {
@@ -156,6 +156,7 @@ export class Runtime {
     }
     await this.harness.trustWorkspace(workDir);
     this.checkedTrust.add(workDir);
+    return workDir;
   }
   async open(id = this.options.resume): Promise<Session> {
     if (this.closing) throw new Error('CoderAI is shutting down');

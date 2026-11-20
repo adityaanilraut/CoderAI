@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { McpServerConfigSchema } from '@coderai/sdk/mcp-config';
 import type { McpServerConfig } from '@coderai/sdk';
@@ -8,9 +8,11 @@ import { browserUrl, openBrowser } from './browser.js';
 
 /** List the merged configuration without printing credential values. */
 export async function listMcpConfiguration(runtime: Runtime): Promise<string> {
-  if (runtime.options.trust) await runtime.trust(async () => false);
-  const trust = await runtime.harness.getWorkspaceTrustInfo(runtime.options.cwd);
-  const servers = await runtime.harness.listMcpServers({ cwd: runtime.options.cwd });
+  const cwd = runtime.options.trust
+    ? await runtime.trust(async () => false)
+    : await realpath(resolve(runtime.options.cwd));
+  const trust = await runtime.harness.getWorkspaceTrustInfo(cwd);
+  const servers = await runtime.harness.listMcpServers({ cwd });
   const listing = servers.length ? servers.map(server => {
     let target: string;
     if (server.transport === 'stdio') target = server.command;
@@ -33,8 +35,8 @@ export async function removeMcpConfiguration(runtime: Runtime, name: string): Pr
 
 /** Testing a configured process can execute project configuration, so use normal workspace trust. */
 export async function testMcpConfiguration(runtime: Runtime, name: string): Promise<string> {
-  await runtime.trust(async () => false);
-  const result = await runtime.harness.testMcpServer(name, { cwd: runtime.options.cwd });
+  const cwd = await runtime.trust(async () => false);
+  const result = await runtime.harness.testMcpServer(name, { cwd });
   if (!result.success) throw new Error(`MCP test failed: ${result.output}`);
   return result.output;
 }
@@ -44,7 +46,7 @@ export async function authenticateMcpConfiguration(runtime: Runtime, name: strin
   open?: (url: string) => Promise<boolean>;
   onUrl?: (url: string) => void;
 } = {}): Promise<void> {
-  if (!runtime.session) await runtime.trust(async () => false);
+  const cwd = runtime.session?.workDir ?? await runtime.trust(async () => false);
   const controller = new AbortController();
   const abort = () => controller.abort();
   process.on('SIGINT', abort); process.on('SIGTERM', abort);
@@ -53,7 +55,7 @@ export async function authenticateMcpConfiguration(runtime: Runtime, name: strin
   try {
     controller.signal.throwIfAborted();
     await runtime.harness.authenticateMcpServer(name, {
-      cwd: runtime.session?.workDir ?? runtime.options.cwd,
+      cwd,
       signal: controller.signal,
       timeoutMs: 180_000,
       onAuthorizationUrl: async value => {
@@ -72,8 +74,8 @@ export async function authenticateMcpConfiguration(runtime: Runtime, name: strin
 }
 
 export async function resetMcpAuthentication(runtime: Runtime, name: string): Promise<void> {
-  if (!runtime.session) await runtime.trust(async () => false);
-  await runtime.harness.resetMcpServerAuth(name, { cwd: runtime.session?.workDir ?? runtime.options.cwd });
+  const cwd = runtime.session?.workDir ?? await runtime.trust(async () => false);
+  await runtime.harness.resetMcpServerAuth(name, { cwd });
   if (runtime.session) await runtime.session.reconnectMcpServer(name);
 }
 

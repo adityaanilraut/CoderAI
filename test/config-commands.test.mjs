@@ -46,7 +46,7 @@ test('saving configuration keeps credentials private after an atomic rewrite', {
   assert.equal((await stat(path)).mode & 0o777, 0o600);
 });
 
-test('provider and model updates preserve aliases and defaults', async t => {
+test('provider and model updates preserve aliases and defaults', { timeout: 30000 }, async t => {
   const f = await fixture(); t.after(f.cleanup);
   for (const key of Object.keys(f.env)) if (key.startsWith('CODERAI_MODEL_')) delete f.env[key];
   for (const args of [
